@@ -2,7 +2,7 @@ import { PDFDocument, type PDFPage } from "@cantoo/pdf-lib";
 import type { CmsError } from "@signature-kit/cms/config";
 import type { SignatureKitError, Signatures } from "@signature-kit/signatures";
 import { signPdf as signPdfDocument } from "./sign.js";
-import { findPdfTextAnchors } from "./anchors.js";
+import { findPdfTextAnchors, removePdfLinkAnchors } from "./anchors.js";
 import type { LiteParseWorkerFactory } from "./liteparse-browser.js";
 import { Effect, Schema } from "effect";
 import {
@@ -791,6 +791,7 @@ const prepareAndSignStampRects = (
             ...(input.anchors.offset === undefined ? {} : { offset: input.anchors.offset }),
           })
         : findPdfTextAnchors({
+            pdf: input.pdf,
             pages,
             textBoxes: input.pageTextBoxes,
             matchers: input.anchors.matchers,
@@ -939,7 +940,8 @@ const preparePdfVisibleDocument = (input: PdfPrepareAndSignInput) =>
                     reason: "Text-anchor search did not find a signature placement.",
                   }),
                 );
-              return prepareAndSignMainStamp(valid, stampRects).pipe(
+              return removePdfLinkAnchors(valid.pdf, valid.anchors?.matchers ?? []).pipe(
+                Effect.flatMap((pdf) => prepareAndSignMainStamp({ ...valid, pdf }, stampRects)),
                 Effect.flatMap((stamped) =>
                   prepareAndSignRubrics(
                     valid,

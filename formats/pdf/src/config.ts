@@ -631,6 +631,7 @@ export type PdfSignaturePage = (typeof PdfSignaturePageSchema)["Type"];
 export const PdfTextAnchorMatcherSchema = Schema.Union([
   Schema.Struct({ text: nonEmptyString }),
   Schema.Struct({ digits: nonEmptyString }),
+  Schema.Struct({ link: nonEmptyString }),
 ]);
 export type PdfTextAnchorMatcher = (typeof PdfTextAnchorMatcherSchema)["Type"];
 

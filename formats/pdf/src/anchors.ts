@@ -1,8 +1,18 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
+import {
+  PDFArray,
+  PDFDict,
+  PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFRef,
+  PDFString,
+} from "@cantoo/pdf-lib";
+import type { PDFObject, PDFPage } from "@cantoo/pdf-lib";
 import { Effect, Schema } from "effect";
+import { hasPdfByteRange } from "./byte-range.js";
 import { parsePdfTextBoxesBrowser } from "./liteparse-browser.js";
 import type { LiteParseWorkerFactory } from "./liteparse-browser.js";
-import { clampCoordinate, visiblePdfPageSize } from "./stamp.js";
+import { clampCoordinate, topLeftRectFromPdfCoordinateTuple, visiblePdfPageSize } from "./stamp.js";
 import {
   PdfError,
   PdfErrorCodeValue,
@@ -20,6 +30,71 @@ import type {
 
 const DEFAULT_ANCHOR_OFFSET = 4;
 
+type PdfLinkAnchorMatcher = Extract<PdfTextAnchorMatcher, { readonly link: string }>;
+type PdfContentAnchorMatcher = Exclude<PdfTextAnchorMatcher, PdfLinkAnchorMatcher>;
+
+const isLinkAnchorMatcher = (matcher: PdfTextAnchorMatcher): matcher is PdfLinkAnchorMatcher =>
+  "link" in matcher;
+
+const isContentAnchorMatcher = (
+  matcher: PdfTextAnchorMatcher,
+): matcher is PdfContentAnchorMatcher => !("link" in matcher);
+
+const linkAnchorUris = (matchers: ReadonlyArray<PdfTextAnchorMatcher>): ReadonlySet<string> =>
+  new Set(matchers.filter(isLinkAnchorMatcher).map((matcher) => matcher.link));
+
+type PdfLinkAnchor = {
+  readonly page: PdfSignaturePage;
+  readonly pdfPage: PDFPage;
+  readonly ref: PDFRef;
+  readonly action: PDFObject | undefined;
+  readonly box: PdfTextBox;
+};
+
+const pdfLinkAnchors = (document: PDFDocument, uris: ReadonlySet<string>) =>
+  document.getPages().flatMap((pdfPage, index): ReadonlyArray<PdfLinkAnchor> => {
+    const size = visiblePdfPageSize(pdfPage);
+    return (pdfPage.node.Annots()?.asArray() ?? []).flatMap((ref) => {
+      const annotation = document.context.lookup(ref);
+      if (!(ref instanceof PDFRef) || !(annotation instanceof PDFDict)) return [];
+      const action = annotation.lookup(PDFName.of("A"));
+      const uri = action instanceof PDFDict ? action.lookup(PDFName.of("URI")) : undefined;
+      const rect = annotation.lookup(PDFName.of("Rect"));
+      if (!(uri instanceof PDFString || uri instanceof PDFHexString)) return [];
+      if (!uris.has(uri.decodeText()) || !(rect instanceof PDFArray)) return [];
+      const { x, y, width, height } = rect.asRectangle();
+      return [
+        {
+          page: { index, width: size.width, height: size.height },
+          pdfPage,
+          ref,
+          action: annotation.get(PDFName.of("A")),
+          box: topLeftRectFromPdfCoordinateTuple(
+            [
+              Math.min(x, x + width),
+              Math.min(y, y + height),
+              Math.max(x, x + width),
+              Math.max(y, y + height),
+            ],
+            pdfPage,
+          ),
+        },
+      ];
+    });
+  });
+
+const loadLinkAnchorDocument = (pdf: Uint8Array): Effect.Effect<PDFDocument, PdfError> =>
+  Effect.tryPromise({
+    try: () => PDFDocument.load(pdf),
+    catch: () =>
+      new PdfError({
+        code: PdfErrorCodeValue.invalidPdf,
+        retryable: false,
+        operation: PdfOperationValue.findTextAnchors,
+        reason: "Failed to load PDF link annotations for anchor placement.",
+      }),
+  });
+
 const CPF_CNPJ_DIGIT_SEPARATORS = /[./-]/gu;
 const MAXIMAL_DIGIT_RUN_PATTERN = /\d+/gu;
 
@@ -33,7 +108,7 @@ const digitRunsFromText = (value: string): ReadonlyArray<string> =>
 const matcherMatches = (
   text: string,
   digitRuns: ReadonlyArray<string>,
-  matcher: PdfTextAnchorMatcher,
+  matcher: PdfContentAnchorMatcher,
 ): boolean => {
   if ("text" in matcher) {
     return text.includes(matcher.text);
@@ -42,7 +117,7 @@ const matcherMatches = (
   return digitRuns.some((run) => run === normalizedMatcherDigits);
 };
 
-const boxMatches = (box: PdfTextBox, matchers: ReadonlyArray<PdfTextAnchorMatcher>): boolean => {
+const boxMatches = (box: PdfTextBox, matchers: ReadonlyArray<PdfContentAnchorMatcher>): boolean => {
   const text = box.text ?? "";
   if (text.length === 0) return false;
   const digitRuns = digitRunsFromText(text);
@@ -207,6 +282,44 @@ const resolveAnchorGeometry = (
   );
 };
 
+const contentAnchorRects = (
+  input: PdfTextAnchorSearchInput,
+): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, LiteParseWorkerFactory> => {
+  const matchers = input.matchers.filter(isContentAnchorMatcher);
+  if (matchers.length === 0) return Effect.succeed([]);
+  return resolveAnchorGeometry(input).pipe(
+    Effect.map(({ pageTextBoxes }) =>
+      pageTextBoxes.flatMap(({ page, textBoxes }) =>
+        textBoxes.flatMap((box) =>
+          boxMatches(box, matchers) ? [rectForAnchorBox(page, box, input)] : [],
+        ),
+      ),
+    ),
+  );
+};
+
+const linkAnchorRects = (
+  input: PdfTextAnchorSearchInput,
+): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError> => {
+  const uris = linkAnchorUris(input.matchers);
+  if (uris.size === 0) return Effect.succeed([]);
+  if (input.pdf === undefined) {
+    return Effect.fail(
+      new PdfError({
+        code: PdfErrorCodeValue.invalidBuilderInput,
+        retryable: false,
+        operation: PdfOperationValue.findTextAnchors,
+        reason: "Link anchor search requires pdf bytes.",
+      }),
+    );
+  }
+  return loadLinkAnchorDocument(input.pdf).pipe(
+    Effect.map((document) =>
+      pdfLinkAnchors(document, uris).map(({ page, box }) => rectForAnchorBox(page, box, input)),
+    ),
+  );
+};
+
 export function findPdfTextAnchors(
   input: PdfTextAnchorSearchWithTextBoxes,
 ): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError>;
@@ -229,15 +342,40 @@ export function findPdfTextAnchors(
         }),
     ),
     Effect.flatMap((valid) =>
-      resolveAnchorGeometry(valid).pipe(
-        Effect.map(({ pageTextBoxes }) =>
-          pageTextBoxes.flatMap(({ page, textBoxes }) =>
-            textBoxes.flatMap((box) =>
-              boxMatches(box, valid.matchers) ? [rectForAnchorBox(page, box, valid)] : [],
-            ),
-          ),
-        ),
+      Effect.all([contentAnchorRects(valid), linkAnchorRects(valid)]).pipe(
+        Effect.map(([contentRects, linkRects]) => [...contentRects, ...linkRects]),
       ),
     ),
   );
 }
+
+export const removePdfLinkAnchors = (
+  pdf: Uint8Array,
+  matchers: ReadonlyArray<PdfTextAnchorMatcher>,
+): Effect.Effect<Uint8Array, PdfError> => {
+  const uris = linkAnchorUris(matchers);
+  if (uris.size === 0 || hasPdfByteRange(pdf)) return Effect.succeed(pdf);
+  return loadLinkAnchorDocument(pdf).pipe(
+    Effect.flatMap((document) => {
+      const anchors = pdfLinkAnchors(document, uris);
+      if (anchors.length === 0) return Effect.succeed(pdf);
+      return Effect.tryPromise({
+        try: () => {
+          anchors.forEach(({ pdfPage, ref, action }) => {
+            pdfPage.node.removeAnnot(ref);
+            document.context.delete(ref);
+            if (action instanceof PDFRef) document.context.delete(action);
+          });
+          return document.save();
+        },
+        catch: () =>
+          new PdfError({
+            code: PdfErrorCodeValue.invalidPdf,
+            retryable: false,
+            operation: PdfOperationValue.findTextAnchors,
+            reason: "Failed to remove link anchors from the PDF.",
+          }),
+      });
+    }),
+  );
+};
