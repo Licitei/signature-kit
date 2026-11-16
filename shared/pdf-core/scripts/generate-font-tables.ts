@@ -119,7 +119,7 @@ for (const line of glyphList.split("\n")) {
     }
   }
 }
-aglEntries.sort((a, b) => a.name.localeCompare(b.name));
+aglEntries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
 const pdfDocEncoding: string[] = [];
 for (let i = 0; i < 256; i += 1) {
