@@ -1220,6 +1220,7 @@ pub(crate) fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_pdf::assert_exact;
     use std::fmt::Write as _;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
@@ -1316,8 +1317,8 @@ mod tests {
         assert!(!document.was_repaired());
         let pages = document.pages().unwrap();
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].info.media_box, [0.0, 0.0, 200.0, 100.0]);
-        assert_eq!(pages[0].info.crop_box, [0.0, 0.0, 200.0, 100.0]);
+        assert_exact(&pages[0].info.media_box, &[0.0, 0.0, 200.0, 100.0]);
+        assert_exact(&pages[0].info.crop_box, &[0.0, 0.0, 200.0, 100.0]);
         assert_eq!(pages[0].info.rotate, 0);
         assert_eq!(
             pages[0].obj_ref,
@@ -1483,7 +1484,7 @@ mod tests {
         assert!(!document.was_repaired());
         let pages = document.pages().unwrap();
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].info.media_box, [0.0, 0.0, 200.0, 100.0]);
+        assert_exact(&pages[0].info.media_box, &[0.0, 0.0, 200.0, 100.0]);
         assert_eq!(document.content(&pages[0]).unwrap(), b"BT (Hi) Tj ET");
         assert!(file.xref_stream > file.object_stream && file.object_stream > file.content);
     }
@@ -1529,7 +1530,7 @@ mod tests {
         let document = open(&bytes);
         assert!(!document.was_repaired());
         let pages = document.pages().unwrap();
-        assert_eq!(pages[0].info.media_box, [0.0, 0.0, 300.0, 400.0]);
+        assert_exact(&pages[0].info.media_box, &[0.0, 0.0, 300.0, 400.0]);
         assert_eq!(
             document.content(&pages[0]).unwrap(),
             b"BT /F1 12 Tf (Hi) Tj ET"
@@ -1616,7 +1617,7 @@ mod tests {
         let bytes = built.bytes[..built.xref].to_vec();
         let document = open(&bytes);
         let pages = document.pages().unwrap();
-        assert_eq!(pages[0].info.media_box, [0.0, 0.0, 50.0, 60.0]);
+        assert_exact(&pages[0].info.media_box, &[0.0, 0.0, 50.0, 60.0]);
     }
 
     #[test]
@@ -1706,7 +1707,7 @@ mod tests {
         let document = open(&bytes);
         let pages = document.pages().unwrap();
         assert_eq!(document.content(&pages[0]).unwrap(), b"q\nQ");
-        assert_eq!(pages[0].info.media_box, DEFAULT_MEDIA_BOX);
+        assert_exact(&pages[0].info.media_box, &DEFAULT_MEDIA_BOX);
     }
 
     #[test]
@@ -1744,10 +1745,10 @@ mod tests {
         let document = open(&bytes);
         let pages = document.pages().unwrap();
         assert_eq!(pages.len(), 2);
-        assert_eq!(pages[0].info.media_box, [0.0, 0.0, 400.0, 500.0]);
+        assert_exact(&pages[0].info.media_box, &[0.0, 0.0, 400.0, 500.0]);
         assert_eq!(pages[0].info.rotate, 180);
         assert!(pages[0].resources.get(b"Font").is_some());
-        assert_eq!(pages[1].info.media_box, [0.0, 0.0, 10.0, 20.0]);
+        assert_exact(&pages[1].info.media_box, &[0.0, 0.0, 10.0, 20.0]);
         assert_eq!(pages[1].info.rotate, 90);
         assert!(pages[1].resources.get(b"XObject").is_some());
         assert!(pages[1].resources.get(b"Font").is_none());
@@ -1795,40 +1796,40 @@ mod tests {
     #[test]
     fn boxes_are_normalised() {
         let info = page_info_with("");
-        assert_eq!(info.media_box, DEFAULT_MEDIA_BOX);
-        assert_eq!(info.crop_box, DEFAULT_MEDIA_BOX);
-        assert_eq!(
-            page_info_with("/MediaBox [200 100 0 0]").media_box,
-            [0.0, 0.0, 200.0, 100.0]
+        assert_exact(&info.media_box, &DEFAULT_MEDIA_BOX);
+        assert_exact(&info.crop_box, &DEFAULT_MEDIA_BOX);
+        assert_exact(
+            &page_info_with("/MediaBox [200 100 0 0]").media_box,
+            &[0.0, 0.0, 200.0, 100.0],
         );
-        assert_eq!(
-            page_info_with("/MediaBox [0 0 0 0]").media_box,
-            DEFAULT_MEDIA_BOX
+        assert_exact(
+            &page_info_with("/MediaBox [0 0 0 0]").media_box,
+            &DEFAULT_MEDIA_BOX,
         );
-        assert_eq!(
-            page_info_with("/MediaBox [1 2 3]").media_box,
-            DEFAULT_MEDIA_BOX
+        assert_exact(
+            &page_info_with("/MediaBox [1 2 3]").media_box,
+            &DEFAULT_MEDIA_BOX,
         );
-        assert_eq!(
-            page_info_with("/MediaBox [a b c d]").media_box,
-            DEFAULT_MEDIA_BOX
+        assert_exact(
+            &page_info_with("/MediaBox [a b c d]").media_box,
+            &DEFAULT_MEDIA_BOX,
         );
-        assert_eq!(
-            page_info_with("/MediaBox [0.5 0.5 10.5 20.25]").media_box,
-            [0.5, 0.5, 10.5, 20.25]
+        assert_exact(
+            &page_info_with("/MediaBox [0.5 0.5 10.5 20.25]").media_box,
+            &[0.5, 0.5, 10.5, 20.25],
         );
     }
 
     #[test]
     fn cropbox_is_intersected_with_mediabox() {
         let info = page_info_with("/MediaBox [0 0 200 100] /CropBox [50 -20 500 60]");
-        assert_eq!(info.crop_box, [50.0, 0.0, 200.0, 60.0]);
+        assert_exact(&info.crop_box, &[50.0, 0.0, 200.0, 60.0]);
         let disjoint = page_info_with("/MediaBox [0 0 200 100] /CropBox [300 300 400 400]");
-        assert_eq!(disjoint.crop_box, [0.0, 0.0, 200.0, 100.0]);
+        assert_exact(&disjoint.crop_box, &[0.0, 0.0, 200.0, 100.0]);
         let invalid = page_info_with("/MediaBox [0 0 200 100] /CropBox [5 5 5 5]");
-        assert_eq!(invalid.crop_box, [0.0, 0.0, 200.0, 100.0]);
+        assert_exact(&invalid.crop_box, &[0.0, 0.0, 200.0, 100.0]);
         let inner = page_info_with("/MediaBox [0 0 200 100] /CropBox [10 20 30 40]");
-        assert_eq!(inner.crop_box, [10.0, 20.0, 30.0, 40.0]);
+        assert_exact(&inner.crop_box, &[10.0, 20.0, 30.0, 40.0]);
     }
 
     #[test]
@@ -1848,7 +1849,7 @@ mod tests {
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
         let info = document.pages().unwrap()[0].info;
-        assert_eq!(info.media_box, [0.0, 0.0, 120.0, 240.0]);
+        assert_exact(&info.media_box, &[0.0, 0.0, 120.0, 240.0]);
         assert_eq!(info.rotate, 90);
     }
 
@@ -1907,7 +1908,7 @@ mod tests {
             }
         );
         assert_eq!(result.links[1].uri, "http://\u{e9}");
-        assert_eq!(result.links[1].rect, [0.0, 0.0, 5.0, 5.0]);
+        assert_exact(&result.links[1].rect, &[0.0, 0.0, 5.0, 5.0]);
         let indirect = build_classic(&link_objects("/Annots 10 0 R"), "", 0).bytes;
         assert_eq!(inspect_all(&indirect).unwrap().links.len(), 2);
         let none = inspect(&indirect, &InspectOptions::default(), &Limits::default()).unwrap();

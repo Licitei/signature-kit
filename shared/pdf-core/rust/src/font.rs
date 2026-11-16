@@ -1058,6 +1058,7 @@ mod tests {
     use super::*;
     use crate::cff::tests::{Layout, build as build_cff};
     use crate::object::{ObjRef, Stream};
+    use crate::test_pdf::assert_exact;
     use std::hint::black_box;
 
     #[derive(Default)]
@@ -1823,7 +1824,7 @@ mod tests {
             let (text, glyphs) = decode(&font, b"AB");
             assert_eq!(text, "XB");
             assert!((glyphs[0].advance - expected).abs() < 1e-9, "{matrix:?}");
-            assert_eq!(glyphs[1].advance, 0.0);
+            assert_exact(&[glyphs[1].advance], &[0.0]);
         }
     }
 
@@ -1953,12 +1954,12 @@ mod tests {
         ]);
         let descendant = dict(vec![("W", widths), ("DW", Object::Integer(700))]);
         let metrics = load_cid_widths(&descendant);
-        assert_eq!(metrics.width(Some(1)), 100.0);
-        assert_eq!(metrics.width(Some(2)), 200.0);
-        assert_eq!(metrics.width(Some(3)), 700.0);
-        assert_eq!(metrics.width(Some(15)), 300.0);
-        assert_eq!(metrics.width(Some(21)), 700.0);
-        assert_eq!(metrics.width(None), 700.0);
+        assert_exact(&[metrics.width(Some(1))], &[100.0]);
+        assert_exact(&[metrics.width(Some(2))], &[200.0]);
+        assert_exact(&[metrics.width(Some(3))], &[700.0]);
+        assert_exact(&[metrics.width(Some(15))], &[300.0]);
+        assert_exact(&[metrics.width(Some(21))], &[700.0]);
+        assert_exact(&[metrics.width(None)], &[700.0]);
     }
 
     #[test]

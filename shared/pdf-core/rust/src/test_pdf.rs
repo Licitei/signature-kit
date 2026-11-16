@@ -113,3 +113,10 @@ pub(crate) fn grid(rows: &[f64], cols: &[f64]) -> String {
     }
     out
 }
+
+pub(crate) fn assert_exact(actual: &[f64], expected: &[f64]) {
+    assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
+    for (left, right) in actual.iter().zip(expected) {
+        assert!(left.total_cmp(right).is_eq(), "{actual:?} != {expected:?}");
+    }
+}

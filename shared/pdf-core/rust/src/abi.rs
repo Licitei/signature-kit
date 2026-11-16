@@ -474,6 +474,7 @@ mod tests {
     use crate::failure::FailureCode;
     use crate::inspection::{LinkInfo, PageInfo, PageText, TextItem};
     use crate::num::widen;
+    use crate::test_pdf::assert_exact;
 
     struct Reader<'a> {
         data: &'a [u8],
@@ -907,12 +908,12 @@ mod tests {
         assert_eq!(tables.len(), 3);
         let first = &tables[0];
         assert_eq!((first.page_index, first.rows, first.cols), (0, 2, 2));
-        assert_eq!(first.bbox, [50.0, 660.0, 350.0, 700.0]);
+        assert_exact(&first.bbox, &[50.0, 660.0, 350.0, 700.0]);
         assert_eq!(first.cells.len(), 4);
         let header = &first.cells[0];
         assert_eq!((header.row, header.col, header.spans), (0, 0, (1, 1)));
         assert_eq!(header.text, "Item | x");
-        assert_eq!(header.bbox, [50.0, 680.0, 200.0, 700.0]);
+        assert_exact(&header.bbox, &[50.0, 680.0, 200.0, 700.0]);
         assert_eq!(first.cells[3].text, "12,50");
         release(&block);
     }
