@@ -6,3 +6,7 @@ packages:
 ## In-house WASM PDF core
 
 New `@signature-kit/pdf-core` package: a zero-dependency Rust/WebAssembly PDF engine with page geometry, link annotations, and positioned text inspection. It exposes a `PdfCore` Effect service with browser and file-system layers and typed `PdfCoreError` failures.
+
+### Tables, markdown and running headers
+
+`PdfCore.tables(pdf, { pageIndexes })` returns structured tables per page: ruled grids from the content-stream path operators (CTM applied, collinear segments merged, clipping-only paths and page-sized frames ignored) and borderless tables from column alignment, with row/column indexes, merged-cell spans, boxes and cell text. `PdfCore.text` gains `format: "markdown"` (detected tables render as GFM tables) and `dropRunningHeaders` (default `true`: headers and footers repeated on at least half of the pages are dropped; a line that is identical on every page keeps one copy on its first page). Ruled tables are now laid out cell by cell, which keeps headings below a table out of its last cell. Text extraction also honours marked-content `/ActualText`, clips glyphs outside a Form XObject `/BBox`, and keeps extracting text under clip render modes 4-7. `pdf_core_tables` is a new wasm export; `pdf_core_text` accepts the new `markdown` and `drop running headers` flags.

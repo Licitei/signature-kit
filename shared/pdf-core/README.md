@@ -45,6 +45,24 @@ const pages = yield * core.text(pdf, { pageIndexes: [0, 1] });
 
 `pageIndexes` is optional; omitted, every page is returned. Pages whose content cannot be decoded come back as empty strings instead of failing the document.
 
+Text options:
+
+- `format`: `"text"` (default) or `"markdown"`. Markdown renders every detected table as a GFM table (`|` escaped, multi-line cells joined with `<br>`, merged cells left empty after their first slot); headings stay plain lines.
+- `dropRunningHeaders` (default `true`): lines repeated in the top or bottom 10% of at least half of the selected pages (digits normalised, so `Página 3 de 79` matches `Página 4 de 79`) are dropped, so sentences continue across page breaks. When the repeated line is identical on every page (a fixed address, say) the first page keeps one copy; when its digits change (page numbers) it is dropped everywhere. It needs at least two selected pages. `inspect` is never affected.
+
+Ruled tables (cell borders drawn as strokes or thin filled rectangles, with the CTM applied; clipping-only paths and page-sized frames are ignored) are laid out cell by cell in both formats, so a bordered form reads row by row and a heading below the table never merges into its last cell. Borderless tables are detected from column alignment of the text runs and are structured in `markdown` and `tables` only; `text` keeps the row-major block layout for them.
+
+`tables` returns the structure of every table:
+
+```ts
+const tables = yield * core.tables(pdf, { pageIndexes: [0] });
+// [{ pageIndex, bbox, rows, cols, cells: [{ row, col, rowSpan, colSpan, bbox, text }] }]
+```
+
+`bbox` values are in page user space like `inspect` rects; `row`/`col` follow the visible reading orientation (top to bottom, left to right) even on rotated pages. Merged cells appear once with `rowSpan`/`colSpan` greater than 1.
+
+Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully outside a Form XObject `/BBox` are skipped, and text render modes 4-7 (clip) still extract text, in `text`, `markdown` and `tables`.
+
 `inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-8 byte offsets into `text`). Results are copied out of wasm memory before the wasm buffers are released.
 
 ## Errors
@@ -53,7 +71,7 @@ Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.
 
 ## Wasm ABI
 
-The module exports `memory` and four functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
+The module exports `memory` and five functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
 
 | Export                                                                          | Contract                                                                              |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -61,8 +79,9 @@ The module exports `memory` and four functions. There is no global mutable state
 | `pdf_core_free(ptr, len)`                                                       | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
 | `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr` | Returns a result block, or `0` when out of memory.                                    |
 | `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`    | Returns a text result block, or `0` when out of memory.                               |
+| `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`  | Returns a tables result block, or `0` when out of memory.                             |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
 
 ### Result block
 
@@ -88,7 +107,11 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 
 ### Text payload (version 1)
 
-`pdf_core_text` uses the same result block and status codes. Only `flags` bit 2 (page indexes) applies. The payload is little-endian and 8-byte aligned: `magic` (`0x58544450`, "PDTX"), `version` (`1`), `page_count`, `text_len` — all `u32`; then `page_count + 1` `u32` offsets into the blob, padded to 8; then the UTF-8 blob of `text_len` bytes, padded to 8. Page `n` is `blob[offsets[n]..offsets[n + 1]]`.
+`pdf_core_text` uses the same result block and status codes. `flags` bits 2 (page indexes), 3 (markdown) and 4 (drop running headers) apply. The payload is little-endian and 8-byte aligned: `magic` (`0x58544450`, "PDTX"), `version` (`1`), `page_count`, `text_len` — all `u32`; then `page_count + 1` `u32` offsets into the blob, padded to 8; then the UTF-8 blob of `text_len` bytes, padded to 8. Page `n` is `blob[offsets[n]..offsets[n + 1]]`.
+
+### Tables payload (version 1)
+
+`pdf_core_tables` uses the same result block and status codes; only `flags` bit 2 applies. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`1`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 48-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`) and `bbox` (4 × `f64`) — followed by its cells in row-major order, 56 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob). The UTF-8 text blob follows the last record and is padded to 8.
 
 ## Development
 

@@ -50,12 +50,14 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.load",
   "pdfCore.inspect",
   "pdfCore.text",
+  "pdfCore.tables",
 ]);
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
   load: "pdfCore.load",
   inspect: "pdfCore.inspect",
   text: "pdfCore.text",
+  tables: "pdfCore.tables",
 } satisfies Record<string, PdfCoreOperation>;
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
@@ -64,6 +66,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreInspection",
   "PdfCoreTextOptions",
   "PdfCoreText",
+  "PdfCoreTablesOptions",
+  "PdfCoreTables",
 ]);
 export type PdfCoreSchemaName = (typeof PdfCoreSchemaNameSchema)["Type"];
 export const PdfCoreSchemaNameValue = {
@@ -72,6 +76,8 @@ export const PdfCoreSchemaNameValue = {
   inspection: "PdfCoreInspection",
   textOptions: "PdfCoreTextOptions",
   text: "PdfCoreText",
+  tablesOptions: "PdfCoreTablesOptions",
+  tables: "PdfCoreTables",
 } satisfies Record<string, PdfCoreSchemaName>;
 
 export class PdfCoreError extends Schema.TaggedError<
@@ -100,10 +106,20 @@ export const PdfCoreInspectOptionsSchema = Schema.Struct({
 });
 export type PdfCoreInspectOptions = (typeof PdfCoreInspectOptionsSchema)["Type"];
 
+export const PdfCoreTextFormatSchema = Schema.Literals(["text", "markdown"]);
+export type PdfCoreTextFormat = (typeof PdfCoreTextFormatSchema)["Type"];
+
 export const PdfCoreTextOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+  format: Schema.optional(PdfCoreTextFormatSchema),
+  dropRunningHeaders: Schema.optional(Schema.Boolean),
 });
 export type PdfCoreTextOptions = (typeof PdfCoreTextOptionsSchema)["Type"];
+
+export const PdfCoreTablesOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+});
+export type PdfCoreTablesOptions = (typeof PdfCoreTablesOptionsSchema)["Type"];
 
 export const PdfCoreTextSchema = Schema.Array(Schema.String);
 export type PdfCoreText = (typeof PdfCoreTextSchema)["Type"];
@@ -115,6 +131,28 @@ export const PdfCoreBoxSchema = Schema.Tuple([
   Schema.Finite,
 ]);
 export type PdfCoreBox = (typeof PdfCoreBoxSchema)["Type"];
+
+export const PdfCoreCellSchema = Schema.Struct({
+  row: pageIndexSchema,
+  col: pageIndexSchema,
+  rowSpan: pageIndexSchema,
+  colSpan: pageIndexSchema,
+  bbox: PdfCoreBoxSchema,
+  text: Schema.String,
+});
+export type PdfCoreCell = (typeof PdfCoreCellSchema)["Type"];
+
+export const PdfCoreTableSchema = Schema.Struct({
+  pageIndex: pageIndexSchema,
+  bbox: PdfCoreBoxSchema,
+  rows: pageIndexSchema,
+  cols: pageIndexSchema,
+  cells: Schema.Array(PdfCoreCellSchema),
+});
+export type PdfCoreTable = (typeof PdfCoreTableSchema)["Type"];
+
+export const PdfCoreTablesSchema = Schema.Array(PdfCoreTableSchema);
+export type PdfCoreTables = (typeof PdfCoreTablesSchema)["Type"];
 
 export const PdfCorePageSchema = Schema.Struct({
   mediaBox: PdfCoreBoxSchema,
@@ -166,5 +204,6 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_free: Schema.declare(isFreeFunction, { identifier: "pdf_core_free" }),
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
   pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
+  pdf_core_tables: Schema.declare(isTextFunction, { identifier: "pdf_core_tables" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];

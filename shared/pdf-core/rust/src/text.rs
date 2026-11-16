@@ -54,6 +54,27 @@ const OP_TJ_ARRAY: u32 = op(b"TJ");
 const OP_QUOTE: u32 = op(b"'");
 const OP_DQUOTE: u32 = op(b"\"");
 const OP_DO: u32 = op(b"Do");
+const OP_LINE_WIDTH: u32 = op(b"w");
+const OP_MOVE: u32 = op(b"m");
+const OP_LINE: u32 = op(b"l");
+const OP_RECT: u32 = op(b"re");
+const OP_CLOSE: u32 = op(b"h");
+const OP_CURVE: u32 = op(b"c");
+const OP_CURVE_V: u32 = op(b"v");
+const OP_CURVE_Y: u32 = op(b"y");
+const OP_STROKE: u32 = op(b"S");
+const OP_CLOSE_STROKE: u32 = op(b"s");
+const OP_FILL: u32 = op(b"f");
+const OP_FILL_OLD: u32 = op(b"F");
+const OP_FILL_EO: u32 = op(b"f*");
+const OP_FILL_STROKE: u32 = op(b"B");
+const OP_FILL_STROKE_EO: u32 = op(b"B*");
+const OP_CLOSE_FILL_STROKE: u32 = op(b"b");
+const OP_CLOSE_FILL_STROKE_EO: u32 = op(b"b*");
+const OP_NO_PAINT: u32 = op(b"n");
+const OP_BMC: u32 = op(b"BMC");
+const OP_BDC: u32 = op(b"BDC");
+const OP_EMC: u32 = op(b"EMC");
 
 #[derive(PartialEq, Eq)]
 enum Shows {
@@ -130,10 +151,129 @@ fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f
     bounds
 }
 
+const AXIS_TOLERANCE: f64 = 1.0;
+const MIN_RULING: f64 = 2.0;
+const THIN_FILL: f64 = 2.0;
+const FRAME_FRACTION: f64 = 0.9;
+const FORCE_BOLD: i64 = 1 << 18;
+
+fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
+    let [a, b, c, d, e, f] = *matrix;
+    (x * a + y * c + e, x * b + y * d + f)
+}
+
+fn axis_aligned(matrix: &Matrix) -> bool {
+    let [a, b, c, d, _, _] = *matrix;
+    let straight = a.abs() + d.abs();
+    let turned = b.abs() + c.abs();
+    straight > MIN_SCALE && turned <= 1e-3 * straight
+        || turned > MIN_SCALE && straight <= 1e-3 * turned
+}
+
+#[derive(Default)]
+struct PathBuilder {
+    segments: Vec<[f64; 4]>,
+    rects: Vec<[f64; 4]>,
+    start: Option<(f64, f64)>,
+    current: Option<(f64, f64)>,
+}
+
+impl PathBuilder {
+    fn move_to(&mut self, point: (f64, f64)) {
+        self.start = Some(point);
+        self.current = Some(point);
+    }
+
+    fn move_current(&mut self, point: (f64, f64)) {
+        self.current = Some(point);
+        if self.start.is_none() {
+            self.start = Some(point);
+        }
+    }
+
+    fn line_to(&mut self, point: (f64, f64), cap: usize) {
+        if let Some((x, y)) = self.current
+            && self.segments.len() < cap
+        {
+            self.segments.push([x, y, point.0, point.1]);
+        }
+        self.current = Some(point);
+        if self.start.is_none() {
+            self.start = Some(point);
+        }
+    }
+
+    fn close(&mut self, cap: usize) {
+        if let (Some(start), Some(current)) = (self.start, self.current)
+            && start != current
+        {
+            self.line_to(start, cap);
+        }
+        self.current = self.start;
+    }
+
+    fn rect(&mut self, ctm: &Matrix, rect: [f64; 4], cap: usize) {
+        let [x, y, width, height] = rect;
+        self.move_to(apply(ctm, x, y));
+        if self.rects.len() >= cap || !axis_aligned(ctm) {
+            return;
+        }
+        let corner_a = apply(ctm, x, y);
+        let corner_b = apply(ctm, x + width, y + height);
+        self.rects.push([
+            corner_a.0.min(corner_b.0),
+            corner_a.1.min(corner_b.1),
+            corner_a.0.max(corner_b.0),
+            corner_a.1.max(corner_b.1),
+        ]);
+    }
+
+    fn clear(&mut self) {
+        self.segments.clear();
+        self.rects.clear();
+        self.start = None;
+        self.current = None;
+    }
+}
+
+fn text_string(bytes: &[u8]) -> String {
+    match bytes {
+        [0xFE, 0xFF, rest @ ..] => decode_utf16(rest, u16::from_be_bytes),
+        [0xFF, 0xFE, rest @ ..] => decode_utf16(rest, u16::from_le_bytes),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        _ => bytes.iter().map(|&byte| char::from(byte)).collect(),
+    }
+}
+
+fn decode_utf16(bytes: &[u8], read: fn([u8; 2]) -> u16) -> String {
+    let units = bytes
+        .chunks_exact(2)
+        .filter_map(|pair| <[u8; 2]>::try_from(pair).ok())
+        .map(read);
+    char::decode_utf16(units)
+        .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+fn actual_text(operands: &[Object]) -> Option<String> {
+    let properties = operands.last()?.as_dict()?;
+    match properties.get(b"ActualText")? {
+        Object::String(bytes) => Some(text_string(bytes)),
+        _ => None,
+    }
+}
+
+fn is_bold_name(name: &[u8]) -> bool {
+    [&b"Bold"[..], b"bold", b"Black", b"Heavy", b"BOLD"]
+        .iter()
+        .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
+}
+
 struct FontEntry {
     font: Font,
     ascent: f64,
     descent: f64,
+    bold: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,6 +292,7 @@ struct GState {
     scale: f64,
     leading: f64,
     rise: f64,
+    line_width: f64,
 }
 
 impl GState {
@@ -165,6 +306,7 @@ impl GState {
             scale: 1.0,
             leading: 0.0,
             rise: 0.0,
+            line_width: 1.0,
         }
     }
 }
@@ -287,14 +429,44 @@ struct Interpreter<'d, 'a> {
     open_size: f64,
     open_dir: (f64, f64),
     open_end: (f64, f64),
+    open_bold: bool,
     split_repositioned: bool,
     repositioned: bool,
+    structure: bool,
+    rulings: Vec<Ruling>,
+    ruling_cap: usize,
+    page_extent: (f64, f64),
+    clip: Option<[f64; 4]>,
+    actual: Option<String>,
+    actual_emitted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub item: TextItem,
     pub direction: (f64, f64),
+    pub bold: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ruling {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub width: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Capture {
+    pub split_repositioned: bool,
+    pub structure: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct PageContent {
+    pub runs: Vec<Run>,
+    pub rulings: Vec<Ruling>,
 }
 
 #[derive(Default)]
@@ -323,10 +495,25 @@ pub fn extract_runs(
     split_repositioned: bool,
     session: &mut Session,
 ) -> Outcome<Vec<Run>> {
+    let capture = Capture {
+        split_repositioned,
+        structure: false,
+    };
+    Ok(extract_content(document, page, limits, capture, session)?.runs)
+}
+
+pub fn extract_content(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    capture: Capture,
+    session: &mut Session,
+) -> Outcome<PageContent> {
     let content = document.content(page)?;
     if content.is_empty() {
-        return Ok(Vec::new());
+        return Ok(PageContent::default());
     }
+    let [mx0, my0, mx1, my1] = page.info.crop_box;
     if session.fonts.len() > MAX_CACHED_FONTS {
         session.fonts.clear();
     }
@@ -349,8 +536,16 @@ pub fn extract_runs(
         open_size: 0.0,
         open_dir: (1.0, 0.0),
         open_end: (0.0, 0.0),
-        split_repositioned,
+        open_bold: false,
+        split_repositioned: capture.split_repositioned,
         repositioned: false,
+        structure: capture.structure,
+        rulings: Vec::new(),
+        ruling_cap: limits.max_items_per_page,
+        page_extent: ((mx1 - mx0).abs(), (my1 - my0).abs()),
+        clip: None,
+        actual: None,
+        actual_emitted: false,
     };
     let mut scope = Scope::new(
         interpreter.next_scope(),
@@ -367,7 +562,10 @@ pub fn extract_runs(
     session.fonts = std::mem::take(&mut interpreter.fonts);
     session.scopes = interpreter.scopes;
     outcome?;
-    Ok(interpreter.items)
+    Ok(PageContent {
+        runs: interpreter.items,
+        rulings: interpreter.rulings,
+    })
 }
 
 impl Interpreter<'_, '_> {
@@ -396,6 +594,8 @@ impl Interpreter<'_, '_> {
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
         let mut operands: Vec<Object> = Vec::new();
+        let mut path = PathBuilder::default();
+        let mut marked: Vec<bool> = Vec::new();
         for token in ContentLexer::new(data) {
             let name = match token {
                 Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
@@ -519,11 +719,142 @@ impl Interpreter<'_, '_> {
                         self.do_xobject(xobject, scope, state, matrices, depth)?;
                     }
                 }
+                OP_LINE_WIDTH => {
+                    if let Some([width]) = tail_numbers::<1>(&operands) {
+                        state.line_width = width;
+                    }
+                }
+                OP_MOVE if self.structure => {
+                    if let Some([x, y]) = tail_numbers::<2>(&operands) {
+                        path.move_to(apply(&state.ctm, x, y));
+                    }
+                }
+                OP_LINE if self.structure => {
+                    if let Some([x, y]) = tail_numbers::<2>(&operands) {
+                        path.line_to(apply(&state.ctm, x, y), self.ruling_cap);
+                    }
+                }
+                OP_CURVE | OP_CURVE_V | OP_CURVE_Y if self.structure => {
+                    if let Some([x, y]) = tail_numbers::<2>(&operands) {
+                        path.move_current(apply(&state.ctm, x, y));
+                    }
+                }
+                OP_RECT if self.structure => {
+                    if let Some([x, y, width, height]) = tail_numbers::<4>(&operands) {
+                        path.rect(&state.ctm, [x, y, width, height], self.ruling_cap);
+                    }
+                }
+                OP_CLOSE if self.structure => path.close(self.ruling_cap),
+                OP_NO_PAINT if self.structure => path.clear(),
+                OP_STROKE if self.structure => self.paint(&mut path, state, true),
+                OP_CLOSE_STROKE if self.structure => {
+                    path.close(self.ruling_cap);
+                    self.paint(&mut path, state, true);
+                }
+                OP_FILL | OP_FILL_OLD | OP_FILL_EO if self.structure => {
+                    self.paint(&mut path, state, false);
+                }
+                OP_FILL_STROKE | OP_FILL_STROKE_EO if self.structure => {
+                    self.paint(&mut path, state, true);
+                }
+                OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO if self.structure => {
+                    path.close(self.ruling_cap);
+                    self.paint(&mut path, state, true);
+                }
+                OP_BMC if self.structure && marked.len() < max_stack => marked.push(false),
+                OP_BDC if self.structure => {
+                    let replacement = if self.actual.is_none() {
+                        actual_text(&operands)
+                    } else {
+                        None
+                    };
+                    if marked.len() < max_stack {
+                        marked.push(replacement.is_some());
+                        if replacement.is_some() {
+                            self.actual = replacement;
+                            self.actual_emitted = false;
+                        }
+                    }
+                }
+                OP_EMC if self.structure && marked.pop() == Some(true) => self.actual = None,
                 _ => {}
             }
             operands.clear();
         }
+        if marked.contains(&true) {
+            self.actual = None;
+        }
         Ok(())
+    }
+
+    fn paint(&mut self, path: &mut PathBuilder, state: &GState, stroke: bool) {
+        let [a, b, c, d, _, _] = state.ctm;
+        let width = state.line_width.abs() * (a * d - b * c).abs().sqrt();
+        let (page_width, page_height) = self.page_extent;
+        for rect in &path.rects {
+            let [x0, y0, x1, y1] = *rect;
+            let frame =
+                x1 - x0 >= FRAME_FRACTION * page_width && y1 - y0 >= FRAME_FRACTION * page_height;
+            if frame {
+                continue;
+            }
+            if stroke {
+                self.push_ruling([x0, y0, x1, y0], width);
+                self.push_ruling([x0, y1, x1, y1], width);
+                self.push_ruling([x0, y0, x0, y1], width);
+                self.push_ruling([x1, y0, x1, y1], width);
+            } else {
+                let (w, h) = (x1 - x0, y1 - y0);
+                let thin = w.min(h) <= THIN_FILL && w.max(h) >= MIN_RULING;
+                if thin && w >= h {
+                    self.push_ruling([x0, (y0 + y1) * 0.5, x1, (y0 + y1) * 0.5], h);
+                } else if thin {
+                    self.push_ruling([(x0 + x1) * 0.5, y0, (x0 + x1) * 0.5, y1], w);
+                }
+            }
+        }
+        if stroke {
+            for segment in &path.segments {
+                self.push_ruling(*segment, width);
+            }
+        }
+        path.clear();
+    }
+
+    fn push_ruling(&mut self, segment: [f64; 4], width: f64) {
+        if self.rulings.len() >= self.ruling_cap {
+            return;
+        }
+        let [x0, y0, x1, y1] = segment;
+        let (dx, dy) = ((x1 - x0).abs(), (y1 - y0).abs());
+        let ruling = if dy <= AXIS_TOLERANCE && dx >= MIN_RULING {
+            let y = (y0 + y1) * 0.5;
+            Ruling {
+                x0: x0.min(x1),
+                y0: y,
+                x1: x0.max(x1),
+                y1: y,
+                width,
+            }
+        } else if dx <= AXIS_TOLERANCE && dy >= MIN_RULING {
+            let x = (x0 + x1) * 0.5;
+            Ruling {
+                x0: x,
+                y0: y0.min(y1),
+                x1: x,
+                y1: y0.max(y1),
+                width,
+            }
+        } else {
+            return;
+        };
+        if ruling.x0.is_finite()
+            && ruling.y0.is_finite()
+            && ruling.x1.is_finite()
+            && ruling.y1.is_finite()
+        {
+            self.rulings.push(ruling);
+        }
     }
 
     fn set_font(&mut self, operands: &[Object], scope: &mut Scope, state: &mut GState) {
@@ -565,11 +896,40 @@ impl Interpreter<'_, '_> {
         let dict = resolved.as_dict()?;
         let font = Font::load(self.document, dict, self.limits).ok()?;
         let (ascent, descent) = self.vertical_metrics(dict);
+        let bold = self.weight_is_bold(dict);
         Some(Rc::new(FontEntry {
             font,
             ascent,
             descent,
+            bold,
         }))
+    }
+
+    fn weight_is_bold(&self, font: &Dict) -> bool {
+        if font
+            .get(b"BaseFont")
+            .and_then(Object::as_name)
+            .is_some_and(is_bold_name)
+        {
+            return true;
+        }
+        let descriptor_forces = |descriptor: &Object| {
+            self.document
+                .follow(descriptor)
+                .ok()
+                .is_some_and(|resolved| {
+                    resolved.as_dict().is_some_and(|dict| {
+                        dict.get(b"Flags")
+                            .and_then(Object::as_number)
+                            .is_some_and(|flags| (flags as i64) & FORCE_BOLD != 0)
+                            || dict
+                                .get(b"FontWeight")
+                                .and_then(Object::as_number)
+                                .is_some_and(|weight| weight >= 600.0)
+                    })
+                })
+        };
+        font.get(b"FontDescriptor").is_some_and(descriptor_forces)
     }
 
     fn descriptor_metrics(&self, descriptor: &Object) -> Option<(f64, f64)> {
@@ -684,9 +1044,21 @@ impl Interpreter<'_, '_> {
         let mut pen_x = 0.0;
         let mut pen_y = 0.0;
         for glyph in glyphs {
-            let glyph_text = decoded
-                .get(glyph.text.start as usize..glyph.text.end as usize)
-                .unwrap_or_default();
+            let replacement = match self.actual.as_ref() {
+                Some(text) if !self.actual_emitted => Some(text.clone()),
+                _ => None,
+            };
+            if replacement.is_some() {
+                self.actual_emitted = true;
+            }
+            let spanned = self.actual.is_some();
+            let glyph_text = match replacement.as_deref() {
+                Some(text) => text,
+                None if spanned => "",
+                None => decoded
+                    .get(glyph.text.start as usize..glyph.text.end as usize)
+                    .unwrap_or_default(),
+            };
             let spacing = state.char_space
                 + if glyph.is_word_space {
                     state.word_space
@@ -712,8 +1084,16 @@ impl Interpreter<'_, '_> {
                 step_x = width + spacing * scale;
                 step_y = 0.0;
             }
-            if usable {
-                let visible = glyph_text.chars().any(|ch| !ch.is_whitespace());
+            let clipped = usable
+                && self.clip.is_some_and(|clip| {
+                    let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
+                    bounds[2] < clip[0]
+                        || bounds[0] > clip[2]
+                        || bounds[3] < clip[1]
+                        || bounds[1] > clip[3]
+                });
+            if usable && !clipped {
+                let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
                 let origin = (
                     pen_x * a + (pen_y + state.rise) * c + e,
                     pen_x * b + (pen_y + state.rise) * d + f,
@@ -735,6 +1115,7 @@ impl Interpreter<'_, '_> {
                     if visible {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
                         self.merge_bounds(bounds);
+                        self.open_bold &= entry.bold;
                     }
                     self.open_end = end;
                 } else {
@@ -743,7 +1124,14 @@ impl Interpreter<'_, '_> {
                     }
                     if visible {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.begin(glyph_text, bounds, effective_size, direction, end);
+                        self.begin(
+                            glyph_text,
+                            bounds,
+                            effective_size,
+                            direction,
+                            end,
+                            entry.bold,
+                        );
                     }
                 }
             }
@@ -785,8 +1173,10 @@ impl Interpreter<'_, '_> {
         size: f64,
         direction: (f64, f64),
         end: (f64, f64),
+        bold: bool,
     ) {
         self.open = true;
+        self.open_bold = bold;
         self.open_text.clear();
         self.open_text.push_str(text);
         self.open_bounds = bounds;
@@ -845,6 +1235,7 @@ impl Interpreter<'_, '_> {
                 text,
             },
             direction: self.open_dir,
+            bold: self.open_bold,
         });
         Ok(())
     }
@@ -907,6 +1298,29 @@ impl Interpreter<'_, '_> {
         let mut inner_scope = Scope::new(self.next_scope(), resources);
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
+        let outer_clip = self.clip;
+        if self.structure
+            && let Some(bounds) = stream
+                .dict
+                .get(b"BBox")
+                .and_then(Object::as_array)
+                .filter(|items| items.len() == 4)
+                .and_then(tail_numbers::<4>)
+                .map(|[x0, y0, x1, y1]| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
+                .filter(|[x0, y0, x1, y1]| x1 - x0 > 0.0 && y1 - y0 > 0.0)
+        {
+            let [x0, y0, x1, y1] =
+                transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
+            self.clip = Some(match outer_clip {
+                Some(outer) => [
+                    outer[0].max(x0),
+                    outer[1].max(y0),
+                    outer[2].min(x1),
+                    outer[3].min(y1),
+                ],
+                None => [x0, y0, x1, y1],
+            });
+        }
         let mut inner_matrices = *matrices;
         if let Some(reference) = reference {
             self.active.push(reference);
@@ -921,6 +1335,7 @@ impl Interpreter<'_, '_> {
         if reference.is_some() {
             self.active.pop();
         }
+        self.clip = outer_clip;
         result
     }
 }
@@ -1245,6 +1660,214 @@ mod tests {
         let split_texts: Vec<&str> = split.iter().map(|run| run.item.text.as_str()).collect();
         assert_eq!(split_texts, ["abc", "def"]);
         assert_eq!(split[0].direction, (1.0, 0.0));
+    }
+
+    const HELVETICA_BOLD: &str =
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
+
+    fn structured(bytes: &[u8]) -> PageContent {
+        let limits = Limits::default();
+        let document = Document::open(bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let capture = Capture {
+            split_repositioned: true,
+            structure: true,
+        };
+        extract_content(
+            &document,
+            pages.first().unwrap(),
+            &limits,
+            capture,
+            &mut Session::default(),
+        )
+        .unwrap()
+    }
+
+    fn run_texts(content: &PageContent) -> Vec<&str> {
+        content
+            .runs
+            .iter()
+            .map(|run| run.item.text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn clip_render_modes_still_extract_text() {
+        for mode in 4..=7 {
+            let bytes = simple_pdf(&format!(
+                "BT /F1 12 Tf {mode} Tr 50 700 Td (clipped {mode}) Tj ET"
+            ));
+            assert_eq!(texts(&extract(&bytes)), [format!("clipped {mode}")]);
+            assert_eq!(run_texts(&structured(&bytes)), [format!("clipped {mode}")]);
+        }
+    }
+
+    fn form_pdf(content: &str, form_body: &str, bbox: &str) -> Vec<u8> {
+        let form = format!(
+            "<< /Type /XObject /Subtype /Form /BBox {bbox} /Length {} >>\nstream\n{form_body}\nendstream",
+            form_body.len()
+        );
+        page_pdf(
+            "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
+            content,
+            &[(5, HELVETICA.to_string()), (6, form)],
+        )
+    }
+
+    #[test]
+    fn form_bbox_drops_glyphs_outside_in_structured_mode() {
+        let body =
+            "BT /F1 10 Tf 10 10 Td (inside) Tj ET BT /F1 10 Tf 1 0 0 1 300 300 Tm (outside) Tj ET";
+        let bytes = form_pdf("q 1 0 0 1 50 50 cm /X Do Q", body, "[0 0 100 100]");
+        assert_eq!(texts(&extract(&bytes)), ["inside", "outside"]);
+        assert_eq!(run_texts(&structured(&bytes)), ["inside"]);
+    }
+
+    #[test]
+    fn form_bbox_clip_follows_matrix_and_nesting() {
+        let body = "BT /F1 10 Tf 1 0 0 1 150 10 Tm (right) Tj ET BT /F1 10 Tf 1 0 0 1 10 10 Tm (left) Tj ET";
+        let bytes = form_pdf("q 2 0 0 2 0 0 cm /X Do Q", body, "[0 0 100 100]");
+        assert_eq!(run_texts(&structured(&bytes)), ["left"]);
+        let degenerate = form_pdf("/X Do", body, "[0 0 0 0]");
+        assert_eq!(run_texts(&structured(&degenerate)), ["right", "left"]);
+    }
+
+    #[test]
+    fn actual_text_replaces_span_text() {
+        let bytes = simple_pdf(
+            "/Span << /ActualText (Real text) >> BDC BT /F1 10 Tf 50 700 Td (fake) Tj 0 -14 Td (more) Tj ET EMC BT /F1 10 Tf 50 600 Td (after) Tj ET",
+        );
+        assert_eq!(texts(&extract(&bytes)), ["fake", "more", "after"]);
+        let content = structured(&bytes);
+        assert_eq!(run_texts(&content), ["Real text", "after"]);
+    }
+
+    #[test]
+    fn actual_text_decodes_utf16_and_survives_nesting() {
+        let bytes = simple_pdf(
+            "/Span << /ActualText <FEFF00520065006100E7> >> BDC /P BMC BT /F1 10 Tf 50 700 Td (x) Tj ET EMC /Span << /ActualText (inner) >> BDC BT /F1 10 Tf 50 680 Td (y) Tj ET EMC EMC",
+        );
+        assert_eq!(run_texts(&structured(&bytes)), ["Reaç"]);
+    }
+
+    #[test]
+    fn unterminated_actual_text_does_not_leak_into_the_next_form() {
+        let bytes =
+            simple_pdf("/Span << /ActualText (Only) >> BDC BT /F1 10 Tf 50 700 Td (a) Tj ET");
+        assert_eq!(run_texts(&structured(&bytes)), ["Only"]);
+    }
+
+    #[test]
+    fn stroked_segments_become_rulings() {
+        let bytes = simple_pdf(
+            "BT /F1 10 Tf 50 700 Td (x) Tj ET 1 w 100 500 m 300 500 l S 200 400 m 200 600.4 l S 100 300 m 200 400 l S",
+        );
+        let content = structured(&bytes);
+        assert_eq!(content.rulings.len(), 2);
+        let horizontal = content.rulings[0];
+        assert_eq!(
+            (horizontal.x0, horizontal.y0, horizontal.x1, horizontal.y1),
+            (100.0, 500.0, 300.0, 500.0)
+        );
+        let vertical = content.rulings[1];
+        assert_eq!((vertical.x0, vertical.x1), (200.0, 200.0));
+        assert!((vertical.y1 - 600.4).abs() < 1e-9);
+        assert!(extract_runs_rulings_empty(&bytes));
+    }
+
+    fn extract_runs_rulings_empty(bytes: &[u8]) -> bool {
+        let limits = Limits::default();
+        let document = Document::open(bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let capture = Capture {
+            split_repositioned: true,
+            structure: false,
+        };
+        extract_content(
+            &document,
+            pages.first().unwrap(),
+            &limits,
+            capture,
+            &mut Session::default(),
+        )
+        .unwrap()
+        .rulings
+        .is_empty()
+    }
+
+    #[test]
+    fn rectangles_apply_the_ctm_and_respect_paint_operators() {
+        let bytes = simple_pdf(
+            "BT /F1 10 Tf 50 700 Td (x) Tj ET q 2 0 0 2 0 0 cm 10 10 50 20 re S Q 100 100 80 0.5 re f 300 300 40 40 re f 0 0 600 800 re S 10 10 580 780 re S 20 20 100 100 re W n",
+        );
+        let content = structured(&bytes);
+        let lines: Vec<(f64, f64, f64, f64)> = content
+            .rulings
+            .iter()
+            .map(|ruling| (ruling.x0, ruling.y0, ruling.x1, ruling.y1))
+            .collect();
+        assert!(lines.contains(&(20.0, 20.0, 120.0, 20.0)));
+        assert!(lines.contains(&(20.0, 60.0, 120.0, 60.0)));
+        assert!(lines.contains(&(20.0, 20.0, 20.0, 60.0)));
+        assert!(lines.contains(&(120.0, 20.0, 120.0, 60.0)));
+        assert!(lines.contains(&(100.0, 100.25, 180.0, 100.25)));
+        assert_eq!(lines.len(), 5);
+    }
+
+    #[test]
+    fn rotated_ctm_rectangles_and_polylines_are_axis_checked() {
+        let bytes = simple_pdf(
+            "BT /F1 10 Tf 50 700 Td (x) Tj ET q 0 1 -1 0 0 0 cm 10 10 50 20 re S Q q 0.7 0.7 -0.7 0.7 0 0 cm 10 10 50 20 re S Q 400 400 m 500 400 l 500 500 l 400 500 l h S",
+        );
+        let content = structured(&bytes);
+        assert_eq!(content.rulings.len(), 4 + 4);
+    }
+
+    #[test]
+    fn bold_fonts_mark_runs() {
+        let bytes = page_pdf(
+            "<< /Font << /F1 5 0 R /F2 6 0 R >> >>",
+            "BT /F1 10 Tf 50 700 Td (plain) Tj ET BT /F2 10 Tf 50 680 Td (heavy) Tj ET BT /F1 10 Tf 50 660 Td (mix ) Tj /F2 10 Tf (bold) Tj ET",
+            &[(5, HELVETICA.to_string()), (6, HELVETICA_BOLD.to_string())],
+        );
+        let content = structured(&bytes);
+        let flags: Vec<(&str, bool)> = content
+            .runs
+            .iter()
+            .map(|run| (run.item.text.as_str(), run.bold))
+            .collect();
+        assert_eq!(
+            flags,
+            [("plain", false), ("heavy", true), ("mix bold", false)]
+        );
+    }
+
+    #[test]
+    fn path_capture_is_bounded_by_the_item_limit() {
+        let mut content = String::from("BT /F1 10 Tf 50 700 Td (x) Tj ET ");
+        for index in 0..50 {
+            content.push_str(&format!("{} 10 m {} 10 l S ", index * 5, index * 5 + 20));
+        }
+        let bytes = simple_pdf(&content);
+        let limits = Limits {
+            max_items_per_page: 8,
+            ..Limits::default()
+        };
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let capture = Capture {
+            split_repositioned: true,
+            structure: true,
+        };
+        let result = extract_content(
+            &document,
+            pages.first().unwrap(),
+            &limits,
+            capture,
+            &mut Session::default(),
+        )
+        .unwrap();
+        assert_eq!(result.rulings.len(), 8);
     }
 
     #[test]
