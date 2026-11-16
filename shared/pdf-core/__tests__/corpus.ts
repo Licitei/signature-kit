@@ -7,7 +7,6 @@ export const PDF_CORE_FIXTURES_DIR = join(import.meta.dirname, "fixtures");
 export const CorpusFixtureNameSchema = Schema.Literals([
   "helvetica-winansi.pdf",
   "react-pdf-declaration.pdf",
-  "takumi-declaration.pdf",
   "rotated-cropped.pdf",
   "links.pdf",
   "habilitacao-150.pdf",
@@ -26,7 +25,6 @@ export const LINK_FIXTURE_URIS = {
   secondary: "https://signature-kit.dev/corpus/link-secondary",
   indirect: "https://signature-kit.dev/corpus/link-indirect",
   rotated: "https://signature-kit.dev/corpus/rotated-page-link",
-  takumiSignature: "licitei:assinatura",
 };
 
 export const corpusFixturePath = (name: CorpusFixtureName): string =>
