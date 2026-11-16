@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use crate::cmap::{CMap, UnicodeMap};
 use crate::failure::{Failure, Outcome};
-use crate::font_tables::{BuiltinEncoding, STANDARD14_WIDTHS, Standard14Font, encoding_glyph_name};
+use crate::font_tables::{BuiltinEncoding, Standard14Font, encoding_glyph_name};
 use crate::fontprog::{FontProgram, agl_components, load_font_file_bytes, parse_font_program};
 use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
@@ -98,7 +98,8 @@ struct VerticalCidMetrics {
     entries: Vec<(u32, u32, [f64; 3])>,
 }
 
-static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; 7] = [const { OnceLock::new() }; 7];
+static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; BuiltinEncoding::COUNT] =
+    [const { OnceLock::new() }; BuiltinEncoding::COUNT];
 
 impl Font {
     pub fn load(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<Font> {
@@ -147,7 +148,7 @@ impl SimpleFont {
             return None;
         }
         let builtin = self.encoding.builtin;
-        let slot = BUILTIN_TEXT_TABLES.get(builtin as usize)?;
+        let slot = BUILTIN_TEXT_TABLES.get(builtin.slot()?)?;
         Some(
             slot.get_or_init(|| {
                 (0..=255u8)
@@ -276,12 +277,12 @@ impl SimpleFont {
 
     fn width_for_code(&self, code: u32) -> f64 {
         let width = if let Some(standard) = self.widths.standard14 {
-            let index = code.min(255) as usize;
-            STANDARD14_WIDTHS
-                .get(standard as usize)
-                .and_then(|row| row.get(index).copied())
-                .map(f64::from)
-                .unwrap_or(self.widths.missing)
+            let index = usize::try_from(code.min(255)).unwrap_or_default();
+            standard
+                .widths()
+                .get(index)
+                .copied()
+                .map_or(self.widths.missing, f64::from)
         } else {
             u32::try_from(self.widths.first_char)
                 .ok()
@@ -959,22 +960,22 @@ fn standard14_from_base_font(name: Option<&Object>) -> Option<Standard14Font> {
     };
     match strip_subset_prefix(bytes) {
         b"Helvetica" => Some(Standard14Font::Helvetica),
-        b"Helvetica-Bold" => Some(Standard14Font::Helvetica_Bold),
-        b"Helvetica-Oblique" => Some(Standard14Font::Helvetica_Oblique),
-        b"Helvetica-BoldOblique" => Some(Standard14Font::Helvetica_BoldOblique),
-        b"Times-Roman" => Some(Standard14Font::Times_Roman),
-        b"Times-Bold" => Some(Standard14Font::Times_Bold),
-        b"Times-Italic" => Some(Standard14Font::Times_Italic),
-        b"Times-BoldItalic" => Some(Standard14Font::Times_BoldItalic),
+        b"Helvetica-Bold" => Some(Standard14Font::HelveticaBold),
+        b"Helvetica-Oblique" => Some(Standard14Font::HelveticaOblique),
+        b"Helvetica-BoldOblique" => Some(Standard14Font::HelveticaBoldOblique),
+        b"Times-Roman" => Some(Standard14Font::TimesRoman),
+        b"Times-Bold" => Some(Standard14Font::TimesBold),
+        b"Times-Italic" => Some(Standard14Font::TimesItalic),
+        b"Times-BoldItalic" => Some(Standard14Font::TimesBoldItalic),
         b"Courier" => Some(Standard14Font::Courier),
-        b"Courier-Bold" => Some(Standard14Font::Courier_Bold),
-        b"Courier-Oblique" => Some(Standard14Font::Courier_Oblique),
-        b"Courier-BoldOblique" => Some(Standard14Font::Courier_BoldOblique),
+        b"Courier-Bold" => Some(Standard14Font::CourierBold),
+        b"Courier-Oblique" => Some(Standard14Font::CourierOblique),
+        b"Courier-BoldOblique" => Some(Standard14Font::CourierBoldOblique),
         b"Symbol" => Some(Standard14Font::Symbol),
         b"ZapfDingbats" => Some(Standard14Font::ZapfDingbats),
         b"Arial" => Some(Standard14Font::Helvetica),
-        b"Arial,Bold" | b"Arial-Bold" => Some(Standard14Font::Helvetica_Bold),
-        b"TimesNewRoman" => Some(Standard14Font::Times_Roman),
+        b"Arial,Bold" | b"Arial-Bold" => Some(Standard14Font::HelveticaBold),
+        b"TimesNewRoman" => Some(Standard14Font::TimesRoman),
         b"CourierNew" => Some(Standard14Font::Courier),
         _ => None,
     }
@@ -1898,12 +1899,12 @@ mod tests {
 
     #[test]
     fn standard14_widths_spot_check() {
-        let helvetica = STANDARD14_WIDTHS[Standard14Font::Helvetica as usize];
+        let helvetica = Standard14Font::Helvetica.widths();
         assert_eq!(helvetica[b'A' as usize], 667);
         assert_eq!(helvetica[b' ' as usize], 278);
-        let times = STANDARD14_WIDTHS[Standard14Font::Times_Roman as usize];
+        let times = Standard14Font::TimesRoman.widths();
         assert_eq!(times[b' ' as usize], 250);
-        let courier = STANDARD14_WIDTHS[Standard14Font::Courier as usize];
+        let courier = Standard14Font::Courier.widths();
         assert_eq!(courier[b'A' as usize], 600);
     }
 

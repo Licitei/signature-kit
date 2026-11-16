@@ -2,7 +2,6 @@
 
 pub mod abi;
 mod cff;
-mod cff_tables;
 mod cmap;
 mod document;
 mod failure;

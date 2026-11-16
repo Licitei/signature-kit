@@ -1,6 +1,4 @@
-use crate::cff_tables::{
-    CFF_EXPERT_CHARSET, CFF_EXPERT_ENCODING, CFF_EXPERT_SUBSET_CHARSET, CFF_STANDARD_STRINGS,
-};
+include!(concat!(env!("OUT_DIR"), "/cff_tables.rs"));
 
 const MAX_GLYPHS: usize = 65_535;
 const MAX_DICT_ENTRIES: usize = 256;
@@ -226,8 +224,8 @@ fn read_charset(
     let mut charset = vec![0u16; glyph_count];
     if offset <= 2 {
         let predefined: Option<&[u16]> = match offset {
-            1 => Some(CFF_EXPERT_CHARSET),
-            2 => Some(CFF_EXPERT_SUBSET_CHARSET),
+            1 => Some(&CFF_EXPERT_CHARSET),
+            2 => Some(&CFF_EXPERT_SUBSET_CHARSET),
             _ => None,
         };
         for (gid, slot) in charset.iter_mut().enumerate() {
