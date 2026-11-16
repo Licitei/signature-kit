@@ -1,0 +1,39 @@
+---
+title: Publish the worker signing runtime
+date: 2026-11-16T18:02:51.564Z
+packages:
+  "@signature-kit/signatures":
+    version: 0.3.0
+  "@signature-kit/a1":
+    version: 0.4.1
+  "@signature-kit/cms":
+    version: 0.2.4
+  "@signature-kit/certificates":
+    version: 0.3.1
+  "@signature-kit/http":
+    version: 0.1.2
+  "@signature-kit/i18n":
+    version: 0.1.2
+  "@signature-kit/xml":
+    version: 0.2.3
+  "@signature-kit/asn1":
+    version: 0.2.3
+  "@signature-kit/crypto":
+    version: 0.2.3
+  "@signature-kit/assinafy":
+    version: 0.4.1
+  "@signature-kit/clicksign":
+    version: 0.4.1
+  "@signature-kit/documenso":
+    version: 0.4.1
+  "@signature-kit/docuseal":
+    version: 0.4.1
+  "@signature-kit/zapsign":
+    version: 0.4.1
+---
+
+## Publish the worker signing runtime
+
+Publish `@signature-kit/signatures/session`, which `@signature-kit/react` 0.1.2 imports to sign A1 documents in a Domain RPC worker. Without it, bundlers fail to resolve the react worker entry.
+
+A1 signing makes the WebCrypto sign step uninterruptible. CMS builds the signing-certificate-v2 attribute directly with asn1js. All packages move to Effect 4.1.0 so applications load a single Effect runtime.

@@ -1,6 +1,6 @@
 {
   "name": "@signature-kit/xml",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -44,7 +44,7 @@
     "@peculiar/x509": "2.2.0",
     "@signature-kit/crypto": "^0.2.1",
     "@signature-kit/i18n": "^0.1.0",
-    "@signature-kit/signatures": "^0.2.0",
+    "@signature-kit/signatures": "^0.3.0",
     "@xmldom/xmldom": "^0.9.12",
     "effect": "4.1.0",
     "reflect-metadata": "^0.2.2",
