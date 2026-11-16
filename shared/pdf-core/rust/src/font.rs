@@ -1,3 +1,4 @@
+use crate::num::widen;
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -171,7 +172,7 @@ impl SimpleFont {
         for byte in bytes {
             let code = u32::from(*byte);
             let advance = self.width_for_code(code);
-            let text_start = text.len() as u32;
+            let text_start = u32::try_from(text.len()).unwrap_or(u32::MAX);
             match table {
                 Some(table) => {
                     if let Some(Some(slice)) = table.get(usize::from(*byte)) {
@@ -188,7 +189,7 @@ impl SimpleFont {
                 code,
                 advance,
                 is_word_space: *byte == 32,
-                text: text_start..text.len() as u32,
+                text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
             });
         }
     }
@@ -287,7 +288,7 @@ impl SimpleFont {
             u32::try_from(self.widths.first_char)
                 .ok()
                 .and_then(|first| code.checked_sub(first))
-                .and_then(|offset| self.widths.widths.get(offset as usize))
+                .and_then(|offset| self.widths.widths.get(widen(offset)))
                 .copied()
                 .unwrap_or(self.widths.missing)
         };
@@ -386,13 +387,13 @@ impl CompositeFont {
             offset = offset.saturating_add(consumed);
             let cid = self.cmap.cid(code, consumed);
             let advance = self.horizontal.width(cid) / 1000.0;
-            let text_start = text.len() as u32;
+            let text_start = u32::try_from(text.len()).unwrap_or(u32::MAX);
             self.push_text(code, cid, text);
             glyphs.push(Glyph {
                 code: cid.unwrap_or(code),
                 advance,
                 is_word_space: consumed == 1 && code == 32,
-                text: text_start..text.len() as u32,
+                text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
             });
         }
     }
@@ -469,7 +470,8 @@ impl CompositeFont {
                     for (cid, pair) in table.chunks_exact(2).enumerate() {
                         let mapped = (u16::from(pair.first().copied().unwrap_or(0)) << 8)
                             | u16::from(pair.get(1).copied().unwrap_or(0));
-                        map.entry(mapped).or_insert(cid as u32);
+                        map.entry(mapped)
+                            .or_insert(u32::try_from(cid).unwrap_or(u32::MAX));
                     }
                     map
                 })
@@ -573,9 +575,9 @@ fn simple_needs_program(
     let (first, last) = if widths.widths.is_empty() {
         (0_u32, 255_u32)
     } else {
-        let first = widths.first_char.clamp(0, 255) as u32;
+        let first = u32::try_from(widths.first_char.clamp(0, 255)).unwrap_or(u32::MAX);
         let last = first
-            .saturating_add(widths.widths.len() as u32)
+            .saturating_add(u32::try_from(widths.widths.len()).unwrap_or(u32::MAX))
             .saturating_sub(1)
             .min(255);
         (first, last)
@@ -823,7 +825,7 @@ fn load_cid_widths(descendant: &Dict) -> CidWidths {
                     let Some(start) = start else { continue };
                     for (step, item) in inner.iter().enumerate() {
                         if let Some(width) = item.as_number() {
-                            let cid = start.saturating_add(step as u32);
+                            let cid = start.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
                             entries.push((cid, cid, width));
                         }
                     }
@@ -885,7 +887,7 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                         let values: Vec<f64> =
                             triple.iter().filter_map(Object::as_number).collect();
                         if let [advance, origin_x, origin_y] = values.as_slice() {
-                            let cid = start.saturating_add(step as u32);
+                            let cid = start.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
                             entries.push((cid, cid, [*advance, *origin_x, *origin_y]));
                         }
                     }
@@ -1145,15 +1147,15 @@ mod tests {
 
     fn sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut out = be32(0x0001_0000);
-        out.extend(be16(tables.len() as u16));
+        out.extend(be16(u16::try_from(tables.len()).unwrap()));
         out.extend([0_u8; 6]);
         let mut offset = (tables.len().saturating_mul(16)).saturating_add(12);
         let mut bodies = Vec::new();
         for (tag, body) in tables {
             out.extend_from_slice(*tag);
             out.extend(be32(0));
-            out.extend(be32(offset as u32));
-            out.extend(be32(body.len() as u32));
+            out.extend(be32(u32::try_from(offset).unwrap()));
+            out.extend(be32(u32::try_from(body.len()).unwrap()));
             bodies.extend_from_slice(body);
             let padded = (body.len().saturating_add(3)) & !3;
             bodies.resize(
@@ -1194,7 +1196,7 @@ mod tests {
     fn post2(names: &[&str]) -> Vec<u8> {
         let mut out = be32(0x0002_0000);
         out.extend([0_u8; 28]);
-        out.extend(be16(names.len() as u16));
+        out.extend(be16(u16::try_from(names.len()).unwrap()));
         let standard = ["A", "B", "space"];
         let mut strings = Vec::new();
         let mut custom = 0_u16;
@@ -1206,7 +1208,7 @@ mod tests {
             } else {
                 out.extend(be16(custom.saturating_add(258)));
                 custom = custom.saturating_add(1);
-                strings.push(entry.len() as u8);
+                strings.push(u8::try_from(entry.len()).unwrap());
                 strings.extend_from_slice(entry.as_bytes());
             }
         }
@@ -1235,7 +1237,7 @@ mod tests {
             while glyf.len() % 4 != 0 {
                 glyf.push(0);
             }
-            loca.extend(be32(glyf.len() as u32));
+            loca.extend(be32(u32::try_from(glyf.len()).unwrap()));
         }
         let mut head = vec![0_u8; 54];
         head[51] = 1;
@@ -1290,8 +1292,8 @@ mod tests {
         let cmap = "1 begincodespacerange <0000> <ffff> endcodespacerange\n3 beginbfrange\n<0010> <0010> <0074>\n<0020> <0020> <0069>\n<0030> <0030> <0000>\nendbfrange";
         let mut map = vec![0_u8; 0x31 * 2];
         for (cid, gid) in [(0x10_usize, 1_u16), (0x20, 2), (0x30, 3)] {
-            map[cid * 2] = (gid >> 8) as u8;
-            map[cid * 2 + 1] = gid as u8;
+            map[cid * 2] = u8::try_from((gid >> 8)).unwrap();
+            map[cid * 2 + 1] = u8::try_from(gid).unwrap();
         }
         let font = type0_with_program(
             &mut resolver,
@@ -1313,22 +1315,22 @@ mod tests {
         for (x_min, y_min, x_max, y_max, advance) in glyphs {
             glyf.extend(be16(1));
             for value in [x_min, y_min, x_max, y_max] {
-                glyf.extend(be16(*value as u16));
+                glyf.extend(be16((*value).cast_unsigned()));
             }
             glyf.extend([0_u8; 4]);
-            loca.extend(be32(glyf.len() as u32));
+            loca.extend(be32(u32::try_from(glyf.len()).unwrap()));
             hmtx.extend(be16(*advance));
-            hmtx.extend(be16(*x_min as u16));
+            hmtx.extend(be16((*x_min).cast_unsigned()));
         }
         let mut head = vec![0_u8; 54];
         head[18..20].copy_from_slice(&1000_u16.to_be_bytes());
         head[51] = 1;
         let mut hhea = vec![0_u8; 36];
-        hhea[34..36].copy_from_slice(&(glyphs.len() as u16).to_be_bytes());
+        hhea[34..36].copy_from_slice(&(u16::try_from(glyphs.len()).unwrap()).to_be_bytes());
         sfnt(&[
             (b"head", head),
             (b"hhea", hhea),
-            (b"maxp", maxp(glyphs.len() as u16)),
+            (b"maxp", maxp(u16::try_from(glyphs.len()).unwrap())),
             (b"hmtx", hmtx),
             (b"loca", loca),
             (b"glyf", glyf),
@@ -1396,10 +1398,12 @@ mod tests {
         for index in 0..count {
             let record = &base[(index.saturating_mul(16)).saturating_add(12)
                 ..(index.saturating_mul(16)).saturating_add(28)];
-            let offset =
-                u32::from_be_bytes([record[8], record[9], record[10], record[11]]) as usize;
-            let length =
-                u32::from_be_bytes([record[12], record[13], record[14], record[15]]) as usize;
+            let offset = widen(u32::from_be_bytes([
+                record[8], record[9], record[10], record[11],
+            ]));
+            let length = widen(u32::from_be_bytes([
+                record[12], record[13], record[14], record[15],
+            ]));
             tables.push((
                 record[..4].to_vec(),
                 base[offset..offset.saturating_add(length)].to_vec(),
@@ -1619,7 +1623,7 @@ mod tests {
         otf.extend(b"CFF ");
         otf.extend(be32(0));
         otf.extend(be32(28));
-        otf.extend(be32(cff.len() as u32));
+        otf.extend(be32(u32::try_from(cff.len()).unwrap()));
         otf.extend(&cff);
         let file = resolver.add_stream(Dict::default(), &otf);
         let descriptor = resolver.add(Object::Dict(dict(vec![("FontFile3", file)])));
@@ -1918,12 +1922,12 @@ mod tests {
     #[test]
     fn standard14_widths_spot_check() {
         let helvetica = Standard14Font::Helvetica.widths();
-        assert_eq!(helvetica[b'A' as usize], 667);
-        assert_eq!(helvetica[b' ' as usize], 278);
+        assert_eq!(helvetica[widen(b'A')], 667);
+        assert_eq!(helvetica[widen(b' ')], 278);
         let times = Standard14Font::TimesRoman.widths();
-        assert_eq!(times[b' ' as usize], 250);
+        assert_eq!(times[widen(b' ')], 250);
         let courier = Standard14Font::Courier.widths();
-        assert_eq!(courier[b'A' as usize], 600);
+        assert_eq!(courier[widen(b'A')], 600);
     }
 
     #[test]
@@ -2000,7 +2004,7 @@ mod tests {
             let mut bytes = Vec::new();
             for _ in 0..32 {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                bytes.push((seed >> 24) as u8);
+                bytes.push(u8::try_from((seed >> 24)).unwrap());
             }
             for font in &fonts {
                 let _ = decode(font, &bytes);

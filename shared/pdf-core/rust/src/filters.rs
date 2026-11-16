@@ -284,7 +284,7 @@ fn push_ascii85_group(
             return Err(Failure::limit("decoded stream exceeds limit"));
         }
         let shift = (3_usize.saturating_sub(index)).saturating_mul(8);
-        out.push((value >> shift) as u8);
+        out.push(u8::try_from((value >> shift) & 0xFF).unwrap_or_default());
     }
     Ok(())
 }
@@ -331,8 +331,8 @@ fn run_length_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
 
 fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec<u8>> {
     let mut dict: Vec<Vec<u8>> = Vec::with_capacity(4096);
-    for i in 0..256_usize {
-        dict.push(vec![i as u8]);
+    for byte in 0..=u8::MAX {
+        dict.push(vec![byte]);
     }
     dict.push(vec![]);
     dict.push(vec![]);
@@ -359,7 +359,7 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
             bit_count = bit_count.saturating_add(8);
         }
         let mask = (1_u32 << code_bits).wrapping_sub(1);
-        let code = (bit_buf & mask) as u16;
+        let code = u16::try_from(bit_buf & mask).unwrap_or(u16::MAX);
         bit_buf >>= code_bits;
         bit_count = bit_count.saturating_sub(code_bits);
         if code == clear_code {
@@ -552,7 +552,7 @@ fn png_predict(
             let filter_type = if predictor == 15 {
                 filter
             } else {
-                (predictor.saturating_sub(10)) as u8
+                u8::try_from(predictor.saturating_sub(10)).unwrap_or(u8::MAX)
             };
             let value = paeth_filter(filter_type, raw, left, up, up_left);
             if out.len() >= max_output {
@@ -583,7 +583,7 @@ fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
 
 fn avg(left: u8, up: u8) -> u8 {
     let sum = u16::from(left).saturating_add(u16::from(up));
-    (sum / 2) as u8
+    u8::try_from(sum / 2).unwrap_or(u8::MAX)
 }
 
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
@@ -619,6 +619,7 @@ const fn is_ws(byte: u8) -> bool {
 #[expect(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::num::usize_to_f64;
     use crate::object::Object;
     fn dict_filter(filter: &[u8], parms: Option<Object>) -> Dict {
         let mut dict = Dict::default();
@@ -825,7 +826,7 @@ mod tests {
                 state ^= state << 13;
                 state ^= state >> 17;
                 state ^= state << 5;
-                *byte ^= state as u8;
+                *byte ^= u8::try_from(state & 0xFF).unwrap();
             }
             let _ = decode_stream(&dict, &input, 65536);
         }
@@ -839,12 +840,12 @@ mod tests {
         let start = std::time::Instant::now();
         let _ = decode_stream(&dict, &payload, 8 * 1024 * 1024).expect("bench");
         let elapsed = start.elapsed().as_secs_f64();
-        let mb = payload.len() as f64 / (1024.0 * 1024.0);
+        let mb = usize_to_f64(payload.len()) / (1024.0 * 1024.0);
         println!("inflate {:.1} MB/s", mb / elapsed);
     }
 
     fn stored_bytes(raw: &[u8]) -> Vec<u8> {
-        let len = raw.len() as u16;
+        let len = u16::try_from(raw.len()).unwrap();
         let nlen = len ^ 0xffff;
         let mut block = Vec::new();
         block.push(0x01);

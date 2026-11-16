@@ -330,7 +330,7 @@ fn run(bytes: &[u8], options: &InspectOptions) -> Outcome<Vec<u8>> {
 fn finish(outcome: Outcome<Vec<u8>>) -> *mut u8 {
     match outcome {
         Ok(payload) => publish(STATUS_OK, &payload),
-        Err(failure) => publish(failure.code as u32, failure.reason.as_bytes()),
+        Err(failure) => publish(u32::from(failure.code), failure.reason.as_bytes()),
     }
 }
 
@@ -443,6 +443,7 @@ mod tests {
     use super::*;
     use crate::failure::FailureCode;
     use crate::inspection::{LinkInfo, PageInfo, PageText, TextItem};
+    use crate::num::widen;
 
     struct Reader<'a> {
         data: &'a [u8],
@@ -491,16 +492,16 @@ mod tests {
         let page_count = reader.u32();
         let link_count = reader.u32();
         let text_count = reader.u32();
-        let pages_offset = reader.u32() as usize;
-        let links_offset = reader.u32() as usize;
-        let text_offset = reader.u32() as usize;
+        let pages_offset = widen(reader.u32());
+        let links_offset = widen(reader.u32());
+        let text_offset = widen(reader.u32());
         assert_eq!(pages_offset, HEADER_LEN);
         assert_eq!(pages_offset % 8, 0);
         assert_eq!(links_offset % 8, 0);
         assert_eq!(text_offset % 8, 0);
         assert_eq!(
             links_offset,
-            pages_offset.saturating_add((page_count as usize).saturating_mul(PAGE_RECORD_LEN))
+            pages_offset.saturating_add((widen(page_count)).saturating_mul(PAGE_RECORD_LEN))
         );
         let pages = (0..page_count)
             .map(|_| {
@@ -520,8 +521,8 @@ mod tests {
             .map(|_| {
                 let rect = reader.rect();
                 let page_index = reader.u32();
-                let start = reader.u32() as usize;
-                let len = reader.u32() as usize;
+                let start = widen(reader.u32());
+                let len = widen(reader.u32());
                 reader.u32();
                 (rect, page_index, start, len)
             })
@@ -542,8 +543,8 @@ mod tests {
         let text = (0..text_count)
             .map(|_| {
                 let page_index = reader.u32();
-                let item_count = reader.u32() as usize;
-                let text_len = reader.u32() as usize;
+                let item_count = widen(reader.u32());
+                let text_len = widen(reader.u32());
                 reader.u32();
                 let rects: Vec<([f64; 4], f64)> = (0..item_count)
                     .map(|_| {
@@ -551,7 +552,7 @@ mod tests {
                         (rect, reader.f64())
                     })
                     .collect();
-                let offsets: Vec<usize> = (0..=item_count).map(|_| reader.u32() as usize).collect();
+                let offsets: Vec<usize> = (0..=item_count).map(|_| widen(reader.u32())).collect();
                 reader.align();
                 let blob = reader.take(text_len);
                 reader.align();
@@ -662,9 +663,9 @@ mod tests {
             at: 0,
         };
         reader.take(20);
-        let pages_offset = reader.u32() as usize;
-        let links_offset = reader.u32() as usize;
-        let text_offset = reader.u32() as usize;
+        let pages_offset = widen(reader.u32());
+        let links_offset = widen(reader.u32());
+        let text_offset = widen(reader.u32());
         assert_eq!(pages_offset % 8, 0);
         assert_eq!(links_offset % 8, 0);
         assert_eq!(text_offset % 8, 0);
@@ -690,9 +691,11 @@ mod tests {
             pdf_core_free(indexes.cast::<u8>(), pages.len().saturating_mul(4));
         }
         assert!(!result.is_null());
-        assert_eq!(result as usize % 8, 0);
+        assert_eq!(result.addr() % 8, 0);
         let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
-        let total = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let total = widen(u32::from_le_bytes([
+            header[0], header[1], header[2], header[3],
+        ]));
         let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
         let payload = unsafe {
             std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total.saturating_sub(8))
@@ -736,9 +739,11 @@ mod tests {
             pdf_core_free(indexes.cast::<u8>(), pages.len().saturating_mul(4));
         }
         assert!(!result.is_null());
-        assert_eq!(result as usize % 8, 0);
+        assert_eq!(result.addr() % 8, 0);
         let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
-        let total = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let total = widen(u32::from_le_bytes([
+            header[0], header[1], header[2], header[3],
+        ]));
         let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
         let payload = unsafe {
             std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total.saturating_sub(8))
@@ -754,15 +759,15 @@ mod tests {
 
     fn decode_text(payload: &[u8]) -> Vec<String> {
         let word = |at: usize| {
-            u32::from_le_bytes([
+            widen(u32::from_le_bytes([
                 payload[at],
                 payload[at.saturating_add(1)],
                 payload[at.saturating_add(2)],
                 payload[at.saturating_add(3)],
-            ]) as usize
+            ]))
         };
-        assert_eq!(word(0) as u32, TEXT_MAGIC);
-        assert_eq!(word(4) as u32, TEXT_VERSION);
+        assert_eq!(u32::try_from(word(0)).unwrap(), TEXT_MAGIC);
+        assert_eq!(u32::try_from(word(4)).unwrap(), TEXT_VERSION);
         let count = word(8);
         let text_len = word(12);
         let offsets_at = TEXT_HEADER_LEN;
@@ -839,8 +844,8 @@ mod tests {
         };
         assert_eq!(word(0), TABLES_MAGIC);
         assert_eq!(word(4), TABLES_VERSION);
-        let tables = word(8) as usize;
-        let cells = word(12) as usize;
+        let tables = widen(word(8));
+        let cells = widen(word(12));
         let blob = (TABLES_HEADER_LEN.saturating_add(tables.saturating_mul(TABLE_RECORD_LEN)))
             .saturating_add(cells.saturating_mul(CELL_RECORD_LEN));
         assert_eq!(blob % 8, 0);
@@ -848,13 +853,13 @@ mod tests {
         let mut at = TABLES_HEADER_LEN;
         let mut out = Vec::new();
         for _ in 0..tables {
-            let count = word(at.saturating_add(12)) as usize;
+            let count = widen(word(at.saturating_add(12)));
             let header = at;
             at = at.saturating_add(TABLE_RECORD_LEN);
             let mut decoded = Vec::new();
             for _ in 0..count {
-                let start = blob.saturating_add(word(at.saturating_add(48)) as usize);
-                let len = word(at.saturating_add(52)) as usize;
+                let start = blob.saturating_add(widen(word(at.saturating_add(48))));
+                let len = widen(word(at.saturating_add(52)));
                 decoded.push(DecodedCell {
                     row: word(at),
                     col: word(at.saturating_add(4)),
@@ -904,7 +909,7 @@ mod tests {
         assert_eq!(tables[0].page_index, 2);
         release(&picked);
         let missing = call_tables(&pdf, FLAG_PAGE_INDEXES, &[9]);
-        assert_eq!(missing.status, FailureCode::InvalidPdf as u32);
+        assert_eq!(missing.status, u32::from(FailureCode::InvalidPdf));
         release(&missing);
         let broken = call_tables(b"not a pdf", 0, &[]);
         assert_ne!(broken.status, STATUS_OK);
@@ -965,18 +970,18 @@ mod tests {
         release(&all);
         release(&picked);
         let missing = call_text(LINKS_PDF, FLAG_PAGE_INDEXES, &[9]);
-        assert_eq!(missing.status, FailureCode::InvalidPdf as u32);
+        assert_eq!(missing.status, u32::from(FailureCode::InvalidPdf));
         release(&missing);
     }
 
     #[test]
     fn text_failures_carry_code_and_reason() {
         let block = call_text(b"not a pdf", 0, &[]);
-        assert_eq!(block.status, FailureCode::InvalidPdf as u32);
+        assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
         assert!(std::str::from_utf8(&block.payload).is_ok());
         release(&block);
         let empty = call_text(b"", 0, &[]);
-        assert_eq!(empty.status, FailureCode::InvalidPdf as u32);
+        assert_eq!(empty.status, u32::from(FailureCode::InvalidPdf));
         release(&empty);
     }
 
@@ -1031,7 +1036,7 @@ mod tests {
     #[test]
     fn failures_carry_code_and_reason() {
         let block = call(b"not a pdf", 0, &[]);
-        assert_eq!(block.status, FailureCode::InvalidPdf as u32);
+        assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
         assert!(!block.payload.is_empty());
         assert!(std::str::from_utf8(&block.payload).is_ok());
         release(&block);
@@ -1040,7 +1045,7 @@ mod tests {
     #[test]
     fn empty_input_is_a_failure_not_a_crash() {
         let block = call(b"", 0, &[]);
-        assert_eq!(block.status, FailureCode::InvalidPdf as u32);
+        assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
         release(&block);
     }
 
@@ -1056,10 +1061,10 @@ mod tests {
                 *result.add(7),
             ])
         };
-        assert_eq!(status, FailureCode::InvalidPdf as u32);
-        let total = unsafe {
+        assert_eq!(status, u32::from(FailureCode::InvalidPdf));
+        let total = widen(unsafe {
             u32::from_le_bytes([*result, *result.add(1), *result.add(2), *result.add(3)])
-        } as usize;
+        });
         unsafe { pdf_core_free(result, total) };
     }
 
@@ -1079,10 +1084,10 @@ mod tests {
                 *result.add(7),
             ])
         };
-        assert_eq!(status, FailureCode::InvalidPdf as u32);
-        let total = unsafe {
+        assert_eq!(status, u32::from(FailureCode::InvalidPdf));
+        let total = widen(unsafe {
             u32::from_le_bytes([*result, *result.add(1), *result.add(2), *result.add(3)])
-        } as usize;
+        });
         unsafe {
             pdf_core_free(result, total);
             pdf_core_free(backing, 16);
@@ -1094,7 +1099,7 @@ mod tests {
         for len in [0_usize, 1, 7, 8, 9, 1000] {
             let block = pdf_core_alloc(len);
             assert!(!block.is_null());
-            assert_eq!(block as usize % 8, 0);
+            assert_eq!(block.addr() % 8, 0);
             unsafe { pdf_core_free(block, len) };
         }
         unsafe { pdf_core_free(ptr::null_mut(), 0) };

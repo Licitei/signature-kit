@@ -354,12 +354,12 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
                 entries.push((op, std::mem::take(&mut operands)));
             }
             28 => {
-                let value = read_u16(bytes, position).map(|value| i32::from(value as i16));
+                let value = read_u16(bytes, position).map(|value| i32::from(value.cast_signed()));
                 position = position.saturating_add(2);
                 push_operand(&mut operands, value.unwrap_or(0));
             }
             29 => {
-                let value = read_u32(bytes, position).map(|value| value as i32);
+                let value = read_u32(bytes, position).map(u32::cast_signed);
                 position = position.saturating_add(4);
                 push_operand(&mut operands, value.unwrap_or(0));
             }
@@ -434,7 +434,7 @@ pub(crate) mod tests {
 
     pub(crate) fn index(items: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(&(items.len() as u16).to_be_bytes());
+        out.extend_from_slice(&(u16::try_from(items.len()).unwrap()).to_be_bytes());
         if items.is_empty() {
             return out;
         }
@@ -442,7 +442,7 @@ pub(crate) mod tests {
         let mut offset = 1_u16;
         out.extend_from_slice(&offset.to_be_bytes());
         for item in items {
-            offset = offset.saturating_add(item.len() as u16);
+            offset = offset.saturating_add(u16::try_from(item.len()).unwrap());
             out.extend_from_slice(&offset.to_be_bytes());
         }
         for item in items {
@@ -501,15 +501,17 @@ pub(crate) mod tests {
         let charset_off = if layout.charset.is_empty() {
             layout.charset_id
         } else {
-            base as i32
+            i32::try_from(base).unwrap()
         };
         let enc_off = if layout.encoding.is_empty() {
             layout.encoding_id
         } else {
-            (base.saturating_add(layout.charset.len())) as i32
+            i32::try_from((base.saturating_add(layout.charset.len()))).unwrap()
         };
-        let cs_off = ((base.saturating_add(layout.charset.len()))
-            .saturating_add(layout.encoding.len())) as i32;
+        let cs_off = i32::try_from(
+            ((base.saturating_add(layout.charset.len())).saturating_add(layout.encoding.len())),
+        )
+        .unwrap();
         let top = index(&[&dict_len(charset_off, enc_off, cs_off)]);
         let mut out = Vec::new();
         out.extend_from_slice(&header);
@@ -680,7 +682,7 @@ pub(crate) mod tests {
             let mut data = vec![0_u8; len];
             for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *slot = (seed >> 24) as u8;
+                *slot = u8::try_from((seed >> 24)).unwrap();
             }
             if let Some(first) = data.first_mut() {
                 *first = 1;

@@ -1,3 +1,5 @@
+use crate::num::widen;
+use crate::num::{f64_to_i64, f64_to_usize};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -273,7 +275,7 @@ impl<'a> Document<'a> {
     fn apply(&self, table: &mut Vec<Entry>, entries: Vec<(u32, Entry)>) {
         let bound = self.object_bound();
         for (number, entry) in entries {
-            let index = number as usize;
+            let index = widen(number);
             if index >= bound {
                 continue;
             }
@@ -311,7 +313,7 @@ impl<'a> Document<'a> {
                 .get(b"Prev")
                 .and_then(Object::as_number)
                 .filter(|value| value.is_finite() && *value >= 0.0)
-                .map(|value| value as usize);
+                .map(f64_to_usize);
             match trailer.as_mut() {
                 None => trailer = Some(section.trailer),
                 Some(base) => {
@@ -522,7 +524,7 @@ impl<'a> Document<'a> {
                 match parse_indirect_object(data, start, nesting, |_| None) {
                     Ok(parsed) => {
                         let number = parsed.obj_ref.number;
-                        let index = number as usize;
+                        let index = widen(number);
                         if index < bound {
                             if table.len() <= index {
                                 table.resize(index.saturating_add(1), Entry::Unset);
@@ -587,7 +589,7 @@ impl<'a> Document<'a> {
             };
             let mut table = self.table.borrow_mut();
             for (index, (member, _)) in stream.entries.iter().enumerate() {
-                let slot_index = *member as usize;
+                let slot_index = widen(*member);
                 if slot_index >= bound {
                     continue;
                 }
@@ -644,7 +646,7 @@ impl<'a> Document<'a> {
     }
 
     pub(crate) fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
-        let index = reference.number as usize;
+        let index = widen(reference.number);
         if let Some(hit) = self.cache.borrow().get(index).and_then(Clone::clone) {
             return Ok(hit);
         }
@@ -707,14 +709,14 @@ impl<'a> Document<'a> {
         let container = self
             .table
             .borrow()
-            .get(stream as usize)
+            .get(widen(stream))
             .copied()
             .unwrap_or(Entry::Unset);
         if !matches!(container, Entry::Offset(_)) {
             return Err(Failure::invalid("object stream is not a direct object"));
         }
         let object_stream = self.object_stream(stream)?;
-        let relative = match object_stream.entries.get(index as usize) {
+        let relative = match object_stream.entries.get(widen(index)) {
             Some(&(member, relative)) if member == number => Some(relative),
             _ => object_stream
                 .entries
@@ -1076,7 +1078,7 @@ fn normalize_rotation(value: f64) -> i32 {
     if !value.is_finite() || value.fract() != 0.0 {
         return 0;
     }
-    let degrees = (value as i64).rem_euclid(360);
+    let degrees = f64_to_i64(value).rem_euclid(360);
     if degrees % 90 != 0 {
         return 0;
     }
@@ -1430,9 +1432,9 @@ mod tests {
         row(&mut rows, 2, 5, 0);
         row(&mut rows, 2, 5, 1);
         row(&mut rows, 2, 5, 2);
-        row(&mut rows, 1, content as u64, 0);
-        row(&mut rows, 1, object_stream as u64, 0);
-        row(&mut rows, 1, xref_stream as u64, 0);
+        row(&mut rows, 1, u64::try_from(content).unwrap(), 0);
+        row(&mut rows, 1, u64::try_from(object_stream).unwrap(), 0);
+        row(&mut rows, 1, u64::try_from(xref_stream).unwrap(), 0);
         let mut section = format!(
             "6 0 obj\n<< /Type /XRef /Size 7 /W [1 4 1] /Root 1 0 R /Length {} >>\nstream\n",
             rows.len()
@@ -2083,7 +2085,7 @@ mod tests {
             match rng.below(6) {
                 0 => {
                     let at = rng.below(bytes.len());
-                    bytes[at] = rng.next() as u8;
+                    bytes[at] = u8::try_from(rng.next() & 0xFF).unwrap();
                 }
                 1 => {
                     let at = rng.below(bytes.len());
@@ -2092,7 +2094,9 @@ mod tests {
                 }
                 2 => {
                     let at = rng.below(bytes.len());
-                    let extra: Vec<u8> = (0..rng.below(16)).map(|_| rng.next() as u8).collect();
+                    let extra: Vec<u8> = (0..rng.below(16))
+                        .map(|_| u8::try_from(rng.next() & 0xFF).unwrap())
+                        .collect();
                     bytes.splice(at..at, extra);
                 }
                 3 => {
@@ -2213,13 +2217,13 @@ mod tests {
             list.len(),
             links.len()
         );
-        assert_eq!(list.len(), pages as usize);
-        assert_eq!(links.len(), pages as usize);
+        assert_eq!(list.len(), widen(pages));
+        assert_eq!(links.len(), widen(pages));
         let repaired = replace(&bytes, b"startxref\n", b"startxref\n9");
         let started = Instant::now();
         let document = Document::open(&repaired, &Limits::default()).unwrap();
         let count = document.pages().unwrap().len();
         println!("repair open+pages={:?} pages={count}", started.elapsed());
-        assert_eq!(count, pages as usize);
+        assert_eq!(count, widen(pages));
     }
 }

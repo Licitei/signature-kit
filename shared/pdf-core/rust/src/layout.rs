@@ -1,3 +1,4 @@
+use crate::num::widen;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
@@ -517,7 +518,7 @@ fn is_list(cells: &[Cell], columns: usize) -> bool {
         return false;
     };
     let mut markers = 0_usize;
-    for cell in cells.iter().filter(|cell| cell.col as usize != last) {
+    for cell in cells.iter().filter(|cell| widen(cell.col) != last) {
         let Some(first) = cell.text.lines().next() else {
             continue;
         };
@@ -1206,6 +1207,7 @@ pub(crate) fn document_tables(
 mod tests {
     use super::*;
     use crate::inspection::TextItem;
+    use crate::num::usize_to_f64;
 
     const SIZE: f64 = 10.0;
     const OPTIONS: TextOptions = TextOptions {
@@ -1446,6 +1448,7 @@ mod tests {
 )]
 mod structure_tests {
     use super::*;
+    use crate::num::usize_to_f64;
     use crate::test_pdf::{PageSpec, bold, document, grid, page, rule, text};
 
     const PLAIN: TextOptions = TextOptions {
@@ -1480,7 +1483,7 @@ mod structure_tests {
             .into_iter()
             .enumerate()
         {
-            let baseline = top - 12.0 - 20.0 * index as f64;
+            let baseline = top - 12.0 - 20.0 * usize_to_f64(index);
             out.push_str(&text(55.0, baseline, 10.0, left));
             out.push_str(&text(205.0, baseline, 10.0, right));
         }
@@ -1560,7 +1563,7 @@ mod structure_tests {
     fn borderless(rows: &[(&str, &str, &str)], top: f64) -> String {
         let mut out = String::new();
         for (index, (a, b, c)) in rows.iter().enumerate() {
-            let baseline = top - 14.0 * index as f64;
+            let baseline = top - 14.0 * usize_to_f64(index);
             out.push_str(&text(50.0, baseline, 10.0, a));
             out.push_str(&text(200.0, baseline, 10.0, b));
             out.push_str(&text(350.0, baseline, 10.0, c));
@@ -1612,7 +1615,7 @@ mod structure_tests {
         .iter()
         .enumerate()
         {
-            let baseline = 700.0 - 14.0 * index as f64;
+            let baseline = 700.0 - 14.0 * usize_to_f64(index);
             content.push_str(&text(50.0, baseline, 10.0, marker));
             content.push_str(&text(120.0, baseline, 10.0, body));
         }
@@ -1826,7 +1829,7 @@ mod structure_tests {
         content.push_str(&text(50.0, 770.0, 9.0, header));
         content.push_str(&text(480.0, 770.0, 9.0, &format!("Pagina {index} de 4")));
         for (line, value) in body.iter().enumerate() {
-            content.push_str(&text(50.0, 600.0 - 14.0 * line as f64, 10.0, value));
+            content.push_str(&text(50.0, 600.0 - 14.0 * usize_to_f64(line), 10.0, value));
         }
         content.push_str(&text(
             50.0,

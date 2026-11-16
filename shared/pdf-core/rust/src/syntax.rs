@@ -1,3 +1,4 @@
+use crate::num::u64_to_f64;
 use std::ops::Range;
 
 use crate::failure::{Failure, Outcome};
@@ -428,7 +429,7 @@ impl<'a> Parser<'a> {
                                     _ => break,
                                 }
                             }
-                            out.push((value & 0xff) as u8);
+                            out.push(u8::try_from(value & 0xff).unwrap_or(u8::MAX));
                         }
                         other => out.push(other),
                     }
@@ -483,17 +484,21 @@ impl<'a> Parser<'a> {
                 self.pos = self.pos.saturating_add(1);
             }
             let divisor = 10_f64.powi(i32::try_from(scale).unwrap_or(0));
-            let magnitude = whole as f64 + fraction as f64 / divisor;
+            let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
             return Object::Real(if negative { -magnitude } else { magnitude });
         }
         if digits == 0 {
             return Object::Integer(0);
         }
-        if overflow || whole > i64::MAX as u64 {
-            let magnitude = if overflow { f64::MAX } else { whole as f64 };
+        if overflow || whole > i64::MAX.cast_unsigned() {
+            let magnitude = if overflow {
+                f64::MAX
+            } else {
+                u64_to_f64(whole)
+            };
             return Object::Real(if negative { -magnitude } else { magnitude });
         }
-        let integer = whole as i64;
+        let integer = whole.cast_signed();
         if self.refs
             && !signed
             && let Some((reference, end)) = self.reference(whole)

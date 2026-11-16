@@ -1,3 +1,5 @@
+use crate::num::usize_to_f64;
+use crate::num::widen;
 use std::collections::HashMap;
 
 const LEVEL_TOLERANCE: f64 = 2.0;
@@ -101,7 +103,7 @@ impl Grid {
             .min(rows.checked_sub(1)?);
         self.index
             .get(row.checked_mul(cols)?.checked_add(col)?)
-            .map(|&cell| cell as usize)
+            .map(|&cell| widen(cell))
     }
 }
 
@@ -113,7 +115,7 @@ fn cluster(mut values: Vec<f64>) -> Vec<f64> {
     let mut last = f64::NEG_INFINITY;
     for value in values {
         if count > 0 && value - last > LEVEL_TOLERANCE {
-            levels.push(sum / count as f64);
+            levels.push(sum / usize_to_f64(count));
             sum = 0.0;
             count = 0;
         }
@@ -122,7 +124,7 @@ fn cluster(mut values: Vec<f64>) -> Vec<f64> {
         last = value;
     }
     if count > 0 {
-        levels.push(sum / count as f64);
+        levels.push(sum / usize_to_f64(count));
     }
     levels
 }
@@ -163,7 +165,8 @@ fn merge_collinear(mut lines: Vec<[f64; 3]>) -> Vec<[f64; 3]> {
         let group = lines.get_mut(start..end).unwrap_or_default();
         group.sort_unstable_by(|a, b| a[1].total_cmp(&b[1]));
         let Some(&first) = group.first() else { break };
-        let position = group.iter().map(|line| line[0]).sum::<f64>() / group.len().max(1) as f64;
+        let position =
+            group.iter().map(|line| line[0]).sum::<f64>() / usize_to_f64(group.len().max(1));
         let mut current = [position, first[1], first[2]];
         for line in group.iter() {
             if line[1] <= current[2] + JOIN_GAP {
@@ -457,13 +460,13 @@ pub(crate) fn column_of(columns: &[(f64, f64)], x0: f64, x1: f64) -> Option<usiz
 }
 
 fn matrix(table: &Table) -> Vec<Vec<Option<&str>>> {
-    let rows = table.rows as usize;
-    let cols = table.cols as usize;
+    let rows = widen(table.rows);
+    let cols = widen(table.cols);
     let mut grid: Vec<Vec<Option<&str>>> = vec![vec![None; cols]; rows];
     for cell in &table.cells {
         if let Some(slot) = grid
-            .get_mut(cell.row as usize)
-            .and_then(|row| row.get_mut(cell.col as usize))
+            .get_mut(widen(cell.row))
+            .and_then(|row| row.get_mut(widen(cell.col)))
         {
             *slot = Some(cell.text.as_str());
         }
@@ -734,9 +737,9 @@ mod tests {
     fn hostile_line_counts_are_bounded() {
         let mut lines = Vec::new();
         for index in 0..(MAX_LINES + 10) {
-            let y = index as f64 * 5.0;
+            let y = usize_to_f64(index) * 5.0;
             lines.push(h(y, 0.0, 100.0));
-            lines.push(v(index as f64 * 7.0, 0.0, 100.0));
+            lines.push(v(usize_to_f64(index) * 7.0, 0.0, 100.0));
         }
         assert!(ruled_grids(&lines).is_empty());
     }

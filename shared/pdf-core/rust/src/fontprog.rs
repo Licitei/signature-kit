@@ -1,3 +1,4 @@
+use crate::num::widen;
 use std::cell::OnceCell;
 use std::collections::HashMap;
 
@@ -628,10 +629,10 @@ impl FontProgram {
         Some(GlyphMetrics {
             units_per_em: outlines.units_per_em,
             advance: read_u16(&self.data, position)?,
-            x_min: read_u16(glyph, 2)? as i16,
-            y_min: read_u16(glyph, 4)? as i16,
-            x_max: read_u16(glyph, 6)? as i16,
-            y_max: read_u16(glyph, 8)? as i16,
+            x_min: (read_u16(glyph, 2)?).cast_signed(),
+            y_min: (read_u16(glyph, 4)?).cast_signed(),
+            x_max: (read_u16(glyph, 6)?).cast_signed(),
+            y_max: (read_u16(glyph, 8)?).cast_signed(),
         })
     }
 
@@ -731,7 +732,7 @@ impl FontProgram {
         };
         let (start, end) = glyph_range(&self.data, outlines, gid)?;
         let glyph = self.data.get(start..end)?;
-        if (read_u16(glyph, 0)? as i16) >= 0 {
+        if ((read_u16(glyph, 0)?).cast_signed()) >= 0 {
             return None;
         }
         let mut position = 10_usize;
@@ -741,11 +742,11 @@ impl FontProgram {
             let component = read_u16(glyph, position.checked_add(2)?)?;
             position = position.checked_add(4)?;
             let offset = if flags & 0x0001 != 0 {
-                let value = i32::from(read_u16(glyph, position)? as i16);
+                let value = i32::from((read_u16(glyph, position)?).cast_signed());
                 position = position.checked_add(4)?;
                 value
             } else {
-                let value = i32::from(*glyph.get(position)? as i8);
+                let value = i32::from((*glyph.get(position)?).cast_signed());
                 position = position.checked_add(2)?;
                 value
             };
@@ -818,7 +819,7 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
             if code > 255 {
                 return None;
             }
-            u16::from(*data.get(offset.checked_add(6)?.checked_add(code as usize)?)?)
+            u16::from(*data.get(offset.checked_add(6)?.checked_add(widen(code))?)?)
         }
         4 => {
             let code = u16::try_from(code).ok()?;
@@ -912,7 +913,7 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
         0 => {
             for code in 0..256_u32 {
                 let Some(gid) = data
-                    .get(offset.saturating_add(6).saturating_add(code as usize))
+                    .get(offset.saturating_add(6).saturating_add(widen(code)))
                     .map(|gid| u16::from(*gid))
                 else {
                     return;
@@ -984,7 +985,10 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
                     return;
                 };
                 if gid != 0 {
-                    visit(u32::from(first).saturating_add(index as u32), gid);
+                    visit(
+                        u32::from(first).saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
+                        gid,
+                    );
                 }
             }
         }
@@ -1411,15 +1415,15 @@ pub(crate) mod tests {
 
     fn sfnt(version: u32, tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut out = be32(version);
-        out.extend(be16(tables.len() as u16));
+        out.extend(be16(u16::try_from(tables.len()).unwrap()));
         out.extend([0_u8; 6]);
         let mut offset = (tables.len().saturating_mul(16)).saturating_add(12);
         let mut bodies = Vec::new();
         for (tag, body) in tables {
             out.extend_from_slice(*tag);
             out.extend(be32(0));
-            out.extend(be32(offset as u32));
-            out.extend(be32(body.len() as u32));
+            out.extend(be32(u32::try_from(offset).unwrap()));
+            out.extend(be32(u32::try_from(body.len()).unwrap()));
             bodies.extend_from_slice(body);
             let padded = (body.len().saturating_add(3)) & !3;
             bodies.resize(
@@ -1434,12 +1438,12 @@ pub(crate) mod tests {
 
     fn cmap_table(subtables: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
         let mut out = be16(0);
-        out.extend(be16(subtables.len() as u16));
+        out.extend(be16(u16::try_from(subtables.len()).unwrap()));
         let mut offset = (subtables.len().saturating_mul(8)).saturating_add(4);
         for (platform, encoding, body) in subtables {
             out.extend(be16(*platform));
             out.extend(be16(*encoding));
-            out.extend(be32(offset as u32));
+            out.extend(be32(u32::try_from(offset).unwrap()));
             offset = offset.saturating_add(body.len());
         }
         for (_, _, body) in subtables {
@@ -1451,9 +1455,11 @@ pub(crate) mod tests {
     fn format4(segments: &[(u16, u16, u16)]) -> Vec<u8> {
         let count = segments.len().saturating_add(1);
         let mut out = be16(4);
-        out.extend(be16(((count.saturating_mul(8)).saturating_add(16)) as u16));
+        out.extend(be16(
+            u16::try_from(((count.saturating_mul(8)).saturating_add(16))).unwrap(),
+        ));
         out.extend(be16(0));
-        out.extend(be16((count.saturating_mul(2)) as u16));
+        out.extend(be16(u16::try_from((count.saturating_mul(2))).unwrap()));
         out.extend([0_u8; 6]);
         for (_, end, _) in segments {
             out.extend(be16(*end));
@@ -1489,11 +1495,11 @@ pub(crate) mod tests {
     fn format6(first: u16, glyphs: &[u16]) -> Vec<u8> {
         let mut out = be16(6);
         out.extend(be16(
-            ((glyphs.len().saturating_mul(2)).saturating_add(10)) as u16,
+            u16::try_from(((glyphs.len().saturating_mul(2)).saturating_add(10))).unwrap(),
         ));
         out.extend(be16(0));
         out.extend(be16(first));
-        out.extend(be16(glyphs.len() as u16));
+        out.extend(be16(u16::try_from(glyphs.len()).unwrap()));
         for glyph in glyphs {
             out.extend(be16(*glyph));
         }
@@ -1504,10 +1510,10 @@ pub(crate) mod tests {
         let mut out = be16(12);
         out.extend(be16(0));
         out.extend(be32(
-            ((groups.len().saturating_mul(12)).saturating_add(16)) as u32,
+            u32::try_from(((groups.len().saturating_mul(12)).saturating_add(16))).unwrap(),
         ));
         out.extend(be32(0));
-        out.extend(be32(groups.len() as u32));
+        out.extend(be32(u32::try_from(groups.len()).unwrap()));
         for (start, end, gid) in groups {
             out.extend(be32(*start));
             out.extend(be32(*end));
@@ -1519,16 +1525,16 @@ pub(crate) mod tests {
     fn post2(names: &[&str]) -> Vec<u8> {
         let mut out = be32(0x0002_0000);
         out.extend([0_u8; 28]);
-        out.extend(be16(names.len() as u16));
+        out.extend(be16(u16::try_from(names.len()).unwrap()));
         let mut strings = Vec::new();
         let mut custom = 0_u16;
         for name in names {
             if let Some(index) = POST_STANDARD_GLYPH_NAMES.iter().position(|std| std == name) {
-                out.extend(be16(index as u16));
+                out.extend(be16(u16::try_from(index).unwrap()));
             } else {
                 out.extend(be16(custom.saturating_add(258)));
                 custom = custom.saturating_add(1);
-                strings.push(name.len() as u8);
+                strings.push(u8::try_from(name.len()).unwrap());
                 strings.extend_from_slice(name.as_bytes());
             }
         }
@@ -1559,7 +1565,7 @@ pub(crate) mod tests {
         coverage.extend(be16(1));
         coverage.extend(be16(first));
         let mut lig = be16(ligature);
-        lig.extend(be16((rest.len() as u16).saturating_add(1)));
+        lig.extend(be16((u16::try_from(rest.len()).unwrap()).saturating_add(1)));
         for component in rest {
             lig.extend(be16(*component));
         }
@@ -1567,7 +1573,7 @@ pub(crate) mod tests {
         set.extend(be16(4));
         set.extend(&lig);
         let mut sub = be16(1);
-        sub.extend(be16((set.len().saturating_add(8)) as u16));
+        sub.extend(be16(u16::try_from((set.len().saturating_add(8))).unwrap()));
         sub.extend(be16(1));
         sub.extend(be16(8));
         sub.extend(&set);
@@ -1598,7 +1604,7 @@ pub(crate) mod tests {
     }
 
     fn simple_glyph(contours: i16) -> Vec<u8> {
-        let mut out = be16(contours as u16);
+        let mut out = be16(contours.cast_unsigned());
         out.extend([0_u8; 12]);
         out
     }
@@ -1617,10 +1623,10 @@ pub(crate) mod tests {
             out.extend(be16(flags));
             out.extend(be16(*component));
             if words {
-                out.extend(be16(*dx as u16));
+                out.extend(be16((*dx).cast_unsigned()));
                 out.extend(be16(0));
             } else {
-                out.push(*dx as i8 as u8);
+                out.push((*dx as i8).cast_unsigned());
                 out.push(0);
             }
         }
@@ -1635,7 +1641,7 @@ pub(crate) mod tests {
             while glyf.len() % 4 != 0 {
                 glyf.push(0);
             }
-            loca.extend(be32(glyf.len() as u32));
+            loca.extend(be32(u32::try_from(glyf.len()).unwrap()));
         }
         (glyf, loca)
     }
@@ -1858,7 +1864,7 @@ pub(crate) mod tests {
         let mut loca = Vec::new();
         for chunk in loca_long.chunks(4) {
             let value = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            loca.extend(be16((value / 2) as u16));
+            loca.extend(be16(u16::try_from((value / 2)).unwrap()));
         }
         let font = sfnt(
             SFNT_TRUETYPE,
@@ -2074,7 +2080,7 @@ pub(crate) mod tests {
             let mut data = vec![0_u8; len];
             for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *slot = (seed >> 24) as u8;
+                *slot = u8::try_from((seed >> 24)).unwrap();
             }
             match round % 4 {
                 0 => data[..4].copy_from_slice(&[0, 1, 0, 0]),

@@ -417,7 +417,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                         && out.codespace.len() < 256
                     {
                         let mut space = Codespace {
-                            length: low.len() as u8,
+                            length: u8::try_from(low.len()).unwrap_or(u8::MAX),
                             low: [0; 4],
                             high: [0; 4],
                         };
@@ -492,7 +492,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     if let (Some((code, length)), Ok(cid)) = (hex_code(source), u32::try_from(cid))
                     {
                         let range = CidRange {
-                            length: length as u8,
+                            length: u8::try_from(length).unwrap_or(u8::MAX),
                             low: code,
                             high: code,
                             cid,
@@ -522,7 +522,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                         && start <= end
                     {
                         let range = CidRange {
-                            length: length as u8,
+                            length: u8::try_from(length).unwrap_or(u8::MAX),
                             low: start,
                             high: end,
                             cid,
@@ -776,6 +776,7 @@ fn be_value(bytes: &[u8]) -> u32 {
 #[expect(clippy::indexing_slicing, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::num::widen;
 
     fn limits() -> Limits {
         Limits::default()
@@ -973,10 +974,10 @@ mod tests {
             for _ in 0..(8 + round % 40) {
                 seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
                 match (seed >> 16) % 6 {
-                    0 => data.extend_from_slice(keywords[(seed >> 20) as usize % keywords.len()]),
+                    0 => data.extend_from_slice(keywords[widen((seed >> 20)) % keywords.len()]),
                     1 => data.extend_from_slice(b"<00"),
                     2 => data.extend_from_slice(b"<ffff> "),
-                    3 => data.push((seed >> 8) as u8),
+                    3 => data.push(u8::try_from((seed >> 8) & 0xFF).unwrap()),
                     4 => data.extend_from_slice(b" 12345678901234567890 "),
                     _ => data.extend_from_slice(b"> ] "),
                 }

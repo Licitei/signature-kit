@@ -1,32 +1,54 @@
+use std::error::Error;
+use std::fmt;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FailureCode {
-    InvalidPdf = 1,
-    EncryptedPdf = 2,
-    LimitExceeded = 3,
-    UnsupportedFeature = 4,
+pub(crate) enum FailureCode {
+    InvalidPdf,
+    EncryptedPdf,
+    LimitExceeded,
+    UnsupportedFeature,
+}
+
+impl From<FailureCode> for u32 {
+    fn from(code: FailureCode) -> Self {
+        match code {
+            FailureCode::InvalidPdf => 1,
+            FailureCode::EncryptedPdf => 2,
+            FailureCode::LimitExceeded => 3,
+            FailureCode::UnsupportedFeature => 4,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failure {
-    pub code: FailureCode,
-    pub reason: String,
+pub(crate) struct Failure {
+    pub(crate) code: FailureCode,
+    pub(crate) reason: String,
 }
 
 impl Failure {
-    pub fn new(code: FailureCode, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(code: FailureCode, reason: impl Into<String>) -> Self {
         Self {
             code,
             reason: reason.into(),
         }
     }
 
-    pub fn invalid(reason: impl Into<String>) -> Self {
+    pub(crate) fn invalid(reason: impl Into<String>) -> Self {
         Self::new(FailureCode::InvalidPdf, reason)
     }
 
-    pub fn limit(reason: impl Into<String>) -> Self {
+    pub(crate) fn limit(reason: impl Into<String>) -> Self {
         Self::new(FailureCode::LimitExceeded, reason)
     }
 }
+
+impl fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}: {}", self.code, self.reason)
+    }
+}
+
+impl Error for Failure {}
 
 pub(crate) type Outcome<T> = Result<T, Failure>;

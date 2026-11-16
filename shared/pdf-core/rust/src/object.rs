@@ -1,3 +1,4 @@
+use crate::num::i64_to_f64;
 use std::ops::Range;
 
 use crate::failure::Outcome;
@@ -56,7 +57,7 @@ impl Dict {
 impl Object {
     pub(crate) const fn as_number(&self) -> Option<f64> {
         match self {
-            Self::Integer(value) => Some(*value as f64),
+            Self::Integer(value) => Some(i64_to_f64(*value)),
             Self::Real(value) => Some(*value),
             _ => None,
         }

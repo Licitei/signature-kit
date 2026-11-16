@@ -1,3 +1,5 @@
+use crate::num::f64_to_i64;
+use crate::num::widen;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -28,9 +30,9 @@ const BOLD_DESCENT: f64 = 0.227;
 
 const fn op(name: &[u8]) -> u32 {
     match name {
-        [a] => *a as u32,
-        [a, b] => (*a as u32) << 8 | *b as u32,
-        [a, b, c] => (*a as u32) << 16 | (*b as u32) << 8 | *c as u32,
+        [a] => u32::from_be_bytes([0, 0, 0, *a]),
+        [a, b] => u32::from_be_bytes([0, 0, *a, *b]),
+        [a, b, c] => u32::from_be_bytes([0, *a, *b, *c]),
         _ => 0,
     }
 }
@@ -955,7 +957,7 @@ impl Interpreter<'_, '_> {
                     resolved.as_dict().is_some_and(|dict| {
                         dict.get(b"Flags")
                             .and_then(Object::as_number)
-                            .is_some_and(|flags| (flags as i64) & FORCE_BOLD != 0)
+                            .is_some_and(|flags| f64_to_i64(flags) & FORCE_BOLD != 0)
                             || dict
                                 .get(b"FontWeight")
                                 .and_then(Object::as_number)
@@ -1090,7 +1092,7 @@ impl Interpreter<'_, '_> {
                 Some(text) => text,
                 None if spanned => "",
                 None => decoded
-                    .get(glyph.text.start as usize..glyph.text.end as usize)
+                    .get(widen(glyph.text.start)..widen(glyph.text.end))
                     .unwrap_or_default(),
             };
             let spacing = state.char_space
@@ -2387,7 +2389,7 @@ mod tests {
                         .iter()
                         .any(|text| text.contains(needle))
                 })
-                .map(|page| page.page_index as usize)
+                .map(|page| widen(page.page_index))
                 .collect()
         };
         assert_eq!(find("helvetica-winansi", "[[licitei-assinatura]]"), [0]);
@@ -2466,7 +2468,9 @@ mod tests {
         for _ in 0..300 {
             let mut content = String::new();
             for _ in 0..200 {
-                content.push_str(tokens[(next() % tokens.len() as u64) as usize]);
+                content.push_str(
+                    tokens[usize::try_from(next() % u64::try_from(tokens.len()).unwrap()).unwrap()],
+                );
                 content.push(' ');
             }
             let bytes = page_pdf(

@@ -1,4 +1,5 @@
 use crate::failure::{Failure, FailureCode, Outcome};
+use crate::num::widen;
 
 fn partial_or_err(err: Failure, out: &[u8]) -> Outcome<Vec<u8>> {
     if err.code == FailureCode::LimitExceeded {
@@ -70,6 +71,7 @@ const CODE_LENGTH_ORDER: [u8; 19] = [
 
 const FAST_BITS: u32 = 10;
 const FAST_SIZE: usize = 1 << FAST_BITS;
+const FAST_MASK: u64 = (1 << FAST_BITS) - 1;
 
 struct Huffman {
     counts: [u16; MAX_BITS + 1],
@@ -108,7 +110,7 @@ impl<'a> BitReader<'a> {
             let word = u64::from_le_bytes(bytes);
             self.bit_buf |= word << self.bit_count;
             let consumed = 63_u32.saturating_sub(self.bit_count) >> 3;
-            self.pos = self.pos.saturating_add(consumed as usize);
+            self.pos = self.pos.saturating_add(widen(consumed));
             self.bit_count = self.bit_count.saturating_add(consumed << 3);
             return;
         }
@@ -134,14 +136,15 @@ impl<'a> BitReader<'a> {
                 return None;
             }
         }
-        let value = (self.bit_buf & ((1_u64 << count).saturating_sub(1))) as u32;
+        let value =
+            u32::try_from(self.bit_buf & ((1_u64 << count).saturating_sub(1))).unwrap_or(u32::MAX);
         self.bit_buf >>= count;
         self.bit_count = self.bit_count.saturating_sub(count);
         Some(value)
     }
 
-    const fn align_byte(&mut self) {
-        let whole = (self.bit_count >> 3) as usize;
+    fn align_byte(&mut self) {
+        let whole = widen(self.bit_count >> 3);
         self.pos = self.pos.saturating_sub(whole);
         self.bit_buf = 0;
         self.bit_count = 0;
@@ -220,7 +223,9 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
     let mut lens_sorted: Vec<(u8, u16)> = lengths
         .iter()
         .enumerate()
-        .filter_map(|(sym, &len)| (len > 0).then_some((len, sym as u16)))
+        .filter_map(|(sym, &len)| {
+            (len > 0).then_some((len, u16::try_from(sym).unwrap_or(u16::MAX)))
+        })
         .collect();
     lens_sorted.sort_by_key(|(len, sym)| (*len, *sym));
 
@@ -244,7 +249,7 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         }
         let reversed = code.reverse_bits() >> 32_u32.saturating_sub(len32);
         let entry = (len32 << 16) | u32::from(sym);
-        let mut index = reversed as usize;
+        let mut index = widen(reversed);
         while index < FAST_SIZE {
             if let Some(cell) = fast.get_mut(index) {
                 *cell = entry;
@@ -265,10 +270,10 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
 
 #[inline]
 fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
-    if bits.bit_count < MAX_BITS as u32 {
+    if bits.bit_count < u32::try_from(MAX_BITS).unwrap_or(u32::MAX) {
         bits.refill();
     }
-    let window = (bits.bit_buf & ((FAST_SIZE as u64).saturating_sub(1))) as usize;
+    let window = usize::try_from(bits.bit_buf & FAST_MASK).unwrap_or_default();
     let entry = tree.fast.get(window).copied().unwrap_or(0);
     if entry != 0 {
         let len = entry >> 16;
@@ -277,7 +282,7 @@ fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
         }
         bits.bit_buf >>= len;
         bits.bit_count = bits.bit_count.saturating_sub(len);
-        return Some((entry & 0xffff) as u16);
+        return u16::try_from(entry & 0xffff).ok();
     }
     decode_slow(bits, tree)
 }
@@ -289,7 +294,7 @@ fn decode_slow(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
         if bits.bit_count == 0 {
             return None;
         }
-        let bit = (bits.bit_buf & 1) as u32;
+        let bit = u32::from(bits.bit_buf & 1 == 1);
         bits.bit_buf >>= 1;
         bits.bit_count = bits.bit_count.saturating_sub(1);
         code = (code << 1) | bit;
@@ -300,7 +305,10 @@ fn decode_slow(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
             let max = first.saturating_add(u32::from(count));
             if code >= first && code < max {
                 let base = tree.offset.get(slot).copied().unwrap_or(0);
-                let index = usize::from(base.saturating_add((code.saturating_sub(first)) as u16));
+                let index =
+                    usize::from(base.saturating_add(
+                        u16::try_from(code.saturating_sub(first)).unwrap_or(u16::MAX),
+                    ));
                 return tree.symbols.get(index).copied();
             }
         }
@@ -355,7 +363,7 @@ fn inflate_block(
             if out.len() >= max {
                 return Err(Failure::limit("inflate output exceeds limit"));
             }
-            out.push(sym as u8);
+            out.push(u8::try_from(sym).unwrap_or(u8::MAX));
             continue;
         }
         if sym == 256 {
@@ -372,10 +380,10 @@ fn inflate_block(
             .ok_or_else(|| Failure::invalid("bad length extra"))?;
         let extra = match extra_len {
             0 => 0_usize,
-            n => bits
-                .take_bits(n)
-                .ok_or_else(|| Failure::invalid("truncated length extra"))?
-                as usize,
+            n => widen(
+                bits.take_bits(n)
+                    .ok_or_else(|| Failure::invalid("truncated length extra"))?,
+            ),
         };
         let length = base.saturating_add(extra);
         let dist_sym = match decode_symbol(bits, dist) {
@@ -399,10 +407,10 @@ fn inflate_block(
             .ok_or_else(|| Failure::invalid("bad distance extra"))?;
         let dist_bits = match dist_extra {
             0 => 0_usize,
-            n => bits
-                .take_bits(n)
-                .ok_or_else(|| Failure::invalid("truncated distance extra"))?
-                as usize,
+            n => widen(
+                bits.take_bits(n)
+                    .ok_or_else(|| Failure::invalid("truncated distance extra"))?,
+            ),
         };
         let distance = dist_base.saturating_add(dist_bits);
         copy_match(out, distance, length, max)?;
@@ -410,18 +418,21 @@ fn inflate_block(
 }
 
 fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
-    let hlit = bits
-        .take_bits(5)
-        .ok_or_else(|| Failure::invalid("truncated hlit"))?
-        .saturating_add(257) as usize;
-    let hdist = bits
-        .take_bits(5)
-        .ok_or_else(|| Failure::invalid("truncated hdist"))?
-        .saturating_add(1) as usize;
-    let hclen = bits
-        .take_bits(4)
-        .ok_or_else(|| Failure::invalid("truncated hclen"))?
-        .saturating_add(4) as usize;
+    let hlit = widen(
+        bits.take_bits(5)
+            .ok_or_else(|| Failure::invalid("truncated hlit"))?
+            .saturating_add(257),
+    );
+    let hdist = widen(
+        bits.take_bits(5)
+            .ok_or_else(|| Failure::invalid("truncated hdist"))?
+            .saturating_add(1),
+    );
+    let hclen = widen(
+        bits.take_bits(4)
+            .ok_or_else(|| Failure::invalid("truncated hclen"))?
+            .saturating_add(4),
+    );
 
     let mut clens = [0_u8; 19];
     for i in 0..hclen {
@@ -433,7 +444,7 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
             .take_bits(3)
             .ok_or_else(|| Failure::invalid("truncated code length"))?;
         if let Some(slot) = clens.get_mut(usize::from(ord)) {
-            *slot = len as u8;
+            *slot = u8::try_from(len).unwrap_or(u8::MAX);
         }
     }
     let cl_tree = build_huffman(&clens)?;
@@ -445,12 +456,13 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
             None => return Err(Failure::invalid("truncated code lengths")),
         };
         if sym < 16 {
-            lengths.push(sym as u8);
+            lengths.push(u8::try_from(sym).unwrap_or(u8::MAX));
         } else if sym == 16 {
-            let rep = bits
-                .take_bits(2)
-                .ok_or_else(|| Failure::invalid("truncated repeat"))?
-                .saturating_add(3) as usize;
+            let rep = widen(
+                bits.take_bits(2)
+                    .ok_or_else(|| Failure::invalid("truncated repeat"))?
+                    .saturating_add(3),
+            );
             let prev = *lengths
                 .last()
                 .ok_or_else(|| Failure::invalid("repeat without prev"))?;
@@ -458,16 +470,18 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
                 lengths.push(prev);
             }
         } else if sym == 17 {
-            let rep = bits
-                .take_bits(3)
-                .ok_or_else(|| Failure::invalid("truncated repeat17"))?
-                .saturating_add(3) as usize;
+            let rep = widen(
+                bits.take_bits(3)
+                    .ok_or_else(|| Failure::invalid("truncated repeat17"))?
+                    .saturating_add(3),
+            );
             lengths.extend(std::iter::repeat_n(0_u8, rep));
         } else if sym == 18 {
-            let rep = bits
-                .take_bits(7)
-                .ok_or_else(|| Failure::invalid("truncated repeat18"))?
-                .saturating_add(11) as usize;
+            let rep = widen(
+                bits.take_bits(7)
+                    .ok_or_else(|| Failure::invalid("truncated repeat18"))?
+                    .saturating_add(11),
+            );
             lengths.extend(std::iter::repeat_n(0_u8, rep));
         } else {
             return Err(Failure::invalid("bad code length symbol"));
@@ -531,7 +545,7 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
                 if len_bits.wrapping_add(nlen_bits) != 0xffff {
                     return partial_or_err(Failure::invalid("stored block len mismatch"), &out);
                 }
-                let len = len_bits as usize;
+                let len = widen(len_bits);
                 if let Err(err) = bits.copy_stored_bytes(&mut out, len, max_output) {
                     return partial_or_err(err, &out);
                 }
@@ -573,31 +587,26 @@ mod tests {
     const ZLIB_MB: &[u8] = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
     const ZLIB_SKEWED: &[u8] = include_bytes!("../tests/fixtures/skewed.zlib");
 
-    const CRC32_TABLE: [u32; 256] = {
-        let mut table = [0_u32; 256];
-        let mut index = 0_usize;
-        while index < 256 {
-            let mut value = index as u32;
-            let mut bit = 0_u8;
-            while bit < 8 {
+    fn crc32_table() -> [u32; 256] {
+        std::array::from_fn(|index| {
+            let mut value = u32::try_from(index).unwrap();
+            for _ in 0..8 {
                 value = if value & 1 == 0 {
                     value >> 1
                 } else {
                     0xEDB8_8320 ^ (value >> 1)
                 };
-                bit += 1;
             }
-            table[index] = value;
-            index += 1;
-        }
-        table
-    };
+            value
+        })
+    }
 
     fn crc32(data: &[u8]) -> u32 {
+        let table = crc32_table();
         let mut hash = 0xFFFF_FFFF_u32;
         for byte in data {
-            let idx = ((hash ^ u32::from(*byte)) & 0xff) as usize;
-            hash = CRC32_TABLE[idx] ^ (hash >> 8);
+            let idx = usize::try_from((hash ^ u32::from(*byte)) & 0xff).unwrap();
+            hash = table[idx] ^ (hash >> 8);
         }
         hash ^ 0xFFFF_FFFF
     }
