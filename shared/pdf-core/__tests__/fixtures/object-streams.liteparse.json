@@ -1,0 +1,18 @@
+{
+  "pages": [
+    {
+      "pageNum": 1,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "PDF salvo com object streams e xref stream.",
+          "x": 72,
+          "y": 80.66,
+          "width": 239.4,
+          "height": 14.028
+        }
+      ]
+    }
+  ]
+}

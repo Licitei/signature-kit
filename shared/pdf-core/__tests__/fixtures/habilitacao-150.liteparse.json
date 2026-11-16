@@ -1,0 +1,5303 @@
+{
+  "pages": [
+    {
+      "pageNum": 1,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 1",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 1: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 2,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 2",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 2: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 418.53,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 3,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 3",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 3: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 443,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 4,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 4",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 4: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 452.44,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 5,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 5",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 5: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 6,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 6",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 6: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 418.53,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 7,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 7",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 7: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 443,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 8,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 8",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 8: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 452.44,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 9,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 9",
+          "x": 72,
+          "y": 50.456,
+          "width": 121.368,
+          "height": 14.268
+        },
+        {
+          "text": "Página 9: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 10,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 10",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 10: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 11,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 11",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 11: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 12,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 12",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 12: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 13,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 13",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 13: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 14,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 14",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 14: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 15,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 15",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 15: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 16,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 16",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 16: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 17,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 17",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 17: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 18,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 18",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 18: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 19,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 19",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 19: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 20,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 20",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 20: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 21,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 21",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 21: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 22,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 22",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 22: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 23,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 23",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 23: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 24,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 24",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 24: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 25,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 25",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 25: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 26,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 26",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 26: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 27,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 27",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 27: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 28,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 28",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 28: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 29,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 29",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 29: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 30,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 30",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 30: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 31,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 31",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 31: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 32,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 32",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 32: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 33,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 33",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 33: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 34,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 34",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 34: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 35,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 35",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 35: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 36,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 36",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 36: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 37,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 37",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 37: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 38,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 38",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 38: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 39,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 39",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 39: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 40,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 40",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 40: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 41,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 41",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 41: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 42,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 42",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 42: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 43,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 43",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 43: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 44,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 44",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 44: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 45,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 45",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 45: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 46,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 46",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 46: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 47,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 47",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 47: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 48,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 48",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 48: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 49,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 49",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 49: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 50,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 50",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 50: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 51,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 51",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 51: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 52,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 52",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 52: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 53,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 53",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 53: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 54,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 54",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 54: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 55,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 55",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 55: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 56,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 56",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 56: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 57,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 57",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 57: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 58,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 58",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 58: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 59,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 59",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 59: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 60,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 60",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 60: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 61,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 61",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 61: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 62,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 62",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 62: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 63,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 63",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 63: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 64,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 64",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 64: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 65,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 65",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 65: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 66,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 66",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 66: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 67,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 67",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 67: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 68,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 68",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 68: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 69,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 69",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 69: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 70,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 70",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 70: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 71,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 71",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 71: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 72,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 72",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 72: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 73,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 73",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 73: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 74,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 74",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 74: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 75,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 75",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 75: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 76,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 76",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 76: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 77,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 77",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 77: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 78,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 78",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 78: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 79,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 79",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 79: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 80,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 80",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 80: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 81,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 81",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 81: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 82,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 82",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 82: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 83,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 83",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 83: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 84,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 84",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 84: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 85,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 85",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 85: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 86,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 86",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 86: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 87,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 87",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 87: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 88,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 88",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 88: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 89,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 89",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 89: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 90,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 90",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 90: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 91,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 91",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 91: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 92,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 92",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 92: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 93,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 93",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 93: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 94,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 94",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 94: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 95,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 95",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 95: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 96,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 96",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 96: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 458,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 97,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 97",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 97: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 430.21,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 98,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 98",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 98: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 424.09,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 99,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 99",
+          "x": 72,
+          "y": 50.456,
+          "width": 128.04,
+          "height": 14.268
+        },
+        {
+          "text": "Página 99: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 448.56,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 100,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 100",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 100: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 101,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 101",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 101: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 102,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 102",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 102: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 103,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 103",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 103: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 104,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 104",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 104: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 105,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 105",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 105: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 106,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 106",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 106: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 107,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 107",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 107: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 108,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 108",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 108: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 109,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 109",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 109: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 110,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 110",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 110: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 111,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 111",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 111: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 112,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 112",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 112: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 113,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 113",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 113: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 114,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 114",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 114: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 115,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 115",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 115: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 116,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 116",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 116: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 117,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 117",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 117: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 118,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 118",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 118: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 119,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 119",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 119: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 120,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 120",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 120: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 121,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 121",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 121: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 122,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 122",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 122: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 123,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 123",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 123: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 124,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 124",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 124: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 125,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 125",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 125: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 126,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 126",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 126: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 127,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 127",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 127: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 128,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 128",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 128: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 129,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 129",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 129: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 130,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 130",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 130: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 131,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 131",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 131: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 132,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 132",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 132: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 133,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 133",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 133: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 134,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 134",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 134: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 135,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 135",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 135: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 136,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 136",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 136: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 137,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 137",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 137: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 138,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 138",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 138: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        }
+      ]
+    },
+    {
+      "pageNum": 139,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 139",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 139: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 140,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 140",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 140: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 141,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 141",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 141: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 142,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 142",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 142: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 143,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 143",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 143: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 144,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 144",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 144: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 145,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 145",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 145: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 146,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 146",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 146: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 147,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 147",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 147: bloco sobre capacidade operacional, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 454.12,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 148,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 148",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 148: bloco sobre documentação complementar, com referência ao edital e à execução contratual",
+          "x": 72,
+          "y": 82.55,
+          "width": 463.56,
+          "height": 11.69
+        },
+        {
+          "text": "em conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 184.54,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 149,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 149",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 149: bloco sobre qualificação técnica, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 435.77,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        }
+      ]
+    },
+    {
+      "pageNum": 150,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Habilitação - folha 150",
+          "x": 72,
+          "y": 50.456,
+          "width": 134.712,
+          "height": 14.268
+        },
+        {
+          "text": "Página 150: bloco sobre regularidade fiscal, com referência ao edital e à execução contratual em",
+          "x": 72,
+          "y": 82.55,
+          "width": 429.65,
+          "height": 11.69
+        },
+        {
+          "text": "conformidade com a Lei 14.133/2021.",
+          "x": 72,
+          "y": 94.55,
+          "width": 167.87,
+          "height": 11.69
+        },
+        {
+          "text": "C1R1",
+          "x": 78,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R1",
+          "x": 228,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R1",
+          "x": 378,
+          "y": 253.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R2",
+          "x": 78,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R2",
+          "x": 228,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R2",
+          "x": 378,
+          "y": 303.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R3",
+          "x": 78,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R3",
+          "x": 228,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R3",
+          "x": 378,
+          "y": 353.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C1R4",
+          "x": 78,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C2R4",
+          "x": 228,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "C3R4",
+          "x": 378,
+          "y": 403.495,
+          "width": 23.004,
+          "height": 10.521
+        },
+        {
+          "text": "Âncora [[licitei-assinatura]] na última página.",
+          "x": 72,
+          "y": 661.605,
+          "width": 215.809,
+          "height": 12.859
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "pages": [
+    {
+      "pageNum": 1,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Versão original do documento.",
+          "x": 72,
+          "y": 80.66,
+          "width": 162.744,
+          "height": 14.028
+        },
+        {
+          "text": "Texto alterado por atualização incremental.",
+          "x": 72,
+          "y": 120.66,
+          "width": 230.1,
+          "height": 14.028
+        }
+      ]
+    }
+  ]
+}

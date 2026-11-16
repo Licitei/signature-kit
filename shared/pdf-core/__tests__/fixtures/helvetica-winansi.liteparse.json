@@ -1,0 +1,39 @@
+{
+  "pages": [
+    {
+      "pageNum": 1,
+      "width": 612,
+      "height": 792,
+      "textItems": [
+        {
+          "text": "Declaração de habilitação - corpus SignatureKit",
+          "x": 72,
+          "y": 56.608,
+          "width": 374.336,
+          "height": 19.024
+        },
+        {
+          "text": "Ação, coração, situação e à margem do edital.",
+          "x": 72,
+          "y": 86.66,
+          "width": 247.452,
+          "height": 14.028
+        },
+        {
+          "text": "CPF 123.456.789-09 e CNPJ 12.345.678/0001-95.",
+          "x": 72,
+          "y": 108.66,
+          "width": 270.156,
+          "height": 14.028
+        },
+        {
+          "text": "Âncoras [[licitei-assinatura]] e {{signature}}.",
+          "x": 72,
+          "y": 130.66,
+          "width": 228.78,
+          "height": 14.028
+        }
+      ]
+    }
+  ]
+}

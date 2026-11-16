@@ -1,0 +1,53 @@
+{
+  "pages": [
+    {
+      "pageNum": 1,
+      "width": 595.28,
+      "height": 841.89,
+      "textItems": [
+        {
+          "text": "Declaração de Habilitação",
+          "x": 48,
+          "y": 47.008,
+          "width": 197.984,
+          "height": 19.024
+        },
+        {
+          "text": "Declaro, sob as penas da lei, que atendo às condições de habilitação exigidas no edital, com ênfase em",
+          "x": 48,
+          "y": 77.105,
+          "width": 499.28,
+          "height": 12.859
+        },
+        {
+          "text": "documentação, qualificação técnica e regularidade fiscal.",
+          "x": 48,
+          "y": 102.305,
+          "width": 278.52,
+          "height": 12.859
+        },
+        {
+          "text": "Texto com fonte incorporada: ção, ênfase, à disposição.",
+          "x": 48,
+          "y": 136.003,
+          "width": 271.911,
+          "height": 12.276
+        },
+        {
+          "text": "[[licitei-assinatura]]",
+          "x": 48,
+          "y": 156.469,
+          "width": 33.08,
+          "height": 4.676
+        },
+        {
+          "text": "Local e data: Curitiba, 15 de janeiro de 2024.",
+          "x": 48,
+          "y": 160.554,
+          "width": 219.131,
+          "height": 12.859
+        }
+      ]
+    }
+  ]
+}
