@@ -42,7 +42,11 @@ impl Dict {
     }
 
     pub fn insert(&mut self, key: &[u8], value: Object) {
-        match self.entries.iter_mut().find(|(name, _)| name.as_slice() == key) {
+        match self
+            .entries
+            .iter_mut()
+            .find(|(name, _)| name.as_slice() == key)
+        {
             Some(entry) => entry.1 = value,
             None => self.entries.push((key.to_vec(), value)),
         }
