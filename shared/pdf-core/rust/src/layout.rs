@@ -1413,7 +1413,7 @@ mod tests {
                 if next() % 4 == 0 {
                     bytes.truncate(cut);
                 }
-                black_box(document_text(&bytes, None, &limits, &OPTIONS));
+                drop(black_box(document_text(&bytes, None, &limits, &OPTIONS)));
             }
         }
     }
@@ -1951,8 +1951,8 @@ mod structure_tests {
                     *byte = u8::try_from(next() % 255).unwrap_or(1).max(1);
                 }
             }
-            black_box(document_tables(&bytes, None, &limits));
-            black_box(document_text(&bytes, None, &limits, &MARKDOWN));
+            drop(black_box(document_tables(&bytes, None, &limits)));
+            drop(black_box(document_text(&bytes, None, &limits, &MARKDOWN)));
         }
     }
 

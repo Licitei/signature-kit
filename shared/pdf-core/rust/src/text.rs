@@ -2473,7 +2473,7 @@ mod tests {
                     ),
                 ],
             );
-            black_box(extract_with(&bytes, &Limits::default()));
+            drop(black_box(extract_with(&bytes, &Limits::default())));
         }
     }
 

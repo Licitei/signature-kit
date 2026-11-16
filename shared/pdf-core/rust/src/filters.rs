@@ -50,27 +50,33 @@ fn parse_filter_chain(dict: &Dict) -> Outcome<FilterChain<'_>> {
             }
             let mut filters = Vec::with_capacity(items.len());
             for item in items {
-                match item {
-                    Object::Name(name) => filters.push(name.clone()),
-                    Object::Ref(_) => return Err(Failure::invalid("indirect filter name")),
-                    _ => return Err(Failure::invalid("filter entry is not a name")),
-                }
+                let Object::Name(name) = item else {
+                    return Err(Failure::invalid(if item.is_ref() {
+                        "indirect filter name"
+                    } else {
+                        "filter entry is not a name"
+                    }));
+                };
+                filters.push(name.clone());
             }
             let parms = match parms_key {
                 None | Some(Object::Null) => vec![None; filters.len()],
-                Some(Object::Array(items)) => {
-                    if items.len() != filters.len() {
+                Some(Object::Array(entries)) => {
+                    if entries.len() != filters.len() {
                         return Err(Failure::invalid("decode parms array length"));
                     }
-                    let mut out = Vec::with_capacity(items.len());
-                    for item in items {
-                        match item {
-                            Object::Null => out.push(None),
-                            Object::Dict(d) => out.push(Some(d)),
-                            Object::Ref(_) => {
-                                return Err(Failure::invalid("indirect decode parms"));
-                            }
-                            _ => return Err(Failure::invalid("decode parms entry")),
+                    let mut out = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        if matches!(entry, Object::Null) {
+                            out.push(None);
+                        } else if let Object::Dict(parm_dict) = entry {
+                            out.push(Some(parm_dict));
+                        } else {
+                            return Err(Failure::invalid(if entry.is_ref() {
+                                "indirect decode parms"
+                            } else {
+                                "decode parms entry"
+                            }));
                         }
                     }
                     out
@@ -187,7 +193,7 @@ fn lzw_decode(parms: Option<&Dict>, data: &[u8], max_output: usize) -> Outcome<V
 }
 
 fn ascii_hex_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
-    let mut out = Vec::with_capacity(data.len() / 2);
+    let mut out = Vec::with_capacity(data.len().div_ceil(2));
     let mut hi: Option<u8> = None;
     for &byte in data {
         if byte == b'>' {
@@ -379,9 +385,9 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
                 .get(usize::from(prev))
                 .ok_or_else(|| Failure::invalid("lzw previous"))?
                 .clone();
-            base.first().copied().map_or(None, |first| {
+            base.first().copied().map(|first| {
                 base.push(first);
-                Some(base)
+                base
             })
         } else {
             None
@@ -442,8 +448,7 @@ fn apply_predictor(parms: Option<&Dict>, data: &mut Vec<u8>, max_output: usize) 
     let row_bytes = columns
         .saturating_mul(colors)
         .saturating_mul(bpc)
-        .saturating_add(7)
-        / 8;
+        .div_ceil(8);
     if predictor == 2 {
         tiff_predict(data, row_bytes, max_output)?;
     } else if (10..=15).contains(&predictor) {
@@ -470,7 +475,9 @@ fn usize_from(parms: Option<&Dict>, key: &[u8], default: usize) -> Outcome<usize
     if value < 0 {
         return Err(Failure::invalid("negative predictor parameter"));
     }
-    usize::try_from(value).map_err(|_| Failure::invalid("predictor parameter overflow"))
+    usize::try_from(value)
+        .ok()
+        .ok_or_else(|| Failure::invalid("predictor parameter overflow"))
 }
 
 fn tiff_predict(data: &mut [u8], row_bytes: usize, max_output: usize) -> Outcome<()> {
@@ -580,7 +587,7 @@ fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
 
 fn avg(left: u8, up: u8) -> u8 {
     let sum = u16::from(left).saturating_add(u16::from(up));
-    u8::try_from(sum / 2).unwrap_or(u8::MAX)
+    u8::try_from(sum >> 1).unwrap_or(u8::MAX)
 }
 
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
@@ -824,7 +831,7 @@ mod tests {
                 state ^= state << 5;
                 *byte ^= u8::try_from(state & 0xFF).unwrap();
             }
-            black_box(decode_stream(&dict, &input, 65536));
+            drop(black_box(decode_stream(&dict, &input, 65536)));
         }
     }
 

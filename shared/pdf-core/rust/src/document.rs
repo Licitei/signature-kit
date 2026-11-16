@@ -182,6 +182,26 @@ fn header_before(data: &[u8], keyword_index: usize, floor: usize) -> Option<usiz
     back(index, |byte| byte.is_ascii_digit(), 10)
 }
 
+#[derive(Default)]
+struct Scan {
+    table: Vec<Entry>,
+    trailers: Vec<Dict>,
+    catalogs: Vec<u32>,
+    object_streams: Vec<(u32, usize)>,
+}
+
+fn merged_trailer(trailers: &[Dict]) -> Dict {
+    let mut merged = Dict::default();
+    for trailer in trailers {
+        for (key, value) in &trailer.entries {
+            if matches!(key.as_slice(), b"Root" | b"Encrypt" | b"Info" | b"ID") {
+                merged.insert(key, value.clone());
+            }
+        }
+    }
+    merged
+}
+
 pub(crate) struct Document<'a> {
     bytes: &'a [u8],
     shift: Cell<usize>,
@@ -402,7 +422,8 @@ impl<'a> Document<'a> {
                     _ => return Err(Failure::invalid("bad xref entry flag")),
                 };
                 let number = u32::try_from(first.saturating_add(index))
-                    .map_err(|_| Failure::invalid("object number out of range"))?;
+                    .ok()
+                    .ok_or_else(|| Failure::invalid("object number out of range"))?;
                 entries.push((number, entry));
             }
         }
@@ -483,11 +504,12 @@ impl<'a> Document<'a> {
                 };
                 let entry = match kind {
                     0 => Entry::Free,
-                    1 => {
-                        usize::try_from(second).map_or(Entry::Free, |offset| Entry::Offset(offset))
-                    }
+                    1 => usize::try_from(second).map_or(Entry::Free, Entry::Offset),
                     2 => match (u32::try_from(second), u32::try_from(third)) {
-                        (Ok(stream), Ok(index)) => Entry::Compressed { stream, index },
+                        (Ok(holder), Ok(position)) => Entry::Compressed {
+                            stream: holder,
+                            index: position,
+                        },
                         _ => Entry::Free,
                     },
                     _ => continue,
@@ -505,73 +527,8 @@ impl<'a> Document<'a> {
     fn rebuild(&self) -> Outcome<()> {
         self.repaired.set(true);
         self.shift.set(0);
-        let data = self.bytes;
-        let bound = self.object_bound();
-        let nesting = self.limits.max_nesting;
-        let mut table: Vec<Entry> = Vec::new();
-        let mut trailers: Vec<Dict> = Vec::new();
-        let mut catalogs: Vec<u32> = Vec::new();
-        let mut object_streams: Vec<(u32, usize)> = Vec::new();
-        let mut pos = 0_usize;
-        while let Some(rest) = data.get(pos..) {
-            let Some(found) = rest.iter().position(|&byte| byte == b'o' || byte == b't') else {
-                break;
-            };
-            let at = pos.saturating_add(found);
-            if keyword_at(data, at, b"obj") {
-                let Some(start) = header_before(data, at, pos) else {
-                    pos = at.saturating_add(3);
-                    continue;
-                };
-                match parse_indirect_object(data, start, nesting, |_| None) {
-                    Ok(parsed) => {
-                        let number = parsed.obj_ref.number;
-                        let index = widen(number);
-                        if index < bound {
-                            if table.len() <= index {
-                                table.resize(index.saturating_add(1), Entry::Unset);
-                            }
-                            if let Some(slot) = table.get_mut(index) {
-                                *slot = Entry::Offset(start);
-                            }
-                        }
-                        if let Some(dict) = parsed.object.as_dict() {
-                            if name_is(dict, b"Type", b"Catalog") {
-                                catalogs.push(number);
-                            } else if name_is(dict, b"Type", b"XRef") {
-                                trailers.push(dict.clone());
-                            } else if name_is(dict, b"Type", b"ObjStm") {
-                                object_streams.push((number, start));
-                            }
-                        }
-                        pos = parsed.end.max(at.saturating_add(3));
-                    }
-                    Err(_) => pos = at.saturating_add(3),
-                }
-            } else if keyword_at(data, at, b"trailer") {
-                let mut parser = Parser::new(data, at.saturating_add(7), nesting, true);
-                if let Ok(Object::Dict(dict)) = parser.parse_object() {
-                    trailers.push(dict);
-                    pos = parser.position().max(at.saturating_add(7));
-                } else {
-                    pos = at.saturating_add(7);
-                }
-            } else {
-                pos = at.saturating_add(1);
-            }
-        }
-        let mut merged = Dict::default();
-        for trailer in &trailers {
-            for (key, value) in &trailer.entries {
-                if matches!(key.as_slice(), b"Root" | b"Encrypt" | b"Info" | b"ID") {
-                    match merged.entries.iter_mut().find(|(name, _)| name == key) {
-                        Some(slot) => slot.1 = value.clone(),
-                        None => merged.entries.push((key.clone(), value.clone())),
-                    }
-                }
-            }
-        }
-        self.install(table, merged);
+        let scan = self.scan_objects();
+        self.install(scan.table, merged_trailer(&scan.trailers));
         let encrypted = self
             .trailer
             .borrow()
@@ -580,6 +537,70 @@ impl<'a> Document<'a> {
         if encrypted {
             return Ok(());
         }
+        let compressed = self.index_object_streams(scan.object_streams);
+        if self.root_valid() {
+            return Ok(());
+        }
+        self.adopt_catalog(&scan.catalogs, &compressed)
+    }
+
+    fn scan_objects(&self) -> Scan {
+        let data = self.bytes;
+        let bound = self.object_bound();
+        let nesting = self.limits.max_nesting;
+        let mut scan = Scan::default();
+        let mut pos = 0_usize;
+        while let Some(rest) = data.get(pos..) {
+            let Some(found) = rest.iter().position(|&byte| byte == b'o' || byte == b't') else {
+                break;
+            };
+            let at = pos.saturating_add(found);
+            pos = if keyword_at(data, at, b"obj") {
+                self.scan_object(&mut scan, at, pos, bound)
+                    .unwrap_or_else(|| at.saturating_add(3))
+            } else if keyword_at(data, at, b"trailer") {
+                let mut parser = Parser::new(data, at.saturating_add(7), nesting, true);
+                if let Ok(Object::Dict(dict)) = parser.parse_object() {
+                    scan.trailers.push(dict);
+                    parser.position().max(at.saturating_add(7))
+                } else {
+                    at.saturating_add(7)
+                }
+            } else {
+                at.saturating_add(1)
+            };
+        }
+        scan
+    }
+
+    fn scan_object(&self, scan: &mut Scan, at: usize, floor: usize, bound: usize) -> Option<usize> {
+        let data = self.bytes;
+        let start = header_before(data, at, floor)?;
+        let parsed = parse_indirect_object(data, start, self.limits.max_nesting, |_| None).ok()?;
+        let number = parsed.obj_ref.number;
+        let index = widen(number);
+        if index < bound {
+            if scan.table.len() <= index {
+                scan.table.resize(index.saturating_add(1), Entry::Unset);
+            }
+            if let Some(slot) = scan.table.get_mut(index) {
+                *slot = Entry::Offset(start);
+            }
+        }
+        if let Some(dict) = parsed.object.as_dict() {
+            if name_is(dict, b"Type", b"Catalog") {
+                scan.catalogs.push(number);
+            } else if name_is(dict, b"Type", b"XRef") {
+                scan.trailers.push(dict.clone());
+            } else if name_is(dict, b"Type", b"ObjStm") {
+                scan.object_streams.push((number, start));
+            }
+        }
+        Some(parsed.end.max(at.saturating_add(3)))
+    }
+
+    fn index_object_streams(&self, object_streams: Vec<(u32, usize)>) -> Vec<u32> {
+        let bound = self.object_bound();
         let mut compressed: Vec<u32> = Vec::new();
         let mut seen: HashSet<u32> = HashSet::new();
         for (number, offset) in object_streams {
@@ -620,9 +641,10 @@ impl<'a> Document<'a> {
                 cache.resize(len, None);
             }
         }
-        if self.root_valid() {
-            return Ok(());
-        }
+        compressed
+    }
+
+    fn adopt_catalog(&self, catalogs: &[u32], compressed: &[u32]) -> Outcome<()> {
         for number in catalogs.iter().rev().chain(compressed.iter().rev()) {
             let candidate = ObjRef {
                 number: *number,
@@ -661,9 +683,10 @@ impl<'a> Document<'a> {
         let loaded = match entry {
             Entry::Unset | Entry::Free => return Ok(Rc::new(Object::Null)),
             Entry::Offset(offset) => self.load_at(reference.number, offset),
-            Entry::Compressed { stream, index } => {
-                self.load_compressed(reference.number, stream, index)
-            }
+            Entry::Compressed {
+                stream,
+                index: position,
+            } => self.load_compressed(reference.number, stream, position),
         };
         match loaded {
             Ok(object) => {
@@ -810,23 +833,23 @@ impl<'a> Document<'a> {
             return Ok(Object::Null);
         }
         let resolved = self.follow(object)?;
-        match &*resolved {
-            Object::Array(items) => items
+        if let Object::Array(items) = &*resolved {
+            items
                 .iter()
                 .map(|item| self.resolve_deep(item, depth.saturating_add(1)))
                 .collect::<Outcome<Vec<_>>>()
-                .map(Object::Array),
-            Object::Dict(dict) => {
-                let mut out = Dict::default();
-                for (key, value) in &dict.entries {
-                    out.entries.push((
-                        key.clone(),
-                        self.resolve_deep(value, depth.saturating_add(1))?,
-                    ));
-                }
-                Ok(Object::Dict(out))
+                .map(Object::Array)
+        } else if let Object::Dict(dict) = &*resolved {
+            let mut out = Dict::default();
+            for (key, value) in &dict.entries {
+                out.entries.push((
+                    key.clone(),
+                    self.resolve_deep(value, depth.saturating_add(1))?,
+                ));
             }
-            other => Ok(other.clone()),
+            Ok(Object::Dict(out))
+        } else {
+            Ok((*resolved).clone())
         }
     }
 
@@ -996,16 +1019,14 @@ impl<'a> Document<'a> {
             out.extend_from_slice(&data);
             Ok(())
         };
-        match &*resolved {
-            Object::Stream(_) => append(&resolved)?,
-            Object::Array(items) => {
-                for item in items {
-                    if let Some(part) = lenient(self.follow(item))? {
-                        append(&part)?;
-                    }
+        if let Object::Array(items) = &*resolved {
+            for item in items {
+                if let Some(part) = lenient(self.follow(item))? {
+                    append(&part)?;
                 }
             }
-            _ => {}
+        } else {
+            append(&resolved)?;
         }
         Ok(out)
     }
@@ -1090,9 +1111,10 @@ fn normalize_rotation(value: f64) -> i32 {
 
 impl Resolver for Document<'_> {
     fn resolve(&self, object: &Object) -> Outcome<Object> {
-        match object {
-            Object::Ref(_) => self.follow(object).map(|resolved| (*resolved).clone()),
-            other => Ok(other.clone()),
+        if object.is_ref() {
+            self.follow(object).map(|resolved| (*resolved).clone())
+        } else {
+            Ok(object.clone())
         }
     }
 
@@ -1186,7 +1208,8 @@ pub(crate) fn inspect(
             }
             inspection.text.push(PageText {
                 page_index: u32::try_from(position)
-                    .map_err(|_| Failure::limit("page index out of range"))?,
+                    .ok()
+                    .ok_or_else(|| Failure::limit("page index out of range"))?,
                 items,
             });
         }
@@ -1197,6 +1220,7 @@ pub(crate) fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
@@ -1367,7 +1391,7 @@ mod tests {
         let mut header = String::new();
         let mut bodies = String::new();
         for (number, body) in compressed {
-            header.push_str(&format!("{number} {} ", bodies.len()));
+            write!(header, "{number} {} ", bodies.len()).unwrap();
             bodies.push_str(body);
             bodies.push('\n');
         }
@@ -1412,12 +1436,14 @@ mod tests {
             for _ in 0..3 {
                 text.push_str("0000000000 00000 f \n");
             }
-            text.push_str(&format!("{content:010} 00000 n \n"));
-            text.push_str(&format!("{object_stream:010} 00000 n \n"));
-            text.push_str(&format!("{xref_stream:010} 00000 n \n"));
-            text.push_str(&format!(
+            writeln!(text, "{content:010} 00000 n ").unwrap();
+            writeln!(text, "{object_stream:010} 00000 n ").unwrap();
+            writeln!(text, "{xref_stream:010} 00000 n ").unwrap();
+            write!(
+                text,
                 "trailer\n<< /Size 7 /Root 1 0 R /XRefStm {xref_stream} >>\nstartxref\n{table}\n%%EOF\n"
-            ));
+            )
+            .unwrap();
             bytes.extend_from_slice(text.as_bytes());
             return ObjStmFile {
                 bytes,
@@ -2143,7 +2169,7 @@ mod tests {
             let seed = &seeds[iteration % seeds.len()];
             let mutated = mutate(seed, &mut rng);
             let one = Instant::now();
-            black_box(inspect(&mutated, &options, &limits));
+            drop(black_box(inspect(&mutated, &options, &limits)));
             assert!(
                 one.elapsed().as_secs() < 5,
                 "slow input at iteration {iteration}"
@@ -2159,25 +2185,28 @@ mod tests {
             many_objects.extend_from_slice(format!("{number} 0 obj [ ").as_bytes());
         }
         let started = Instant::now();
-        black_box(inspect_all(&many_objects));
+        drop(black_box(inspect_all(&many_objects)));
         assert!(started.elapsed().as_secs() < 10);
 
         let mut nested = b"%PDF-1.4\n1 0 obj ".to_vec();
         nested.extend(std::iter::repeat_n(b'[', 200_000));
         let started_2 = Instant::now();
-        black_box(inspect_all(&nested));
+        drop(black_box(inspect_all(&nested)));
         assert!(started_2.elapsed().as_secs() < 10);
 
         let mut huge_xref = b"%PDF-1.4\nxref\n0 99999999999\n".to_vec();
         huge_xref.extend_from_slice(b"trailer\n<< >>\nstartxref\n9\n");
-        black_box(inspect_all(&huge_xref));
+        drop(black_box(inspect_all(&huge_xref)));
     }
 
     #[test]
     fn two_thousand_pages_open_within_budget() {
         let pages = 2000_u32;
         let mut objects = vec![(1_u32, CATALOG.to_owned())];
-        let kids: String = (0..pages).map(|i| format!("{} 0 R ", 10 + i * 3)).collect();
+        let kids = (0..pages).fold(String::new(), |mut kids, i| {
+            write!(kids, "{} 0 R ", 10 + i * 3).unwrap();
+            kids
+        });
         objects.push((
             2,
             format!("<< /Type /Pages /Kids [{kids}] /Count {pages} /MediaBox [0 0 612 792] >>"),

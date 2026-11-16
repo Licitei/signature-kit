@@ -117,6 +117,10 @@ impl Object {
         }
     }
 
+    pub(crate) const fn is_ref(&self) -> bool {
+        matches!(self, Self::Ref(_))
+    }
+
     pub(crate) const fn as_stream(&self) -> Option<&Stream> {
         if let Self::Stream(value) = self {
             Some(value)

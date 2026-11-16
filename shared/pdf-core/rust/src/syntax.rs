@@ -1052,7 +1052,7 @@ mod tests {
     #[test]
     fn garbage_never_hangs() {
         for input in [&b")))))"[..], b">>>>", b"}{}{", b"%", b"", b"   "] {
-            black_box(Parser::new(input, 0, 8, true).parse_object());
+            drop(black_box(Parser::new(input, 0, 8, true).parse_object()));
         }
     }
 
