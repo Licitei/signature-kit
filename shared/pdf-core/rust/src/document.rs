@@ -1192,14 +1192,9 @@ pub(crate) fn inspect(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
 mod tests {
     use super::*;
+    use std::hint::black_box;
     use std::time::Instant;
 
     const CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R >>";
@@ -1336,21 +1331,21 @@ mod tests {
             links: false,
             page_indexes: Some(vec![5]),
         };
-        let error = inspect(&bytes, &options, &Limits::default()).unwrap_err();
-        assert_eq!(error.code, FailureCode::InvalidPdf);
-        let options = InspectOptions {
+        let error_2 = inspect(&bytes, &options, &Limits::default()).unwrap_err();
+        assert_eq!(error_2.code, FailureCode::InvalidPdf);
+        let options_2 = InspectOptions {
             text: true,
             links: false,
             page_indexes: Some(vec![0, 0]),
         };
-        let result = inspect(&bytes, &options, &Limits::default()).unwrap();
+        let result = inspect(&bytes, &options_2, &Limits::default()).unwrap();
         assert_eq!(result.text.len(), 1);
         let few_pages = Limits {
             max_pages: 0,
             ..Limits::default()
         };
-        let error = inspect(&bytes, &InspectOptions::default(), &few_pages).unwrap_err();
-        assert_eq!(error.code, FailureCode::LimitExceeded);
+        let error_3 = inspect(&bytes, &InspectOptions::default(), &few_pages).unwrap_err();
+        assert_eq!(error_3.code, FailureCode::LimitExceeded);
     }
 
     fn be(value: u64, width: usize) -> Vec<u8> {
@@ -1392,10 +1387,10 @@ mod tests {
         );
         let xref_stream = bytes.len();
         let mut rows: Vec<u8> = Vec::new();
-        let row = |rows: &mut Vec<u8>, kind: u64, second: u64, third: u64| {
-            rows.extend(be(kind, 1));
-            rows.extend(be(second, 4));
-            rows.extend(be(third, 1));
+        let row = |sink: &mut Vec<u8>, kind: u64, second: u64, third: u64| {
+            sink.extend(be(kind, 1));
+            sink.extend(be(second, 4));
+            sink.extend(be(third, 1));
         };
         if hybrid {
             row(&mut rows, 2, 5, 0);
@@ -1554,9 +1549,9 @@ mod tests {
             let cut = find_bytes(&basic_pdf(), 0, b"startxref").unwrap();
             basic_pdf()[..cut].to_vec()
         };
-        let document = open(&missing);
-        assert!(document.was_repaired());
-        assert_eq!(document.pages().unwrap().len(), 1);
+        let document_2 = open(&missing);
+        assert!(document_2.was_repaired());
+        assert_eq!(document_2.pages().unwrap().len(), 1);
     }
 
     #[test]
@@ -1900,10 +1895,10 @@ mod tests {
         let mut with_trailer = broken;
         with_trailer
             .extend_from_slice(b"trailer\n<< /Root 1 0 R /Encrypt << /Filter /Standard >> >>\n");
-        let error = Document::open(&with_trailer, &Limits::default())
+        let error_4 = Document::open(&with_trailer, &Limits::default())
             .err()
             .unwrap();
-        assert_eq!(error.code, FailureCode::EncryptedPdf);
+        assert_eq!(error_4.code, FailureCode::EncryptedPdf);
     }
 
     #[test]
@@ -2145,7 +2140,7 @@ mod tests {
             let seed = &seeds[iteration % seeds.len()];
             let mutated = mutate(seed, &mut rng);
             let one = Instant::now();
-            let _ = inspect(&mutated, &options, &limits);
+            black_box(inspect(&mutated, &options, &limits));
             assert!(
                 one.elapsed().as_secs() < 5,
                 "slow input at iteration {iteration}"
@@ -2161,18 +2156,18 @@ mod tests {
             many_objects.extend_from_slice(format!("{number} 0 obj [ ").as_bytes());
         }
         let started = Instant::now();
-        let _ = inspect_all(&many_objects);
+        black_box(inspect_all(&many_objects));
         assert!(started.elapsed().as_secs() < 10);
 
         let mut nested = b"%PDF-1.4\n1 0 obj ".to_vec();
         nested.extend(std::iter::repeat_n(b'[', 200_000));
-        let started = Instant::now();
-        let _ = inspect_all(&nested);
-        assert!(started.elapsed().as_secs() < 10);
+        let started_2 = Instant::now();
+        black_box(inspect_all(&nested));
+        assert!(started_2.elapsed().as_secs() < 10);
 
         let mut huge_xref = b"%PDF-1.4\nxref\n0 99999999999\n".to_vec();
         huge_xref.extend_from_slice(b"trailer\n<< >>\nstartxref\n9\n");
-        let _ = inspect_all(&huge_xref);
+        black_box(inspect_all(&huge_xref));
     }
 
     #[test]
@@ -2220,10 +2215,10 @@ mod tests {
         assert_eq!(list.len(), widen(pages));
         assert_eq!(links.len(), widen(pages));
         let repaired = replace(&bytes, b"startxref\n", b"startxref\n9");
-        let started = Instant::now();
-        let document = Document::open(&repaired, &Limits::default()).unwrap();
-        let count = document.pages().unwrap().len();
-        println!("repair open+pages={:?} pages={count}", started.elapsed());
+        let started_3 = Instant::now();
+        let document_3 = Document::open(&repaired, &Limits::default()).unwrap();
+        let count = document_3.pages().unwrap().len();
+        println!("repair open+pages={:?} pages={count}", started_3.elapsed());
         assert_eq!(count, widen(pages));
     }
 }

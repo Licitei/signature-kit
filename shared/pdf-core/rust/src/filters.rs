@@ -616,11 +616,11 @@ const fn is_ws(byte: u8) -> bool {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::num::usize_to_f64;
     use crate::object::Object;
+    use std::hint::black_box;
     fn dict_filter(filter: &[u8], parms: Option<Object>) -> Dict {
         let mut dict = Dict::default();
         dict.insert(b"Filter", Object::Name(filter.to_vec()));
@@ -828,7 +828,7 @@ mod tests {
                 state ^= state << 5;
                 *byte ^= u8::try_from(state & 0xFF).unwrap();
             }
-            let _ = decode_stream(&dict, &input, 65536);
+            black_box(decode_stream(&dict, &input, 65536));
         }
     }
 
@@ -838,7 +838,7 @@ mod tests {
         let payload = repetitive_deflate_mb();
         let dict = dict_filter(b"FlateDecode", None);
         let start = std::time::Instant::now();
-        let _ = decode_stream(&dict, &payload, 8 * 1024 * 1024).expect("bench");
+        black_box(decode_stream(&dict, &payload, 8 * 1024 * 1024).expect("bench"));
         let elapsed = start.elapsed().as_secs_f64();
         let mb = usize_to_f64(payload.len()) / (1024.0 * 1024.0);
         println!("inflate {:.1} MB/s", mb / elapsed);

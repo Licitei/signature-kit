@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the C ABI boundary hands raw pointers across the WebAssembly import surface"
+)]
+
 use std::alloc::{Layout, alloc, dealloc};
 use std::ptr;
 
@@ -7,28 +12,25 @@ use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::table::Table;
 
-pub const MAGIC: u32 = 0x4346_4450;
-pub const VERSION: u32 = 1;
-pub const HEADER_LEN: usize = 32;
-pub const PAGE_RECORD_LEN: usize = 72;
-pub const LINK_RECORD_LEN: usize = 48;
-pub const TEXT_PAGE_HEADER_LEN: usize = 16;
-pub const TEXT_RECT_STRIDE: usize = 40;
-pub const RESULT_HEADER_LEN: usize = 8;
-pub const FLAG_TEXT: u32 = 1;
-pub const FLAG_LINKS: u32 = 2;
-pub const FLAG_PAGE_INDEXES: u32 = 4;
-pub const FLAG_MARKDOWN: u32 = 8;
-pub const FLAG_DROP_RUNNING: u32 = 16;
-pub const STATUS_OK: u32 = 0;
-pub const TEXT_MAGIC: u32 = 0x5854_4450;
-pub const TEXT_VERSION: u32 = 1;
-pub const TEXT_HEADER_LEN: usize = 16;
-pub const TABLES_MAGIC: u32 = 0x4254_4450;
-pub const TABLES_VERSION: u32 = 1;
-pub const TABLES_HEADER_LEN: usize = 16;
-pub const TABLE_RECORD_LEN: usize = 48;
-pub const CELL_RECORD_LEN: usize = 56;
+const MAGIC: u32 = 0x4346_4450;
+const VERSION: u32 = 1;
+const HEADER_LEN: usize = 32;
+const PAGE_RECORD_LEN: usize = 72;
+const RESULT_HEADER_LEN: usize = 8;
+const FLAG_TEXT: u32 = 1;
+const FLAG_LINKS: u32 = 2;
+const FLAG_PAGE_INDEXES: u32 = 4;
+const FLAG_MARKDOWN: u32 = 8;
+const FLAG_DROP_RUNNING: u32 = 16;
+const STATUS_OK: u32 = 0;
+const TEXT_MAGIC: u32 = 0x5854_4450;
+const TEXT_VERSION: u32 = 1;
+const TEXT_HEADER_LEN: usize = 16;
+const TABLES_MAGIC: u32 = 0x4254_4450;
+const TABLES_VERSION: u32 = 1;
+const TABLES_HEADER_LEN: usize = 16;
+const TABLE_RECORD_LEN: usize = 48;
+const CELL_RECORD_LEN: usize = 56;
 const ALIGNMENT: usize = 8;
 
 fn block_layout(len: usize) -> Option<Layout> {
@@ -36,7 +38,9 @@ fn block_layout(len: usize) -> Option<Layout> {
 }
 
 fn len32(value: usize) -> Outcome<u32> {
-    u32::try_from(value).map_err(|_| Failure::limit("result exceeds the 32-bit size limit"))
+    u32::try_from(value)
+        .ok()
+        .ok_or_else(|| Failure::limit("result exceeds the 32-bit size limit"))
 }
 
 fn padded(value: usize) -> Outcome<usize> {
@@ -88,7 +92,7 @@ impl Writer {
     }
 }
 
-pub fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
+fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
     let page_count = len32(inspection.pages.len())?;
     let link_count = len32(inspection.links.len())?;
     let text_page_count = len32(inspection.text.len())?;
@@ -175,7 +179,7 @@ pub fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
     Ok(out.buf)
 }
 
-pub fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
+fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
     let page_count = len32(pages.len())?;
     let mut text_len: usize = 0;
     for page in pages {
@@ -224,7 +228,7 @@ pub fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
     Ok(out.buf)
 }
 
-pub fn encode_tables(tables: &[Table]) -> Outcome<Vec<u8>> {
+fn encode_tables(tables: &[Table]) -> Outcome<Vec<u8>> {
     let table_count = len32(tables.len())?;
     let mut cell_count: usize = 0;
     let mut text_len: usize = 0;
@@ -304,27 +308,21 @@ fn publish(status: u32, payload: &[u8]) -> *mut u8 {
     let Some(layout) = block_layout(total) else {
         return ptr::null_mut();
     };
+    // SAFETY: `block_layout` never yields a zero-sized layout.
     let block = unsafe { alloc(layout) };
     if block.is_null() {
         return block;
     }
     let mut header = [0_u8; RESULT_HEADER_LEN];
-    header[..4].copy_from_slice(&total32.to_le_bytes());
-    header[4..].copy_from_slice(&status.to_le_bytes());
-    unsafe {
-        ptr::copy_nonoverlapping(header.as_ptr(), block, RESULT_HEADER_LEN);
-        ptr::copy_nonoverlapping(
-            payload.as_ptr(),
-            block.add(RESULT_HEADER_LEN),
-            payload.len(),
-        );
-    }
+    let (total_field, status_field) = header.split_at_mut(4);
+    total_field.copy_from_slice(&total32.to_le_bytes());
+    status_field.copy_from_slice(&status.to_le_bytes());
+    // SAFETY: `block` holds `total >= RESULT_HEADER_LEN` writable bytes and `header` is a distinct local array.
+    unsafe { ptr::copy_nonoverlapping(header.as_ptr(), block, RESULT_HEADER_LEN) };
+    let tail = block.wrapping_add(RESULT_HEADER_LEN);
+    // SAFETY: `block` holds `total` bytes, so the payload fits after the header and cannot overlap the Rust-owned slice.
+    unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), tail, payload.len()) };
     block
-}
-
-fn run(bytes: &[u8], options: &InspectOptions) -> Outcome<Vec<u8>> {
-    let inspection = document::inspect(bytes, options, &Limits::default())?;
-    encode(&inspection)
 }
 
 fn finish(outcome: Outcome<Vec<u8>>) -> *mut u8 {
@@ -334,6 +332,9 @@ fn finish(outcome: Outcome<Vec<u8>>) -> *mut u8 {
     }
 }
 
+/// # Safety
+///
+/// `data` must be null or valid for reads of `len` initialised elements that stay unmodified for `'a`.
 unsafe fn view<'a, T>(data: *const T, len: usize) -> Outcome<&'a [T]> {
     if len == 0 || data.is_null() {
         return Ok(&[]);
@@ -341,104 +342,133 @@ unsafe fn view<'a, T>(data: *const T, len: usize) -> Outcome<&'a [T]> {
     if !data.is_aligned() {
         return Err(Failure::invalid("misaligned input buffer"));
     }
+    // SAFETY: non-null, aligned, and valid for `len` elements by the caller contract.
     Ok(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn pdf_core_alloc(len: usize) -> *mut u8 {
-    match block_layout(len) {
-        Some(layout) => unsafe { alloc(layout) },
-        None => ptr::null_mut(),
+struct Request<'a> {
+    pdf: &'a [u8],
+    flags: u32,
+    pages: Option<&'a [u32]>,
+}
+
+impl Request<'_> {
+    /// # Safety
+    ///
+    /// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for `pdf_len` and `pages_len` for the whole call.
+    unsafe fn from_raw(
+        pdf_ptr: *const u8,
+        pdf_len: usize,
+        flags: u32,
+        pages_ptr: *const u32,
+        pages_len: usize,
+    ) -> Outcome<Self> {
+        // SAFETY: forwarded from this function's contract.
+        let pdf = unsafe { view(pdf_ptr, pdf_len) }?;
+        let pages = if flags & FLAG_PAGE_INDEXES == 0 {
+            None
+        } else {
+            // SAFETY: forwarded from this function's contract.
+            Some(unsafe { view(pages_ptr, pages_len) }?)
+        };
+        Ok(Self { pdf, flags, pages })
+    }
+
+    const fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
     }
 }
 
-#[expect(clippy::missing_safety_doc)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pdf_core_free(data: *mut u8, len: usize) {
+pub(crate) extern "C" fn pdf_core_alloc(len: usize) -> *mut u8 {
+    block_layout(len).map_or(ptr::null_mut(), |layout| {
+        // SAFETY: `block_layout` never yields a zero-sized layout.
+        unsafe { alloc(layout) }
+    })
+}
+
+/// # Safety
+///
+/// `data` must be null or a block returned by this module with exactly `len` as the length it was requested or published with.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_free(data: *mut u8, len: usize) {
     if data.is_null() {
         return;
     }
     if let Some(layout) = block_layout(len) {
+        // SAFETY: `data` came from `alloc` with the same layout by the caller contract.
         unsafe { dealloc(data, layout) };
     }
 }
 
-#[expect(clippy::missing_safety_doc)]
+/// # Safety
+///
+/// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pdf_core_inspect(
+pub(crate) unsafe extern "C" fn pdf_core_inspect(
     pdf_ptr: *const u8,
     pdf_len: usize,
     flags: u32,
     pages_ptr: *const u32,
     pages_len: usize,
 ) -> *mut u8 {
-    let outcome = (|| {
-        let bytes = unsafe { view(pdf_ptr, pdf_len) }?;
-        let page_indexes = if flags & FLAG_PAGE_INDEXES != 0 {
-            Some(unsafe { view(pages_ptr, pages_len) }?.to_vec())
-        } else {
-            None
-        };
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|request| {
         let options = InspectOptions {
-            text: flags & FLAG_TEXT != 0,
-            links: flags & FLAG_LINKS != 0,
-            page_indexes,
+            text: request.has(FLAG_TEXT),
+            links: request.has(FLAG_LINKS),
+            page_indexes: request.pages.map(<[u32]>::to_vec),
         };
-        run(bytes, &options)
-    })();
-    finish(outcome)
+        let inspection = document::inspect(request.pdf, &options, &Limits::default())?;
+        encode(&inspection)
+    }))
 }
 
-#[expect(clippy::missing_safety_doc)]
+/// # Safety
+///
+/// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pdf_core_text(
+pub(crate) unsafe extern "C" fn pdf_core_text(
     pdf_ptr: *const u8,
     pdf_len: usize,
     flags: u32,
     pages_ptr: *const u32,
     pages_len: usize,
 ) -> *mut u8 {
-    let outcome = (|| {
-        let bytes = unsafe { view(pdf_ptr, pdf_len) }?;
-        let page_indexes = if flags & FLAG_PAGE_INDEXES != 0 {
-            Some(unsafe { view(pages_ptr, pages_len) }?)
-        } else {
-            None
-        };
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|request| {
         let options = TextOptions {
-            markdown: flags & FLAG_MARKDOWN != 0,
-            drop_running: flags & FLAG_DROP_RUNNING != 0,
+            markdown: request.has(FLAG_MARKDOWN),
+            drop_running: request.has(FLAG_DROP_RUNNING),
         };
-        let pages = layout::document_text(bytes, page_indexes, &layout::text_limits(), &options)?;
+        let pages =
+            layout::document_text(request.pdf, request.pages, &layout::text_limits(), &options)?;
         encode_text(&pages)
-    })();
-    finish(outcome)
+    }))
 }
 
-#[expect(clippy::missing_safety_doc)]
+/// # Safety
+///
+/// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pdf_core_tables(
+pub(crate) unsafe extern "C" fn pdf_core_tables(
     pdf_ptr: *const u8,
     pdf_len: usize,
     flags: u32,
     pages_ptr: *const u32,
     pages_len: usize,
 ) -> *mut u8 {
-    let outcome = (|| {
-        let bytes = unsafe { view(pdf_ptr, pdf_len) }?;
-        let page_indexes = if flags & FLAG_PAGE_INDEXES != 0 {
-            Some(unsafe { view(pages_ptr, pages_len) }?)
-        } else {
-            None
-        };
-        let tables = layout::document_tables(bytes, page_indexes, &layout::text_limits())?;
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|request| {
+        let tables = layout::document_tables(request.pdf, request.pages, &layout::text_limits())?;
         encode_tables(&tables)
-    })();
-    finish(outcome)
+    }))
 }
 
 #[cfg(test)]
-#[expect(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::failure::FailureCode;
@@ -554,7 +584,7 @@ mod tests {
                     .collect();
                 let offsets: Vec<usize> = (0..=item_count).map(|_| widen(reader.u32())).collect();
                 reader.align();
-                let blob = reader.take(text_len);
+                let strings = reader.take(text_len);
                 reader.align();
                 let items = rects
                     .iter()
@@ -563,7 +593,7 @@ mod tests {
                         rect: *rect,
                         font_size: *font_size,
                         text: String::from_utf8_lossy(
-                            &blob[offsets[index]..offsets[index.saturating_add(1)]],
+                            &strings[offsets[index]..offsets[index.saturating_add(1)]],
                         )
                         .into_owned(),
                     })
@@ -679,37 +709,11 @@ mod tests {
     }
 
     fn call(bytes: &[u8], flags: u32, pages: &[u32]) -> Block {
-        let input = pdf_core_alloc(bytes.len());
-        assert!(!input.is_null());
-        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), input, bytes.len()) };
-        let indexes = pdf_core_alloc(pages.len().saturating_mul(4)).cast::<u32>();
-        assert!(!indexes.is_null());
-        unsafe { ptr::copy_nonoverlapping(pages.as_ptr(), indexes, pages.len()) };
-        let result = unsafe { pdf_core_inspect(input, bytes.len(), flags, indexes, pages.len()) };
-        unsafe {
-            pdf_core_free(input, bytes.len());
-            pdf_core_free(indexes.cast::<u8>(), pages.len().saturating_mul(4));
-        }
-        assert!(!result.is_null());
-        assert_eq!(result.addr() % 8, 0);
-        let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
-        let total = widen(u32::from_le_bytes([
-            header[0], header[1], header[2], header[3],
-        ]));
-        let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-        let payload = unsafe {
-            std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total.saturating_sub(8))
-        }
-        .to_vec();
-        Block {
-            ptr: result,
-            total,
-            status,
-            payload,
-        }
+        call_entry(pdf_core_inspect, bytes, flags, pages)
     }
 
     fn release(block: &Block) {
+        // SAFETY: the block was published by this module with exactly `total` bytes.
         unsafe { pdf_core_free(block.ptr, block.total) };
     }
 
@@ -726,29 +730,42 @@ mod tests {
         call_entry(pdf_core_tables, bytes, flags, pages)
     }
 
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "pdf_core_alloc returns 8-byte aligned blocks, which satisfies u32"
+    )]
     fn call_entry(entry: Entry, bytes: &[u8], flags: u32, pages: &[u32]) -> Block {
         let input = pdf_core_alloc(bytes.len());
         assert!(!input.is_null());
+        // SAFETY: `input` holds `bytes.len()` writable bytes and does not overlap `bytes`.
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), input, bytes.len()) };
-        let indexes = pdf_core_alloc(pages.len().saturating_mul(4)).cast::<u32>();
+        let page_bytes = pages.len().saturating_mul(4);
+        let indexes = pdf_core_alloc(page_bytes).cast::<u32>();
         assert!(!indexes.is_null());
+        // SAFETY: `indexes` holds `page_bytes` writable bytes and does not overlap `pages`.
         unsafe { ptr::copy_nonoverlapping(pages.as_ptr(), indexes, pages.len()) };
+        // SAFETY: both buffers were allocated above with the lengths passed here.
         let result = unsafe { entry(input, bytes.len(), flags, indexes, pages.len()) };
-        unsafe {
-            pdf_core_free(input, bytes.len());
-            pdf_core_free(indexes.cast::<u8>(), pages.len().saturating_mul(4));
-        }
+        // SAFETY: both blocks came from `pdf_core_alloc` with these exact lengths and are no longer used.
+        unsafe { pdf_core_free(input, bytes.len()) };
+        // SAFETY: as above.
+        unsafe { pdf_core_free(indexes.cast::<u8>(), page_bytes) };
+        adopt(result)
+    }
+
+    fn adopt(result: *mut u8) -> Block {
         assert!(!result.is_null());
         assert_eq!(result.addr() % 8, 0);
+        // SAFETY: every published block starts with an `RESULT_HEADER_LEN` byte header.
         let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
-        let total = widen(u32::from_le_bytes([
-            header[0], header[1], header[2], header[3],
-        ]));
-        let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-        let payload = unsafe {
-            std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total.saturating_sub(8))
-        }
-        .to_vec();
+        let [t0, t1, t2, t3, s0, s1, s2, s3] = <[u8; RESULT_HEADER_LEN]>::try_from(header).unwrap();
+        let total = widen(u32::from_le_bytes([t0, t1, t2, t3]));
+        let status = u32::from_le_bytes([s0, s1, s2, s3]);
+        let tail = result.wrapping_add(RESULT_HEADER_LEN);
+        // SAFETY: the header declares `total` bytes, and the payload is everything after the header.
+        let payload =
+            unsafe { std::slice::from_raw_parts(tail, total.saturating_sub(RESULT_HEADER_LEN)) }
+                .to_vec();
         Block {
             ptr: result,
             total,
@@ -1051,47 +1068,30 @@ mod tests {
 
     #[test]
     fn null_input_is_treated_as_empty() {
+        // SAFETY: a null input pointer is documented as an empty buffer.
         let result = unsafe { pdf_core_inspect(ptr::null(), 10, 0, ptr::null(), 0) };
-        assert!(!result.is_null());
-        let status = unsafe {
-            u32::from_le_bytes([
-                *result.add(4),
-                *result.add(5),
-                *result.add(6),
-                *result.add(7),
-            ])
-        };
-        assert_eq!(status, u32::from(FailureCode::InvalidPdf));
-        let total = widen(unsafe {
-            u32::from_le_bytes([*result, *result.add(1), *result.add(2), *result.add(3)])
-        });
-        unsafe { pdf_core_free(result, total) };
+        let block = adopt(result);
+        assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
+        release(&block);
     }
 
     #[test]
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the test hands the ABI a deliberately misaligned page index pointer"
+    )]
     fn misaligned_page_indexes_are_rejected() {
         let backing = pdf_core_alloc(16);
-        let skewed = unsafe { backing.add(1) }.cast::<u32>();
+        let skewed = backing.wrapping_add(1).cast::<u32>();
         let input = b"%PDF-1.7\n";
+        // SAFETY: the PDF pointer is valid; the page pointer is checked for alignment before it is read.
         let result =
             unsafe { pdf_core_inspect(input.as_ptr(), input.len(), FLAG_PAGE_INDEXES, skewed, 1) };
-        assert!(!result.is_null());
-        let status = unsafe {
-            u32::from_le_bytes([
-                *result.add(4),
-                *result.add(5),
-                *result.add(6),
-                *result.add(7),
-            ])
-        };
-        assert_eq!(status, u32::from(FailureCode::InvalidPdf));
-        let total = widen(unsafe {
-            u32::from_le_bytes([*result, *result.add(1), *result.add(2), *result.add(3)])
-        });
-        unsafe {
-            pdf_core_free(result, total);
-            pdf_core_free(backing, 16);
-        }
+        let block = adopt(result);
+        assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
+        release(&block);
+        // SAFETY: `backing` came from `pdf_core_alloc(16)`.
+        unsafe { pdf_core_free(backing, 16) };
     }
 
     #[test]
@@ -1100,8 +1100,10 @@ mod tests {
             let block = pdf_core_alloc(len);
             assert!(!block.is_null());
             assert_eq!(block.addr() % 8, 0);
+            // SAFETY: `block` came from `pdf_core_alloc(len)`.
             unsafe { pdf_core_free(block, len) };
         }
+        // SAFETY: freeing a null pointer is a documented no-op.
         unsafe { pdf_core_free(ptr::null_mut(), 0) };
     }
 

@@ -1,4 +1,5 @@
 use crate::inspection::Limits;
+use crate::syntax::{hex_value, is_regular, is_whitespace};
 
 const MAX_ENTRIES: usize = 262_144;
 const MAX_HEX_BYTES: usize = 64;
@@ -21,30 +22,22 @@ struct Lexer<'a> {
     position: usize,
 }
 
-const fn is_space(byte: u8) -> bool {
-    matches!(byte, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
-}
-
-const fn is_delimiter(byte: u8) -> bool {
-    is_space(byte)
-        || matches!(
-            byte,
-            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-        )
-}
-
 impl<'a> Lexer<'a> {
     const fn new(data: &'a [u8]) -> Self {
-        Lexer { data, position: 0 }
+        Self { data, position: 0 }
     }
 
-    fn take_while(&mut self, accept: impl Fn(u8) -> bool) -> &'a [u8] {
+    const fn advance(&mut self, count: usize) {
+        self.position = self.position.saturating_add(count);
+    }
+
+    fn take_run<P: Fn(u8) -> bool>(&mut self, accept: P) -> &'a [u8] {
         let start = self.position;
         while let Some(byte) = self.data.get(self.position) {
             if !accept(*byte) {
                 break;
             }
-            self.position = self.position.saturating_add(1);
+            self.advance(1);
         }
         self.data.get(start..self.position).unwrap_or_default()
     }
@@ -52,9 +45,9 @@ impl<'a> Lexer<'a> {
     fn skip_string(&mut self) {
         let mut depth = 0_usize;
         while let Some(byte) = self.data.get(self.position).copied() {
-            self.position = self.position.saturating_add(1);
+            self.advance(1);
             match byte {
-                b'\\' => self.position = self.position.saturating_add(1),
+                b'\\' => self.advance(1),
                 b'(' => depth = depth.saturating_add(1),
                 b')' => {
                     depth = depth.saturating_sub(1);
@@ -66,49 +59,50 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Token<'a>;
 
     fn next(&mut self) -> Option<Token<'a>> {
         loop {
             let byte = *self.data.get(self.position)?;
             match byte {
-                _ if is_space(byte) => self.position = self.position.saturating_add(1),
+                _ if is_whitespace(byte) => self.advance(1),
                 b'%' => {
-                    self.take_while(|byte| !matches!(byte, b'\n' | b'\r'));
+                    self.take_run(|other| !matches!(other, b'\n' | b'\r'));
                 }
                 b'(' => self.skip_string(),
                 b'<' => {
-                    self.position = self.position.saturating_add(1);
+                    self.advance(1);
                     if self.data.get(self.position) == Some(&b'<') {
-                        self.position = self.position.saturating_add(1);
+                        self.advance(1);
                         continue;
                     }
-                    let raw = self.take_while(|byte| byte != b'>');
-                    self.position = self.position.saturating_add(1);
+                    let raw = self.take_run(|other| other != b'>');
+                    self.advance(1);
                     return Some(Token::Hex(raw));
                 }
-                b'>' | b')' | b'{' | b'}' => self.position = self.position.saturating_add(1),
+                b'>' | b')' | b'{' | b'}' => self.advance(1),
                 b'[' => {
-                    self.position = self.position.saturating_add(1);
+                    self.advance(1);
                     return Some(Token::ArrayOpen);
                 }
                 b']' => {
-                    self.position = self.position.saturating_add(1);
+                    self.advance(1);
                     return Some(Token::ArrayClose);
                 }
                 b'/' => {
-                    self.position = self.position.saturating_add(1);
-                    return Some(Token::Name(self.take_while(|byte| !is_delimiter(byte))));
+                    self.advance(1);
+                    return Some(Token::Name(self.take_run(is_regular)));
                 }
                 _ => {
-                    let word = self.take_while(|byte| !is_delimiter(byte));
+                    let word = self.take_run(is_regular);
                     if word.is_empty() {
-                        self.position = self.position.saturating_add(1);
+                        self.advance(1);
                         continue;
                     }
-                    return Some(match parse_int(word) {
-                        Some(value) => Token::Int(value),
-                        None => Token::Keyword(word),
-                    });
+                    return Some(parse_int(word).map_or(Token::Keyword(word), Token::Int));
                 }
             }
         }
@@ -127,20 +121,13 @@ fn parse_int(word: &[u8]) -> Option<i64> {
     Some(value)
 }
 
-const fn nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
-        b'A'..=b'F' => Some((byte.saturating_sub(b'A')).saturating_add(10)),
-        b'a'..=b'f' => Some((byte.saturating_sub(b'a')).saturating_add(10)),
-        _ => None,
-    }
-}
-
 fn hex_bytes(raw: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity((raw.len() / 2).saturating_add(1));
+    let mut out = Vec::with_capacity(raw.len().div_ceil(2));
     let mut high: Option<u8> = None;
     for byte in raw {
-        let Some(value) = nibble(*byte) else { continue };
+        let Some(value) = hex_value(*byte) else {
+            continue;
+        };
         if out.len() >= MAX_HEX_BYTES {
             break;
         }
@@ -176,7 +163,7 @@ pub(crate) fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
     if let [single] = bytes {
         return vec![u32::from(*single)];
     }
-    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut out = Vec::with_capacity(bytes.len().div_euclid(2));
     let mut units = bytes.chunks_exact(2).map(|pair| {
         (u32::from(pair.first().copied().unwrap_or(0)) << 8)
             | u32::from(pair.get(1).copied().unwrap_or(0))
@@ -345,7 +332,7 @@ struct Codespace {
 }
 
 impl Codespace {
-    fn contains(&self, bytes: &[u8]) -> bool {
+    fn contains(self, bytes: &[u8]) -> bool {
         let length = usize::from(self.length);
         bytes.len() >= length
             && self
@@ -378,171 +365,217 @@ struct CMapData {
 
 fn array_items<'a>(lexer: &mut Lexer<'a>) -> Vec<&'a [u8]> {
     let mut items = Vec::new();
-    while let Some(token) = lexer.next() {
+    for token in lexer {
         match token {
             Token::Hex(raw) if items.len() < MAX_ARRAY_ITEMS => items.push(raw),
             Token::ArrayClose => break,
-            _ => {}
+            Token::Hex(_)
+            | Token::Name(_)
+            | Token::Int(_)
+            | Token::Keyword(_)
+            | Token::ArrayOpen => {}
         }
     }
     items
 }
 
-fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
-    let cap = limits.max_items.min(MAX_ENTRIES);
-    let mut out = CMapData::default();
-    let mut lexer = Lexer::new(data);
-    let mut last_name: Option<&[u8]> = None;
-    let mut entries = 0_usize;
-    while let Some(token) = lexer.next() {
-        match token {
-            Token::Name(name) => last_name = Some(name),
-            Token::Keyword(b"usecmap") => {
-                if let Some(name) = last_name {
-                    out.parent = Some(name.to_vec());
-                }
-            }
-            Token::Int(value) if last_name == Some(b"WMode".as_slice()) => {
-                out.vertical = value == 1;
-                last_name = None;
-            }
-            Token::Keyword(b"begincodespacerange") => {
-                while let Some(Token::Hex(low)) = lexer.next() {
-                    let Some(Token::Hex(high)) = lexer.next() else {
-                        break;
-                    };
-                    let (low, high) = (hex_bytes(low), hex_bytes(high));
-                    if (1..=4).contains(&low.len())
-                        && low.len() == high.len()
-                        && out.codespace.len() < 256
-                    {
-                        let mut space = Codespace {
-                            length: u8::try_from(low.len()).unwrap_or(u8::MAX),
-                            low: [0; 4],
-                            high: [0; 4],
-                        };
-                        for (slot, byte) in space.low.iter_mut().zip(low.iter()) {
-                            *slot = *byte;
-                        }
-                        for (slot, byte) in space.high.iter_mut().zip(high.iter()) {
-                            *slot = *byte;
-                        }
-                        out.codespace.push(space);
-                    }
-                }
-            }
-            Token::Keyword(b"beginbfchar") => {
-                while let Some(Token::Hex(source)) = lexer.next() {
-                    let Some(dest) = lexer.next() else { break };
-                    let Token::Hex(dest) = dest else { continue };
-                    if entries >= cap {
-                        break;
-                    }
-                    entries = entries.saturating_add(1);
-                    if let Some((code, _)) = hex_code(source) {
-                        let text = decode_utf16(&hex_bytes(dest));
-                        out.unicode.has_unusable |= !text_usable(&text);
-                        out.unicode.chars.push((code, text.into_boxed_slice()));
-                    }
-                }
-            }
-            Token::Keyword(b"beginbfrange") => {
-                while let Some(Token::Hex(low)) = lexer.next() {
-                    let (Some(Token::Hex(high)), Some(dest)) = (lexer.next(), lexer.next()) else {
-                        break;
-                    };
-                    let bounds = hex_code(low).zip(hex_code(high));
-                    let dest = match dest {
-                        Token::Hex(raw) => {
-                            let text = decode_utf16(&hex_bytes(raw)).into_boxed_slice();
-                            out.unicode.has_unusable |= !text_usable(&text);
-                            Some(RangeDest::Incrementing(text))
-                        }
-                        Token::ArrayOpen => {
-                            let items: Vec<Box<[u32]>> = array_items(&mut lexer)
-                                .into_iter()
-                                .map(|raw| decode_utf16(&hex_bytes(raw)).into_boxed_slice())
-                                .collect();
-                            out.unicode.has_unusable |= items.iter().any(|item| !text_usable(item));
-                            Some(RangeDest::PerCode(items))
-                        }
-                        _ => None,
-                    };
-                    if entries >= cap {
-                        break;
-                    }
-                    entries = entries.saturating_add(1);
-                    if let (Some(((start, _), (end, _))), Some(dest)) = (bounds, dest)
-                        && start <= end
-                    {
-                        out.unicode.ranges.push(UnicodeRange { start, end, dest });
-                    }
-                }
-            }
-            Token::Keyword(b"begincidchar" | b"beginnotdefchar") => {
-                let notdef = token == Token::Keyword(b"beginnotdefchar");
-                while let Some(Token::Hex(source)) = lexer.next() {
-                    let Some(Token::Int(cid)) = lexer.next() else {
-                        break;
-                    };
-                    if entries >= cap {
-                        break;
-                    }
-                    entries = entries.saturating_add(1);
-                    if let (Some((code, length)), Ok(cid)) = (hex_code(source), u32::try_from(cid))
-                    {
-                        let range = CidRange {
-                            length: u8::try_from(length).unwrap_or(u8::MAX),
-                            low: code,
-                            high: code,
-                            cid,
-                        };
-                        if notdef {
-                            out.notdef.push(range);
-                        } else {
-                            out.cid_ranges.push(range);
-                        }
-                    }
-                }
-            }
-            Token::Keyword(b"begincidrange" | b"beginnotdefrange") => {
-                let notdef = token == Token::Keyword(b"beginnotdefrange");
-                while let Some(Token::Hex(low)) = lexer.next() {
-                    let (Some(Token::Hex(high)), Some(Token::Int(cid))) =
-                        (lexer.next(), lexer.next())
-                    else {
-                        break;
-                    };
-                    if entries >= cap {
-                        break;
-                    }
-                    entries = entries.saturating_add(1);
-                    if let (Some((start, length)), Some((end, _)), Ok(cid)) =
-                        (hex_code(low), hex_code(high), u32::try_from(cid))
-                        && start <= end
-                    {
-                        let range = CidRange {
-                            length: u8::try_from(length).unwrap_or(u8::MAX),
-                            low: start,
-                            high: end,
-                            cid,
-                        };
-                        if notdef {
-                            out.notdef.push(range);
-                        } else {
-                            out.cid_ranges.push(range);
-                        }
-                    }
-                }
-            }
-            _ => {}
+struct CMapParser<'a> {
+    lexer: Lexer<'a>,
+    out: CMapData,
+    entries: usize,
+    cap: usize,
+}
+
+impl<'a> CMapParser<'a> {
+    fn new(data: &'a [u8], limits: &Limits) -> Self {
+        Self {
+            lexer: Lexer::new(data),
+            out: CMapData::default(),
+            entries: 0,
+            cap: limits.max_items.min(MAX_ENTRIES),
         }
     }
-    out.unicode.finish();
-    out.cid_ranges
-        .sort_by_key(|range| (range.length, range.low));
-    out.notdef.sort_by_key(|range| (range.length, range.low));
-    out
+
+    const fn take_slot(&mut self) -> bool {
+        if self.entries >= self.cap {
+            return false;
+        }
+        self.entries = self.entries.saturating_add(1);
+        true
+    }
+
+    fn parse(mut self) -> CMapData {
+        let mut last_name: Option<&[u8]> = None;
+        while let Some(token) = self.lexer.next() {
+            match token {
+                Token::Name(name) => last_name = Some(name),
+                Token::Keyword(b"usecmap") => {
+                    if let Some(name) = last_name {
+                        self.out.parent = Some(name.to_vec());
+                    }
+                }
+                Token::Int(value) if last_name == Some(b"WMode".as_slice()) => {
+                    self.out.vertical = value == 1;
+                    last_name = None;
+                }
+                Token::Keyword(b"begincodespacerange") => self.codespace_ranges(),
+                Token::Keyword(b"beginbfchar") => self.bf_chars(),
+                Token::Keyword(b"beginbfrange") => self.bf_ranges(),
+                Token::Keyword(b"begincidchar") => self.cid_chars(false),
+                Token::Keyword(b"beginnotdefchar") => self.cid_chars(true),
+                Token::Keyword(b"begincidrange") => self.cid_ranges(false),
+                Token::Keyword(b"beginnotdefrange") => self.cid_ranges(true),
+                Token::Hex(_)
+                | Token::Int(_)
+                | Token::Keyword(_)
+                | Token::ArrayOpen
+                | Token::ArrayClose => {}
+            }
+        }
+        self.out.unicode.finish();
+        self.out
+            .cid_ranges
+            .sort_by_key(|range| (range.length, range.low));
+        self.out
+            .notdef
+            .sort_by_key(|range| (range.length, range.low));
+        self.out
+    }
+
+    fn codespace_ranges(&mut self) {
+        while let Some(Token::Hex(low)) = self.lexer.next() {
+            let Some(Token::Hex(high)) = self.lexer.next() else {
+                break;
+            };
+            let (low, high) = (hex_bytes(low), hex_bytes(high));
+            if (1..=4).contains(&low.len())
+                && low.len() == high.len()
+                && self.out.codespace.len() < 256
+            {
+                let mut space = Codespace {
+                    length: u8::try_from(low.len()).unwrap_or(u8::MAX),
+                    low: [0; 4],
+                    high: [0; 4],
+                };
+                for (slot, byte) in space.low.iter_mut().zip(low.iter()) {
+                    *slot = *byte;
+                }
+                for (slot, byte) in space.high.iter_mut().zip(high.iter()) {
+                    *slot = *byte;
+                }
+                self.out.codespace.push(space);
+            }
+        }
+    }
+
+    fn bf_chars(&mut self) {
+        while let Some(Token::Hex(source)) = self.lexer.next() {
+            let Some(dest) = self.lexer.next() else { break };
+            let Token::Hex(dest) = dest else { continue };
+            if !self.take_slot() {
+                break;
+            }
+            if let Some((code, _)) = hex_code(source) {
+                let text = decode_utf16(&hex_bytes(dest));
+                self.out.unicode.has_unusable |= !text_usable(&text);
+                self.out.unicode.chars.push((code, text.into_boxed_slice()));
+            }
+        }
+    }
+
+    fn bf_ranges(&mut self) {
+        while let Some(Token::Hex(low)) = self.lexer.next() {
+            let (Some(Token::Hex(high)), Some(dest)) = (self.lexer.next(), self.lexer.next())
+            else {
+                break;
+            };
+            let bounds = hex_code(low).zip(hex_code(high));
+            let dest = match dest {
+                Token::Hex(raw) => {
+                    let text = decode_utf16(&hex_bytes(raw)).into_boxed_slice();
+                    self.out.unicode.has_unusable |= !text_usable(&text);
+                    Some(RangeDest::Incrementing(text))
+                }
+                Token::ArrayOpen => {
+                    let items: Vec<Box<[u32]>> = array_items(&mut self.lexer)
+                        .into_iter()
+                        .map(|raw| decode_utf16(&hex_bytes(raw)).into_boxed_slice())
+                        .collect();
+                    self.out.unicode.has_unusable |= items.iter().any(|item| !text_usable(item));
+                    Some(RangeDest::PerCode(items))
+                }
+                Token::Int(_) | Token::Name(_) | Token::Keyword(_) | Token::ArrayClose => None,
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let (Some(((start, _), (end, _))), Some(dest)) = (bounds, dest)
+                && start <= end
+            {
+                self.out
+                    .unicode
+                    .ranges
+                    .push(UnicodeRange { start, end, dest });
+            }
+        }
+    }
+
+    fn push_cid(&mut self, notdef: bool, range: CidRange) {
+        if notdef {
+            self.out.notdef.push(range);
+        } else {
+            self.out.cid_ranges.push(range);
+        }
+    }
+
+    fn cid_chars(&mut self, notdef: bool) {
+        while let Some(Token::Hex(source)) = self.lexer.next() {
+            let Some(Token::Int(cid)) = self.lexer.next() else {
+                break;
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let (Some((code, length)), Ok(cid)) = (hex_code(source), u32::try_from(cid)) {
+                let range = CidRange {
+                    length: u8::try_from(length).unwrap_or(u8::MAX),
+                    low: code,
+                    high: code,
+                    cid,
+                };
+                self.push_cid(notdef, range);
+            }
+        }
+    }
+
+    fn cid_ranges(&mut self, notdef: bool) {
+        while let Some(Token::Hex(low)) = self.lexer.next() {
+            let (Some(Token::Hex(high)), Some(Token::Int(cid))) =
+                (self.lexer.next(), self.lexer.next())
+            else {
+                break;
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let (Some((start, length)), Some((end, _)), Ok(cid)) =
+                (hex_code(low), hex_code(high), u32::try_from(cid))
+                && start <= end
+            {
+                let range = CidRange {
+                    length: u8::try_from(length).unwrap_or(u8::MAX),
+                    low: start,
+                    high: end,
+                    cid,
+                };
+                self.push_cid(notdef, range);
+            }
+        }
+    }
+}
+
+fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
+    CMapParser::new(data, limits).parse()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -751,7 +784,7 @@ impl CMap {
             } else {
                 vec![code]
             }),
-            _ => None,
+            Kind::Identity | Kind::Embedded => None,
         }
     }
 }
@@ -773,10 +806,10 @@ fn be_value(bytes: &[u8]) -> u32 {
 }
 
 #[cfg(test)]
-#[expect(clippy::indexing_slicing, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::num::widen;
+    use std::hint::black_box;
 
     fn limits() -> Limits {
         Limits::default()
@@ -974,7 +1007,7 @@ mod tests {
             for _ in 0..(8 + round % 40) {
                 seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
                 match (seed >> 16) % 6 {
-                    0 => data.extend_from_slice(keywords[widen((seed >> 20)) % keywords.len()]),
+                    0 => data.extend_from_slice(keywords[widen(seed >> 20) % keywords.len()]),
                     1 => data.extend_from_slice(b"<00"),
                     2 => data.extend_from_slice(b"<ffff> "),
                     3 => data.push(u8::try_from((seed >> 8) & 0xFF).unwrap()),
@@ -983,11 +1016,11 @@ mod tests {
                 }
             }
             let map = UnicodeMap::parse(&data, &limits());
-            let _ = map.lookup(1);
+            black_box(map.lookup(1));
             let parsed = CMap::parse(&data, &limits());
-            let _ = parsed.cmap.read(&data, 0);
-            let _ = parsed.cmap.cid(0x41, 1);
-            let _ = parsed.cmap.cid(0x4141, 2);
+            black_box(parsed.cmap.read(&data, 0));
+            black_box(parsed.cmap.cid(0x41, 1));
+            black_box(parsed.cmap.cid(0x4141, 2));
         }
     }
 }

@@ -1054,13 +1054,13 @@ fn push_codepoints(text: &mut String, codepoints: &[u32]) {
 }
 
 #[cfg(test)]
-#[expect(clippy::indexing_slicing, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
     use crate::cff::tests::{Layout, build as build_cff};
     use crate::object::{ObjRef, Stream};
+    use std::hint::black_box;
 
     #[derive(Default)]
     struct TestResolver {
@@ -1292,7 +1292,7 @@ mod tests {
         let cmap = "1 begincodespacerange <0000> <ffff> endcodespacerange\n3 beginbfrange\n<0010> <0010> <0074>\n<0020> <0020> <0069>\n<0030> <0030> <0000>\nendbfrange";
         let mut map = vec![0_u8; 0x31 * 2];
         for (cid, gid) in [(0x10_usize, 1_u16), (0x20, 2), (0x30, 3)] {
-            map[cid * 2] = u8::try_from((gid >> 8)).unwrap();
+            map[cid * 2] = u8::try_from(gid >> 8).unwrap();
             map[cid * 2 + 1] = u8::try_from(gid).unwrap();
         }
         let font = type0_with_program(
@@ -1368,7 +1368,6 @@ mod tests {
             (65, -3, 164, 648, 229),
             (16, -8, 490, 648, 557),
         ]);
-        let _ = &mut program;
         let cmap = sfnt_with_cmap(&program, format0_cmap(1, 0, &[(1, 1), (2, 2), (3, 3)]));
         let file = resolver.add_stream(Dict::default(), &cmap);
         let descriptor = resolver.add(Object::Dict(dict(vec![
@@ -2004,11 +2003,11 @@ mod tests {
             let mut bytes = Vec::new();
             for _ in 0..32 {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                bytes.push(u8::try_from((seed >> 24)).unwrap());
+                bytes.push(u8::try_from(seed >> 24).unwrap());
             }
             for font in &fonts {
-                let _ = decode(font, &bytes);
-                let _ = font.vertical_metrics(seed);
+                black_box(decode(font, &bytes));
+                black_box(font.vertical_metrics(seed));
             }
         }
     }
@@ -2043,7 +2042,7 @@ mod tests {
                 ("FontMatrix", Object::Array(vec![Object::Null])),
             ]);
             if let Ok(font) = Font::load(&resolver, &font, &Limits::default()) {
-                let _ = decode(&font, &[0, 1, 2, 3, 255]);
+                black_box(decode(&font, &[0, 1, 2, 3, 255]));
             }
         }
     }

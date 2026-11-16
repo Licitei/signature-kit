@@ -31,7 +31,7 @@ const fn is_number_start(byte: u8) -> bool {
     matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.')
 }
 
-const fn hex_value(byte: u8) -> Option<u8> {
+pub(crate) const fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
         b'a'..=b'f' => Some((byte.saturating_sub(b'a')).saturating_add(10)),
@@ -843,14 +843,9 @@ pub(crate) fn parse_indirect_object(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
 mod tests {
     use super::*;
+    use std::hint::black_box;
 
     fn parse(input: &[u8]) -> Object {
         Parser::new(input, 0, 64, true)
@@ -1002,19 +997,19 @@ mod tests {
         );
 
         let broken = parse(b"<< /A 1 garbage /B /C /D >> ");
-        let Some(dict) = broken.as_dict() else {
+        let Some(dict_2) = broken.as_dict() else {
             panic!("not a dict");
         };
-        assert_eq!(dict.get(b"A"), Some(&Object::Integer(1)));
-        assert_eq!(dict.get(b"B"), Some(&name("C")));
-        assert_eq!(dict.get(b"D"), None);
+        assert_eq!(dict_2.get(b"A"), Some(&Object::Integer(1)));
+        assert_eq!(dict_2.get(b"B"), Some(&name("C")));
+        assert_eq!(dict_2.get(b"D"), None);
 
         let odd = parse(b"<< 5 /A 1 ) /B 2 >>");
-        let Some(dict) = odd.as_dict() else {
+        let Some(dict_3) = odd.as_dict() else {
             panic!("not a dict");
         };
-        assert_eq!(dict.get(b"A"), Some(&Object::Integer(1)));
-        assert_eq!(dict.get(b"B"), Some(&Object::Integer(2)));
+        assert_eq!(dict_3.get(b"A"), Some(&Object::Integer(1)));
+        assert_eq!(dict_3.get(b"B"), Some(&Object::Integer(2)));
     }
 
     #[test]
@@ -1057,7 +1052,7 @@ mod tests {
     #[test]
     fn garbage_never_hangs() {
         for input in [&b")))))"[..], b">>>>", b"}{}{", b"%", b"", b"   "] {
-            let _ = Parser::new(input, 0, 8, true).parse_object();
+            black_box(Parser::new(input, 0, 8, true).parse_object());
         }
     }
 
@@ -1078,23 +1073,23 @@ mod tests {
         assert!(matches!(parsed.object, Object::Dict(_)));
 
         let compact = b"3 2 obj<</A 1>>endobj";
-        let Ok(parsed) = parse_indirect_object(compact, 0, 64, no_length) else {
+        let Ok(parsed_2) = parse_indirect_object(compact, 0, 64, no_length) else {
             panic!("parse failed");
         };
         assert_eq!(
-            parsed.obj_ref,
+            parsed_2.obj_ref,
             ObjRef {
                 number: 3,
                 generation: 2
             }
         );
-        assert_eq!(parsed.end, compact.len());
+        assert_eq!(parsed_2.end, compact.len());
 
         let empty = b"4 0 obj endobj";
-        let Ok(parsed) = parse_indirect_object(empty, 0, 64, no_length) else {
+        let Ok(parsed_3) = parse_indirect_object(empty, 0, 64, no_length) else {
             panic!("parse failed");
         };
-        assert_eq!(parsed.object, Object::Null);
+        assert_eq!(parsed_3.object, Object::Null);
     }
 
     #[test]
@@ -1129,15 +1124,15 @@ mod tests {
         };
         assert_eq!(stream_bytes(crlf, &parsed), b"hello");
         let cr = b"1 0 obj << /Length 5 >> stream\rhello\rendstream endobj";
-        let Ok(parsed) = parse_indirect_object(cr, 0, 64, no_length) else {
+        let Ok(parsed_4) = parse_indirect_object(cr, 0, 64, no_length) else {
             panic!("parse failed");
         };
-        assert_eq!(stream_bytes(cr, &parsed), b"hello");
+        assert_eq!(stream_bytes(cr, &parsed_4), b"hello");
         let spaced = b"1 0 obj << /Length 5 >> stream  \nhello\nendstream endobj";
-        let Ok(parsed) = parse_indirect_object(spaced, 0, 64, no_length) else {
+        let Ok(parsed_5) = parse_indirect_object(spaced, 0, 64, no_length) else {
             panic!("parse failed");
         };
-        assert_eq!(stream_bytes(spaced, &parsed), b"hello");
+        assert_eq!(stream_bytes(spaced, &parsed_5), b"hello");
     }
 
     #[test]
@@ -1148,15 +1143,15 @@ mod tests {
         };
         assert_eq!(stream_bytes(short, &parsed), b"hello");
         let long = b"1 0 obj\n<< /Length 999 >>\nstream\nhello\nendstream\nendobj\n";
-        let Ok(parsed) = parse_indirect_object(long, 0, 64, no_length) else {
+        let Ok(parsed_6) = parse_indirect_object(long, 0, 64, no_length) else {
             panic!("parse failed");
         };
-        assert_eq!(stream_bytes(long, &parsed), b"hello");
+        assert_eq!(stream_bytes(long, &parsed_6), b"hello");
         let missing = b"1 0 obj\n<< >>\nstream\nhello\nendstream\nendobj\n";
-        let Ok(parsed) = parse_indirect_object(missing, 0, 64, no_length) else {
+        let Ok(parsed_7) = parse_indirect_object(missing, 0, 64, no_length) else {
             panic!("parse failed");
         };
-        assert_eq!(stream_bytes(missing, &parsed), b"hello");
+        assert_eq!(stream_bytes(missing, &parsed_7), b"hello");
     }
 
     #[test]
@@ -1181,10 +1176,10 @@ mod tests {
         };
         assert_eq!(stream_bytes(data, &parsed), b"hello");
         let eof = b"1 0 obj\n<< >>\nstream\nhello";
-        let Ok(parsed) = parse_indirect_object(eof, 0, 64, no_length) else {
+        let Ok(parsed_8) = parse_indirect_object(eof, 0, 64, no_length) else {
             panic!("parse failed");
         };
-        assert_eq!(stream_bytes(eof, &parsed), b"hello");
+        assert_eq!(stream_bytes(eof, &parsed_8), b"hello");
     }
 
     fn lex(input: &[u8]) -> Vec<ContentToken<'_>> {

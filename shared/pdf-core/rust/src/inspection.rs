@@ -1,4 +1,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the max_ prefix names what kind of bound each field is"
+)]
 pub(crate) struct Limits {
     pub max_pdf_bytes: usize,
     pub max_pages: usize,
@@ -33,34 +37,34 @@ pub(crate) struct InspectOptions {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PageInfo {
+pub(crate) struct PageInfo {
     pub media_box: [f64; 4],
     pub crop_box: [f64; 4],
     pub rotate: i32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct LinkInfo {
+pub(crate) struct LinkInfo {
     pub page_index: u32,
     pub rect: [f64; 4],
     pub uri: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct TextItem {
+pub(crate) struct TextItem {
     pub rect: [f64; 4],
     pub font_size: f64,
     pub text: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct PageText {
+pub(crate) struct PageText {
     pub page_index: u32,
     pub items: Vec<TextItem>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Inspection {
+pub(crate) struct Inspection {
     pub pages: Vec<PageInfo>,
     pub links: Vec<LinkInfo>,
     pub text: Vec<PageText>,

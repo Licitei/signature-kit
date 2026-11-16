@@ -1400,10 +1400,10 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-#[expect(clippy::indexing_slicing, clippy::expect_used)]
 pub(crate) mod tests {
     use super::*;
     use crate::cff::tests::{Layout, build as build_cff};
+    use std::hint::black_box;
 
     fn be16(value: u16) -> Vec<u8> {
         value.to_be_bytes().to_vec()
@@ -1456,10 +1456,10 @@ pub(crate) mod tests {
         let count = segments.len().saturating_add(1);
         let mut out = be16(4);
         out.extend(be16(
-            u16::try_from(((count.saturating_mul(8)).saturating_add(16))).unwrap(),
+            u16::try_from((count.saturating_mul(8)).saturating_add(16)).unwrap(),
         ));
         out.extend(be16(0));
-        out.extend(be16(u16::try_from((count.saturating_mul(2))).unwrap()));
+        out.extend(be16(u16::try_from(count.saturating_mul(2)).unwrap()));
         out.extend([0_u8; 6]);
         for (_, end, _) in segments {
             out.extend(be16(*end));
@@ -1495,7 +1495,7 @@ pub(crate) mod tests {
     fn format6(first: u16, glyphs: &[u16]) -> Vec<u8> {
         let mut out = be16(6);
         out.extend(be16(
-            u16::try_from(((glyphs.len().saturating_mul(2)).saturating_add(10))).unwrap(),
+            u16::try_from((glyphs.len().saturating_mul(2)).saturating_add(10)).unwrap(),
         ));
         out.extend(be16(0));
         out.extend(be16(first));
@@ -1510,7 +1510,7 @@ pub(crate) mod tests {
         let mut out = be16(12);
         out.extend(be16(0));
         out.extend(be32(
-            u32::try_from(((groups.len().saturating_mul(12)).saturating_add(16))).unwrap(),
+            u32::try_from((groups.len().saturating_mul(12)).saturating_add(16)).unwrap(),
         ));
         out.extend(be32(0));
         out.extend(be32(u32::try_from(groups.len()).unwrap()));
@@ -1573,7 +1573,7 @@ pub(crate) mod tests {
         set.extend(be16(4));
         set.extend(&lig);
         let mut sub = be16(1);
-        sub.extend(be16(u16::try_from((set.len().saturating_add(8))).unwrap()));
+        sub.extend(be16(u16::try_from(set.len().saturating_add(8)).unwrap()));
         sub.extend(be16(1));
         sub.extend(be16(8));
         sub.extend(&set);
@@ -1753,10 +1753,10 @@ pub(crate) mod tests {
                 (b"maxp", maxp(8)),
             ],
         );
-        let program = parse_font_program(mac).expect("mac");
-        assert_eq!(program.code_to_gid(0x8E, true), Some(5));
-        assert_eq!(program.code_to_gid(0x8E, false), Some(5));
-        assert_eq!(program.gid_text(5), None);
+        let program_2 = parse_font_program(mac).expect("mac");
+        assert_eq!(program_2.code_to_gid(0x8E, true), Some(5));
+        assert_eq!(program_2.code_to_gid(0x8E, false), Some(5));
+        assert_eq!(program_2.gid_text(5), None);
     }
 
     #[test]
@@ -1864,7 +1864,7 @@ pub(crate) mod tests {
         let mut loca = Vec::new();
         for chunk in loca_long.chunks(4) {
             let value = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            loca.extend(be16(u16::try_from((value / 2)).unwrap()));
+            loca.extend(be16(u16::try_from(value / 2).unwrap()));
         }
         let font = sfnt(
             SFNT_TRUETYPE,
@@ -1923,21 +1923,21 @@ pub(crate) mod tests {
         assert_eq!(program.cid_to_gid(701), Some(2));
         assert_eq!(program.cid_to_gid(5), None);
         assert_eq!(program.builtin_name(0x41), None);
-        let mut charset = vec![0_u8];
-        charset.extend(be16(66));
-        let cff = build_cff(&Layout {
+        let mut charset_2 = vec![0_u8];
+        charset_2.extend(be16(66));
+        let cff_2 = build_cff(&Layout {
             names: vec![],
-            charset,
+            charset: charset_2,
             charset_id: 0,
             encoding: vec![0, 1, 0x7A],
             encoding_id: 0,
             cid_keyed: false,
             glyphs: 2,
         });
-        let program = parse_font_program(cff).expect("name cff");
-        assert_eq!(program.builtin_name(0x7A), Some(b"a".as_slice()));
-        assert_eq!(program.builtin_name(0x41), None);
-        assert_eq!(program.gid_text(1), Some(vec![0x61]));
+        let program_3 = parse_font_program(cff_2).expect("name cff");
+        assert_eq!(program_3.builtin_name(0x7A), Some(b"a".as_slice()));
+        assert_eq!(program_3.builtin_name(0x41), None);
+        assert_eq!(program_3.gid_text(1), Some(vec![0x61]));
     }
 
     #[test]
@@ -2032,20 +2032,20 @@ pub(crate) mod tests {
 
     fn exercise(program: &FontProgram) {
         for gid in [0_u16, 1, 2, 3, 9, 100, 65535] {
-            let _ = program.gid_text(gid);
-            let _ = program.gid_parts(gid);
-            let _ = program.glyph_name(gid);
+            black_box(program.gid_text(gid));
+            black_box(program.gid_parts(gid));
+            black_box(program.glyph_name(gid));
         }
         for code in [0_u32, 0x41, 0x61, 0xF041, 0xFFFF, 0x1F600] {
-            let _ = program.code_to_gid(code, true);
-            let _ = program.code_to_gid(code, false);
+            black_box(program.code_to_gid(code, true));
+            black_box(program.code_to_gid(code, false));
         }
         for cid in [0_u32, 1, 700, 70000] {
-            let _ = program.cid_to_gid(cid);
+            black_box(program.cid_to_gid(cid));
         }
-        let _ = program.gid_for_name(b"t_i");
+        black_box(program.gid_for_name(b"t_i"));
         for code in 0..=255_u8 {
-            let _ = program.builtin_name(code);
+            black_box(program.builtin_name(code));
         }
     }
 
@@ -2080,7 +2080,7 @@ pub(crate) mod tests {
             let mut data = vec![0_u8; len];
             for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *slot = u8::try_from((seed >> 24)).unwrap();
+                *slot = u8::try_from(seed >> 24).unwrap();
             }
             match round % 4 {
                 0 => data[..4].copy_from_slice(&[0, 1, 0, 0]),

@@ -17,7 +17,7 @@ pub(crate) struct Rule {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Cell {
+pub(crate) struct Cell {
     pub row: u32,
     pub col: u32,
     pub row_span: u32,
@@ -27,7 +27,7 @@ pub struct Cell {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Table {
+pub(crate) struct Table {
     pub page_index: u32,
     pub bbox: [f64; 4],
     pub rows: u32,
@@ -537,12 +537,6 @@ pub(crate) fn render_markdown(table: &Table) -> String {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
 mod tests {
     use super::*;
 

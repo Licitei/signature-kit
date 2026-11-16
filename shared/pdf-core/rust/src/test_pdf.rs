@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-
 pub(crate) fn stream_object(dict: &str, data: &str) -> String {
     format!(
         "<< /Length {} {} >>\nstream\n{}\nendstream",

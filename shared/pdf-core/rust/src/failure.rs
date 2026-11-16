@@ -27,25 +27,25 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    pub(crate) fn new(code: FailureCode, reason: impl Into<String>) -> Self {
+    pub(crate) fn new<R: Into<String>>(code: FailureCode, reason: R) -> Self {
         Self {
             code,
             reason: reason.into(),
         }
     }
 
-    pub(crate) fn invalid(reason: impl Into<String>) -> Self {
+    pub(crate) fn invalid<R: Into<String>>(reason: R) -> Self {
         Self::new(FailureCode::InvalidPdf, reason)
     }
 
-    pub(crate) fn limit(reason: impl Into<String>) -> Self {
+    pub(crate) fn limit<R: Into<String>>(reason: R) -> Self {
         Self::new(FailureCode::LimitExceeded, reason)
     }
 }
 
 impl fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:?}: {}", self.code, self.reason)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.reason)
     }
 }
 

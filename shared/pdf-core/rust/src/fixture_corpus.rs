@@ -1,10 +1,4 @@
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic
-)]
 mod tests {
     use crate::document::{self, Document, Page};
     use crate::failure::FailureCode;

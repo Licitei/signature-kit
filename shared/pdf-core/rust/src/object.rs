@@ -1,7 +1,7 @@
-use crate::num::i64_to_f64;
 use std::ops::Range;
 
 use crate::failure::Outcome;
+use crate::num::i64_to_f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct ObjRef {
@@ -59,35 +59,46 @@ impl Object {
         match self {
             Self::Integer(value) => Some(i64_to_f64(*value)),
             Self::Real(value) => Some(*value),
-            _ => None,
+            Self::Null
+            | Self::Bool(_)
+            | Self::Name(_)
+            | Self::String(_)
+            | Self::Array(_)
+            | Self::Dict(_)
+            | Self::Stream(_)
+            | Self::Ref(_) => None,
         }
     }
 
     pub(crate) const fn as_integer(&self) -> Option<i64> {
-        match self {
-            Self::Integer(value) => Some(*value),
-            _ => None,
+        if let Self::Integer(value) = self {
+            Some(*value)
+        } else {
+            None
         }
     }
 
     pub(crate) fn as_name(&self) -> Option<&[u8]> {
-        match self {
-            Self::Name(value) => Some(value),
-            _ => None,
+        if let Self::Name(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
     pub(crate) fn as_string(&self) -> Option<&[u8]> {
-        match self {
-            Self::String(value) => Some(value),
-            _ => None,
+        if let Self::String(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
     pub(crate) fn as_array(&self) -> Option<&[Self]> {
-        match self {
-            Self::Array(value) => Some(value),
-            _ => None,
+        if let Self::Array(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
@@ -95,14 +106,22 @@ impl Object {
         match self {
             Self::Dict(value) => Some(value),
             Self::Stream(stream) => Some(&stream.dict),
-            _ => None,
+            Self::Null
+            | Self::Bool(_)
+            | Self::Integer(_)
+            | Self::Real(_)
+            | Self::Name(_)
+            | Self::String(_)
+            | Self::Array(_)
+            | Self::Ref(_) => None,
         }
     }
 
     pub(crate) const fn as_stream(&self) -> Option<&Stream> {
-        match self {
-            Self::Stream(value) => Some(value),
-            _ => None,
+        if let Self::Stream(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 }

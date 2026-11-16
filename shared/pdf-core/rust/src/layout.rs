@@ -1198,16 +1198,10 @@ pub(crate) fn document_tables(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
 mod tests {
     use super::*;
     use crate::inspection::TextItem;
-    use crate::num::usize_to_f64;
+    use std::hint::black_box;
 
     const SIZE: f64 = 10.0;
     const OPTIONS: TextOptions = TextOptions {
@@ -1420,7 +1414,7 @@ mod tests {
                 if next() % 4 == 0 {
                     bytes.truncate(cut);
                 }
-                let _ = document_text(&bytes, None, &limits, &OPTIONS);
+                black_box(document_text(&bytes, None, &limits, &OPTIONS));
             }
         }
     }
@@ -1434,22 +1428,17 @@ mod tests {
             max_pdf_bytes: 4,
             ..Limits::default()
         };
-        let error = document_text(b"%PDF-1.4\n", None, &oversized, &OPTIONS).unwrap_err();
-        assert_eq!(error.code, crate::failure::FailureCode::LimitExceeded);
+        let error_2 = document_text(b"%PDF-1.4\n", None, &oversized, &OPTIONS).unwrap_err();
+        assert_eq!(error_2.code, crate::failure::FailureCode::LimitExceeded);
     }
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
 mod structure_tests {
     use super::*;
     use crate::num::usize_to_f64;
     use crate::test_pdf::{PageSpec, bold, document, grid, page, rule, text};
+    use std::hint::black_box;
 
     const PLAIN: TextOptions = TextOptions {
         markdown: false,
@@ -1673,8 +1662,8 @@ mod structure_tests {
             700.0,
         );
         large.push_str(&text(50.0, 658.0, 14.0, "Observacoes"));
-        let tables = tables_of(&document(&[page(large)], &[]));
-        assert_eq!(cell(&tables[0], 2, 0).text, "Areia");
+        let tables_2 = tables_of(&document(&[page(large)], &[]));
+        assert_eq!(cell(&tables_2[0], 2, 0).text, "Areia");
     }
 
     #[test]
@@ -1963,8 +1952,8 @@ mod structure_tests {
                     *byte = u8::try_from(next() % 255).unwrap_or(1).max(1);
                 }
             }
-            let _ = document_tables(&bytes, None, &limits);
-            let _ = document_text(&bytes, None, &limits, &MARKDOWN);
+            black_box(document_tables(&bytes, None, &limits));
+            black_box(document_text(&bytes, None, &limits, &MARKDOWN));
         }
     }
 

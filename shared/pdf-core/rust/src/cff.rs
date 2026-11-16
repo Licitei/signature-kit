@@ -428,9 +428,9 @@ fn read_u32(bytes: &[u8], position: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-#[expect(clippy::indexing_slicing, clippy::expect_used)]
 pub(crate) mod tests {
     use super::*;
+    use std::hint::black_box;
 
     pub(crate) fn index(items: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -506,10 +506,10 @@ pub(crate) mod tests {
         let enc_off = if layout.encoding.is_empty() {
             layout.encoding_id
         } else {
-            i32::try_from((base.saturating_add(layout.charset.len()))).unwrap()
+            i32::try_from(base.saturating_add(layout.charset.len())).unwrap()
         };
         let cs_off = i32::try_from(
-            ((base.saturating_add(layout.charset.len())).saturating_add(layout.encoding.len())),
+            (base.saturating_add(layout.charset.len())).saturating_add(layout.encoding.len()),
         )
         .unwrap();
         let top = index(&[&dict_len(charset_off, enc_off, cs_off)]);
@@ -682,12 +682,12 @@ pub(crate) mod tests {
             let mut data = vec![0_u8; len];
             for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *slot = u8::try_from((seed >> 24)).unwrap();
+                *slot = u8::try_from(seed >> 24).unwrap();
             }
             if let Some(first) = data.first_mut() {
                 *first = 1;
             }
-            let _ = CffFont::parse(&data);
+            black_box(CffFont::parse(&data));
         }
     }
 
@@ -709,11 +709,11 @@ pub(crate) mod tests {
             for value in [0_u8, 1, 0x7F, 0xFF] {
                 let mut data = valid.clone();
                 data[position] = value;
-                let _ = CffFont::parse(&data);
+                black_box(CffFont::parse(&data));
             }
         }
         for cut in 0..valid.len() {
-            let _ = CffFont::parse(&valid[..cut]);
+            black_box(CffFont::parse(&valid[..cut]));
         }
     }
 }

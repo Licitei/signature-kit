@@ -580,7 +580,6 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::inflate;
 

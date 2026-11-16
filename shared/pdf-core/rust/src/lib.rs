@@ -1,6 +1,4 @@
-#![forbid(unsafe_op_in_unsafe_fn)]
-
-pub mod abi;
+mod abi;
 mod cff;
 mod cmap;
 mod document;

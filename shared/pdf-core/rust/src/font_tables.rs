@@ -131,7 +131,7 @@ mod tests {
     fn glyph_names_are_sorted_and_unique() {
         let names: Vec<_> = (0..GLYPH_NAME_ENDS.len()).filter_map(name_at).collect();
         assert_eq!(names.len(), GLYPH_NAME_ENDS.len());
-        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(names.windows(2).all(|pair| matches!(pair, [a, b] if a < b)));
     }
 
     #[test]

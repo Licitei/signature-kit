@@ -1378,16 +1378,11 @@ impl Interpreter<'_, '_> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
 mod tests {
     use super::*;
     use crate::document::inspect;
     use crate::inspection::{InspectOptions, Inspection};
+    use std::hint::black_box;
 
     const HELVETICA: &str =
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
@@ -2484,7 +2479,7 @@ mod tests {
                     ),
                 ],
             );
-            let _ = extract_with(&bytes, &Limits::default());
+            black_box(extract_with(&bytes, &Limits::default()));
         }
     }
 
