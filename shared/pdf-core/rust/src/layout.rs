@@ -548,7 +548,7 @@ pub fn page_text(runs: &[Run], rotate: i32) -> String {
 
 pub fn text_limits() -> Limits {
     Limits {
-        max_items_per_page: 1_000_000,
+        max_items_per_page: 250_000,
         max_items: usize::MAX,
         max_text_bytes: 1 << 30,
         ..Limits::default()
@@ -793,6 +793,42 @@ mod tests {
             nested.push(run(offset, 700.0 - offset, 500.0 - offset, "n"));
         }
         assert!(!page_text(&nested, 0).is_empty());
+    }
+
+    #[test]
+    fn mutated_documents_never_panic() {
+        let fixtures: [&[u8]; 5] = [
+            include_bytes!("../../__tests__/fixtures/links.pdf"),
+            include_bytes!("../../__tests__/fixtures/helvetica-winansi.pdf"),
+            include_bytes!("../../__tests__/fixtures/react-pdf-declaration.pdf"),
+            include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf"),
+            include_bytes!("../../__tests__/fixtures/object-streams.pdf"),
+        ];
+        let limits = text_limits();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for fixture in fixtures {
+            assert!(document_text(fixture, None, &limits).is_ok());
+            for _ in 0..150 {
+                let mut bytes = fixture.to_vec();
+                for _ in 0..(1 + next() % 8) {
+                    let at = usize::try_from(next()).unwrap_or(0) % bytes.len();
+                    if let Some(byte) = bytes.get_mut(at) {
+                        *byte ^= u8::try_from(next() % 255).unwrap_or(1).max(1);
+                    }
+                }
+                let cut = usize::try_from(next()).unwrap_or(0) % (bytes.len() + 1);
+                if next() % 4 == 0 {
+                    bytes.truncate(cut);
+                }
+                let _ = document_text(&bytes, None, &limits);
+            }
+        }
     }
 
     #[test]

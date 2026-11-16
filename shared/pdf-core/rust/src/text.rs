@@ -13,6 +13,7 @@ type Matrix = [f64; 6];
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 const MAX_OPERANDS: usize = 512;
 const MAX_FORM_DEPTH: usize = 24;
+const MAX_CACHED_FONTS: usize = 2048;
 const SPACE_GAP: f64 = 0.2;
 const BREAK_GAP: f64 = 1.5;
 const BACK_GAP: f64 = 0.4;
@@ -325,6 +326,9 @@ pub fn extract_runs(
     let content = document.content(page)?;
     if content.is_empty() {
         return Ok(Vec::new());
+    }
+    if session.fonts.len() > MAX_CACHED_FONTS {
+        session.fonts.clear();
     }
     let mut interpreter = Interpreter {
         document,

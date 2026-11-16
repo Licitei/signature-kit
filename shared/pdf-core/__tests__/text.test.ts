@@ -84,7 +84,9 @@ describe("PdfCore.text", () => {
       );
       expect(outOfRange.code).toBe(PdfCoreErrorCodeValue.invalidPdf);
       expect(outOfRange.operation).toBe("pdfCore.text");
-      const invalid = yield* Effect.flip(core.text(readFixture("links.pdf"), { pageIndexes: [-1] }));
+      const invalid = yield* Effect.flip(
+        core.text(readFixture("links.pdf"), { pageIndexes: [-1] }),
+      );
       expect(invalid.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
       expect(invalid.schemaName).toBe("PdfCoreTextOptions");
     }).pipe(Effect.provide(layer)),

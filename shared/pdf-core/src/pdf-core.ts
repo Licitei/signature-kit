@@ -130,13 +130,8 @@ export const makePdfCore = (
           const result = yield* Effect.acquireRelease(
             Effect.suspend(() => {
               const pointer =
-                entry(
-                  input.pointer,
-                  pdf.byteLength,
-                  flags,
-                  pages.pointer,
-                  pageIndexes.length,
-                ) >>> 0;
+                entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length) >>>
+                0;
               if (pointer === 0) {
                 return Effect.fail(
                   new PdfCoreError({

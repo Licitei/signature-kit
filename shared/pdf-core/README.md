@@ -37,6 +37,14 @@ const program = Effect.gen(function* () {
 program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))));
 ```
 
+`text` returns one reading-order plain-text string per page (pdftotext style). It clusters positioned runs into lines, splits lines into cells on wide gaps, groups cells into blocks, orders blocks with an XY-cut (columns are read column by column, table rows row by row), honours `/Rotate` and sideways text, and ignores content streams that cannot show text:
+
+```ts
+const pages = yield* core.text(pdf, { pageIndexes: [0, 1] });
+```
+
+`pageIndexes` is optional; omitted, every page is returned. Pages whose content cannot be decoded come back as empty strings instead of failing the document.
+
 `inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-8 byte offsets into `text`). Results are copied out of wasm memory before the wasm buffers are released.
 
 ## Errors
@@ -45,13 +53,14 @@ Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.
 
 ## Wasm ABI
 
-The module exports `memory` and three functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
+The module exports `memory` and four functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
 
 | Export                                                                          | Contract                                                             |
 | ------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | `pdf_core_alloc(len) -> ptr`                                                    | 8-byte aligned block of `len` bytes, or `0` when out of memory.      |
-| `pdf_core_free(ptr, len)`                                                       | Releases a block returned by `pdf_core_alloc` or `pdf_core_inspect`. |
+| `pdf_core_free(ptr, len)`                                                       | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
 | `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr` | Returns a result block, or `0` when out of memory.                   |
+| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`    | Returns a text result block, or `0` when out of memory.              |
 
 `flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page).
 
@@ -76,6 +85,10 @@ Pages — `page_count` records of 72 bytes: `media_box` (4 × `f64`), `crop_box`
 Links — `link_count` records of 48 bytes: `rect` (4 × `f64`), `page_index` (`u32`), `uri_offset` (`u32`), `uri_len` (`u32`), 4 bytes padding; then one UTF-8 blob holding every URI (`uri_offset` is relative to the blob start), padded to 8.
 
 Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` offsets into the text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8.
+
+### Text payload (version 1)
+
+`pdf_core_text` uses the same result block and status codes. Only `flags` bit 2 (page indexes) applies. The payload is little-endian and 8-byte aligned: `magic` (`0x58544450`, "PDTX"), `version` (`1`), `page_count`, `text_len` — all `u32`; then `page_count + 1` `u32` offsets into the blob, padded to 8; then the UTF-8 blob of `text_len` bytes, padded to 8. Page `n` is `blob[offsets[n]..offsets[n + 1]]`.
 
 ## Development
 

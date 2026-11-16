@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect } from "effect";
 
 import { makePdfCore } from "../dist/pdf-core.js";
@@ -50,49 +51,65 @@ const percentile = (values: ReadonlyArray<number>, ratio: number): number => {
 
 const nonWhitespace = (text: string): number => text.replace(/\s+/gu, "").length;
 
-const pdfCoreRunner = async (): Promise<(file: string) => Promise<Outcome>> => {
-  const module = await WebAssembly.compile(new Uint8Array(readFileSync(wasmPath)));
-  const core = await Effect.runPromise(makePdfCore(module));
-  return async (file) => {
-    const bytes = new Uint8Array(readFileSync(file));
-    const start = performance.now();
-    const result = await Effect.runPromise(Effect.result(core.text(bytes)));
-    const ms = performance.now() - start;
-    return result._tag === "Success"
-      ? {
-          ok: true,
-          ms,
-          pages: result.success.length,
-          chars: result.success.reduce((sum, page) => sum + nonWhitespace(page), 0),
-        }
-      : { ok: false, ms, reason: `${result.failure.code}: ${result.failure.message}` };
-  };
-};
+type Runner = (file: string) => Effect.Effect<Outcome>;
 
-const liteparseRunner = async (dir: string): Promise<(file: string) => Promise<Outcome>> => {
-  const module = await import(
-    pathToFileURL(join(dir, "node_modules", "@llamaindex", "liteparse", "dist", "lib.js")).href
+const pdfCoreRunner = Effect.gen(function* () {
+  const module = yield* Effect.promise(() =>
+    WebAssembly.compile(new Uint8Array(readFileSync(wasmPath))),
   );
-  const parser = new module.LiteParse({
-    outputFormat: "markdown",
-    ocrEnabled: false,
-    imageMode: "off",
+  const core = yield* makePdfCore(module);
+  const run: Runner = (file) =>
+    Effect.gen(function* () {
+      const bytes = new Uint8Array(readFileSync(file));
+      const start = performance.now();
+      const result = yield* Effect.result(core.text(bytes));
+      const ms = performance.now() - start;
+      return result._tag === "Success"
+        ? {
+            ok: true,
+            ms,
+            pages: result.success.length,
+            chars: result.success.reduce((sum, page) => sum + nonWhitespace(page), 0),
+          }
+        : { ok: false, ms, reason: `${result.failure.code}: ${result.failure.message}` };
+    });
+  return run;
+});
+
+const liteparseRunner = (dir: string) =>
+  Effect.gen(function* () {
+    const module = yield* Effect.promise(
+      () =>
+        import(
+          pathToFileURL(join(dir, "node_modules", "@llamaindex", "liteparse", "dist", "lib.js"))
+            .href
+        ),
+    );
+    const parser = new module.LiteParse({
+      outputFormat: "markdown",
+      ocrEnabled: false,
+      imageMode: "off",
+      quiet: true,
+    });
+    const run: Runner = (file) =>
+      Effect.promise(() => {
+        const start = performance.now();
+        return parser.parse(file).then(
+          (parsed: { pages?: ReadonlyArray<unknown>; text?: unknown }): Outcome => ({
+            ok: true,
+            ms: performance.now() - start,
+            pages: Array.isArray(parsed.pages) ? parsed.pages.length : 0,
+            chars: nonWhitespace(typeof parsed.text === "string" ? parsed.text : ""),
+          }),
+          (failure: unknown): Outcome => ({
+            ok: false,
+            ms: performance.now() - start,
+            reason: String(failure).slice(0, 120),
+          }),
+        );
+      });
+    return run;
   });
-  return async (file) => {
-    const start = performance.now();
-    try {
-      const parsed = await parser.parse(file);
-      return {
-        ok: true,
-        ms: performance.now() - start,
-        pages: Array.isArray(parsed.pages) ? parsed.pages.length : 0,
-        chars: nonWhitespace(String(parsed.text ?? "")),
-      };
-    } catch (failure) {
-      return { ok: false, ms: performance.now() - start, reason: String(failure).slice(0, 120) };
-    }
-  };
-};
 
 const summarize = (label: string, rows: ReadonlyArray<Row>): void => {
   const groups = [...new Set(rows.map((row) => row.group))].sort();
@@ -134,24 +151,31 @@ const files = listPdfs(options.root);
 const selected = options.limit > 0 ? files.slice(0, options.limit) : files;
 const groupOf = (file: string): string => relative(options.root, file).split(sep)[0] ?? "";
 
-const runAll = async (
-  run: (file: string) => Promise<Outcome>,
-): Promise<ReadonlyArray<Row>> => {
-  const warm = selected.reduce(
-    (smallest, file) => (statSync(file).size < statSync(smallest).size ? file : smallest),
-    selected[0] ?? "",
-  );
-  if (warm !== "") {
-    await run(warm);
-  }
-  const rows: Row[] = [];
-  for (const file of selected) {
-    rows.push({ file: relative(options.root, file), group: groupOf(file), outcome: await run(file) });
-  }
-  return rows;
-};
+const runAll = (run: Runner) =>
+  Effect.gen(function* () {
+    const warm = selected.reduce(
+      (smallest, file) => (statSync(file).size < statSync(smallest).size ? file : smallest),
+      selected[0] ?? "",
+    );
+    if (warm !== "") {
+      yield* run(warm);
+    }
+    const rows: Row[] = [];
+    for (const file of selected) {
+      rows.push({
+        file: relative(options.root, file),
+        group: groupOf(file),
+        outcome: yield* run(file),
+      });
+    }
+    return rows;
+  });
 
-summarize("pdf_core", await runAll(await pdfCoreRunner()));
-if (options.liteparseDir !== undefined) {
-  summarize("liteparse", await runAll(await liteparseRunner(options.liteparseDir)));
-}
+const program = Effect.gen(function* () {
+  summarize("pdf_core", yield* runAll(yield* pdfCoreRunner));
+  if (options.liteparseDir !== undefined) {
+    summarize("liteparse", yield* runAll(yield* liteparseRunner(options.liteparseDir)));
+  }
+});
+
+NodeRuntime.runMain(program);
