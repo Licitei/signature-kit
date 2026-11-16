@@ -231,6 +231,9 @@
       "dependencies": {
         "effect": "4.1.0",
       },
+      "devDependencies": {
+        "@cantoo/pdf-lib": "2.11.1",
+      },
     },
     "signers/a1": {
       "name": "@signature-kit/a1",

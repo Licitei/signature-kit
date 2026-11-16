@@ -2,12 +2,15 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { Effect } from "effect";
+
 import {
   CORPUS_FIXTURE_NAMES,
   listCommittedCorpusFixtures,
   PDF_CORE_FIXTURES_DIR,
   type CorpusFixtureName,
 } from "../__tests__/corpus.ts";
+import { makePdfCore } from "../dist/pdf-core.js";
 import { bunStorePackageRoot, workspaceModuleUrl } from "../scripts/workspace-modules.ts";
 
 const pdfInspectorModule = await import(
@@ -155,19 +158,20 @@ const createPdfInspectorAdapter = async (): Promise<
   };
 };
 
-const loadPdfCoreAdapter = async (): Promise<PdfCoreBenchAdapter | undefined> => {
-  const modulePath = join(benchDir, "../dist/pdf-core.js");
-  try {
-    const module = (await import(modulePath)) as {
-      readonly inspect?: (pdf: Uint8Array) => Promise<TextExtractionSummary>;
-    };
-    if (typeof module.inspect === "function") {
-      return module.inspect;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
+const pdfCoreWasmPath = join(benchDir, "../dist/pdf-core.wasm");
+
+const compilePdfCore = async () => {
+  const wasm = await WebAssembly.compile(new Uint8Array(readFileSync(pdfCoreWasmPath)));
+  return Effect.runPromise(makePdfCore(wasm));
+};
+
+const createPdfCoreAdapter = async (): Promise<PdfCoreBenchAdapter> => {
+  const core = await compilePdfCore();
+  return async (pdf: Uint8Array): Promise<TextExtractionSummary> => {
+    const inspection = await Effect.runPromise(core.inspect(pdf, { text: true, links: true }));
+    const items = inspection.text.reduce((total, page) => total + page.rects.length / 5, 0);
+    return { pages: inspection.pages.length, items };
+  };
 };
 
 const measure = async (
@@ -229,7 +233,7 @@ const main = async (): Promise<void> => {
   const liteParseRun = await createLiteParseAdapter();
   const pdfJsRun = await createPdfJsAdapter();
   const pdfInspectorRun = await createPdfInspectorAdapter();
-  const pdfCoreRun = await loadPdfCoreAdapter();
+  const pdfCoreRun = await createPdfCoreAdapter();
   const rows: BenchRow[] = [];
   for (const fixture of fixturesToRun()) {
     const pdf = new Uint8Array(readFileSync(fixture.path));
@@ -250,9 +254,11 @@ const main = async (): Promise<void> => {
         await initPdfInspector({ module_or_path: pdfInspectorWasmBytes() });
       }),
     );
-    if (pdfCoreRun !== undefined) {
-      rows.push(await measure(fixture.label, "pdf-core", pdfCoreRun, pdf, async () => undefined));
-    }
+    rows.push(
+      await measure(fixture.label, "pdf-core", pdfCoreRun, pdf, async () => {
+        await compilePdfCore();
+      }),
+    );
   }
   const table = markdownTable(rows);
   console.log(table);

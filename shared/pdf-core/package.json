@@ -42,6 +42,9 @@
   "dependencies": {
     "effect": "4.1.0"
   },
+  "devDependencies": {
+    "@cantoo/pdf-lib": "2.11.1"
+  },
   "nx": {
     "targets": {
       "build-wasm": {
