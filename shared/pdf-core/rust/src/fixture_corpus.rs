@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -10,7 +10,7 @@ mod tests {
     use crate::failure::FailureCode;
     use crate::font::Font;
     use crate::inspection::{InspectOptions, Inspection, Limits};
-    use crate::object::{Object, Resolver};
+    use crate::object::{Object, Resolver as _};
 
     const LINK_PRIMARY: &str = "https://signature-kit.dev/corpus/link-primary";
     const LINK_SECONDARY: &str = "https://signature-kit.dev/corpus/link-secondary";
@@ -93,7 +93,7 @@ mod tests {
         assert!(inspection.links.iter().all(|link| link.uri == LINK_ROTATED));
     }
 
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     #[test]
     fn corpus_page_counts_and_liteparse_dims() {
         let expectations: [(&str, usize, Option<(f64, f64)>); 9] = [
@@ -185,8 +185,7 @@ mod tests {
         let sample = content
             .windows(3)
             .find(|window| window[0] == b'(' && window[1] != b'\\')
-            .map(|window| window[1])
-            .unwrap_or(b'A');
+            .map_or(b'A', |window| window[1]);
         let mut decoded_any = false;
         for font in &fonts {
             let mut glyphs = Vec::new();
@@ -249,12 +248,12 @@ mod tests {
     #[test]
     fn encrypted_corpus_rejected() {
         let objects = [
-            (1u32, "<< /Type /Catalog /Pages 2 0 R >>".to_string()),
+            (1_u32, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
             (
-                2u32,
-                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+                2_u32,
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
             ),
-            (3u32, "<< /Type /Page /Parent 2 0 R >>".to_string()),
+            (3_u32, "<< /Type /Page /Parent 2 0 R >>".to_owned()),
         ];
         let mut bytes = b"%PDF-1.7\n".to_vec();
         for (number, body) in &objects {

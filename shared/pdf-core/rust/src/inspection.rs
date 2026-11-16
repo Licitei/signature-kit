@@ -1,5 +1,5 @@
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Limits {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Limits {
     pub max_pdf_bytes: usize,
     pub max_pages: usize,
     pub max_items_per_page: usize,
@@ -25,8 +25,8 @@ impl Default for Limits {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct InspectOptions {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct InspectOptions {
     pub text: bool,
     pub links: bool,
     pub page_indexes: Option<Vec<u32>>,

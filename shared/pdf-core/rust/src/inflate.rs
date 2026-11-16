@@ -33,8 +33,8 @@ const DIST_EXTRA: [u8; 30] = [
 ];
 
 fn fixed_lit_lens() -> [u8; 288] {
-    let mut lens = [0u8; 288];
-    let mut i = 0usize;
+    let mut lens = [0_u8; 288];
+    let mut i = 0_usize;
     while i < 144 {
         if let Some(slot) = lens.get_mut(i) {
             *slot = 8;
@@ -62,7 +62,7 @@ fn fixed_lit_lens() -> [u8; 288] {
     lens
 }
 
-const FIXED_DIST_LENS: [u8; 32] = [5u8; 32];
+const FIXED_DIST_LENS: [u8; 32] = [5_u8; 32];
 
 const CODE_LENGTH_ORDER: [u8; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
@@ -88,7 +88,7 @@ struct BitReader<'a> {
 }
 
 impl<'a> BitReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    const fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             pos: 0,
@@ -134,13 +134,13 @@ impl<'a> BitReader<'a> {
                 return None;
             }
         }
-        let value = (self.bit_buf & ((1u64 << count) - 1)) as u32;
+        let value = (self.bit_buf & ((1_u64 << count) - 1)) as u32;
         self.bit_buf >>= count;
         self.bit_count -= count;
         Some(value)
     }
 
-    fn align_byte(&mut self) {
+    const fn align_byte(&mut self) {
         let whole = (self.bit_count >> 3) as usize;
         self.pos = self.pos.saturating_sub(whole);
         self.bit_buf = 0;
@@ -168,7 +168,7 @@ impl<'a> BitReader<'a> {
 }
 
 fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
-    let mut max_len = 0u8;
+    let mut max_len = 0_u8;
     for &len in lengths {
         if len > max_len {
             max_len = len;
@@ -178,7 +178,7 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         return Err(Failure::invalid("empty huffman tree"));
     }
 
-    let mut counts = [0u16; MAX_BITS + 1];
+    let mut counts = [0_u16; MAX_BITS + 1];
     for &len in lengths {
         if len > 0 {
             let slot = usize::from(len);
@@ -188,9 +188,9 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         }
     }
 
-    let mut next_code = [0u16; MAX_BITS + 1];
-    let mut code = 0u16;
-    let mut bits = 1u8;
+    let mut next_code = [0_u16; MAX_BITS + 1];
+    let mut code = 0_u16;
+    let mut bits = 1_u8;
     while usize::from(bits) <= MAX_BITS {
         let prev = usize::from(bits).saturating_sub(1);
         let prev_count = counts.get(prev).copied().unwrap_or(0);
@@ -201,10 +201,10 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         bits = bits.saturating_add(1);
     }
 
-    let mut first_code = [0u16; MAX_BITS + 1];
-    let mut offset = [0u16; MAX_BITS + 1];
-    let mut symbol_offset = 0u16;
-    let mut bit = 1u8;
+    let mut first_code = [0_u16; MAX_BITS + 1];
+    let mut offset = [0_u16; MAX_BITS + 1];
+    let mut symbol_offset = 0_u16;
+    let mut bit = 1_u8;
     while usize::from(bit) <= MAX_BITS {
         let slot = usize::from(bit);
         if let Some(dst) = first_code.get_mut(slot) {
@@ -220,13 +220,7 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
     let mut lens_sorted: Vec<(u8, u16)> = lengths
         .iter()
         .enumerate()
-        .filter_map(|(sym, &len)| {
-            if len > 0 {
-                Some((len, sym as u16))
-            } else {
-                None
-            }
-        })
+        .filter_map(|(sym, &len)| (len > 0).then_some((len, sym as u16)))
         .collect();
     lens_sorted.sort_by_key(|(len, sym)| (*len, *sym));
 
@@ -235,7 +229,7 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         symbols.push(sym);
     }
 
-    let mut fast = vec![0u32; FAST_SIZE];
+    let mut fast = vec![0_u32; FAST_SIZE];
     let mut assigned = next_code;
     for &(len, sym) in &lens_sorted {
         let slot = usize::from(len);
@@ -245,7 +239,7 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         let code = u32::from(*code_slot);
         *code_slot = code_slot.wrapping_add(1);
         let len32 = u32::from(len);
-        if len32 > FAST_BITS || code >= (1u32 << len32) {
+        if len32 > FAST_BITS || code >= (1_u32 << len32) {
             continue;
         }
         let reversed = code.reverse_bits() >> (32 - len32);
@@ -255,7 +249,7 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
             if let Some(cell) = fast.get_mut(index) {
                 *cell = entry;
             }
-            index += 1usize << len32;
+            index += 1_usize << len32;
         }
     }
 
@@ -289,8 +283,8 @@ fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
 }
 
 fn decode_slow(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
-    let mut code = 0u32;
-    let mut len = 1u8;
+    let mut code = 0_u32;
+    let mut len = 1_u8;
     while len <= tree.max_bits {
         if bits.bit_count == 0 {
             return None;
@@ -377,7 +371,7 @@ fn inflate_block(
             .copied()
             .ok_or_else(|| Failure::invalid("bad length extra"))?;
         let extra = match extra_len {
-            0 => 0usize,
+            0 => 0_usize,
             n => bits
                 .take_bits(n)
                 .ok_or_else(|| Failure::invalid("truncated length extra"))?
@@ -404,7 +398,7 @@ fn inflate_block(
             .copied()
             .ok_or_else(|| Failure::invalid("bad distance extra"))?;
         let dist_bits = match dist_extra {
-            0 => 0usize,
+            0 => 0_usize,
             n => bits
                 .take_bits(n)
                 .ok_or_else(|| Failure::invalid("truncated distance extra"))?
@@ -429,7 +423,7 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
         .ok_or_else(|| Failure::invalid("truncated hclen"))?
         .saturating_add(4) as usize;
 
-    let mut clens = [0u8; 19];
+    let mut clens = [0_u8; 19];
     for i in 0..hclen {
         let ord = CODE_LENGTH_ORDER
             .get(i)
@@ -468,13 +462,13 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
                 .take_bits(3)
                 .ok_or_else(|| Failure::invalid("truncated repeat17"))?
                 .saturating_add(3) as usize;
-            lengths.extend(std::iter::repeat_n(0u8, rep));
+            lengths.extend(std::iter::repeat_n(0_u8, rep));
         } else if sym == 18 {
             let rep = bits
                 .take_bits(7)
                 .ok_or_else(|| Failure::invalid("truncated repeat18"))?
                 .saturating_add(11) as usize;
-            lengths.extend(std::iter::repeat_n(0u8, rep));
+            lengths.extend(std::iter::repeat_n(0_u8, rep));
         } else {
             return Err(Failure::invalid("bad code length symbol"));
         }
@@ -505,7 +499,7 @@ fn skip_zlib_header(data: &[u8]) -> usize {
     }
 }
 
-pub fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
+pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max_output));
     let skip = skip_zlib_header(data);
     let payload = match data.get(skip..) {
@@ -572,7 +566,7 @@ pub fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing)]
+#[expect(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::inflate;
 
@@ -580,11 +574,11 @@ mod tests {
     const ZLIB_SKEWED: &[u8] = include_bytes!("../tests/fixtures/skewed.zlib");
 
     const CRC32_TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
-        let mut index = 0usize;
+        let mut table = [0_u32; 256];
+        let mut index = 0_usize;
         while index < 256 {
             let mut value = index as u32;
-            let mut bit = 0u8;
+            let mut bit = 0_u8;
             while bit < 8 {
                 value = if value & 1 == 0 {
                     value >> 1
@@ -600,7 +594,7 @@ mod tests {
     };
 
     fn crc32(data: &[u8]) -> u32 {
-        let mut hash = 0xFFFF_FFFFu32;
+        let mut hash = 0xFFFF_FFFF_u32;
         for byte in data {
             let idx = ((hash ^ u32::from(*byte)) & 0xff) as usize;
             hash = CRC32_TABLE[idx] ^ (hash >> 8);
@@ -609,8 +603,8 @@ mod tests {
     }
 
     fn adler32(data: &[u8]) -> u32 {
-        let mut a = 1u32;
-        let mut b = 0u32;
+        let mut a = 1_u32;
+        let mut b = 0_u32;
         for byte in data {
             a = (a + u32::from(*byte)) % 65521;
             b = (b + a) % 65521;
@@ -633,7 +627,7 @@ mod tests {
         use super::{BitReader, build_huffman, decode_symbol, fixed_lit_lens};
         let lit = build_huffman(&fixed_lit_lens()).expect("lit");
         let data = [
-            0xcbu8, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01, 0x00,
+            0xcb_u8, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01, 0x00,
         ];
         let mut bits = BitReader::new(&data);
         let hdr = bits.take_bits(3).expect("hdr");
@@ -645,7 +639,7 @@ mod tests {
     #[test]
     fn zlib_hello() {
         let data = [
-            0x78u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
+            0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
             0x00, 0x1a, 0x0b, 0x04, 0x5d,
         ];
         let out = inflate(&data, 1024).expect("inflate");
@@ -655,7 +649,7 @@ mod tests {
     #[test]
     fn raw_deflate_no_header() {
         let data = [
-            0xcbu8, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01, 0x00,
+            0xcb_u8, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01, 0x00,
         ];
         let out = inflate(&data, 1024).expect("inflate");
         assert_eq!(out, b"hello world");
@@ -690,7 +684,7 @@ mod tests {
     #[test]
     fn stored_zlib_block() {
         let data = [
-            0x78u8, 0x01, 0x01, 0x0b, 0x00, 0xf4, 0xff, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77,
+            0x78_u8, 0x01, 0x01, 0x0b, 0x00, 0xf4, 0xff, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x77,
             0x6f, 0x72, 0x6c, 0x64, 0x1a, 0x0b, 0x04, 0x5d,
         ];
         let out = inflate(&data, 1024).expect("inflate");

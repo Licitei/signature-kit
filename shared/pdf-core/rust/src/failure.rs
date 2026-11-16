@@ -29,4 +29,4 @@ impl Failure {
     }
 }
 
-pub type Outcome<T> = Result<T, Failure>;
+pub(crate) type Outcome<T> = Result<T, Failure>;

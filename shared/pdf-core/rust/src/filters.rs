@@ -11,7 +11,7 @@ const IMAGE_FILTERS: [&[u8]; 4] = [
     b"JBIG2Decode",
 ];
 
-pub fn decode_stream(dict: &Dict, raw: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
+pub(crate) fn decode_stream(dict: &Dict, raw: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     let (filters, parms) = parse_filter_chain(dict)?;
     if filters.is_empty() {
         if raw.len() > max_output {
@@ -179,9 +179,8 @@ fn flate_decode(parms: Option<&Dict>, data: &[u8], max_output: usize) -> Outcome
 fn lzw_decode(parms: Option<&Dict>, data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     let early_change = parms
         .and_then(|d| d.get(b"EarlyChange"))
-        .and_then(|o| o.as_integer())
-        .map(|v| v != 0)
-        .unwrap_or(true);
+        .and_then(Object::as_integer)
+        != Some(0);
     let mut decoded = lzw_expand(data, early_change, max_output)?;
     apply_predictor(parms, &mut decoded, max_output)?;
     Ok(decoded)
@@ -262,7 +261,7 @@ fn push_ascii85_group(
     for (dst, &src) in chars.iter_mut().zip(group.iter()) {
         *dst = src;
     }
-    let mut value = 0u32;
+    let mut value = 0_u32;
     for i in 0..5 {
         let b = chars
             .get(i)
@@ -278,13 +277,13 @@ fn push_ascii85_group(
     let emit = if partial {
         group.len().saturating_sub(1)
     } else {
-        4usize
+        4_usize
     };
     for index in 0..emit {
         if out.len() >= max_output {
             return Err(Failure::limit("decoded stream exceeds limit"));
         }
-        let shift = (3usize.saturating_sub(index)).saturating_mul(8);
+        let shift = (3_usize.saturating_sub(index)).saturating_mul(8);
         out.push((value >> shift) as u8);
     }
     Ok(())
@@ -292,7 +291,7 @@ fn push_ascii85_group(
 
 fn run_length_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len().saturating_mul(2));
-    let mut index = 0usize;
+    let mut index = 0_usize;
     while index < data.len() {
         let byte = *data
             .get(index)
@@ -318,7 +317,7 @@ fn run_length_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
                 .get(index)
                 .ok_or_else(|| Failure::invalid("run length repeat"))?;
             index = index.saturating_add(1);
-            let repeat = usize::from(257u16.saturating_sub(u16::from(byte)));
+            let repeat = usize::from(257_u16.saturating_sub(u16::from(byte)));
             for _ in 0..repeat {
                 if out.len() >= max_output {
                     return Err(Failure::limit("decoded stream exceeds limit"));
@@ -332,20 +331,20 @@ fn run_length_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
 
 fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec<u8>> {
     let mut dict: Vec<Vec<u8>> = Vec::with_capacity(4096);
-    for i in 0..256usize {
+    for i in 0..256_usize {
         dict.push(vec![i as u8]);
     }
     dict.push(vec![]);
     dict.push(vec![]);
     let mut out = Vec::with_capacity(data.len().saturating_mul(2));
-    let mut code_bits = 9u8;
-    let clear_code = 256u16;
-    let eod_code = 257u16;
-    let mut next_code = 258u16;
+    let mut code_bits = 9_u8;
+    let clear_code = 256_u16;
+    let eod_code = 257_u16;
+    let mut next_code = 258_u16;
     let mut previous: Option<u16> = None;
-    let mut bit_buf = 0u32;
-    let mut bit_count = 0u8;
-    let mut pos = 0usize;
+    let mut bit_buf = 0_u32;
+    let mut bit_count = 0_u8;
+    let mut pos = 0_usize;
     loop {
         while bit_count < code_bits {
             let Some(byte) = data.get(pos) else {
@@ -359,7 +358,7 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
             bit_buf |= u32::from(*byte) << bit_count;
             bit_count = bit_count.saturating_add(8);
         }
-        let mask = (1u32 << code_bits).wrapping_sub(1);
+        let mask = (1_u32 << code_bits).wrapping_sub(1);
         let code = (bit_buf & mask) as u16;
         bit_buf >>= code_bits;
         bit_count = bit_count.saturating_sub(code_bits);
@@ -412,10 +411,10 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
             }
             next_code = next_code.saturating_add(1);
             if early_change {
-                if next_code == (1u16 << code_bits).saturating_sub(1) && code_bits < 12 {
+                if next_code == (1_u16 << code_bits).saturating_sub(1) && code_bits < 12 {
                     code_bits = code_bits.saturating_add(1);
                 }
-            } else if next_code == 1u16 << code_bits && code_bits < 12 {
+            } else if next_code == 1_u16 << code_bits && code_bits < 12 {
                 code_bits = code_bits.saturating_add(1);
             }
         }
@@ -427,7 +426,7 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
 fn predictor_value(parms: Option<&Dict>) -> i64 {
     parms
         .and_then(|d| d.get(b"Predictor"))
-        .and_then(|o| o.as_integer())
+        .and_then(Object::as_integer)
         .unwrap_or(1)
 }
 
@@ -480,7 +479,7 @@ fn tiff_predict(data: &mut [u8], row_bytes: usize, max_output: usize) -> Outcome
     if row_bytes == 0 || data.is_empty() {
         return Ok(());
     }
-    let mut index = 0usize;
+    let mut index = 0_usize;
     while index < data.len() {
         for col in 1..row_bytes {
             let cur_idx = index.saturating_add(col);
@@ -509,7 +508,7 @@ fn png_predict(
         return Ok(());
     }
     let mut out = Vec::with_capacity(data.len());
-    let mut pos = 0usize;
+    let mut pos = 0_usize;
     while pos < data.len() {
         let filter = *data
             .get(pos)
@@ -572,7 +571,7 @@ fn png_predict(
 
 fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
     let pred = match filter {
-        0 => 0u8,
+        0 => 0_u8,
         1 => left,
         2 => up,
         3 => avg(left, up),
@@ -603,7 +602,7 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-fn hex_digit(byte: u8) -> Option<u8> {
+const fn hex_digit(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
         b'a'..=b'f' => Some(byte.saturating_sub(b'a').saturating_add(10)),
@@ -612,12 +611,12 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-fn is_ws(byte: u8) -> bool {
+const fn is_ws(byte: u8) -> bool {
     matches!(byte, 0 | 9 | 10 | 12 | 13 | 32)
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[expect(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::object::Object;
@@ -648,7 +647,7 @@ mod tests {
     #[test]
     fn flate_roundtrip() {
         let zlib = [
-            0x78u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
+            0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
             0x00, 0x1a, 0x0b, 0x04, 0x5d,
         ];
         let dict = dict_filter(b"FlateDecode", None);
@@ -674,7 +673,7 @@ mod tests {
 
     #[test]
     fn run_length_roundtrip() {
-        let raw = [3u8, 97, 98, 99, 100, 254, 97, 128];
+        let raw = [3_u8, 97, 98, 99, 100, 254, 97, 128];
         let dict = dict_filter(b"RL", None);
         let out = decode_stream(&dict, &raw, 1024).expect("rl");
         assert_eq!(out, b"abcdaaa");
@@ -704,10 +703,10 @@ mod tests {
         parms.insert(b"Columns", Object::Integer(2));
         dict.insert(b"DecodeParms", Object::Dict(parms));
         let stored = [
-            0x78u8, 0x01, 0x01, 0x03, 0x00, 0xfc, 0xff, 0x01, 0x01, 0x02, 0x00, 0x0a, 0x00, 0x05,
+            0x78_u8, 0x01, 0x01, 0x03, 0x00, 0xfc, 0xff, 0x01, 0x01, 0x02, 0x00, 0x0a, 0x00, 0x05,
         ];
         let out = decode_stream(&dict, &stored, 1024).expect("png sub");
-        assert_eq!(out, vec![1u8, 3]);
+        assert_eq!(out, vec![1_u8, 3]);
     }
 
     #[test]
@@ -721,18 +720,18 @@ mod tests {
         parms.insert(b"Columns", Object::Integer(2));
         dict.insert(b"DecodeParms", Object::Dict(parms));
         let stored = [
-            0x78u8, 0x01, 0x01, 0x04, 0x00, 0xfb, 0xff, 0x0a, 0x05, 0x0a, 0x0a, 0x00, 0x59, 0x00,
+            0x78_u8, 0x01, 0x01, 0x04, 0x00, 0xfb, 0xff, 0x0a, 0x05, 0x0a, 0x0a, 0x00, 0x59, 0x00,
             0x24,
         ];
         let out = decode_stream(&dict, &stored, 1024).expect("tiff");
-        assert_eq!(out, vec![10u8, 15, 10, 20]);
+        assert_eq!(out, vec![10_u8, 15, 10, 20]);
     }
 
     #[test]
     fn limit_enforced() {
         let dict = dict_filter(b"FlateDecode", None);
         let big = [
-            0x78u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
+            0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
             0x00, 0x1a, 0x0b, 0x04, 0x5d,
         ];
         let err = decode_stream(&dict, &big, 4).expect_err("limit");
@@ -743,7 +742,7 @@ mod tests {
     fn truncated_returns_partial_flate() {
         let dict = dict_filter(b"Fl", None);
         let partial = [
-            0x78u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49,
+            0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49,
         ];
         let out = decode_stream(&dict, &partial, 1024).expect("partial");
         assert!(!out.is_empty());
@@ -761,7 +760,7 @@ mod tests {
     fn lzw_roundtrip() {
         let mut dict = Dict::default();
         dict.insert(b"Filter", Object::Name(b"LZWDecode".to_vec()));
-        let data = [0x00u8, 0x83, 0x08, 0x09, 0x08];
+        let data = [0x00_u8, 0x83, 0x08, 0x09, 0x08];
         let out = decode_stream(&dict, &data, 1024).expect("lzw");
         assert_eq!(out, b"AB");
     }
@@ -781,23 +780,23 @@ mod tests {
     #[test]
     fn png_predictor_up_average_paeth_and_mixed() {
         let up = [
-            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0x62, 0x66, 0x05, 0x00, 0x00, 0x99, 0x00, 0x29,
+            0x78_u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0x62, 0x66, 0x05, 0x00, 0x00, 0x99, 0x00, 0x29,
         ];
-        assert_eq!(png_decode_stored(&up, 12), vec![10u8, 20, 13, 25]);
+        assert_eq!(png_decode_stored(&up, 12), vec![10_u8, 20, 13, 25]);
         let average = [
-            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe6, 0xe2, 0x00, 0x00, 0x00, 0xad, 0x00, 0x34,
+            0x78_u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe6, 0xe2, 0x00, 0x00, 0x00, 0xad, 0x00, 0x34,
         ];
-        assert_eq!(png_decode_stored(&average, 13), vec![10u8, 25, 15, 28]);
+        assert_eq!(png_decode_stored(&average, 13), vec![10_u8, 25, 15, 28]);
         let paeth = [
-            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe1, 0xe2, 0x06, 0x00, 0x00, 0xb3, 0x00, 0x38,
+            0x78_u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe1, 0xe2, 0x06, 0x00, 0x00, 0xb3, 0x00, 0x38,
         ];
-        assert_eq!(png_decode_stored(&paeth, 14), vec![10u8, 20, 20, 31]);
+        assert_eq!(png_decode_stored(&paeth, 14), vec![10_u8, 20, 20, 31]);
         let mixed = [
-            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0x64, 0xe2, 0x60, 0x62, 0x64, 0x03, 0x00, 0x01,
+            0x78_u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0x64, 0xe2, 0x60, 0x62, 0x64, 0x03, 0x00, 0x01,
             0x23, 0x00, 0x33,
         ];
         let mixed_out = png_decode_stored(&mixed, 15);
-        assert_eq!(mixed_out, vec![10u8, 20, 2, 10, 3, 16]);
+        assert_eq!(mixed_out, vec![10_u8, 20, 2, 10, 3, 16]);
     }
 
     #[test]
@@ -810,7 +809,7 @@ mod tests {
             dict.insert(b"DecodeParms", Object::Dict(parms));
             decode_stream(&dict, data, 1024).expect("lzw")
         };
-        let short = [0x00u8, 0x83, 0x08, 0x09, 0x08];
+        let short = [0x00_u8, 0x83, 0x08, 0x09, 0x08];
         assert_eq!(decode(1, &short), b"AB");
         assert_eq!(decode(0, &short), b"AB");
     }
@@ -818,11 +817,11 @@ mod tests {
     #[test]
     fn corruption_loop_no_panic() {
         let dict = dict_filter(b"FlateDecode", None);
-        let seed = [0x78u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9];
-        let mut state = 0xA5A5_1234u32;
+        let seed = [0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9];
+        let mut state = 0xA5A5_1234_u32;
         for _ in 0..4096 {
             let mut input = seed;
-            for byte in input.iter_mut() {
+            for byte in &mut input {
                 state ^= state << 13;
                 state ^= state >> 17;
                 state ^= state << 5;
@@ -853,7 +852,7 @@ mod tests {
         block.extend_from_slice(&len.to_le_bytes());
         block.extend_from_slice(&nlen.to_le_bytes());
         block.extend_from_slice(raw);
-        let mut out = vec![0x78u8, 0x01];
+        let mut out = vec![0x78_u8, 0x01];
         out.extend_from_slice(&block);
         out.extend_from_slice(&[0, 0, 0, 0]);
         out

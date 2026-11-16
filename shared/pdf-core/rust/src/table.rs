@@ -7,7 +7,7 @@ const MAX_LINES: usize = 6000;
 const MAX_CELLS: usize = 250_000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rule {
+pub(crate) struct Rule {
     pub x0: f64,
     pub y0: f64,
     pub x1: f64,
@@ -34,7 +34,7 @@ pub struct Table {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GridCell {
+pub(crate) struct GridCell {
     pub row: usize,
     pub col: usize,
     pub row_span: usize,
@@ -42,7 +42,7 @@ pub struct GridCell {
 }
 
 #[derive(Clone, Debug)]
-pub struct Grid {
+pub(crate) struct Grid {
     pub xs: Vec<f64>,
     pub ys: Vec<f64>,
     pub cells: Vec<GridCell>,
@@ -50,15 +50,15 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub fn rows(&self) -> usize {
+    pub(crate) const fn rows(&self) -> usize {
         self.ys.len().saturating_sub(1)
     }
 
-    pub fn cols(&self) -> usize {
+    pub(crate) const fn cols(&self) -> usize {
         self.xs.len().saturating_sub(1)
     }
 
-    pub fn bounds(&self) -> [f64; 4] {
+    pub(crate) fn bounds(&self) -> [f64; 4] {
         let left = self.xs.first().copied().unwrap_or(0.0);
         let right = self.xs.last().copied().unwrap_or(0.0);
         let top = self.ys.first().copied().unwrap_or(0.0);
@@ -66,7 +66,7 @@ impl Grid {
         [left, bottom, right, top]
     }
 
-    pub fn cell_rect(&self, cell: &GridCell) -> [f64; 4] {
+    pub(crate) fn cell_rect(&self, cell: &GridCell) -> [f64; 4] {
         let left = self.xs.get(cell.col).copied().unwrap_or(0.0);
         let right = self
             .xs
@@ -82,7 +82,7 @@ impl Grid {
         [left, bottom, right, top]
     }
 
-    pub fn locate(&self, x: f64, y: f64) -> Option<usize> {
+    pub(crate) fn locate(&self, x: f64, y: f64) -> Option<usize> {
         let [left, bottom, right, top] = self.bounds();
         if !(x >= left && x <= right && y >= bottom && y <= top) {
             return None;
@@ -109,7 +109,7 @@ fn cluster(mut values: Vec<f64>) -> Vec<f64> {
     values.sort_unstable_by(f64::total_cmp);
     let mut levels: Vec<f64> = Vec::new();
     let mut sum = 0.0;
-    let mut count = 0usize;
+    let mut count = 0_usize;
     let mut last = f64::NEG_INFINITY;
     for value in values {
         if count > 0 && value - last > LEVEL_TOLERANCE {
@@ -145,7 +145,7 @@ fn nearest(levels: &[f64], value: f64) -> Option<usize> {
 fn merge_collinear(mut lines: Vec<[f64; 3]>) -> Vec<[f64; 3]> {
     lines.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
     let mut merged: Vec<[f64; 3]> = Vec::with_capacity(lines.len());
-    let mut start = 0usize;
+    let mut start = 0_usize;
     while start < lines.len() {
         if lines.get(start).is_none() {
             break;
@@ -198,7 +198,7 @@ fn covered(spans: &[(f64, f64)], from: f64, to: f64) -> bool {
         .any(|&(lo, hi)| lo <= from + TOUCH && hi >= to - TOUCH)
 }
 
-pub fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
+pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
     let mut horizontal: Vec<[f64; 3]> = Vec::new();
     let mut vertical: Vec<[f64; 3]> = Vec::new();
     for line in lines {
@@ -340,7 +340,7 @@ fn build_grid(
         covered(spans, bottom, top)
     };
     let mut owned = vec![false; rows * cols];
-    let mut index = vec![0u32; rows * cols];
+    let mut index = vec![0_u32; rows * cols];
     let mut cells: Vec<GridCell> = Vec::new();
     for row in 0..rows {
         for col in 0..cols {
@@ -395,7 +395,7 @@ fn build_grid(
     })
 }
 
-pub fn merge_row(columns: &[(f64, f64)], spans: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
+pub(crate) fn merge_row(columns: &[(f64, f64)], spans: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     let mut next = columns.to_vec();
     let mut used: Vec<usize> = Vec::new();
     for &(x0, x1) in spans {
@@ -432,7 +432,7 @@ pub fn merge_row(columns: &[(f64, f64)], spans: &[(f64, f64)]) -> Option<Vec<(f6
     Some(next)
 }
 
-pub fn column_of(columns: &[(f64, f64)], x0: f64, x1: f64) -> Option<usize> {
+pub(crate) fn column_of(columns: &[(f64, f64)], x0: f64, x1: f64) -> Option<usize> {
     let mut hits = columns
         .iter()
         .enumerate()
@@ -459,7 +459,7 @@ fn matrix(table: &Table) -> Vec<Vec<Option<&str>>> {
     grid
 }
 
-pub fn render_text(table: &Table) -> String {
+pub(crate) fn render_text(table: &Table) -> String {
     let mut out = String::new();
     for row in matrix(table) {
         let cells: Vec<&str> = row
@@ -499,7 +499,7 @@ fn push_markdown_cell(out: &mut String, text: &str) {
     }
 }
 
-pub fn render_markdown(table: &Table) -> String {
+pub(crate) fn render_markdown(table: &Table) -> String {
     let mut out = String::new();
     for (index, row) in matrix(table).into_iter().enumerate() {
         if index > 0 {
@@ -522,7 +522,7 @@ pub fn render_markdown(table: &Table) -> String {
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,

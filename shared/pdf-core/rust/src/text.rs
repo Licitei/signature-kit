@@ -5,7 +5,7 @@ use crate::document::{Document, Page};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::font::{Font, Glyph};
 use crate::inspection::{Limits, TextItem};
-use crate::object::{Dict, ObjRef, Object, Resolver};
+use crate::object::{Dict, ObjRef, Object, Resolver as _};
 use crate::syntax::{ContentLexer, ContentToken};
 
 type Matrix = [f64; 6];
@@ -86,7 +86,7 @@ enum Shows {
 
 fn scan_shows(data: &[u8]) -> Shows {
     let mut forms = false;
-    let mut at = 0usize;
+    let mut at = 0_usize;
     while let Some(offset) = data.get(at..).and_then(|rest| {
         rest.iter()
             .position(|byte| matches!(byte, b'T' | b'D' | b'\'' | b'"'))
@@ -180,12 +180,12 @@ struct PathBuilder {
 }
 
 impl PathBuilder {
-    fn move_to(&mut self, point: (f64, f64)) {
+    const fn move_to(&mut self, point: (f64, f64)) {
         self.start = Some(point);
         self.current = Some(point);
     }
 
-    fn move_current(&mut self, point: (f64, f64)) {
+    const fn move_current(&mut self, point: (f64, f64)) {
         self.current = Some(point);
         if self.start.is_none() {
             self.start = Some(point);
@@ -297,7 +297,7 @@ struct GState {
 }
 
 impl GState {
-    fn initial() -> Self {
+    const fn initial() -> Self {
         Self {
             ctm: IDENTITY,
             font: None,
@@ -346,7 +346,7 @@ struct Scope {
 }
 
 impl Scope {
-    fn new(id: u32, resources: Rc<Object>) -> Self {
+    const fn new(id: u32, resources: Rc<Object>) -> Self {
         Self {
             id,
             resources,
@@ -388,7 +388,7 @@ impl Scope {
         } else {
             &mut self.xobjects
         };
-        if let Lazy::Unset = slot {
+        if matches!(slot, Lazy::Unset) {
             let found = self
                 .resources
                 .as_dict()
@@ -447,14 +447,14 @@ struct Interpreter<'d, 'a> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Run {
+pub(crate) struct Run {
     pub item: TextItem,
     pub direction: (f64, f64),
     pub bold: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Ruling {
+pub(crate) struct Ruling {
     pub x0: f64,
     pub y0: f64,
     pub x1: f64,
@@ -463,24 +463,24 @@ pub struct Ruling {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Capture {
+pub(crate) struct Capture {
     pub split_repositioned: bool,
     pub structure: bool,
 }
 
 #[derive(Debug, Default)]
-pub struct PageContent {
+pub(crate) struct PageContent {
     pub runs: Vec<Run>,
     pub rulings: Vec<Ruling>,
 }
 
 #[derive(Default)]
-pub struct Session {
+pub(crate) struct Session {
     fonts: HashMap<FontKey, Option<Rc<FontEntry>>>,
     scopes: u32,
 }
 
-pub fn extract_page(
+pub(crate) fn extract_page(
     document: &Document<'_>,
     page: &Page,
     limits: &Limits,
@@ -493,7 +493,7 @@ pub fn extract_page(
     )
 }
 
-pub fn extract_runs(
+pub(crate) fn extract_runs(
     document: &Document<'_>,
     page: &Page,
     limits: &Limits,
@@ -507,7 +507,7 @@ pub fn extract_runs(
     Ok(extract_content(document, page, limits, capture, session)?.runs)
 }
 
-pub fn extract_content(
+pub(crate) fn extract_content(
     document: &Document<'_>,
     page: &Page,
     limits: &Limits,
@@ -574,7 +574,7 @@ pub fn extract_content(
 }
 
 impl Interpreter<'_, '_> {
-    fn next_scope(&mut self) -> u32 {
+    const fn next_scope(&mut self) -> u32 {
         self.scopes = self.scopes.wrapping_add(1);
         self.scopes
     }
@@ -1233,7 +1233,7 @@ impl Interpreter<'_, '_> {
         self.open_text.push_str(text);
     }
 
-    fn merge_bounds(&mut self, bounds: [f64; 4]) {
+    const fn merge_bounds(&mut self, bounds: [f64; 4]) {
         let [x0, y0, x1, y1] = bounds;
         let [ox0, oy0, ox1, oy1] = &mut self.open_bounds;
         *ox0 = ox0.min(x0);
@@ -1374,7 +1374,7 @@ impl Interpreter<'_, '_> {
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
@@ -1410,7 +1410,7 @@ mod tests {
         for number in 0..=max {
             match offsets.iter().find(|(n, _)| *n == number) {
                 Some((_, offset)) => {
-                    bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes())
+                    bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
                 }
                 None => bytes.extend_from_slice(b"0000000000 65535 f \n"),
             }
@@ -1427,8 +1427,8 @@ mod tests {
 
     fn page_pdf(resources: &str, content: &str, extra: &[(u32, String)]) -> Vec<u8> {
         let mut objects = vec![
-            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_string()),
-            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string()),
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned()),
             (
                 3,
                 format!(
@@ -1445,7 +1445,7 @@ mod tests {
         page_pdf(
             "<< /Font << /F1 5 0 R >> >>",
             content,
-            &[(5, HELVETICA.to_string())],
+            &[(5, HELVETICA.to_owned())],
         )
     }
 
@@ -1637,17 +1637,17 @@ mod tests {
 
     #[test]
     fn form_xobject_applies_matrix_and_own_resources() {
-        let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Matrix [1 0 0 1 50 60] /Resources << /Font << /G 7 0 R >> >> /Length 31 >>\nstream\nBT /G 10 Tf 10 10 Td (Inside) Tj ET\nendstream".to_string();
+        let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Matrix [1 0 0 1 50 60] /Resources << /Font << /G 7 0 R >> >> /Length 31 >>\nstream\nBT /G 10 Tf 10 10 Td (Inside) Tj ET\nendstream".to_owned();
         let bytes = page_pdf(
             "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R /I 8 0 R >> >>",
             "BT /F1 10 Tf 0 700 Td (Outer) Tj ET /X Do /I Do",
             &[
-                (5, HELVETICA.to_string()),
+                (5, HELVETICA.to_owned()),
                 (6, form),
-                (7, HELVETICA.to_string()),
+                (7, HELVETICA.to_owned()),
                 (
                     8,
-                    "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\u{1}\nendstream".to_string(),
+                    "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\u{1}\nendstream".to_owned(),
                 ),
             ],
         );
@@ -1659,11 +1659,11 @@ mod tests {
 
     #[test]
     fn form_inherits_page_resources_and_cycles_terminate() {
-        let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length 38 >>\nstream\nBT /F1 10 Tf (Loop) Tj ET /X Do\nendstream".to_string();
+        let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length 38 >>\nstream\nBT /F1 10 Tf (Loop) Tj ET /X Do\nendstream".to_owned();
         let bytes = page_pdf(
             "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
             "/X Do",
-            &[(5, HELVETICA.to_string()), (6, form)],
+            &[(5, HELVETICA.to_owned()), (6, form)],
         );
         let items = extract(&bytes);
         assert_eq!(texts(&items), ["Loop"]);
@@ -1743,7 +1743,7 @@ mod tests {
         page_pdf(
             "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
             content,
-            &[(5, HELVETICA.to_string()), (6, form)],
+            &[(5, HELVETICA.to_owned()), (6, form)],
         )
     }
 
@@ -1861,7 +1861,7 @@ mod tests {
         let bytes = page_pdf(
             "<< /Font << /F1 5 0 R /F2 6 0 R >> >>",
             "BT /F1 10 Tf 50 700 Td (plain) Tj ET BT /F2 10 Tf 50 680 Td (heavy) Tj ET BT /F1 10 Tf 50 660 Td (mix ) Tj /F2 10 Tf (bold) Tj ET",
-            &[(5, HELVETICA.to_string()), (6, HELVETICA_BOLD.to_string())],
+            &[(5, HELVETICA.to_owned()), (6, HELVETICA_BOLD.to_owned())],
         );
         let content = structured(&bytes);
         let flags: Vec<(&str, bool)> = content
@@ -1973,16 +1973,16 @@ mod tests {
             &[
                 (
                     5,
-                    "<< /Type /Font /Subtype /Type0 /BaseFont /Sample /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>".to_string(),
+                    "<< /Type /Font /Subtype /Type0 /BaseFont /Sample /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>".to_owned(),
                 ),
                 (
                     6,
-                    "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sample /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 500 /W [1 [600 700]] /FontDescriptor 8 0 R >>".to_string(),
+                    "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sample /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 500 /W [1 [600 700]] /FontDescriptor 8 0 R >>".to_owned(),
                 ),
                 (7, stream_object("", cmap)),
                 (
                     8,
-                    "<< /Type /FontDescriptor /FontName /Sample /Flags 4 /Ascent 800 /Descent -200 /CapHeight 700 /ItalicAngle 0 /StemV 80 /FontBBox [0 -200 1000 800] >>".to_string(),
+                    "<< /Type /FontDescriptor /FontName /Sample /Flags 4 /Ascent 800 /Descent -200 /CapHeight 700 /ItalicAngle 0 /StemV 80 /FontBBox [0 -200 1000 800] >>".to_owned(),
                 ),
             ],
         )
@@ -2015,12 +2015,12 @@ mod tests {
             &[
                 (
                     5,
-                    "<< /Type /Font /Subtype /Type0 /BaseFont /Sample /Encoding /Identity-H /DescendantFonts 9 0 R /ToUnicode 7 0 R >>".to_string(),
+                    "<< /Type /Font /Subtype /Type0 /BaseFont /Sample /Encoding /Identity-H /DescendantFonts 9 0 R /ToUnicode 7 0 R >>".to_owned(),
                 ),
-                (9, "[6 0 R]".to_string()),
+                (9, "[6 0 R]".to_owned()),
                 (
                     6,
-                    "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sample /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 500 >>".to_string(),
+                    "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sample /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 500 >>".to_owned(),
                 ),
                 (7, stream_object("", cmap)),
             ],
@@ -2037,12 +2037,12 @@ mod tests {
             &[
                 (
                     5,
-                    "<< /Type /Font /Subtype /TrueType /BaseFont /AAAAMF+Custom /FirstChar 32 /LastChar 32 /Widths [250] /ToUnicode 7 0 R /FontDescriptor 8 0 R >>".to_string(),
+                    "<< /Type /Font /Subtype /TrueType /BaseFont /AAAAMF+Custom /FirstChar 32 /LastChar 32 /Widths [250] /ToUnicode 7 0 R /FontDescriptor 8 0 R >>".to_owned(),
                 ),
                 (7, stream_object("", cmap)),
                 (
                     8,
-                    "<< /Type /FontDescriptor /FontName /AAAAMF+Custom /Flags 4 /Ascent 800 /Descent -200 /CapHeight 700 /ItalicAngle 0 /StemV 80 /FontBBox [0 -200 1000 800] >>".to_string(),
+                    "<< /Type /FontDescriptor /FontName /AAAAMF+Custom /Flags 4 /Ascent 800 /Descent -200 /CapHeight 700 /ItalicAngle 0 /StemV 80 /FontBBox [0 -200 1000 800] >>".to_owned(),
                 ),
             ],
         );
@@ -2058,12 +2058,12 @@ mod tests {
                 (
                     5,
                     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 9 0 R >>"
-                        .to_string(),
+                        .to_owned(),
                 ),
                 (
                     9,
                     "<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [1 /eacute] >>"
-                        .to_string(),
+                        .to_owned(),
                 ),
             ],
         );
@@ -2072,11 +2072,11 @@ mod tests {
 
     #[test]
     fn fonts_are_cached_across_forms() {
-        let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length 30 >>\nstream\nBT /F1 10 Tf (Form) Tj ET\nendstream".to_string();
+        let form = "<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length 30 >>\nstream\nBT /F1 10 Tf (Form) Tj ET\nendstream".to_owned();
         let bytes = page_pdf(
             "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
             "BT /F1 10 Tf 0 700 Td (Page) Tj ET q 1 0 0 1 0 -50 cm /X Do Q q 1 0 0 1 0 -100 cm /X Do Q",
-            &[(5, HELVETICA.to_string()), (6, form)],
+            &[(5, HELVETICA.to_owned()), (6, form)],
         );
         let items = extract(&bytes);
         assert_eq!(texts(&items), ["Page", "Form", "Form"]);
@@ -2090,35 +2090,35 @@ mod tests {
         Bool(bool),
         Number(f64),
         Text(String),
-        List(Vec<Value>),
-        Map(Vec<(String, Value)>),
+        List(Vec<Self>),
+        Map(Vec<(String, Self)>),
     }
 
     impl Value {
-        fn get(&self, key: &str) -> Option<&Value> {
+        fn get(&self, key: &str) -> Option<&Self> {
             match self {
-                Value::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+                Self::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
                 _ => None,
             }
         }
 
         fn number(&self, key: &str) -> f64 {
             match self.get(key) {
-                Some(Value::Number(value)) => *value,
+                Some(Self::Number(value)) => *value,
                 other => panic!("missing number {key}: {other:?}"),
             }
         }
 
-        fn list(&self, key: &str) -> &[Value] {
+        fn list(&self, key: &str) -> &[Self] {
             match self.get(key) {
-                Some(Value::List(items)) => items,
+                Some(Self::List(items)) => items,
                 _ => &[],
             }
         }
 
         fn text(&self, key: &str) -> &str {
             match self.get(key) {
-                Some(Value::Text(text)) => text,
+                Some(Self::Text(text)) => text,
                 other => panic!("missing text {key}: {other:?}"),
             }
         }
@@ -2191,7 +2191,7 @@ mod tests {
                                         std::str::from_utf8(&bytes[*pos + 1..*pos + 5]).unwrap();
                                     let ch = char::from_u32(u32::from_str_radix(code, 16).unwrap())
                                         .unwrap();
-                                    let mut buffer = [0u8; 4];
+                                    let mut buffer = [0_u8; 4];
                                     out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
                                     *pos += 4;
                                 }
@@ -2254,7 +2254,7 @@ mod tests {
                 page.list("textItems")
                     .iter()
                     .map(|item| Golden {
-                        text: item.text("text").to_string(),
+                        text: item.text("text").to_owned(),
                         x: item.number("x"),
                         y: item.number("y"),
                         width: item.number("width"),
@@ -2328,7 +2328,7 @@ mod tests {
 
     #[test]
     fn fixtures_match_liteparse_goldens() {
-        let mut compared = 0usize;
+        let mut compared = 0_usize;
         for (name, bytes, golden) in fixtures() {
             let inspection = inspect_text(bytes);
             let golden = goldens(golden);
@@ -2411,7 +2411,7 @@ mod tests {
 
     #[test]
     fn extraction_survives_random_content_streams() {
-        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = || {
             state ^= state << 13;
             state ^= state >> 7;
@@ -2469,10 +2469,10 @@ mod tests {
                 "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
                 &content,
                 &[
-                    (5, HELVETICA.to_string()),
+                    (5, HELVETICA.to_owned()),
                     (
                         6,
-                        "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 25 >>\nstream\nBT /F1 9 Tf (x) Tj ET /X Do\nendstream".to_string(),
+                        "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 25 >>\nstream\nBT /F1 9 Tf (x) Tj ET /X Do\nendstream".to_owned(),
                     ),
                 ],
             );
@@ -2492,11 +2492,11 @@ mod tests {
             &[
                 (
                     5,
-                    "<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding /Identity-V /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>".to_string(),
+                    "<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding /Identity-V /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>".to_owned(),
                 ),
                 (
                     6,
-                    "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Test /DW 800 /DW2 [900 -1200] /W2 [2 [-600 100 800]] >>".to_string(),
+                    "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Test /DW 800 /DW2 [900 -1200] /W2 [2 [-600 100 800]] >>".to_owned(),
                 ),
                 (7, to_unicode),
             ],

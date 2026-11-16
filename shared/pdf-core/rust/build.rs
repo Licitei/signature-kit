@@ -1,33 +1,35 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::error::Error;
+use std::fmt::{Display, Write as _};
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 const ENCODING_SIZE: usize = 256;
 const NO_GLYPH: u16 = u16::MAX;
 
+type BuildResult<T> = Result<T, Box<dyn Error>>;
 type Sections<'a> = Vec<(&'a str, Vec<&'a str>)>;
 
-fn main() -> Result<(), String> {
-    let manifest =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|error| error.to_string())?);
-    let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|error| error.to_string())?);
-    let read = |name: &str| {
-        let path = manifest.join("data").join(name);
-        println!("cargo::rerun-if-changed={}", path.display());
-        fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))
-    };
-    let glyphlist = read("glyphlist.txt")?;
-    let encodings = read("encodings.txt")?;
-    let standard14 = read("standard14.txt")?;
-    let cff = read("cff.txt")?;
+fn main() -> BuildResult<()> {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     println!("cargo::rerun-if-changed=build.rs");
+    let glyphlist = read(&manifest, "glyphlist.txt")?;
+    let encodings = read(&manifest, "encodings.txt")?;
+    let standard14 = read(&manifest, "standard14.txt")?;
+    let cff = read(&manifest, "cff.txt")?;
 
-    let encodings = sections(&encodings);
-    let font_tables = font_tables(&glyphlist, &encodings, &sections(&standard14))?;
-    fs::write(out_dir.join("font_tables.rs"), font_tables).map_err(|error| error.to_string())?;
+    let font_tables = font_tables(&glyphlist, &sections(&encodings), &sections(&standard14))?;
+    fs::write(out_dir.join("font_tables.rs"), font_tables)?;
     let cff_tables = cff_tables(&sections(&cff))?;
-    fs::write(out_dir.join("cff_tables.rs"), cff_tables).map_err(|error| error.to_string())
+    fs::write(out_dir.join("cff_tables.rs"), cff_tables)?;
+    Ok(())
+}
+
+fn read(manifest: &Path, name: &str) -> BuildResult<String> {
+    let path = manifest.join("data").join(name);
+    println!("cargo::rerun-if-changed={}", path.display());
+    Ok(fs::read_to_string(path)?)
 }
 
 fn sections(text: &str) -> Sections<'_> {
@@ -48,21 +50,21 @@ fn sections(text: &str) -> Sections<'_> {
     sections
 }
 
-fn section<'a>(sections: &'a Sections<'_>, name: &str) -> Result<&'a [&'a str], String> {
+fn section<'a>(sections: &'a Sections<'_>, name: &str) -> BuildResult<&'a [&'a str]> {
     sections
         .iter()
         .find(|(found, _)| *found == name)
         .map(|(_, lines)| lines.as_slice())
-        .ok_or_else(|| format!("missing section [{name}]"))
+        .ok_or_else(|| format!("missing section [{name}]").into())
 }
 
-fn coded_names<'a>(lines: &[&'a str]) -> Result<Vec<Option<&'a str>>, String> {
+fn coded_names<'a>(lines: &[&'a str]) -> BuildResult<Vec<Option<&'a str>>> {
     let mut table = vec![None; ENCODING_SIZE];
     for line in lines {
         let (code, name) = line
             .split_once(' ')
             .ok_or_else(|| format!("malformed encoding line `{line}`"))?;
-        let code: usize = code.parse().map_err(|_| format!("bad code in `{line}`"))?;
+        let code: usize = code.parse()?;
         *table
             .get_mut(code)
             .ok_or_else(|| format!("code out of range in `{line}`"))? = Some(name);
@@ -88,29 +90,35 @@ fn screaming(name: &str) -> String {
     out
 }
 
-fn array<T: std::fmt::Display>(items: impl IntoIterator<Item = T>) -> String {
+fn array<T: Display>(items: &[T]) -> String {
     let mut out = String::from("[");
-    for (index, item) in items.into_iter().enumerate() {
+    for (index, item) in items.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        let _ = write!(out, "{item}");
+        out.push_str(&item.to_string());
     }
     out.push(']');
     out
 }
 
-fn to_u16(value: usize, what: &str) -> Result<u16, String> {
-    u16::try_from(value).map_err(|_| format!("{what} exceeds u16"))
+fn emit<T: Display>(
+    out: &mut String,
+    name: &str,
+    element: &str,
+    values: &[T],
+) -> Result<(), std::fmt::Error> {
+    writeln!(
+        out,
+        "pub(crate) static {name}: [{element}; {}] = {};",
+        values.len(),
+        array(values)
+    )
 }
 
-fn font_tables(
-    glyphlist: &str,
-    encodings: &Sections<'_>,
-    standard14: &Sections<'_>,
-) -> Result<String, String> {
-    let mut agl: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
-    for line in glyphlist.lines().map(str::trim) {
+fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
+    let mut agl = BTreeMap::new();
+    for line in text.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -119,11 +127,19 @@ fn font_tables(
             .ok_or_else(|| format!("malformed glyph list line `{line}`"))?;
         let codes = codes
             .split_whitespace()
-            .map(|code| u32::from_str_radix(code, 16).map_err(|_| format!("bad code in `{line}`")))
+            .map(|code| u32::from_str_radix(code, 16))
             .collect::<Result<Vec<_>, _>>()?;
         agl.insert(name, codes);
     }
+    Ok(agl)
+}
 
+fn font_tables(
+    glyphlist: &str,
+    encodings: &Sections<'_>,
+    standard14: &Sections<'_>,
+) -> BuildResult<String> {
+    let agl = glyph_list(glyphlist)?;
     let mut tables = Vec::new();
     let mut names: BTreeSet<&str> = agl.keys().copied().collect();
     for (name, lines) in encodings {
@@ -132,67 +148,60 @@ fn font_tables(
         tables.push((*name, table));
     }
     let names: Vec<&str> = names.into_iter().collect();
-    let index: BTreeMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let index: BTreeMap<&str, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(position, name)| (*name, position))
+        .collect();
 
     let mut out = String::new();
-    let text: String = names.concat();
+    writeln!(
+        out,
+        "pub(crate) static GLYPH_NAME_TEXT: &str = {:?};",
+        names.concat()
+    )?;
     let mut end = 0_usize;
     let mut ends = Vec::with_capacity(names.len());
     for name in &names {
-        end += name.len();
-        ends.push(to_u16(end, "glyph name text")?);
+        end = end.saturating_add(name.len());
+        ends.push(u16::try_from(end)?);
     }
-    let _ = writeln!(out, "pub(crate) static GLYPH_NAME_TEXT: &str = {text:?};");
-    let _ = writeln!(
-        out,
-        "pub(crate) static GLYPH_NAME_ENDS: [u16; {}] = {};",
-        ends.len(),
-        array(&ends)
-    );
+    emit(&mut out, "GLYPH_NAME_ENDS", "u16", &ends)?;
 
-    let mut starts = Vec::with_capacity(names.len() + 1);
+    let mut starts = Vec::with_capacity(names.len().saturating_add(1));
     let mut codepoints: Vec<u32> = Vec::new();
     for name in &names {
-        starts.push(to_u16(codepoints.len(), "glyph list")?);
+        starts.push(u16::try_from(codepoints.len())?);
         if let Some(found) = agl.get(name) {
             codepoints.extend_from_slice(found);
         }
     }
-    starts.push(to_u16(codepoints.len(), "glyph list")?);
-    let _ = writeln!(
-        out,
-        "pub(crate) static AGL_STARTS: [u16; {}] = {};",
-        starts.len(),
-        array(&starts)
-    );
-    let _ = writeln!(
-        out,
-        "pub(crate) static AGL_CODEPOINTS: [u32; {}] = {};",
-        codepoints.len(),
-        array(&codepoints)
-    );
+    starts.push(u16::try_from(codepoints.len())?);
+    emit(&mut out, "AGL_STARTS", "u16", &starts)?;
+    emit(&mut out, "AGL_CODEPOINTS", "u32", &codepoints)?;
 
     let mut win_ansi: &[Option<&str>] = &[];
     for (name, table) in &tables {
-        let row: Vec<u16> = table
+        let row = table
             .iter()
-            .map(|glyph| match glyph.and_then(|glyph| index.get(glyph)) {
-                Some(found) => to_u16(*found, "glyph index"),
-                None => Ok(NO_GLYPH),
+            .map(|glyph| {
+                glyph
+                    .and_then(|glyph| index.get(glyph))
+                    .map_or(Ok(NO_GLYPH), |found| u16::try_from(*found))
             })
-            .collect::<Result<_, _>>()?;
-        let _ = writeln!(
-            out,
-            "pub(crate) static ENCODING_{}: [u16; {ENCODING_SIZE}] = {};",
-            screaming(name),
-            array(&row)
-        );
+            .collect::<Result<Vec<_>, _>>()?;
+        emit(
+            &mut out,
+            &format!("ENCODING_{}", screaming(name)),
+            "u16",
+            &row,
+        )?;
         if *name == "WinAnsi" {
             win_ansi = table;
         }
     }
     if win_ansi.is_empty() {
-        return Err("missing section [WinAnsi]".to_owned());
+        return Err("missing section [WinAnsi]".into());
     }
 
     for (font, lines) in standard14 {
@@ -201,12 +210,7 @@ fn font_tables(
             let (glyph, width) = line
                 .split_once(' ')
                 .ok_or_else(|| format!("malformed width line `{line}`"))?;
-            widths.insert(
-                glyph,
-                width
-                    .parse()
-                    .map_err(|_| format!("bad width in `{line}`"))?,
-            );
+            widths.insert(glyph, width.parse()?);
         }
         let row: Vec<u16> = win_ansi
             .iter()
@@ -217,26 +221,26 @@ fn font_tables(
                     .unwrap_or(0)
             })
             .collect();
-        let _ = writeln!(
-            out,
-            "pub(crate) static STANDARD14_{}: [u16; {ENCODING_SIZE}] = {};",
-            screaming(font),
-            array(&row)
-        );
+        emit(
+            &mut out,
+            &format!("STANDARD14_{}", screaming(font)),
+            "u16",
+            &row,
+        )?;
     }
     Ok(out)
 }
 
-fn cff_tables(cff: &Sections<'_>) -> Result<String, String> {
+fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
     let strings = section(cff, "StandardStrings")?;
-    let sid = |name: &str| -> Result<u16, String> {
+    let sid = |name: &str| -> BuildResult<u16> {
         let position = strings
             .iter()
             .position(|candidate| *candidate == name)
             .ok_or_else(|| format!("unknown CFF standard string `{name}`"))?;
-        to_u16(position, "SID")
+        Ok(u16::try_from(position)?)
     };
-    let charset = |name: &str| -> Result<Vec<u16>, String> {
+    let charset = |name: &str| -> BuildResult<Vec<u16>> {
         section(cff, name)?.iter().map(|glyph| sid(glyph)).collect()
     };
     let mut expert = vec![0_u16; ENCODING_SIZE];
@@ -249,28 +253,23 @@ fn cff_tables(cff: &Sections<'_>) -> Result<String, String> {
         }
     }
     let mut out = String::new();
-    let _ = writeln!(
+    writeln!(
         out,
-        "pub(crate) static CFF_STANDARD_STRINGS: [&str; {}] = {:?};",
-        strings.len(),
-        strings
-    );
-    for (constant, section_name) in [
-        ("CFF_EXPERT_CHARSET", "ExpertCharset"),
-        ("CFF_EXPERT_SUBSET_CHARSET", "ExpertSubsetCharset"),
-    ] {
-        let sids = charset(section_name)?;
-        let _ = writeln!(
-            out,
-            "pub(crate) static {constant}: [u16; {}] = {};",
-            sids.len(),
-            array(&sids)
-        );
-    }
-    let _ = writeln!(
-        out,
-        "pub(crate) static CFF_EXPERT_ENCODING: [u16; {ENCODING_SIZE}] = {};",
-        array(&expert)
-    );
+        "pub(crate) static CFF_STANDARD_STRINGS: [&str; {}] = {strings:?};",
+        strings.len()
+    )?;
+    emit(
+        &mut out,
+        "CFF_EXPERT_CHARSET",
+        "u16",
+        &charset("ExpertCharset")?,
+    )?;
+    emit(
+        &mut out,
+        "CFF_EXPERT_SUBSET_CHARSET",
+        "u16",
+        &charset("ExpertSubsetCharset")?,
+    )?;
+    emit(&mut out, "CFF_EXPERT_ENCODING", "u16", &expert)?;
     Ok(out)
 }

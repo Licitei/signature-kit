@@ -18,7 +18,7 @@ enum BuiltinEncoding {
 }
 
 #[derive(Clone, Debug)]
-pub struct CffFont {
+pub(crate) struct CffFont {
     glyph_count: usize,
     cid_keyed: bool,
     charset: Vec<u16>,
@@ -36,10 +36,10 @@ struct Index {
 }
 
 impl Index {
-    fn parse(bytes: &[u8], position: usize) -> Option<Index> {
+    fn parse(bytes: &[u8], position: usize) -> Option<Self> {
         let count = usize::from(read_u16(bytes, position)?);
         if count == 0 {
-            return Some(Index {
+            return Some(Self {
                 count: 0,
                 off_size: 0,
                 offsets: position.checked_add(2)?,
@@ -62,7 +62,7 @@ impl Index {
         if end > bytes.len() {
             return None;
         }
-        Some(Index {
+        Some(Self {
             count,
             off_size,
             offsets,
@@ -99,7 +99,7 @@ impl Index {
 }
 
 impl CffFont {
-    pub fn parse(bytes: &[u8]) -> Option<CffFont> {
+    pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
         if *bytes.first()? != 1 {
             return None;
         }
@@ -139,7 +139,7 @@ impl CffFont {
                 .collect();
             cid_index.sort_by_key(|(cid, _)| *cid);
         }
-        Some(CffFont {
+        Some(Self {
             glyph_count,
             cid_keyed,
             charset,
@@ -149,22 +149,22 @@ impl CffFont {
         })
     }
 
-    pub fn glyph_count(&self) -> usize {
+    pub(crate) const fn glyph_count(&self) -> usize {
         self.glyph_count
     }
 
-    pub fn is_cid_keyed(&self) -> bool {
+    pub(crate) const fn is_cid_keyed(&self) -> bool {
         self.cid_keyed
     }
 
-    pub fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
+    pub(crate) fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
         if self.cid_keyed {
             return None;
         }
         self.sid_name(*self.charset.get(usize::from(gid))?)
     }
 
-    pub fn gid_for_cid(&self, cid: u16) -> Option<u16> {
+    pub(crate) fn gid_for_cid(&self, cid: u16) -> Option<u16> {
         if !self.cid_keyed {
             return (usize::from(cid) < self.glyph_count).then_some(cid);
         }
@@ -175,7 +175,7 @@ impl CffFont {
         self.cid_index.get(position).map(|(_, gid)| *gid)
     }
 
-    pub fn cid_for_gid(&self, gid: u16) -> Option<u16> {
+    pub(crate) fn cid_for_gid(&self, gid: u16) -> Option<u16> {
         if self.cid_keyed {
             self.charset.get(usize::from(gid)).copied()
         } else {
@@ -183,7 +183,7 @@ impl CffFont {
         }
     }
 
-    pub fn builtin_name(&self, code: u8) -> Option<&[u8]> {
+    pub(crate) fn builtin_name(&self, code: u8) -> Option<&[u8]> {
         match &self.encoding {
             BuiltinEncoding::Standard => {
                 let name = crate::font_tables::encoding_glyph_name(
@@ -221,7 +221,7 @@ fn read_charset(
     glyph_count: usize,
     cid_keyed: bool,
 ) -> Option<Vec<u16>> {
-    let mut charset = vec![0u16; glyph_count];
+    let mut charset = vec![0_u16; glyph_count];
     if offset <= 2 {
         let predefined: Option<&[u16]> = match offset {
             1 => Some(&CFF_EXPERT_CHARSET),
@@ -241,7 +241,7 @@ fn read_charset(
     let mut position = usize::try_from(offset).ok()?;
     let format = *bytes.get(position)?;
     position = position.checked_add(1)?;
-    let mut gid = 1usize;
+    let mut gid = 1_usize;
     match format {
         0 => {
             while gid < glyph_count {
@@ -286,7 +286,7 @@ fn read_encoding(bytes: &[u8], offset: i32, charset: &[u16]) -> Option<BuiltinEn
     let mut position = usize::try_from(offset).ok()?;
     let format = *bytes.get(position)?;
     position = position.checked_add(1)?;
-    let mut table = vec![0u16; 256];
+    let mut table = vec![0_u16; 256];
     let mut assign = |code: usize, gid: usize| {
         if let (Some(slot), Some(sid)) = (table.get_mut(code), charset.get(gid)) {
             *slot = *sid;
@@ -305,7 +305,7 @@ fn read_encoding(bytes: &[u8], offset: i32, charset: &[u16]) -> Option<BuiltinEn
         1 => {
             let ranges = usize::from(*bytes.get(position)?);
             position = position.checked_add(1)?;
-            let mut gid = 1usize;
+            let mut gid = 1_usize;
             for _ in 0..ranges {
                 let first = usize::from(*bytes.get(position)?);
                 let left = usize::from(*bytes.get(position.checked_add(1)?)?);
@@ -336,7 +336,7 @@ fn read_encoding(bytes: &[u8], offset: i32, charset: &[u16]) -> Option<BuiltinEn
 fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
     let mut entries: Vec<(u16, Vec<i32>)> = Vec::new();
     let mut operands: Vec<i32> = Vec::new();
-    let mut position = 0usize;
+    let mut position = 0_usize;
     while let Some(&byte) = bytes.get(position) {
         position += 1;
         match byte {
@@ -396,7 +396,7 @@ fn push_operand(operands: &mut Vec<i32>, value: i32) {
 }
 
 fn read_offset(bytes: &[u8], position: usize, size: usize) -> Option<usize> {
-    let mut value = 0usize;
+    let mut value = 0_usize;
     for step in 0..size {
         value = (value << 8) | usize::from(*bytes.get(position.checked_add(step)?)?);
     }
@@ -416,7 +416,7 @@ fn read_u32(bytes: &[u8], position: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::expect_used)]
+#[expect(clippy::indexing_slicing, clippy::expect_used)]
 pub(crate) mod tests {
     use super::*;
 
@@ -427,7 +427,7 @@ pub(crate) mod tests {
             return out;
         }
         out.push(2);
-        let mut offset = 1u16;
+        let mut offset = 1_u16;
         out.extend_from_slice(&offset.to_be_bytes());
         for item in items {
             offset += item.len() as u16;
@@ -462,9 +462,9 @@ pub(crate) mod tests {
         }
         let custom_refs: Vec<&[u8]> = customs.iter().map(Vec::as_slice).collect();
         let strings = index(&custom_refs);
-        let charstring_items: Vec<&[u8]> = (0..layout.glyphs).map(|_| [14u8].as_slice()).collect();
+        let charstring_items: Vec<&[u8]> = (0..layout.glyphs).map(|_| [14_u8].as_slice()).collect();
         let charstrings = index(&charstring_items);
-        let header = [1u8, 0, 4, 2];
+        let header = [1_u8, 0, 4, 2];
         let name_index = index(&[b"T"]);
         let dict_len = |charset_off: i32, enc_off: i32, cs_off: i32| {
             let mut dict = Vec::new();
@@ -520,7 +520,7 @@ pub(crate) mod tests {
 
     #[test]
     fn charset_format0_names_and_custom_strings() {
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend_from_slice(&sid(34));
         charset.extend_from_slice(&sid(391));
         let font = CffFont::parse(&build(&Layout {
@@ -544,13 +544,13 @@ pub(crate) mod tests {
 
     #[test]
     fn charset_format1_and_format2_ranges() {
-        for format in [1u8, 2] {
+        for format in [1_u8, 2] {
             let mut charset = vec![format];
             charset.extend_from_slice(&sid(34));
             if format == 1 {
                 charset.push(2);
             } else {
-                charset.extend_from_slice(&2u16.to_be_bytes());
+                charset.extend_from_slice(&2_u16.to_be_bytes());
             }
             let font = CffFont::parse(&build(&Layout {
                 names: vec![],
@@ -574,7 +574,7 @@ pub(crate) mod tests {
 
     #[test]
     fn encoding_supplement_overrides_code() {
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend_from_slice(&sid(34));
         let font = CffFont::parse(&build(&Layout {
             names: vec![],
@@ -634,7 +634,7 @@ pub(crate) mod tests {
 
     #[test]
     fn cid_keyed_charset_maps_cid_to_gid() {
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend_from_slice(&sid(500));
         charset.extend_from_slice(&sid(20));
         let font = CffFont::parse(&build(&Layout {
@@ -659,11 +659,11 @@ pub(crate) mod tests {
         assert!(CffFont::parse(&[]).is_none());
         assert!(CffFont::parse(&[1, 0, 4, 2]).is_none());
         assert!(CffFont::parse(&[2, 0, 4, 2, 0, 0]).is_none());
-        let mut seed = 0x1234_5678u32;
-        for round in 0..2000usize {
+        let mut seed = 0x1234_5678_u32;
+        for round in 0..2000_usize {
             let len = 8 + round % 96;
-            let mut data = vec![0u8; len];
-            for slot in data.iter_mut() {
+            let mut data = vec![0_u8; len];
+            for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 *slot = (seed >> 24) as u8;
             }
@@ -676,7 +676,7 @@ pub(crate) mod tests {
 
     #[test]
     fn mutated_valid_font_does_not_panic() {
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend_from_slice(&sid(34));
         charset.extend_from_slice(&sid(391));
         let valid = build(&Layout {
@@ -689,7 +689,7 @@ pub(crate) mod tests {
             glyphs: 3,
         });
         for position in 0..valid.len() {
-            for value in [0u8, 1, 0x7F, 0xFF] {
+            for value in [0_u8, 1, 0x7F, 0xFF] {
                 let mut data = valid.clone();
                 data[position] = value;
                 let _ = CffFont::parse(&data);

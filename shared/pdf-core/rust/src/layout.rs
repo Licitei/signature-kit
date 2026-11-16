@@ -174,7 +174,7 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
     drop_duplicates(frags, &mut members);
     let mut current: Option<Segment> = None;
     let mut right_edge = f64::NEG_INFINITY;
-    let mut right_size = 0.0f64;
+    let mut right_size = 0.0_f64;
     for index in members {
         let Some(frag) = frags.get(index) else {
             continue;
@@ -184,33 +184,31 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
         if split && let Some(done) = current.take() {
             out.push(done);
         }
-        match current.as_mut() {
-            Some(segment) => {
-                segment.members.push(index);
-                segment.x0 = segment.x0.min(frag.x0);
-                segment.x1 = segment.x1.max(frag.x1);
-                segment.y0 = segment.y0.min(frag.y0);
-                segment.y1 = segment.y1.max(frag.y1);
-                segment.size = segment.size.max(frag.size);
-                segment.bold &= frag.bold;
-                segment.center = line.center;
-            }
-            None => {
-                let continuation = frag.text.chars().next().is_some_and(|ch| {
+        if let Some(segment) = current.as_mut() {
+            segment.members.push(index);
+            segment.x0 = segment.x0.min(frag.x0);
+            segment.x1 = segment.x1.max(frag.x1);
+            segment.y0 = segment.y0.min(frag.y0);
+            segment.y1 = segment.y1.max(frag.y1);
+            segment.size = segment.size.max(frag.size);
+            segment.bold &= frag.bold;
+            segment.center = line.center;
+        } else {
+            let continuation =
+                frag.text.chars().next().is_some_and(|ch| {
                     ch.is_lowercase() || matches!(ch, ',' | ';' | ')' | ':' | '.')
                 });
-                current = Some(Segment {
-                    members: vec![index],
-                    x0: frag.x0,
-                    x1: frag.x1,
-                    y0: frag.y0,
-                    y1: frag.y1,
-                    size: frag.size,
-                    center: line.center,
-                    continuation,
-                    bold: frag.bold,
-                });
-            }
+            current = Some(Segment {
+                members: vec![index],
+                x0: frag.x0,
+                x1: frag.x1,
+                y0: frag.y0,
+                y1: frag.y1,
+                size: frag.size,
+                center: line.center,
+                continuation,
+                bold: frag.bold,
+            });
         }
         right_edge = right_edge.max(frag.x1);
         right_size = frag.size;
@@ -275,35 +273,32 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
         for (offset, segment) in line.iter().enumerate() {
             let segment_index = start + offset;
             let claimed = targets.get(offset).copied().flatten();
-            match claimed.and_then(|id| blocks.get_mut(id)) {
-                Some(block) => {
-                    block.segments.push(segment_index);
-                    block.x0 = block.x0.min(segment.x0);
-                    block.x1 = block.x1.max(segment.x1);
-                    block.top = block.top.max(segment.y1 - CORE_TOP * segment.size);
-                    block.bottom = block.bottom.min(segment.y0 + CORE_BOTTOM * segment.size);
-                    block.last = segment_index;
-                    block.last_x0 = segment.x0;
-                    block.last_x1 = segment.x1;
-                    block.last_center = segment.center;
-                    block.last_size = segment.size;
-                }
-                None => {
-                    active.push(blocks.len());
-                    blocks.push(Block {
-                        table: None,
-                        segments: vec![segment_index],
-                        x0: segment.x0,
-                        x1: segment.x1,
-                        top: segment.y1 - CORE_TOP * segment.size,
-                        bottom: segment.y0 + CORE_BOTTOM * segment.size,
-                        last: segment_index,
-                        last_x0: segment.x0,
-                        last_x1: segment.x1,
-                        last_center: segment.center,
-                        last_size: segment.size,
-                    });
-                }
+            if let Some(block) = claimed.and_then(|id| blocks.get_mut(id)) {
+                block.segments.push(segment_index);
+                block.x0 = block.x0.min(segment.x0);
+                block.x1 = block.x1.max(segment.x1);
+                block.top = block.top.max(segment.y1 - CORE_TOP * segment.size);
+                block.bottom = block.bottom.min(segment.y0 + CORE_BOTTOM * segment.size);
+                block.last = segment_index;
+                block.last_x0 = segment.x0;
+                block.last_x1 = segment.x1;
+                block.last_center = segment.center;
+                block.last_size = segment.size;
+            } else {
+                active.push(blocks.len());
+                blocks.push(Block {
+                    table: None,
+                    segments: vec![segment_index],
+                    x0: segment.x0,
+                    x1: segment.x1,
+                    top: segment.y1 - CORE_TOP * segment.size,
+                    bottom: segment.y0 + CORE_BOTTOM * segment.size,
+                    last: segment_index,
+                    last_x0: segment.x0,
+                    last_x1: segment.x1,
+                    last_center: segment.center,
+                    last_size: segment.size,
+                });
             }
         }
     }
@@ -367,11 +362,11 @@ fn cut_bands(
     }
 }
 
-fn vertical_key(block: &Block) -> (f64, f64) {
+const fn vertical_key(block: &Block) -> (f64, f64) {
     (block.top, block.bottom)
 }
 
-fn horizontal_key(block: &Block) -> (f64, f64) {
+const fn horizontal_key(block: &Block) -> (f64, f64) {
     (block.x0, block.x1)
 }
 
@@ -453,7 +448,7 @@ struct PageLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TextOptions {
+pub(crate) struct TextOptions {
     pub markdown: bool,
     pub drop_running: bool,
 }
@@ -521,7 +516,7 @@ fn is_list(cells: &[Cell], columns: usize) -> bool {
     let Some(last) = columns.checked_sub(1) else {
         return false;
     };
-    let mut markers = 0usize;
+    let mut markers = 0_usize;
     for cell in cells.iter().filter(|cell| cell.col as usize != last) {
         let Some(first) = cell.text.lines().next() else {
             continue;
@@ -546,7 +541,7 @@ fn aligned_tables(
             .get(index)
             .and_then(|&(start, end)| segments.get(start..end))
     };
-    let mut index = 0usize;
+    let mut index = 0_usize;
     while let Some(first) = line_at(index) {
         if !is_row_line(first) {
             index += 1;
@@ -970,7 +965,7 @@ fn page_layout(
 ) -> PageLayout {
     let page = page_quarter(rotate);
     let mut pools: [Vec<Frag<'_>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-    let mut weights = [0usize; 4];
+    let mut weights = [0_usize; 4];
     for run in runs {
         if run.item.text.is_empty() || !run.direction.0.is_finite() || !run.direction.1.is_finite()
         {
@@ -1052,7 +1047,7 @@ fn page_layout(
 }
 
 #[cfg(test)]
-pub fn page_text(runs: &[Run], rotate: i32) -> String {
+pub(crate) fn page_text(runs: &[Run], rotate: i32) -> String {
     let mode = Mode {
         markdown: false,
         aligned: false,
@@ -1062,7 +1057,7 @@ pub fn page_text(runs: &[Run], rotate: i32) -> String {
     assemble(&layout.pieces, &HashMap::new(), 0)
 }
 
-pub fn text_limits() -> Limits {
+pub(crate) fn text_limits() -> Limits {
     Limits {
         max_items_per_page: 250_000,
         max_items: usize::MAX,
@@ -1114,7 +1109,7 @@ fn single_page(
     }
 }
 
-pub fn document_text(
+pub(crate) fn document_text(
     bytes: &[u8],
     page_indexes: Option<&[u32]>,
     limits: &Limits,
@@ -1145,7 +1140,7 @@ pub fn document_text(
         HashMap::new()
     };
     let mut texts = Vec::with_capacity(layouts.len());
-    let mut total_bytes = 0usize;
+    let mut total_bytes = 0_usize;
     for (position, layout) in layouts.iter().enumerate() {
         let text = assemble(&layout.pieces, &dropped, position);
         total_bytes = total_bytes.saturating_add(text.len());
@@ -1157,7 +1152,7 @@ pub fn document_text(
     Ok(texts)
 }
 
-pub fn document_tables(
+pub(crate) fn document_tables(
     bytes: &[u8],
     page_indexes: Option<&[u32]>,
     limits: &Limits,
@@ -1175,7 +1170,7 @@ pub fn document_tables(
     };
     let mut session = Session::default();
     let mut tables: Vec<Table> = Vec::new();
-    let mut total_bytes = 0usize;
+    let mut total_bytes = 0_usize;
     for position in selected {
         let Some(page) = pages.get(position) else {
             continue;
@@ -1197,7 +1192,7 @@ pub fn document_tables(
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
@@ -1397,7 +1392,7 @@ mod tests {
             include_bytes!("../../__tests__/fixtures/object-streams.pdf"),
         ];
         let limits = text_limits();
-        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         let mut next = move || {
             state ^= state << 13;
             state ^= state >> 7;
@@ -1408,7 +1403,7 @@ mod tests {
             assert!(document_text(fixture, None, &limits, &OPTIONS).is_ok());
             for _ in 0..150 {
                 let mut bytes = fixture.to_vec();
-                for _ in 0..(1 + next() % 8) {
+                for _ in 0..=(next() % 8) {
                     let at = usize::try_from(next()).unwrap_or(0) % bytes.len();
                     if let Some(byte) = bytes.get_mut(at) {
                         *byte ^= u8::try_from(next() % 255).unwrap_or(1).max(1);
@@ -1438,7 +1433,7 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
@@ -1945,7 +1940,7 @@ mod structure_tests {
         ));
         let fixture = document(&[page(content)], &[]);
         let limits = text_limits();
-        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
         let mut next = move || {
             state ^= state << 13;
             state ^= state >> 7;
@@ -1954,7 +1949,7 @@ mod structure_tests {
         };
         for _ in 0..300 {
             let mut bytes = fixture.clone();
-            for _ in 0..(1 + next() % 6) {
+            for _ in 0..=(next() % 6) {
                 let at = usize::try_from(next()).unwrap_or(0) % bytes.len();
                 if let Some(byte) = bytes.get_mut(at) {
                     *byte = u8::try_from(next() % 255).unwrap_or(1).max(1);

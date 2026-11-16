@@ -301,7 +301,7 @@ fn publish(status: u32, payload: &[u8]) -> *mut u8 {
     if block.is_null() {
         return block;
     }
-    let mut header = [0u8; RESULT_HEADER_LEN];
+    let mut header = [0_u8; RESULT_HEADER_LEN];
     header[..4].copy_from_slice(&total32.to_le_bytes());
     header[4..].copy_from_slice(&status.to_le_bytes());
     unsafe {
@@ -345,7 +345,7 @@ pub extern "C" fn pdf_core_alloc(len: usize) -> *mut u8 {
     }
 }
 
-#[allow(clippy::missing_safety_doc)]
+#[expect(clippy::missing_safety_doc)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pdf_core_free(data: *mut u8, len: usize) {
     if data.is_null() {
@@ -356,7 +356,7 @@ pub unsafe extern "C" fn pdf_core_free(data: *mut u8, len: usize) {
     }
 }
 
-#[allow(clippy::missing_safety_doc)]
+#[expect(clippy::missing_safety_doc)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pdf_core_inspect(
     pdf_ptr: *const u8,
@@ -382,7 +382,7 @@ pub unsafe extern "C" fn pdf_core_inspect(
     finish(outcome)
 }
 
-#[allow(clippy::missing_safety_doc)]
+#[expect(clippy::missing_safety_doc)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pdf_core_text(
     pdf_ptr: *const u8,
@@ -408,7 +408,7 @@ pub unsafe extern "C" fn pdf_core_text(
     finish(outcome)
 }
 
-#[allow(clippy::missing_safety_doc)]
+#[expect(clippy::missing_safety_doc)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pdf_core_tables(
     pdf_ptr: *const u8,
@@ -431,7 +431,7 @@ pub unsafe extern "C" fn pdf_core_tables(
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
+#[expect(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::failure::FailureCode;
@@ -1058,7 +1058,7 @@ mod tests {
 
     #[test]
     fn alloc_is_eight_byte_aligned_and_zero_len_safe() {
-        for len in [0usize, 1, 7, 8, 9, 1000] {
+        for len in [0_usize, 1, 7, 8, 9, 1000] {
             let block = pdf_core_alloc(len);
             assert!(!block.is_null());
             assert_eq!(block as usize % 8, 0);

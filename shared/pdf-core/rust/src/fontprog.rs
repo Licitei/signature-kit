@@ -306,7 +306,7 @@ struct TrueTypeOutlines {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GlyphMetrics {
+pub(crate) struct GlyphMetrics {
     pub units_per_em: u16,
     pub advance: u16,
     pub x_min: i16,
@@ -323,12 +323,12 @@ enum Outlines {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Type1Encoding {
+pub(crate) struct Type1Encoding {
     standard: bool,
     entries: Vec<(u8, Vec<u8>)>,
 }
 
-pub struct FontProgram {
+pub(crate) struct FontProgram {
     data: Vec<u8>,
     cmaps: Vec<CmapSubtable>,
     post: Option<(usize, usize)>,
@@ -342,7 +342,7 @@ pub struct FontProgram {
     ligatures: OnceCell<HashMap<u16, Vec<u16>>>,
 }
 
-pub fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
+pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
     if bytes.len() < 4 {
         return None;
     }
@@ -390,7 +390,7 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
     let mut hhea = None;
     let mut hmtx = None;
     for index in 0..table_count {
-        let base = 12usize.checked_add(index.checked_mul(16)?)?;
+        let base = 12_usize.checked_add(index.checked_mul(16)?)?;
         let tag = [
             *bytes.get(base)?,
             *bytes.get(base + 1)?,
@@ -486,19 +486,19 @@ fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut Fo
 
 impl FontProgram {
     #[cfg(test)]
-    pub fn glyph_count(&self) -> usize {
+    pub(crate) const fn glyph_count(&self) -> usize {
         self.glyph_count
     }
 
-    pub fn has_authoritative_names(&self) -> bool {
+    pub(crate) const fn has_authoritative_names(&self) -> bool {
         matches!(&self.outlines, Outlines::Cff(_) | Outlines::Type1(_))
     }
 
-    pub fn is_cid_keyed(&self) -> bool {
+    pub(crate) fn is_cid_keyed(&self) -> bool {
         matches!(&self.outlines, Outlines::Cff(cff) if cff.is_cid_keyed())
     }
 
-    pub fn cid_to_gid(&self, cid: u32) -> Option<u16> {
+    pub(crate) fn cid_to_gid(&self, cid: u32) -> Option<u16> {
         let cid = u16::try_from(cid).ok()?;
         match &self.outlines {
             Outlines::Cff(cff) => cff.gid_for_cid(cid),
@@ -506,18 +506,18 @@ impl FontProgram {
         }
     }
 
-    pub fn gid_to_cid(&self, gid: u16) -> Option<u32> {
+    pub(crate) fn gid_to_cid(&self, gid: u16) -> Option<u32> {
         match &self.outlines {
             Outlines::Cff(cff) => cff.cid_for_gid(gid).map(u32::from),
             _ => Some(u32::from(gid)),
         }
     }
 
-    pub fn code_for_gid(&self, gid: u16) -> Option<u32> {
+    pub(crate) fn code_for_gid(&self, gid: u16) -> Option<u32> {
         self.codes
             .get_or_init(|| {
                 let mut map = HashMap::new();
-                for (platform, encoding) in [(3u16, 0u16), (1, 0), (3, 1)] {
+                for (platform, encoding) in [(3_u16, 0_u16), (1, 0), (3, 1)] {
                     for sub in self
                         .cmaps
                         .iter()
@@ -539,7 +539,7 @@ impl FontProgram {
             .copied()
     }
 
-    pub fn builtin_name(&self, code: u8) -> Option<&[u8]> {
+    pub(crate) fn builtin_name(&self, code: u8) -> Option<&[u8]> {
         match &self.outlines {
             Outlines::Cff(cff) if !cff.is_cid_keyed() => cff.builtin_name(code),
             Outlines::Type1(encoding) => encoding.name(code),
@@ -547,7 +547,7 @@ impl FontProgram {
         }
     }
 
-    pub fn code_to_gid(&self, code: u32, symbolic: bool) -> Option<u16> {
+    pub(crate) fn code_to_gid(&self, code: u32, symbolic: bool) -> Option<u16> {
         let lookup = |platform: u16, encoding: u16, query: u32| {
             self.cmaps
                 .iter()
@@ -555,7 +555,7 @@ impl FontProgram {
                 .find_map(|sub| cmap_lookup(&self.data, sub, query))
         };
         if symbolic {
-            for base in [0u32, 0xF000, 0xF100, 0xF200] {
+            for base in [0_u32, 0xF000, 0xF100, 0xF200] {
                 if let Some(gid) = lookup(3, 0, base | code) {
                     return Some(gid);
                 }
@@ -570,7 +570,7 @@ impl FontProgram {
         if symbolic { None } else { lookup(1, 0, code) }
     }
 
-    pub fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
+    pub(crate) fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
         if let Outlines::Cff(cff) = &self.outlines {
             return cff.glyph_name(gid);
         }
@@ -580,7 +580,7 @@ impl FontProgram {
             .filter(|name| !name.is_empty())
     }
 
-    pub fn gid_for_name(&self, name: &[u8]) -> Option<u16> {
+    pub(crate) fn gid_for_name(&self, name: &[u8]) -> Option<u16> {
         let index = self.name_index.get_or_init(|| {
             let mut map = HashMap::new();
             for gid in 0..self.glyph_count.min(MAX_GLYPHS) {
@@ -594,7 +594,7 @@ impl FontProgram {
         index.get(name).copied()
     }
 
-    pub fn gid_text(&self, gid: u16) -> Option<Vec<u32>> {
+    pub(crate) fn gid_text(&self, gid: u16) -> Option<Vec<u32>> {
         if let Some(text) = self.glyph_name(gid).and_then(agl_components) {
             return Some(text);
         }
@@ -604,14 +604,14 @@ impl FontProgram {
             .filter(|text| text.iter().all(|cp| *cp != 0))
     }
 
-    pub fn gid_parts(&self, gid: u16) -> Option<Vec<u16>> {
+    pub(crate) fn gid_parts(&self, gid: u16) -> Option<Vec<u16>> {
         if let Some(parts) = self.ligature_map().get(&gid) {
             return Some(parts.clone());
         }
         self.composite_parts(gid)
     }
 
-    pub fn glyph_metrics(&self, gid: u16) -> Option<GlyphMetrics> {
+    pub(crate) fn glyph_metrics(&self, gid: u16) -> Option<GlyphMetrics> {
         let Outlines::TrueType(outlines) = &self.outlines else {
             return None;
         };
@@ -654,7 +654,7 @@ impl FontProgram {
             Some(0x0002_0000) => {
                 let count = read_u16(table, 32).map_or(0, usize::from).min(MAX_GLYPHS);
                 let mut strings: Vec<&[u8]> = Vec::new();
-                let mut position = 34usize.saturating_add(count.saturating_mul(2));
+                let mut position = 34_usize.saturating_add(count.saturating_mul(2));
                 while let Some(length) = table.get(position).map(|len| usize::from(*len)) {
                     let Some(text) = table.get(position + 1..position + 1 + length) else {
                         break;
@@ -686,7 +686,7 @@ impl FontProgram {
         self.reverse.get_or_init(|| {
             let mut map = HashMap::new();
             let unicode = [
-                (3u16, 10u16),
+                (3_u16, 10_u16),
                 (3, 1),
                 (0, 4),
                 (0, 3),
@@ -730,7 +730,7 @@ impl FontProgram {
         if (read_u16(glyph, 0)? as i16) >= 0 {
             return None;
         }
-        let mut position = 10usize;
+        let mut position = 10_usize;
         let mut parts: Vec<(i32, u16)> = Vec::new();
         loop {
             let flags = read_u16(glyph, position)?;
@@ -764,7 +764,7 @@ impl FontProgram {
 }
 
 impl Type1Encoding {
-    pub fn name(&self, code: u8) -> Option<&[u8]> {
+    pub(crate) fn name(&self, code: u8) -> Option<&[u8]> {
         if self.standard {
             let name = encoding_glyph_name(BuiltinEncoding::Standard, code);
             return (!name.is_empty()).then_some(name.as_bytes());
@@ -823,7 +823,7 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
             let starts = ends.checked_add(seg_count * 2)?.checked_add(2)?;
             let deltas = starts.checked_add(seg_count * 2)?;
             let ranges = deltas.checked_add(seg_count * 2)?;
-            let mut low = 0usize;
+            let mut low = 0_usize;
             let mut high = seg_count;
             while low < high {
                 let mid = low + (high - low) / 2;
@@ -872,7 +872,7 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
         12 => {
             let groups = usize::try_from(read_u32(data, offset.checked_add(12)?)?).ok()?;
             let base = offset.checked_add(16)?;
-            let mut low = 0usize;
+            let mut low = 0_usize;
             let mut high = groups.min(MAX_REVERSE_CODES);
             while low < high {
                 let mid = low + (high - low) / 2;
@@ -902,7 +902,7 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
     let mut budget = MAX_REVERSE_CODES;
     match sub.format {
         0 => {
-            for code in 0..256u32 {
+            for code in 0..256_u32 {
                 let Some(gid) = data
                     .get(offset.saturating_add(6).saturating_add(code as usize))
                     .map(|gid| u16::from(*gid))
@@ -1155,10 +1155,10 @@ fn parse_type1_encoding(bytes: &[u8]) -> Option<Type1Encoding> {
     let start = find_subslice(clear, b"/Encoding")?;
     let mut position = start + b"/Encoding".len();
     let mut encoding = Type1Encoding::default();
-    let mut depth = 0usize;
-    let mut tokens = 0usize;
+    let mut depth = 0_usize;
+    let mut tokens = 0_usize;
     let mut pending: Option<u8> = None;
-    let mut stage = 0u8;
+    let mut stage = 0_u8;
     while tokens < MAX_TYPE1_TOKENS {
         let Some(token) = next_type1_token(clear, &mut position) else {
             break;
@@ -1203,7 +1203,7 @@ enum Type1Token<'a> {
     Close,
 }
 
-fn is_type1_delimiter(value: u8) -> bool {
+const fn is_type1_delimiter(value: u8) -> bool {
     matches!(
         value,
         b'/' | b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'<' | b'>' | b'%'
@@ -1277,7 +1277,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-pub fn agl_components(name: &[u8]) -> Option<Vec<u32>> {
+pub(crate) fn agl_components(name: &[u8]) -> Option<Vec<u32>> {
     let text = core::str::from_utf8(name).ok()?;
     if let Some(found) = lookup_agl(name) {
         return Some(found.to_vec());
@@ -1328,7 +1328,7 @@ fn agl_component(part: &str, out: &mut Vec<u32>) -> Option<()> {
     None
 }
 
-pub fn load_font_file_bytes(
+pub(crate) fn load_font_file_bytes(
     key: &[u8],
     descriptor: &crate::object::Dict,
     resolver: &dyn crate::object::Resolver,
@@ -1361,7 +1361,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::expect_used)]
+#[expect(clippy::indexing_slicing, clippy::expect_used)]
 pub(crate) mod tests {
     use super::*;
     use crate::cff::tests::{Layout, build as build_cff};
@@ -1377,7 +1377,7 @@ pub(crate) mod tests {
     fn sfnt(version: u32, tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut out = be32(version);
         out.extend(be16(tables.len() as u16));
-        out.extend([0u8; 6]);
+        out.extend([0_u8; 6]);
         let mut offset = 12 + tables.len() * 16;
         let mut bodies = Vec::new();
         for (tag, body) in tables {
@@ -1416,7 +1416,7 @@ pub(crate) mod tests {
         out.extend(be16((16 + count * 8) as u16));
         out.extend(be16(0));
         out.extend(be16((count * 2) as u16));
-        out.extend([0u8; 6]);
+        out.extend([0_u8; 6]);
         for (_, end, _) in segments {
             out.extend(be16(*end));
         }
@@ -1437,7 +1437,7 @@ pub(crate) mod tests {
     }
 
     fn format0(map: &[(u8, u8)]) -> Vec<u8> {
-        let mut glyphs = [0u8; 256];
+        let mut glyphs = [0_u8; 256];
         for (code, gid) in map {
             glyphs[usize::from(*code)] = *gid;
         }
@@ -1476,10 +1476,10 @@ pub(crate) mod tests {
 
     fn post2(names: &[&str]) -> Vec<u8> {
         let mut out = be32(0x0002_0000);
-        out.extend([0u8; 28]);
+        out.extend([0_u8; 28]);
         out.extend(be16(names.len() as u16));
         let mut strings = Vec::new();
-        let mut custom = 0u16;
+        let mut custom = 0_u16;
         for name in names {
             if let Some(index) = POST_STANDARD_GLYPH_NAMES.iter().position(|std| std == name) {
                 out.extend(be16(index as u16));
@@ -1497,12 +1497,12 @@ pub(crate) mod tests {
     fn maxp(glyphs: u16) -> Vec<u8> {
         let mut out = be32(0x0001_0000);
         out.extend(be16(glyphs));
-        out.extend([0u8; 26]);
+        out.extend([0_u8; 26]);
         out
     }
 
     fn head(long_loca: bool) -> Vec<u8> {
-        let mut out = vec![0u8; 54];
+        let mut out = vec![0_u8; 54];
         out[51] = u8::from(long_loca);
         out
     }
@@ -1530,7 +1530,7 @@ pub(crate) mod tests {
         sub.extend(be16(8));
         sub.extend(&set);
         sub.extend(&coverage);
-        let mut kind = 4u16;
+        let mut kind = 4_u16;
         if extension {
             let mut wrapped = be16(1);
             wrapped.extend(be16(4));
@@ -1557,15 +1557,15 @@ pub(crate) mod tests {
 
     fn simple_glyph(contours: i16) -> Vec<u8> {
         let mut out = be16(contours as u16);
-        out.extend([0u8; 12]);
+        out.extend([0_u8; 12]);
         out
     }
 
     fn composite_glyph(parts: &[(u16, i16)], words: bool) -> Vec<u8> {
         let mut out = be16(0xFFFF);
-        out.extend([0u8; 8]);
+        out.extend([0_u8; 8]);
         for (index, (component, dx)) in parts.iter().enumerate() {
-            let mut flags = 0x0002u16;
+            let mut flags = 0x0002_u16;
             if words {
                 flags |= 0x0001;
             }
@@ -1659,7 +1659,7 @@ pub(crate) mod tests {
         table.extend(be16(0));
         table.extend(be16(0));
         table.extend(be16(4));
-        table.extend([0u8; 6]);
+        table.extend([0_u8; 6]);
         table.extend(be16(0x42));
         table.extend(be16(0xFFFF));
         table.extend(be16(0));
@@ -1736,7 +1736,7 @@ pub(crate) mod tests {
     #[test]
     fn post_format1_uses_standard_order() {
         let mut post = be32(0x0001_0000);
-        post.extend([0u8; 28]);
+        post.extend([0_u8; 28]);
         let font = sfnt(SFNT_TRUETYPE, &[(b"post", post), (b"maxp", maxp(258))]);
         let program = parse_font_program(font).expect("program");
         assert_eq!(program.glyph_name(36), Some(b"A".as_slice()));
@@ -1746,7 +1746,7 @@ pub(crate) mod tests {
     #[test]
     fn post_format3_has_no_names() {
         let mut post = be32(0x0003_0000);
-        post.extend([0u8; 28]);
+        post.extend([0_u8; 28]);
         let font = sfnt(SFNT_TRUETYPE, &[(b"post", post), (b"maxp", maxp(8))]);
         let program = parse_font_program(font).expect("program");
         assert_eq!(program.glyph_name(3), None);
@@ -1833,7 +1833,7 @@ pub(crate) mod tests {
 
     #[test]
     fn opentype_cff_names_and_cid_mapping() {
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend(be16(66));
         charset.extend(be16(391));
         let cff = build_cff(&Layout {
@@ -1857,7 +1857,7 @@ pub(crate) mod tests {
 
     #[test]
     fn raw_cff_cid_keyed_and_builtin_encoding() {
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend(be16(700));
         charset.extend(be16(701));
         let cff = build_cff(&Layout {
@@ -1875,7 +1875,7 @@ pub(crate) mod tests {
         assert_eq!(program.cid_to_gid(701), Some(2));
         assert_eq!(program.cid_to_gid(5), None);
         assert_eq!(program.builtin_name(0x41), None);
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend(be16(66));
         let cff = build_cff(&Layout {
             names: vec![],
@@ -1966,7 +1966,7 @@ pub(crate) mod tests {
                 (b"glyf", glyf),
             ],
         );
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend(be16(66));
         charset.extend(be16(391));
         let cff = build_cff(&Layout {
@@ -1983,20 +1983,20 @@ pub(crate) mod tests {
     }
 
     fn exercise(program: &FontProgram) {
-        for gid in [0u16, 1, 2, 3, 9, 100, 65535] {
+        for gid in [0_u16, 1, 2, 3, 9, 100, 65535] {
             let _ = program.gid_text(gid);
             let _ = program.gid_parts(gid);
             let _ = program.glyph_name(gid);
         }
-        for code in [0u32, 0x41, 0x61, 0xF041, 0xFFFF, 0x1F600] {
+        for code in [0_u32, 0x41, 0x61, 0xF041, 0xFFFF, 0x1F600] {
             let _ = program.code_to_gid(code, true);
             let _ = program.code_to_gid(code, false);
         }
-        for cid in [0u32, 1, 700, 70000] {
+        for cid in [0_u32, 1, 700, 70000] {
             let _ = program.cid_to_gid(cid);
         }
         let _ = program.gid_for_name(b"t_i");
-        for code in 0..=255u8 {
+        for code in 0..=255_u8 {
             let _ = program.builtin_name(code);
         }
     }
@@ -2013,7 +2013,7 @@ pub(crate) mod tests {
                 }
             }
             for position in 0..valid.len() {
-                for value in [0u8, 0x01, 0x7F, 0x80, 0xFF] {
+                for value in [0_u8, 0x01, 0x7F, 0x80, 0xFF] {
                     let mut data = valid.clone();
                     data[position] = value;
                     if let Some(program) = parse_font_program(data) {
@@ -2026,11 +2026,11 @@ pub(crate) mod tests {
 
     #[test]
     fn random_bytes_never_panic() {
-        let mut seed = 0x5165_3729u32;
-        for round in 0..1024usize {
+        let mut seed = 0x5165_3729_u32;
+        for round in 0..1024_usize {
             let len = 16 + round % 300;
-            let mut data = vec![0u8; len];
-            for slot in data.iter_mut() {
+            let mut data = vec![0_u8; len];
+            for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 *slot = (seed >> 24) as u8;
             }

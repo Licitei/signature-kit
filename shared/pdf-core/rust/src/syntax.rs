@@ -8,12 +8,12 @@ const KEYWORD_PROBE: usize = 16;
 const IMAGE_END_PROBE: usize = 10;
 
 #[inline(always)]
-pub fn is_whitespace(byte: u8) -> bool {
+pub(crate) const fn is_whitespace(byte: u8) -> bool {
     matches!(byte, 0 | 9 | 10 | 12 | 13 | 32)
 }
 
 #[inline(always)]
-pub fn is_delimiter(byte: u8) -> bool {
+pub(crate) const fn is_delimiter(byte: u8) -> bool {
     matches!(
         byte,
         b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
@@ -21,16 +21,16 @@ pub fn is_delimiter(byte: u8) -> bool {
 }
 
 #[inline(always)]
-pub fn is_regular(byte: u8) -> bool {
+pub(crate) const fn is_regular(byte: u8) -> bool {
     !is_whitespace(byte) && !is_delimiter(byte)
 }
 
 #[inline(always)]
-fn is_number_start(byte: u8) -> bool {
+const fn is_number_start(byte: u8) -> bool {
     matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.')
 }
 
-fn hex_value(byte: u8) -> Option<u8> {
+const fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),
@@ -39,7 +39,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-pub fn skip_whitespace_at(data: &[u8], mut pos: usize) -> usize {
+pub(crate) fn skip_whitespace_at(data: &[u8], mut pos: usize) -> usize {
     while let Some(&byte) = data.get(pos) {
         if is_whitespace(byte) {
             pos += 1;
@@ -58,7 +58,7 @@ pub fn skip_whitespace_at(data: &[u8], mut pos: usize) -> usize {
     pos
 }
 
-pub fn read_unsigned(data: &[u8], pos: &mut usize) -> Option<u64> {
+pub(crate) fn read_unsigned(data: &[u8], pos: &mut usize) -> Option<u64> {
     let start = *pos;
     let mut value: u64 = 0;
     let mut cursor = start;
@@ -76,7 +76,7 @@ pub fn read_unsigned(data: &[u8], pos: &mut usize) -> Option<u64> {
     Some(value)
 }
 
-pub fn find_bytes(data: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_bytes(data: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     let first = *needle.first()?;
     let mut index = from;
     while let Some(rest) = data.get(index..) {
@@ -90,7 +90,7 @@ pub fn find_bytes(data: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     None
 }
 
-pub fn keyword_at(data: &[u8], pos: usize, keyword: &[u8]) -> bool {
+pub(crate) fn keyword_at(data: &[u8], pos: usize, keyword: &[u8]) -> bool {
     data.get(pos..pos + keyword.len()) == Some(keyword)
         && !data
             .get(pos + keyword.len())
@@ -99,23 +99,23 @@ pub fn keyword_at(data: &[u8], pos: usize, keyword: &[u8]) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reject {
+pub(crate) enum Reject {
     Garbage,
     TooDeep,
 }
 
 impl Reject {
-    pub fn into_failure(self) -> Failure {
+    pub(crate) fn into_failure(self) -> Failure {
         match self {
-            Reject::Garbage => Failure::invalid("malformed object"),
-            Reject::TooDeep => Failure::limit("object nesting exceeds limit"),
+            Self::Garbage => Failure::invalid("malformed object"),
+            Self::TooDeep => Failure::limit("object nesting exceeds limit"),
         }
     }
 }
 
 type Parsed<T> = Result<T, Reject>;
 
-pub struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     data: &'a [u8],
     pos: usize,
     max_depth: usize,
@@ -123,7 +123,7 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(data: &'a [u8], pos: usize, max_depth: usize, refs: bool) -> Self {
+    pub(crate) const fn new(data: &'a [u8], pos: usize, max_depth: usize, refs: bool) -> Self {
         Self {
             data,
             pos,
@@ -132,7 +132,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn position(&self) -> usize {
+    pub(crate) const fn position(&self) -> usize {
         self.pos
     }
 
@@ -150,11 +150,11 @@ impl<'a> Parser<'a> {
         self.data.get(start..end).unwrap_or_default()
     }
 
-    pub fn skip_whitespace(&mut self) {
+    pub(crate) fn skip_whitespace(&mut self) {
         self.pos = skip_whitespace_at(self.data, self.pos);
     }
 
-    pub fn parse_object(&mut self) -> Outcome<Object> {
+    pub(crate) fn parse_object(&mut self) -> Outcome<Object> {
         self.skip_whitespace();
         self.value(0).map_err(Reject::into_failure)
     }
@@ -361,7 +361,7 @@ impl<'a> Parser<'a> {
     fn literal_string(&mut self) -> Vec<u8> {
         self.pos += 1;
         let mut out = Vec::new();
-        let mut depth = 1usize;
+        let mut depth = 1_usize;
         loop {
             let start = self.pos;
             while let Some(byte) = self.peek() {
@@ -447,7 +447,7 @@ impl<'a> Parser<'a> {
         }
         let mut whole: u64 = 0;
         let mut overflow = false;
-        let mut digits = 0usize;
+        let mut digits = 0_usize;
         while let Some(byte @ b'0'..=b'9') = self.peek() {
             match whole
                 .checked_mul(10)
@@ -462,7 +462,7 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(b'.') {
             self.pos += 1;
             let mut fraction: u64 = 0;
-            let mut scale = 0usize;
+            let mut scale = 0_usize;
             while let Some(byte @ b'0'..=b'9') = self.peek() {
                 if scale < 18 {
                     fraction = fraction * 10 + u64::from(byte - b'0');
@@ -470,7 +470,7 @@ impl<'a> Parser<'a> {
                 }
                 self.pos += 1;
             }
-            let divisor = 10f64.powi(i32::try_from(scale).unwrap_or(0));
+            let divisor = 10_f64.powi(i32::try_from(scale).unwrap_or(0));
             let magnitude = whole as f64 + fraction as f64 / divisor;
             return Object::Real(if negative { -magnitude } else { magnitude });
         }
@@ -621,17 +621,17 @@ fn inline_image_end(data: &[u8], start: usize, length: Option<usize>) -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ContentToken<'a> {
+pub(crate) enum ContentToken<'a> {
     Operand(Object),
     Operator(&'a [u8]),
 }
 
-pub struct ContentLexer<'a> {
+pub(crate) struct ContentLexer<'a> {
     parser: Parser<'a>,
 }
 
 impl<'a> ContentLexer<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
+    pub(crate) const fn new(data: &'a [u8]) -> Self {
         Self {
             parser: Parser::new(data, 0, CONTENT_NESTING, false),
         }
@@ -674,13 +674,13 @@ impl<'a> Iterator for ContentLexer<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct IndirectObject {
+pub(crate) struct IndirectObject {
     pub obj_ref: ObjRef,
     pub object: Object,
     pub end: usize,
 }
 
-pub fn parse_object_header(data: &[u8], offset: usize) -> Option<(ObjRef, usize)> {
+pub(crate) fn parse_object_header(data: &[u8], offset: usize) -> Option<(ObjRef, usize)> {
     let mut pos = skip_whitespace_at(data, offset);
     let number = read_unsigned(data, &mut pos)?;
     let gap = pos;
@@ -771,7 +771,7 @@ fn object_tail(data: &[u8], from: usize) -> usize {
     pos
 }
 
-pub fn parse_indirect_object(
+pub(crate) fn parse_indirect_object(
     data: &[u8],
     offset: usize,
     max_depth: usize,
@@ -816,7 +816,7 @@ pub fn parse_indirect_object(
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,

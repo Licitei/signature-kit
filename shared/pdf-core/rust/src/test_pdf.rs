@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-pub fn stream_object(dict: &str, data: &str) -> String {
+pub(crate) fn stream_object(dict: &str, data: &str) -> String {
     format!(
         "<< /Length {} {} >>\nstream\n{}\nendstream",
         data.len(),
@@ -9,7 +9,7 @@ pub fn stream_object(dict: &str, data: &str) -> String {
     )
 }
 
-pub fn build(objects: &[(u32, String)]) -> Vec<u8> {
+pub(crate) fn build(objects: &[(u32, String)]) -> Vec<u8> {
     let mut bytes = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (number, body) in objects {
@@ -37,22 +37,22 @@ pub fn build(objects: &[(u32, String)]) -> Vec<u8> {
     bytes
 }
 
-pub struct PageSpec {
+pub(crate) struct PageSpec {
     pub content: String,
     pub rotate: i32,
 }
 
-pub fn page(content: String) -> PageSpec {
+pub(crate) fn page(content: String) -> PageSpec {
     PageSpec { content, rotate: 0 }
 }
 
-pub fn document(pages: &[PageSpec], extra: &[(u32, String)]) -> Vec<u8> {
-    let first_page = 10u32;
+pub(crate) fn document(pages: &[PageSpec], extra: &[(u32, String)]) -> Vec<u8> {
+    let first_page = 10_u32;
     let kids: Vec<String> = (0..pages.len())
         .map(|index| format!("{} 0 R", first_page + 2 * u32::try_from(index).unwrap()))
         .collect();
     let mut objects = vec![
-        (1, "<< /Type /Catalog /Pages 2 0 R >>".to_string()),
+        (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
         (
             2,
             format!(
@@ -63,13 +63,11 @@ pub fn document(pages: &[PageSpec], extra: &[(u32, String)]) -> Vec<u8> {
         ),
         (
             3,
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
-                .to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_owned(),
         ),
         (
             4,
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
-                .to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>".to_owned(),
         ),
     ];
     for (index, spec) in pages.iter().enumerate() {
@@ -88,19 +86,19 @@ pub fn document(pages: &[PageSpec], extra: &[(u32, String)]) -> Vec<u8> {
     build(&objects)
 }
 
-pub fn text(x: f64, y: f64, size: f64, value: &str) -> String {
+pub(crate) fn text(x: f64, y: f64, size: f64, value: &str) -> String {
     format!("BT /F1 {size} Tf 1 0 0 1 {x} {y} Tm ({value}) Tj ET\n")
 }
 
-pub fn bold(x: f64, y: f64, size: f64, value: &str) -> String {
+pub(crate) fn bold(x: f64, y: f64, size: f64, value: &str) -> String {
     format!("BT /F2 {size} Tf 1 0 0 1 {x} {y} Tm ({value}) Tj ET\n")
 }
 
-pub fn rule(x0: f64, y0: f64, x1: f64, y1: f64) -> String {
+pub(crate) fn rule(x0: f64, y0: f64, x1: f64, y1: f64) -> String {
     format!("0.5 w {x0} {y0} m {x1} {y1} l S\n")
 }
 
-pub fn grid(rows: &[f64], cols: &[f64]) -> String {
+pub(crate) fn grid(rows: &[f64], cols: &[f64]) -> String {
     let (left, right) = (cols[0], cols[cols.len() - 1]);
     let (top, bottom) = (rows[0], rows[rows.len() - 1]);
     let mut out = String::new();

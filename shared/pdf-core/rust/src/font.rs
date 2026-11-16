@@ -25,7 +25,7 @@ const DEFAULT_VERTICAL_ORIGIN: f64 = 880.0;
 const DEFAULT_VERTICAL_ADVANCE: f64 = 1000.0;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Glyph {
+pub(crate) struct Glyph {
     pub code: u32,
     pub advance: f64,
     pub is_word_space: bool,
@@ -33,13 +33,13 @@ pub struct Glyph {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct VerticalMetrics {
+pub(crate) struct VerticalMetrics {
     pub advance: f64,
     pub origin_x: f64,
     pub origin_y: f64,
 }
 
-pub struct Font {
+pub(crate) struct Font {
     inner: FontKind,
 }
 
@@ -102,31 +102,31 @@ static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; BuiltinEncoding::C
     [const { OnceLock::new() }; BuiltinEncoding::COUNT];
 
 impl Font {
-    pub fn load(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<Font> {
+    pub(crate) fn load(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<Self> {
         let subtype = name_bytes(font.get(b"Subtype"));
         let inner = if subtype == Some(b"Type0") {
             FontKind::Composite(Box::new(load_type0(resolver, font, limits)?))
         } else {
             FontKind::Simple(Box::new(load_simple(resolver, font, limits)?))
         };
-        Ok(Font { inner })
+        Ok(Self { inner })
     }
 
-    pub fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
+    pub(crate) fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
         match &self.inner {
             FontKind::Simple(simple) => simple.decode(bytes, glyphs, text),
             FontKind::Composite(composite) => composite.decode(bytes, glyphs, text),
         }
     }
 
-    pub fn is_vertical(&self) -> bool {
+    pub(crate) fn is_vertical(&self) -> bool {
         match &self.inner {
             FontKind::Simple(_) => false,
             FontKind::Composite(composite) => composite.cmap.is_vertical(),
         }
     }
 
-    pub fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
+    pub(crate) fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
         match &self.inner {
             FontKind::Simple(_) => VerticalMetrics {
                 advance: DEFAULT_VERTICAL_ADVANCE / 1000.0,
@@ -151,7 +151,7 @@ impl SimpleFont {
         let slot = BUILTIN_TEXT_TABLES.get(builtin.slot()?)?;
         Some(
             slot.get_or_init(|| {
-                (0..=255u8)
+                (0..=255_u8)
                     .map(|code| {
                         let name = encoding_glyph_name(builtin, code);
                         match agl_components(name.as_bytes()) {
@@ -381,7 +381,7 @@ fn shape_ligature(
 
 impl CompositeFont {
     fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
-        let mut offset = 0usize;
+        let mut offset = 0_usize;
         while let Some((code, consumed)) = self.cmap.read(bytes, offset) {
             offset += consumed;
             let cid = self.cmap.cid(code, consumed);
@@ -571,7 +571,7 @@ fn simple_needs_program(
     symbolic: bool,
 ) -> bool {
     let (first, last) = if widths.widths.is_empty() {
-        (0u32, 255u32)
+        (0_u32, 255_u32)
     } else {
         let first = widths.first_char.clamp(0, 255) as u32;
         let last = first
@@ -759,7 +759,7 @@ fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outco
 }
 
 fn load_differences(entries: &[Object], state: &mut EncodingState) {
-    let mut code = 0i64;
+    let mut code = 0_i64;
     for entry in entries {
         match entry {
             Object::Integer(value) => code = *value,
@@ -805,7 +805,7 @@ fn load_cid_widths(descendant: &Dict) -> CidWidths {
     let default_width = read_number(descendant.get(b"DW")).unwrap_or(1000.0);
     let mut entries: Vec<(u32, u32, f64)> = Vec::new();
     if let Some(Object::Array(items)) = descendant.get(b"W") {
-        let mut index = 0usize;
+        let mut index = 0_usize;
         while index < items.len() && entries.len() < MAX_METRIC_ENTRIES {
             let start = items
                 .get(index)
@@ -863,7 +863,7 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
     };
     let mut entries: Vec<(u32, u32, [f64; 3])> = Vec::new();
     if let Some(Object::Array(items)) = deref(resolver, descendant.get(b"W2")) {
-        let mut index = 0usize;
+        let mut index = 0_usize;
         while index < items.len() && entries.len() < MAX_METRIC_ENTRIES {
             let start = items
                 .get(index)
@@ -1005,7 +1005,7 @@ fn name_bytes(value: Option<&Object>) -> Option<&[u8]> {
     }
 }
 
-fn read_integer(value: Option<&Object>) -> Option<i64> {
+const fn read_integer(value: Option<&Object>) -> Option<i64> {
     match value {
         Some(Object::Integer(v)) => Some(*v),
         Some(Object::Real(v)) => Some(*v as i64),
@@ -1017,7 +1017,7 @@ fn read_number(value: Option<&Object>) -> Option<f64> {
     value.and_then(Object::as_number)
 }
 
-fn symbolic_fallback(code: u32) -> u32 {
+const fn symbolic_fallback(code: u32) -> u32 {
     if code >= 0xF000 {
         return code - 0xF000;
     }
@@ -1041,7 +1041,7 @@ fn push_codepoints(text: &mut String, codepoints: &[u32]) {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::expect_used, clippy::panic)]
+#[expect(clippy::indexing_slicing, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeMap;
 
@@ -1135,7 +1135,7 @@ mod tests {
     fn sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut out = be32(0x0001_0000);
         out.extend(be16(tables.len() as u16));
-        out.extend([0u8; 6]);
+        out.extend([0_u8; 6]);
         let mut offset = 12 + tables.len() * 16;
         let mut bodies = Vec::new();
         for (tag, body) in tables {
@@ -1155,12 +1155,12 @@ mod tests {
     fn maxp(glyphs: u16) -> Vec<u8> {
         let mut out = be32(0x0001_0000);
         out.extend(be16(glyphs));
-        out.extend([0u8; 26]);
+        out.extend([0_u8; 26]);
         out
     }
 
     fn format0_cmap(platform: u16, encoding: u16, map: &[(u8, u8)]) -> Vec<u8> {
-        let mut glyphs = [0u8; 256];
+        let mut glyphs = [0_u8; 256];
         for (code, gid) in map {
             glyphs[usize::from(*code)] = *gid;
         }
@@ -1179,14 +1179,14 @@ mod tests {
 
     fn post2(names: &[&str]) -> Vec<u8> {
         let mut out = be32(0x0002_0000);
-        out.extend([0u8; 28]);
+        out.extend([0_u8; 28]);
         out.extend(be16(names.len() as u16));
         let standard = ["A", "B", "space"];
         let mut strings = Vec::new();
-        let mut custom = 0u16;
+        let mut custom = 0_u16;
         for entry in names {
             if let Some(index) = standard.iter().position(|std| std == entry) {
-                out.extend(be16([36u16, 37, 3][index]));
+                out.extend(be16([36_u16, 37, 3][index]));
             } else if *entry == ".notdef" {
                 out.extend(be16(0));
             } else {
@@ -1205,11 +1205,11 @@ mod tests {
         let mut loca = be32(0);
         let simple = |contours: u16| {
             let mut glyph = be16(contours);
-            glyph.extend([0u8; 12]);
+            glyph.extend([0_u8; 12]);
             glyph
         };
         let mut composite = be16(0xFFFF);
-        composite.extend([0u8; 8]);
+        composite.extend([0_u8; 8]);
         composite.extend(be16(0x0022));
         composite.extend(be16(1));
         composite.extend([0, 0]);
@@ -1223,7 +1223,7 @@ mod tests {
             }
             loca.extend(be32(glyf.len() as u32));
         }
-        let mut head = vec![0u8; 54];
+        let mut head = vec![0_u8; 54];
         head[51] = 1;
         let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
             (b"head", head),
@@ -1274,8 +1274,8 @@ mod tests {
     fn nul_mapped_ligature_cid_is_recovered_from_composite_glyph() {
         let mut resolver = TestResolver::default();
         let cmap = "1 begincodespacerange <0000> <ffff> endcodespacerange\n3 beginbfrange\n<0010> <0010> <0074>\n<0020> <0020> <0069>\n<0030> <0030> <0000>\nendbfrange";
-        let mut map = vec![0u8; 0x31 * 2];
-        for (cid, gid) in [(0x10usize, 1u16), (0x20, 2), (0x30, 3)] {
+        let mut map = vec![0_u8; 0x31 * 2];
+        for (cid, gid) in [(0x10_usize, 1_u16), (0x20, 2), (0x30, 3)] {
             map[cid * 2] = (gid >> 8) as u8;
             map[cid * 2 + 1] = gid as u8;
         }
@@ -1301,15 +1301,15 @@ mod tests {
             for value in [x_min, y_min, x_max, y_max] {
                 glyf.extend(be16(*value as u16));
             }
-            glyf.extend([0u8; 4]);
+            glyf.extend([0_u8; 4]);
             loca.extend(be32(glyf.len() as u32));
             hmtx.extend(be16(*advance));
             hmtx.extend(be16(*x_min as u16));
         }
-        let mut head = vec![0u8; 54];
-        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        let mut head = vec![0_u8; 54];
+        head[18..20].copy_from_slice(&1000_u16.to_be_bytes());
         head[51] = 1;
-        let mut hhea = vec![0u8; 36];
+        let mut hhea = vec![0_u8; 36];
         hhea[34..36].copy_from_slice(&(glyphs.len() as u16).to_be_bytes());
         sfnt(&[
             (b"head", head),
@@ -1449,14 +1449,14 @@ mod tests {
     fn valid_to_unicode_wins_over_program() {
         let mut resolver = TestResolver::default();
         let cmap = "beginbfrange <0010> <0010> <0058> <0030> <0030> <0000> endbfrange";
-        let mut map = vec![0u8; 0x31 * 2];
+        let mut map = vec![0_u8; 0x31 * 2];
         map[0x30 * 2 + 1] = 3;
         map[0x10 * 2 + 1] = 1;
         let program = {
             let mut table = be32(0x0002_0000);
-            table.extend([0u8; 28]);
+            table.extend([0_u8; 28]);
             table.extend(be16(4));
-            for index in [0u16, 36, 37, 258] {
+            for index in [0_u16, 36, 37, 258] {
                 table.extend(be16(index));
             }
             table.push(3);
@@ -1530,7 +1530,7 @@ mod tests {
     #[test]
     fn cff_builtin_encoding_names_drive_simple_text() {
         let mut resolver = TestResolver::default();
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend(be16(34));
         charset.extend(be16(391));
         let cff = build_cff(&Layout {
@@ -1583,7 +1583,7 @@ mod tests {
     #[test]
     fn opentype_cff_name_keyed_type0_maps_cid_through_names() {
         let mut resolver = TestResolver::default();
-        let mut charset = vec![0u8];
+        let mut charset = vec![0_u8];
         charset.extend(be16(34));
         charset.extend(be16(391));
         let cff = build_cff(&Layout {
@@ -1597,7 +1597,7 @@ mod tests {
         });
         let mut otf = be32(0x4F54_544F);
         otf.extend(be16(1));
-        otf.extend([0u8; 6]);
+        otf.extend([0_u8; 6]);
         otf.extend(b"CFF ");
         otf.extend(be32(0));
         otf.extend(be32(28));
@@ -1855,7 +1855,7 @@ mod tests {
             let (fast, glyphs) = decode(&font, &all);
             assert_eq!(glyphs.len(), 256);
             let mut slow = String::new();
-            for code in 0..=255u32 {
+            for code in 0..=255_u32 {
                 push_codepoints(&mut slow, &simple.resolve(code));
             }
             assert_eq!(fast, slow, "{encoding}");
@@ -1977,7 +1977,7 @@ mod tests {
             ]),
         ));
         fonts.push(load(&resolver, dict(vec![("Subtype", name("Type1"))])));
-        let mut seed = 0x1234_5678u32;
+        let mut seed = 0x1234_5678_u32;
         for _ in 0..200 {
             let mut bytes = Vec::new();
             for _ in 0..32 {
@@ -1994,7 +1994,7 @@ mod tests {
     #[test]
     fn hostile_font_dictionaries_do_not_panic() {
         let mut resolver = TestResolver::default();
-        let garbage = resolver.add_stream(Dict::default(), &[0xFFu8; 64]);
+        let garbage = resolver.add_stream(Dict::default(), &[0xFF_u8; 64]);
         for subtype in ["Type1", "TrueType", "Type0", "Type3", "MMType1"] {
             let descriptor = resolver.add(Object::Dict(dict(vec![
                 ("FontFile", garbage.clone()),

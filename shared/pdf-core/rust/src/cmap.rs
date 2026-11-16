@@ -21,11 +21,11 @@ struct Lexer<'a> {
     position: usize,
 }
 
-fn is_space(byte: u8) -> bool {
+const fn is_space(byte: u8) -> bool {
     matches!(byte, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
 }
 
-fn is_delimiter(byte: u8) -> bool {
+const fn is_delimiter(byte: u8) -> bool {
     is_space(byte)
         || matches!(
             byte,
@@ -34,7 +34,7 @@ fn is_delimiter(byte: u8) -> bool {
 }
 
 impl<'a> Lexer<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    const fn new(data: &'a [u8]) -> Self {
         Lexer { data, position: 0 }
     }
 
@@ -50,7 +50,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_string(&mut self) {
-        let mut depth = 0usize;
+        let mut depth = 0_usize;
         while let Some(byte) = self.data.get(self.position).copied() {
             self.position += 1;
             match byte {
@@ -127,7 +127,7 @@ fn parse_int(word: &[u8]) -> Option<i64> {
     Some(value)
 }
 
-fn nibble(byte: u8) -> Option<u8> {
+const fn nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'A'..=b'F' => Some(byte - b'A' + 10),
@@ -162,11 +162,11 @@ fn hex_code(raw: &[u8]) -> Option<(u32, usize)> {
     }
     let value = bytes
         .iter()
-        .fold(0u32, |acc, byte| (acc << 8) | u32::from(*byte));
+        .fold(0_u32, |acc, byte| (acc << 8) | u32::from(*byte));
     Some((value, bytes.len()))
 }
 
-pub fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
+pub(crate) fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
     if let [single] = bytes {
         return vec![u32::from(*single)];
     }
@@ -191,7 +191,7 @@ pub fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
     out
 }
 
-pub fn text_usable(codepoints: &[u32]) -> bool {
+pub(crate) fn text_usable(codepoints: &[u32]) -> bool {
     !codepoints.is_empty()
         && codepoints.iter().all(|cp| {
             char::from_u32(*cp).is_some_and(|ch| {
@@ -215,14 +215,14 @@ struct UnicodeRange {
     dest: RangeDest,
 }
 
-pub enum Lookup<'a> {
+pub(crate) enum Lookup<'a> {
     Slice(&'a [u32]),
     One(u32),
     Owned(Vec<u32>),
 }
 
 impl Lookup<'_> {
-    pub fn as_slice(&self) -> &[u32] {
+    pub(crate) fn as_slice(&self) -> &[u32] {
         match self {
             Lookup::Slice(slice) => slice,
             Lookup::One(value) => core::slice::from_ref(value),
@@ -232,26 +232,26 @@ impl Lookup<'_> {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct UnicodeMap {
+pub(crate) struct UnicodeMap {
     chars: Vec<(u32, Box<[u32]>)>,
     ranges: Vec<UnicodeRange>,
     has_unusable: bool,
 }
 
 impl UnicodeMap {
-    pub fn parse(data: &[u8], limits: &Limits) -> UnicodeMap {
+    pub(crate) fn parse(data: &[u8], limits: &Limits) -> Self {
         parse_cmap_data(data, limits).unicode
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.chars.is_empty() && self.ranges.is_empty()
     }
 
-    pub fn has_unusable(&self) -> bool {
+    pub(crate) const fn has_unusable(&self) -> bool {
         self.has_unusable
     }
 
-    pub fn lookup(&self, code: u32) -> Option<Lookup<'_>> {
+    pub(crate) fn lookup(&self, code: u32) -> Option<Lookup<'_>> {
         if let Ok(position) = self.chars.binary_search_by_key(&code, |(key, _)| *key)
             && let Some((_, dest)) = self.chars.get(position)
         {
@@ -282,7 +282,7 @@ impl UnicodeMap {
         None
     }
 
-    pub fn code_for_char(&self, character: u32) -> Option<u32> {
+    pub(crate) fn code_for_char(&self, character: u32) -> Option<u32> {
         let wanted = [character];
         if let Some((code, _)) = self.chars.iter().find(|(_, dest)| **dest == wanted) {
             return Some(*code);
@@ -307,7 +307,7 @@ impl UnicodeMap {
         None
     }
 
-    pub fn usable(&self, code: u32) -> Option<Lookup<'_>> {
+    pub(crate) fn usable(&self, code: u32) -> Option<Lookup<'_>> {
         self.lookup(code)
             .filter(|found| text_usable(found.as_slice()))
     }
@@ -382,7 +382,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
     let mut out = CMapData::default();
     let mut lexer = Lexer::new(data);
     let mut last_name: Option<&[u8]> = None;
-    let mut entries = 0usize;
+    let mut entries = 0_usize;
     while let Some(token) = lexer.next() {
         match token {
             Token::Name(name) => last_name = Some(name),
@@ -468,7 +468,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     }
                 }
             }
-            Token::Keyword(b"begincidchar") | Token::Keyword(b"beginnotdefchar") => {
+            Token::Keyword(b"begincidchar" | b"beginnotdefchar") => {
                 let notdef = token == Token::Keyword(b"beginnotdefchar");
                 while let Some(Token::Hex(source)) = lexer.next() {
                     let Some(Token::Int(cid)) = lexer.next() else {
@@ -494,7 +494,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     }
                 }
             }
-            Token::Keyword(b"begincidrange") | Token::Keyword(b"beginnotdefrange") => {
+            Token::Keyword(b"begincidrange" | b"beginnotdefrange") => {
                 let notdef = token == Token::Keyword(b"beginnotdefrange");
                 while let Some(Token::Hex(low)) = lexer.next() {
                     let (Some(Token::Hex(high)), Some(Token::Int(cid))) =
@@ -543,27 +543,27 @@ enum Kind {
 }
 
 #[derive(Clone, Debug)]
-pub struct CMap {
+pub(crate) struct CMap {
     kind: Kind,
     codespace: Vec<Codespace>,
     cid_ranges: Vec<CidRange>,
     notdef: Vec<CidRange>,
-    parent: Option<Box<CMap>>,
+    parent: Option<Box<Self>>,
     vertical: bool,
 }
 
-pub struct ParsedCMap {
+pub(crate) struct ParsedCMap {
     pub cmap: CMap,
     pub parent: Option<Vec<u8>>,
 }
 
 impl CMap {
-    pub fn identity(vertical: bool) -> CMap {
-        CMap::with_kind(Kind::Identity, vertical)
+    pub(crate) const fn identity(vertical: bool) -> Self {
+        Self::with_kind(Kind::Identity, vertical)
     }
 
-    fn with_kind(kind: Kind, vertical: bool) -> CMap {
-        CMap {
+    const fn with_kind(kind: Kind, vertical: bool) -> Self {
+        Self {
             kind,
             codespace: Vec::new(),
             cid_ranges: Vec::new(),
@@ -573,10 +573,10 @@ impl CMap {
         }
     }
 
-    pub fn predefined(name: &[u8]) -> Option<CMap> {
+    pub(crate) fn predefined(name: &[u8]) -> Option<Self> {
         let vertical = match name {
-            b"Identity-H" => return Some(CMap::identity(false)),
-            b"Identity-V" => return Some(CMap::identity(true)),
+            b"Identity-H" => return Some(Self::identity(false)),
+            b"Identity-V" => return Some(Self::identity(true)),
             _ if name.ends_with(b"-V") => true,
             _ if name.ends_with(b"-H") => false,
             _ => return None,
@@ -586,18 +586,18 @@ impl CMap {
         }
         let contains = |needle: &[u8]| name.windows(needle.len()).any(|window| window == needle);
         if contains(b"UCS2") {
-            Some(CMap::with_kind(Kind::Ucs2, vertical))
+            Some(Self::with_kind(Kind::Ucs2, vertical))
         } else if contains(b"UTF16") {
-            Some(CMap::with_kind(Kind::Utf16, vertical))
+            Some(Self::with_kind(Kind::Utf16, vertical))
         } else {
             None
         }
     }
 
-    pub fn parse(data: &[u8], limits: &Limits) -> ParsedCMap {
+    pub(crate) fn parse(data: &[u8], limits: &Limits) -> ParsedCMap {
         let parsed = parse_cmap_data(data, limits);
         ParsedCMap {
-            cmap: CMap {
+            cmap: Self {
                 kind: Kind::Embedded,
                 codespace: parsed.codespace,
                 cid_ranges: parsed.cid_ranges,
@@ -609,8 +609,8 @@ impl CMap {
         }
     }
 
-    pub fn with_parent(mut self, parent: CMap) -> CMap {
-        let mut depth = 0usize;
+    pub(crate) fn with_parent(mut self, parent: Self) -> Self {
+        let mut depth = 0_usize;
         let mut cursor = &parent;
         while let Some(next) = cursor.parent.as_deref() {
             depth += 1;
@@ -625,24 +625,24 @@ impl CMap {
         self
     }
 
-    pub fn with_vertical(mut self, vertical: bool) -> CMap {
+    pub(crate) const fn with_vertical(mut self, vertical: bool) -> Self {
         self.vertical = vertical;
         self
     }
 
-    pub fn is_vertical(&self) -> bool {
+    pub(crate) const fn is_vertical(&self) -> bool {
         self.vertical
     }
 
-    pub fn is_identity(&self) -> bool {
+    pub(crate) fn is_identity(&self) -> bool {
         self.kind == Kind::Identity
     }
 
-    pub fn is_unicode_keyed(&self) -> bool {
+    pub(crate) const fn is_unicode_keyed(&self) -> bool {
         matches!(self.kind, Kind::Ucs2 | Kind::Utf16)
     }
 
-    pub fn is_empty_table(&self) -> bool {
+    pub(crate) fn is_empty_table(&self) -> bool {
         self.kind == Kind::Embedded
             && self.codespace.is_empty()
             && self.cid_ranges.is_empty()
@@ -658,7 +658,7 @@ impl CMap {
         &self.codespace
     }
 
-    pub fn read(&self, bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
+    pub(crate) fn read(&self, bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
         let rest = bytes.get(offset..)?;
         let first = *rest.first()?;
         match self.kind {
@@ -694,7 +694,7 @@ impl CMap {
                         None => Some((u32::from(first), 1)),
                     };
                 }
-                for length in 1..=4usize {
+                for length in 1..=4_usize {
                     let Some(window) = rest.get(..length) else {
                         break;
                     };
@@ -712,7 +712,7 @@ impl CMap {
         }
     }
 
-    pub fn cid(&self, code: u32, length: usize) -> Option<u32> {
+    pub(crate) fn cid(&self, code: u32, length: usize) -> Option<u32> {
         match self.kind {
             Kind::Identity => Some(code),
             Kind::Ucs2 | Kind::Utf16 => None,
@@ -732,7 +732,7 @@ impl CMap {
             .or_else(|| find_range(&self.notdef, length, code).map(|range| range.cid))
     }
 
-    pub fn direct_unicode(&self, code: u32) -> Option<Vec<u32>> {
+    pub(crate) fn direct_unicode(&self, code: u32) -> Option<Vec<u32>> {
         match self.kind {
             Kind::Ucs2 => Some(vec![code]),
             Kind::Utf16 => Some(if code > 0xFFFF {
@@ -758,11 +758,11 @@ fn find_range(ranges: &[CidRange], length: u8, code: u32) -> Option<&CidRange> {
 fn be_value(bytes: &[u8]) -> u32 {
     bytes
         .iter()
-        .fold(0u32, |acc, byte| (acc << 8) | u32::from(*byte))
+        .fold(0_u32, |acc, byte| (acc << 8) | u32::from(*byte))
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::expect_used)]
+#[expect(clippy::indexing_slicing, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn garbage_never_panics() {
-        let mut seed = 0x9E37_79B9u32;
+        let mut seed = 0x9E37_79B9_u32;
         let keywords: [&[u8]; 8] = [
             b" begincodespacerange ",
             b" beginbfchar ",
@@ -957,7 +957,7 @@ mod tests {
             b" usecmap ",
             b" [ ",
         ];
-        for round in 0..2048usize {
+        for round in 0..2048_usize {
             let mut data = Vec::new();
             for _ in 0..(8 + round % 40) {
                 seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);

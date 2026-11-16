@@ -46,7 +46,7 @@ fn pdf_doc_char(byte: u8) -> char {
     }
 }
 
-pub fn decode_text_string(bytes: &[u8]) -> String {
+pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xfe, 0xff]) {
         let units = rest.chunks(2).map(|pair| match pair {
             [high, low] => u16::from(*high) << 8 | u16::from(*low),
@@ -94,7 +94,7 @@ struct Section {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Page {
+pub(crate) struct Page {
     pub obj_ref: Option<ObjRef>,
     pub dict: Dict,
     pub resources: Dict,
@@ -110,13 +110,13 @@ struct Inherited {
 }
 
 impl Inherited {
-    fn merged(&self, dict: &Dict) -> Inherited {
+    fn merged(&self, dict: &Dict) -> Self {
         let pick = |key: &[u8], parent: &Option<Rc<Object>>| {
             dict.get(key)
                 .map(|value| Rc::new(value.clone()))
                 .or_else(|| parent.clone())
         };
-        Inherited {
+        Self {
             resources: pick(b"Resources", &self.resources),
             media_box: pick(b"MediaBox", &self.media_box),
             crop_box: pick(b"CropBox", &self.crop_box),
@@ -176,7 +176,7 @@ fn header_before(data: &[u8], keyword_index: usize, floor: usize) -> Option<usiz
     back(index, |byte| byte.is_ascii_digit(), 10)
 }
 
-pub struct Document<'a> {
+pub(crate) struct Document<'a> {
     bytes: &'a [u8],
     shift: Cell<usize>,
     limits: Limits,
@@ -189,7 +189,7 @@ pub struct Document<'a> {
 }
 
 impl<'a> Document<'a> {
-    pub fn open(bytes: &'a [u8], limits: &Limits) -> Outcome<Self> {
+    pub(crate) fn open(bytes: &'a [u8], limits: &Limits) -> Outcome<Self> {
         if bytes.len() > limits.max_pdf_bytes {
             return Err(Failure::limit("pdf exceeds size limit"));
         }
@@ -219,7 +219,7 @@ impl<'a> Document<'a> {
     }
 
     #[cfg(test)]
-    pub fn was_repaired(&self) -> bool {
+    pub(crate) const fn was_repaired(&self) -> bool {
         self.repaired.get()
     }
 
@@ -244,7 +244,7 @@ impl<'a> Document<'a> {
             .min(self.bytes.len().saturating_mul(8).saturating_add(4096))
     }
 
-    pub fn catalog(&self) -> Outcome<Option<Rc<Object>>> {
+    pub(crate) fn catalog(&self) -> Outcome<Option<Rc<Object>>> {
         let root = self.trailer.borrow().get(b"Root").cloned();
         let Some(root) = root else { return Ok(None) };
         let Some(object) = lenient(self.follow(&root))? else {
@@ -426,7 +426,7 @@ impl<'a> Document<'a> {
             .get(b"W")
             .and_then(Object::as_array)
             .ok_or_else(|| Failure::invalid("xref stream without /W"))?;
-        let mut w = [0usize; 3];
+        let mut w = [0_usize; 3];
         if widths.len() < 3 {
             return Err(Failure::invalid("bad xref /W"));
         }
@@ -453,7 +453,7 @@ impl<'a> Document<'a> {
         };
         let data = self.stream_data(&stream)?;
         let mut entries = Vec::new();
-        let mut cursor = 0usize;
+        let mut cursor = 0_usize;
         for pair in index.chunks(2) {
             let [start, count] = pair else { break };
             if *start < 0 || *count < 0 {
@@ -504,7 +504,7 @@ impl<'a> Document<'a> {
         let mut trailers: Vec<Dict> = Vec::new();
         let mut catalogs: Vec<u32> = Vec::new();
         let mut object_streams: Vec<(u32, usize)> = Vec::new();
-        let mut pos = 0usize;
+        let mut pos = 0_usize;
         while let Some(rest) = data.get(pos..) {
             let Some(found) = rest.iter().position(|&byte| byte == b'o' || byte == b't') else {
                 break;
@@ -639,9 +639,9 @@ impl<'a> Document<'a> {
         Err(Failure::invalid("no document catalog found"))
     }
 
-    pub fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
+    pub(crate) fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
         let index = reference.number as usize;
-        if let Some(hit) = self.cache.borrow().get(index).and_then(|slot| slot.clone()) {
+        if let Some(hit) = self.cache.borrow().get(index).and_then(Clone::clone) {
             return Ok(hit);
         }
         let entry = self
@@ -754,7 +754,7 @@ impl<'a> Document<'a> {
             return Err(Failure::limit("object stream too large"));
         }
         let mut entries = Vec::with_capacity(count);
-        let mut pos = 0usize;
+        let mut pos = 0_usize;
         for _ in 0..count {
             pos = skip_whitespace_at(&data, pos);
             let Some(member) = read_unsigned(&data, &mut pos) else {
@@ -781,7 +781,7 @@ impl<'a> Document<'a> {
         Ok(parsed)
     }
 
-    pub fn follow(&self, object: &Object) -> Outcome<Rc<Object>> {
+    pub(crate) fn follow(&self, object: &Object) -> Outcome<Rc<Object>> {
         let Object::Ref(first) = object else {
             return Ok(Rc::new(object.clone()));
         };
@@ -830,7 +830,7 @@ impl<'a> Document<'a> {
         if items.len() < 4 {
             return Ok(None);
         }
-        let mut values = [0.0f64; 4];
+        let mut values = [0.0_f64; 4];
         for (slot, item) in values.iter_mut().zip(items) {
             let number = lenient(self.follow(item))?.and_then(|value| value.as_number());
             match number {
@@ -947,7 +947,7 @@ impl<'a> Document<'a> {
         Ok(pages)
     }
 
-    pub fn pages(&self) -> Outcome<Vec<Page>> {
+    pub(crate) fn pages(&self) -> Outcome<Vec<Page>> {
         let pages = self.walk_pages()?;
         if pages.is_empty() && !self.repaired.get() && self.rebuild().is_ok() {
             return self.walk_pages();
@@ -955,7 +955,7 @@ impl<'a> Document<'a> {
         Ok(pages)
     }
 
-    pub fn content(&self, page: &Page) -> Outcome<Vec<u8>> {
+    pub(crate) fn content(&self, page: &Page) -> Outcome<Vec<u8>> {
         let Some(contents) = page.dict.get(b"Contents") else {
             return Ok(Vec::new());
         };
@@ -999,7 +999,7 @@ impl<'a> Document<'a> {
         Ok(out)
     }
 
-    pub fn links(&self, pages: &[Page]) -> Outcome<Vec<LinkInfo>> {
+    pub(crate) fn links(&self, pages: &[Page]) -> Outcome<Vec<LinkInfo>> {
         let mut links = Vec::new();
         for (index, page) in pages.iter().enumerate() {
             let Ok(page_index) = u32::try_from(index) else {
@@ -1063,7 +1063,7 @@ impl<'a> Document<'a> {
 fn be_value(bytes: &[u8]) -> u64 {
     bytes
         .iter()
-        .fold(0u64, |value, &byte| value << 8 | u64::from(byte))
+        .fold(0_u64, |value, &byte| value << 8 | u64::from(byte))
 }
 
 fn normalize_rotation(value: f64) -> i32 {
@@ -1117,7 +1117,11 @@ impl Resolver for Document<'_> {
     }
 }
 
-pub fn inspect(bytes: &[u8], options: &InspectOptions, limits: &Limits) -> Outcome<Inspection> {
+pub(crate) fn inspect(
+    bytes: &[u8],
+    options: &InspectOptions,
+    limits: &Limits,
+) -> Outcome<Inspection> {
     if bytes.len() > limits.max_pdf_bytes {
         return Err(Failure::limit("pdf exceeds size limit"));
     }
@@ -1149,8 +1153,8 @@ pub fn inspect(bytes: &[u8], options: &InspectOptions, limits: &Limits) -> Outco
             }
             None => selected.extend(0..pages.len()),
         }
-        let mut total_items = 0usize;
-        let mut total_bytes = 0usize;
+        let mut total_items = 0_usize;
+        let mut total_bytes = 0_usize;
         for position in selected {
             let Some(page) = pages.get(position) else {
                 continue;
@@ -1180,7 +1184,7 @@ pub fn inspect(bytes: &[u8], options: &InspectOptions, limits: &Limits) -> Outco
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
@@ -1205,9 +1209,9 @@ mod tests {
 
     fn basic_objects() -> Vec<(u32, String)> {
         vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
-            (3, PAGE.to_string()),
+            (1, CATALOG.to_owned()),
+            (2, PAGES.to_owned()),
+            (3, PAGE.to_owned()),
             (4, stream_object("", "BT /F1 12 Tf (Hi) Tj ET")),
         ]
     }
@@ -1230,7 +1234,7 @@ mod tests {
         for number in 0..=max {
             match offsets.iter().find(|(n, _)| *n == number) {
                 Some((_, offset)) => {
-                    bytes.extend_from_slice(format!("{:010} 00000 n \n", offset + skew).as_bytes())
+                    bytes.extend_from_slice(format!("{:010} 00000 n \n", offset + skew).as_bytes());
                 }
                 None => bytes.extend_from_slice(b"0000000000 65535 f \n"),
             }
@@ -1351,7 +1355,7 @@ mod tests {
     }
 
     fn object_stream_pdf(hybrid: bool) -> ObjStmFile {
-        let compressed = [(1u32, CATALOG), (2, PAGES), (3, PAGE)];
+        let compressed = [(1_u32, CATALOG), (2, PAGES), (3, PAGE)];
         let mut header = String::new();
         let mut bodies = String::new();
         for (number, body) in compressed {
@@ -1400,9 +1404,9 @@ mod tests {
             for _ in 0..3 {
                 text.push_str("0000000000 00000 f \n");
             }
-            text.push_str(&format!("{:010} 00000 n \n", content));
-            text.push_str(&format!("{:010} 00000 n \n", object_stream));
-            text.push_str(&format!("{:010} 00000 n \n", xref_stream));
+            text.push_str(&format!("{content:010} 00000 n \n"));
+            text.push_str(&format!("{object_stream:010} 00000 n \n"));
+            text.push_str(&format!("{xref_stream:010} 00000 n \n"));
             text.push_str(&format!(
                 "trailer\n<< /Size 7 /Root 1 0 R /XRefStm {xref_stream} >>\nstartxref\n{table}\n%%EOF\n"
             ));
@@ -1518,7 +1522,7 @@ mod tests {
     #[test]
     fn prev_cycle_terminates() {
         let base = build_classic(&basic_objects(), "", 0);
-        let mut bytes = base.bytes.clone();
+        let mut bytes = base.bytes;
         let xref = bytes.len();
         bytes.extend_from_slice(
             format!(
@@ -1572,7 +1576,7 @@ mod tests {
         let mut objects = basic_objects();
         objects.push((
             3,
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 50 60] >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 50 60] >>".to_owned(),
         ));
         let built = build_classic(&objects, "", 0);
         let bytes = built.bytes[..built.xref].to_vec();
@@ -1612,9 +1616,9 @@ mod tests {
         objects.pop();
         objects.push((
             4,
-            "<< /Length 5 0 R >>\nstream\nBT (A) Tj ET\nendstream".to_string(),
+            "<< /Length 5 0 R >>\nstream\nBT (A) Tj ET\nendstream".to_owned(),
         ));
-        objects.push((5, "12".to_string()));
+        objects.push((5, "12".to_owned()));
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
         let pages = document.pages().unwrap();
@@ -1628,9 +1632,9 @@ mod tests {
         objects.pop();
         objects.push((
             4,
-            "<< /Length 5 0 R >>\nstream\nBT ET\nendstream".to_string(),
+            "<< /Length 5 0 R >>\nstream\nBT ET\nendstream".to_owned(),
         ));
-        objects.push((5, "<< /Length 4 0 R >>\nstream\nxx\nendstream".to_string()));
+        objects.push((5, "<< /Length 4 0 R >>\nstream\nxx\nendstream".to_owned()));
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
         let pages = document.pages().unwrap();
@@ -1643,7 +1647,7 @@ mod tests {
         objects.pop();
         objects.push((
             4,
-            "<< /Length 3 >>\nstream\nBT (A) Tj ET\nendstream".to_string(),
+            "<< /Length 3 >>\nstream\nBT (A) Tj ET\nendstream".to_owned(),
         ));
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
@@ -1654,15 +1658,15 @@ mod tests {
     #[test]
     fn contents_array_is_joined_and_skips_broken_parts() {
         let objects = vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
+            (1, CATALOG.to_owned()),
+            (2, PAGES.to_owned()),
             (
                 3,
-                "<< /Type /Page /Parent 2 0 R /Contents [4 0 R 9 0 R 5 0 R 7 0 R] >>".to_string(),
+                "<< /Type /Page /Parent 2 0 R /Contents [4 0 R 9 0 R 5 0 R 7 0 R] >>".to_owned(),
             ),
             (4, stream_object("", "q")),
             (5, stream_object("", "Q")),
-            (7, "42".to_string()),
+            (7, "42".to_owned()),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
@@ -1687,21 +1691,19 @@ mod tests {
     #[test]
     fn nested_page_tree_with_inheritance_and_cycle() {
         let objects = vec![
-            (1, CATALOG.to_string()),
+            (1, CATALOG.to_owned()),
             (
                 2,
-                "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 3 /Rotate 90 /MediaBox [0 0 400 500] /Resources << /Font << /F1 9 0 R >> >> >>"
-                    .to_string(),
+                "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 3 /Rotate 90 /MediaBox [0 0 400 500] /Resources << /Font << /F1 9 0 R >> >> >>".to_owned(),
             ),
             (
                 3,
-                "<< /Type /Pages /Parent 2 0 R /Kids [4 0 R 2 0 R 3 0 R] /Rotate 180 >>".to_string(),
+                "<< /Type /Pages /Parent 2 0 R /Kids [4 0 R 2 0 R 3 0 R] /Rotate 180 >>".to_owned(),
             ),
-            (4, "<< /Type /Page /Parent 3 0 R >>".to_string()),
+            (4, "<< /Type /Page /Parent 3 0 R >>".to_owned()),
             (
                 5,
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 20] /Resources << /XObject << >> >> >>"
-                    .to_string(),
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 20] /Resources << /XObject << >> >> >>".to_owned(),
             ),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
@@ -1720,12 +1722,12 @@ mod tests {
     #[test]
     fn page_tree_tolerates_garbage_kids() {
         let objects = vec![
-            (1, CATALOG.to_string()),
+            (1, CATALOG.to_owned()),
             (
                 2,
-                "<< /Type /Pages /Kids [3 0 R 77 0 R 5 null (x) 3 0 R] >>".to_string(),
+                "<< /Type /Pages /Kids [3 0 R 77 0 R 5 null (x) 3 0 R] >>".to_owned(),
             ),
-            (3, PAGE.to_string()),
+            (3, PAGE.to_owned()),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
@@ -1734,8 +1736,8 @@ mod tests {
 
     fn page_info_with(extra: &str) -> PageInfo {
         let objects = vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
+            (1, CATALOG.to_owned()),
+            (2, PAGES.to_owned()),
             (3, format!("<< /Type /Page /Parent 2 0 R {extra} >>")),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
@@ -1798,16 +1800,16 @@ mod tests {
     #[test]
     fn indirect_box_values_are_resolved() {
         let objects = vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
+            (1, CATALOG.to_owned()),
+            (2, PAGES.to_owned()),
             (
                 3,
-                "<< /Type /Page /Parent 2 0 R /MediaBox 5 0 R /Rotate 6 0 R >>".to_string(),
+                "<< /Type /Page /Parent 2 0 R /MediaBox 5 0 R /Rotate 6 0 R >>".to_owned(),
             ),
-            (5, "[0 0 7 0 R 8 0 R]".to_string()),
-            (6, "90".to_string()),
-            (7, "120".to_string()),
-            (8, "240".to_string()),
+            (5, "[0 0 7 0 R 8 0 R]".to_owned()),
+            (6, "90".to_owned()),
+            (7, "120".to_owned()),
+            (8, "240".to_owned()),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
@@ -1818,38 +1820,37 @@ mod tests {
 
     fn link_objects(page_extra: &str) -> Vec<(u32, String)> {
         vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
+            (1, CATALOG.to_owned()),
+            (2, PAGES.to_owned()),
             (
                 3,
                 format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] {page_extra} >>"),
             ),
             (
                 4,
-                "<< /Type /Annot /Subtype /Link /Rect [100 50 10 20] /A << /S /URI /URI (https://example.com/a) >> >>"
-                    .to_string(),
+                "<< /Type /Annot /Subtype /Link /Rect [100 50 10 20] /A << /S /URI /URI (https://example.com/a) >> >>".to_owned(),
             ),
             (
                 5,
-                "<< /Type /Annot /Subtype /Link /Rect [0 0 5 5] /A 6 0 R >>".to_string(),
+                "<< /Type /Annot /Subtype /Link /Rect [0 0 5 5] /A 6 0 R >>".to_owned(),
             ),
             (
                 6,
-                "<< /S /URI /URI <FEFF0068007400740070003A002F002F00E9> >>".to_string(),
+                "<< /S /URI /URI <FEFF0068007400740070003A002F002F00E9> >>".to_owned(),
             ),
             (
                 7,
-                "<< /Subtype /Link /Rect [0 0 1 1] /Dest [3 0 R /Fit] >>".to_string(),
+                "<< /Subtype /Link /Rect [0 0 1 1] /Dest [3 0 R /Fit] >>".to_owned(),
             ),
             (
                 8,
-                "<< /Subtype /Text /Rect [0 0 1 1] /A << /S /URI /URI (x) >> >>".to_string(),
+                "<< /Subtype /Text /Rect [0 0 1 1] /A << /S /URI /URI (x) >> >>".to_owned(),
             ),
             (
                 9,
-                "<< /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (x) >> >>".to_string(),
+                "<< /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (x) >> >>".to_owned(),
             ),
-            (10, "[4 0 R 5 0 R 7 0 R 8 0 R 9 0 R 99 0 R null]".to_string()),
+            (10, "[4 0 R 5 0 R 7 0 R 8 0 R 9 0 R 99 0 R null]".to_owned()),
         ]
     }
 
@@ -1868,7 +1869,7 @@ mod tests {
             LinkInfo {
                 page_index: 0,
                 rect: [10.0, 20.0, 100.0, 50.0],
-                uri: "https://example.com/a".to_string()
+                uri: "https://example.com/a".to_owned()
             }
         );
         assert_eq!(result.links[1].uri, "http://\u{e9}");
@@ -1886,7 +1887,7 @@ mod tests {
         assert_eq!(error.code, FailureCode::EncryptedPdf);
         let built = build_classic(&basic_objects(), "/Encrypt << /Filter /Standard >>", 0);
         let broken = built.bytes[..built.xref].to_vec();
-        let mut with_trailer = broken.clone();
+        let mut with_trailer = broken;
         with_trailer
             .extend_from_slice(b"trailer\n<< /Root 1 0 R /Encrypt << /Filter /Standard >> >>\n");
         let error = Document::open(&with_trailer, &Limits::default())
@@ -1911,8 +1912,8 @@ mod tests {
     #[test]
     fn document_without_pages_is_empty_not_error() {
         let objects = vec![
-            (1, CATALOG.to_string()),
-            (2, "<< /Type /Pages /Kids [] /Count 0 >>".to_string()),
+            (1, CATALOG.to_owned()),
+            (2, "<< /Type /Pages /Kids [] /Count 0 >>".to_owned()),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
         let result = inspect_all(&bytes).unwrap();
@@ -1922,13 +1923,13 @@ mod tests {
     #[test]
     fn resolver_follows_chains_and_missing_objects() {
         let objects = vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
-            (3, PAGE.to_string()),
-            (5, "6 0 R".to_string()),
-            (6, "7 0 R".to_string()),
-            (7, "(done)".to_string()),
-            (8, "8 0 R".to_string()),
+            (1, CATALOG.to_owned()),
+            (2, PAGES.to_owned()),
+            (3, PAGE.to_owned()),
+            (5, "6 0 R".to_owned()),
+            (6, "7 0 R".to_owned()),
+            (7, "(done)".to_owned()),
+            (8, "8 0 R".to_owned()),
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
         let document = open(&bytes);
@@ -1961,10 +1962,10 @@ mod tests {
 
     fn append_binary_stream_pdf(dict: &str, data: &[u8]) -> Vec<u8> {
         let objects = [
-            (1u32, CATALOG),
-            (2u32, PAGES),
-            (3u32, PAGE),
-            (5u32, "/FlateDecode"),
+            (1_u32, CATALOG),
+            (2_u32, PAGES),
+            (3_u32, PAGE),
+            (5_u32, "/FlateDecode"),
         ];
         let mut bytes = b"%PDF-1.7\n".to_vec();
         let mut offsets = Vec::new();
@@ -1991,9 +1992,8 @@ mod tests {
             let offset = offsets
                 .iter()
                 .find(|(n, _)| *n == number)
-                .map(|(_, o)| *o)
-                .unwrap_or(0);
-            bytes.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+                .map_or(0, |(_, o)| *o);
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
         }
         bytes.extend_from_slice(
             format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
@@ -2003,7 +2003,9 @@ mod tests {
 
     #[test]
     fn stream_data_resolves_indirect_filter_to_filters_module() {
-        let flate_ab = [0x78u8, 0x9c, 0x4b, 0x4c, 0x02, 0x00, 0x01, 0x26, 0x00, 0xc4];
+        let flate_ab = [
+            0x78_u8, 0x9c, 0x4b, 0x4c, 0x02, 0x00, 0x01, 0x26, 0x00, 0xc4,
+        ];
         let bytes = append_binary_stream_pdf("", &flate_ab);
         let document = open(&bytes);
         let object = document
@@ -2163,8 +2165,8 @@ mod tests {
     #[test]
     #[ignore]
     fn perf_two_thousand_pages() {
-        let pages = 2000u32;
-        let mut objects = vec![(1u32, CATALOG.to_string())];
+        let pages = 2000_u32;
+        let mut objects = vec![(1_u32, CATALOG.to_owned())];
         let kids: String = (0..pages).map(|i| format!("{} 0 R ", 10 + i * 3)).collect();
         objects.push((
             2,
@@ -2182,8 +2184,7 @@ mod tests {
             ));
             objects.push((
                 page + 1,
-                "<< /Subtype /Link /Rect [10 10 100 30] /A << /S /URI /URI (https://example.com/x) >> >>"
-                    .to_string(),
+                "<< /Subtype /Link /Rect [10 10 100 30] /A << /S /URI /URI (https://example.com/x) >> >>".to_owned(),
             ));
             objects.push((page + 2, stream_object("", "BT /F1 12 Tf (Hello) Tj ET")));
         }
