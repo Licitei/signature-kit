@@ -517,11 +517,11 @@ impl<'a> Parser<'a> {
         let number = u32::try_from(number).ok()?;
         let data = self.data;
         let mut index = self.pos;
-        let gap = index;
+        let number_gap = index;
         while data.get(index).copied().is_some_and(is_whitespace) {
             index = index.saturating_add(1);
         }
-        if index == gap {
+        if index == number_gap {
             return None;
         }
         let digits_start = index;
@@ -540,11 +540,11 @@ impl<'a> Parser<'a> {
         if index == digits_start {
             return None;
         }
-        let gap = index;
+        let reference_gap = index;
         while data.get(index).copied().is_some_and(is_whitespace) {
             index = index.saturating_add(1);
         }
-        if index == gap || !keyword_at(data, index, b"R") {
+        if index == reference_gap || !keyword_at(data, index, b"R") {
             return None;
         }
         let reference = ObjRef {
@@ -710,15 +710,15 @@ pub(crate) struct IndirectObject {
 pub(crate) fn parse_object_header(data: &[u8], offset: usize) -> Option<(ObjRef, usize)> {
     let mut pos = skip_whitespace_at(data, offset);
     let number = read_unsigned(data, &mut pos)?;
-    let gap = pos;
+    let number_gap = pos;
     pos = skip_whitespace_at(data, pos);
-    if pos == gap {
+    if pos == number_gap {
         return None;
     }
     let generation = read_unsigned(data, &mut pos)?;
-    let gap = pos;
+    let generation_gap = pos;
     pos = skip_whitespace_at(data, pos);
-    if pos == gap || !keyword_at(data, pos, b"obj") {
+    if pos == generation_gap || !keyword_at(data, pos, b"obj") {
         return None;
     }
     let reference = ObjRef {
@@ -816,30 +816,28 @@ pub(crate) fn parse_indirect_object(
     let after = parser.position();
     let keyword = skip_whitespace_at(data, after);
     let has_stream = matches!(object, Object::Dict(_)) && keyword_at(data, keyword, b"stream");
-    match object {
-        Object::Dict(dict) if has_stream => {
-            let declared = match dict.get(b"Length") {
-                Some(Object::Integer(length)) => usize::try_from(*length).ok(),
-                Some(Object::Ref(reference)) => {
-                    resolve_length(*reference).and_then(|length| usize::try_from(length).ok())
-                }
-                _ => None,
-            };
-            let start = stream_start(data, keyword.saturating_add(6));
-            let range = stream_range(data, start, declared);
-            let end = object_tail(data, range.end);
-            Ok(IndirectObject {
-                obj_ref,
-                object: Object::Stream(Stream { dict, data: range }),
-                end,
-            })
-        }
-        other => Ok(IndirectObject {
+    if has_stream && let Object::Dict(dict) = object {
+        let declared = match dict.get(b"Length") {
+            Some(Object::Integer(length)) => usize::try_from(*length).ok(),
+            Some(Object::Ref(reference)) => {
+                resolve_length(*reference).and_then(|length| usize::try_from(length).ok())
+            }
+            _ => None,
+        };
+        let start = stream_start(data, keyword.saturating_add(6));
+        let range = stream_range(data, start, declared);
+        let end = object_tail(data, range.end);
+        return Ok(IndirectObject {
             obj_ref,
-            object: other,
-            end: object_tail(data, after),
-        }),
+            object: Object::Stream(Stream { dict, data: range }),
+            end,
+        });
     }
+    Ok(IndirectObject {
+        obj_ref,
+        object,
+        end: object_tail(data, after),
+    })
 }
 
 #[cfg(test)]
@@ -1100,9 +1098,10 @@ mod tests {
     }
 
     fn stream_bytes<'a>(data: &'a [u8], parsed: &IndirectObject) -> &'a [u8] {
-        match &parsed.object {
-            Object::Stream(stream) => data.get(stream.data.clone()).unwrap_or_default(),
-            _ => &[],
+        if let Object::Stream(stream) = &parsed.object {
+            data.get(stream.data.clone()).unwrap_or_default()
+        } else {
+            &[]
         }
     }
 

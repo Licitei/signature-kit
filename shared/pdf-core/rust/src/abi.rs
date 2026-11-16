@@ -444,7 +444,7 @@ pub(crate) unsafe extern "C" fn pdf_core_text(
             drop_running: request.has(FLAG_DROP_RUNNING),
         };
         let pages =
-            layout::document_text(request.pdf, request.pages, &layout::text_limits(), &options)?;
+            layout::document_text(request.pdf, request.pages, &layout::text_limits(), options)?;
         encode_text(&pages)
     }))
 }

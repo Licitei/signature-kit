@@ -241,13 +241,13 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         let Some(code_slot) = assigned.get_mut(slot) else {
             continue;
         };
-        let code = u32::from(*code_slot);
+        let assigned_code = u32::from(*code_slot);
         *code_slot = code_slot.wrapping_add(1);
         let len32 = u32::from(len);
-        if len32 > FAST_BITS || code >= (1_u32 << len32) {
+        if len32 > FAST_BITS || assigned_code >= (1_u32 << len32) {
             continue;
         }
-        let reversed = code.reverse_bits() >> 32_u32.saturating_sub(len32);
+        let reversed = assigned_code.reverse_bits() >> 32_u32.saturating_sub(len32);
         let entry = (len32 << 16) | u32::from(sym);
         let mut index = widen(reversed);
         while index < FAST_SIZE {
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn truncated_stream_returns_the_decoded_prefix() {
-        let cut = ZLIB_SKEWED.get(..ZLIB_SKEWED.len() / 2).expect("prefix");
+        let cut = ZLIB_SKEWED.get(..ZLIB_SKEWED.len() >> 1).expect("prefix");
         let out = inflate(cut, 1024 * 1024).expect("partial");
         assert!(!out.is_empty());
         assert!(out.len() < 67_500);

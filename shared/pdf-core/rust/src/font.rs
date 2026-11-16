@@ -1,4 +1,4 @@
-use crate::num::widen;
+use crate::num::{f64_to_i64, widen};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -484,14 +484,11 @@ impl CompositeFont {
     fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
         let horizontal = self.horizontal.width(Some(code));
         let found = find_entry(&self.vertical.entries, code);
-        let (advance, origin_x, origin_y) = match found {
-            Some([advance, origin_x, origin_y]) => (advance, origin_x, origin_y),
-            None => (
-                self.vertical.advance,
-                horizontal / 2.0,
-                self.vertical.origin_y,
-            ),
-        };
+        let [advance, origin_x, origin_y] = found.unwrap_or([
+            self.vertical.advance,
+            horizontal / 2.0,
+            self.vertical.origin_y,
+        ]);
         VerticalMetrics {
             advance: advance.abs() / 1000.0,
             origin_x: origin_x / 1000.0,
@@ -519,17 +516,22 @@ impl CidWidths {
 }
 
 fn deref(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Object> {
-    match value? {
-        reference @ Object::Ref(_) => resolver.resolve(reference).ok(),
-        other => Some(other.clone()),
+    let value = value?;
+    if value.is_ref() {
+        resolver.resolve(value).ok()
+    } else {
+        Some(value.clone())
     }
 }
 
 fn deref_dict(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Dict> {
-    match deref(resolver, value)? {
-        Object::Dict(dict) => Some(dict),
-        Object::Stream(stream) => Some(stream.dict),
-        _ => None,
+    let object = deref(resolver, value)?;
+    if let Object::Dict(dict) = object {
+        Some(dict)
+    } else if let Object::Stream(stream) = object {
+        Some(stream.dict)
+    } else {
+        None
     }
 }
 
@@ -769,15 +771,13 @@ fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outco
 fn load_differences(entries: &[Object], state: &mut EncodingState) {
     let mut code = 0_i64;
     for entry in entries {
-        match entry {
-            Object::Integer(value) => code = *value,
-            Object::Name(name) => {
-                if let Ok(slot) = u8::try_from(code) {
-                    state.differences.push((slot, name.clone()));
-                }
-                code = code.saturating_add(1);
+        if let Object::Integer(value) = entry {
+            code = *value;
+        } else if let Object::Name(name) = entry {
+            if let Ok(slot) = u8::try_from(code) {
+                state.differences.push((slot, name.clone()));
             }
-            _ => {}
+            code = code.saturating_add(1);
         }
     }
 }
@@ -887,9 +887,9 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                     for (step, triple) in inner.chunks_exact(3).enumerate() {
                         let values: Vec<f64> =
                             triple.iter().filter_map(Object::as_number).collect();
-                        if let [advance, origin_x, origin_y] = values.as_slice() {
+                        if let [vertical_advance, origin_x, shift_y] = values.as_slice() {
                             let cid = start.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
-                            entries.push((cid, cid, [*advance, *origin_x, *origin_y]));
+                            entries.push((cid, cid, [*vertical_advance, *origin_x, *shift_y]));
                         }
                     }
                 }
@@ -903,14 +903,14 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                         .collect();
                     let end = u32::try_from(*end).ok();
                     index = index.saturating_add(4);
-                    if let (Some(start), Some(end), [advance, origin_x, origin_y]) =
+                    if let (Some(start), Some(end), [vertical_advance, origin_x, shift_y]) =
                         (start, end, values.as_slice())
                         && start <= end
                     {
                         entries.push((
                             start,
                             end.min(start.saturating_add(MAX_WIDTH_RANGE)),
-                            [*advance, *origin_x, *origin_y],
+                            [*vertical_advance, *origin_x, *shift_y],
                         ));
                     }
                 }
@@ -1019,7 +1019,7 @@ fn name_bytes(value: Option<&Object>) -> Option<&[u8]> {
 const fn read_integer(value: Option<&Object>) -> Option<i64> {
     match value {
         Some(Object::Integer(v)) => Some(*v),
-        Some(Object::Real(v)) => Some(*v as i64),
+        Some(Object::Real(v)) => Some(f64_to_i64(*v)),
         _ => None,
     }
 }
@@ -1090,13 +1090,13 @@ mod tests {
 
     impl Resolver for TestResolver {
         fn resolve(&self, object: &Object) -> Outcome<Object> {
-            match object {
-                Object::Ref(reference) => self
-                    .objects
+            if let Object::Ref(reference) = object {
+                self.objects
                     .get(&reference.number)
                     .cloned()
-                    .ok_or_else(|| Failure::invalid("missing object")),
-                other => Ok(other.clone()),
+                    .ok_or_else(|| Failure::invalid("missing object"))
+            } else {
+                Ok(object.clone())
             }
         }
 
@@ -1131,8 +1131,8 @@ mod tests {
         (text, glyphs)
     }
 
-    fn load(resolver: &TestResolver, font: Dict) -> Font {
-        Font::load(resolver, &font, &Limits::default()).expect("font")
+    fn load(resolver: &TestResolver, font: &Dict) -> Font {
+        Font::load(resolver, font, &Limits::default()).expect("font")
     }
 
     fn be16(value: u16) -> Vec<u8> {
@@ -1251,11 +1251,11 @@ mod tests {
 
     fn type0_with_program(
         resolver: &mut TestResolver,
-        program: Vec<u8>,
+        program: &[u8],
         to_unicode: Option<&str>,
         cid_to_gid: Option<Vec<u8>>,
     ) -> Dict {
-        let file = resolver.add_stream(Dict::default(), &program);
+        let file = resolver.add_stream(Dict::default(), program);
         let descriptor = resolver.add(Object::Dict(dict(vec![
             ("Type", name("FontDescriptor")),
             ("FontFile2", file),
@@ -1295,11 +1295,11 @@ mod tests {
         }
         let font = type0_with_program(
             &mut resolver,
-            truetype_ligature_font(Vec::new()),
+            &truetype_ligature_font(Vec::new()),
             Some(cmap),
             Some(map),
         );
-        let font = load(&resolver, font);
+        let font = load(&resolver, &font);
         let (text, glyphs) = decode(&font, &[0x00, 0x10, 0x00, 0x30, 0x00, 0x20]);
         assert_eq!(text, "ttii");
         assert_eq!(glyphs.len(), 3);
@@ -1349,8 +1349,8 @@ mod tests {
             (200, -3, 520, 684, 529),
         ]);
         let cmap = "beginbfrange <0001> <0001> <0074> <0002> <0002> <0069> <0003> <0003> <0066> <0004> <0004> <006c> <0005> <0007> <0000> endbfrange";
-        let font = type0_with_program(&mut resolver, program, Some(cmap), None);
-        let font = load(&resolver, font);
+        let font = type0_with_program(&mut resolver, &program, Some(cmap), None);
+        let font = load(&resolver, &font);
         assert_eq!(decode(&font, &[0, 5]).0, "ti");
         assert_eq!(decode(&font, &[0, 6]).0, "");
         assert_eq!(decode(&font, &[0, 7]).0, "");
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn ligature_shape_match_applies_to_simple_symbolic_fonts() {
         let mut resolver = TestResolver::default();
-        let mut program = metric_font(&[
+        let program = metric_font(&[
             (0, 0, 0, 0, 500),
             (16, -8, 303, 584, 335),
             (65, -3, 164, 648, 229),
@@ -1378,7 +1378,7 @@ mod tests {
         );
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("TrueType")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
@@ -1390,19 +1390,16 @@ mod tests {
     }
 
     fn sfnt_with_cmap(base: &[u8], cmap: Vec<u8>) -> Vec<u8> {
-        let count = usize::from(u16::from_be_bytes([base[4], base[5]]));
+        let count = usize::from(u16::from_be_bytes(base[4..6].try_into().unwrap()));
         let mut tables: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for index in 0..count {
-            let record = &base[(index.saturating_mul(16)).saturating_add(12)
-                ..(index.saturating_mul(16)).saturating_add(28)];
-            let offset = widen(u32::from_be_bytes([
-                record[8], record[9], record[10], record[11],
-            ]));
-            let length = widen(u32::from_be_bytes([
-                record[12], record[13], record[14], record[15],
-            ]));
+            let start = index.saturating_mul(16).saturating_add(12);
+            let record: [u8; 16] = base[start..start.saturating_add(16)].try_into().unwrap();
+            let [t0, t1, t2, t3, _, _, _, _, o0, o1, o2, o3, l0, l1, l2, l3] = record;
+            let offset = widen(u32::from_be_bytes([o0, o1, o2, o3]));
+            let length = widen(u32::from_be_bytes([l0, l1, l2, l3]));
             tables.push((
-                record[..4].to_vec(),
+                vec![t0, t1, t2, t3],
                 base[offset..offset.saturating_add(length)].to_vec(),
             ));
         }
@@ -1429,8 +1426,8 @@ mod tests {
                 (b"maxp", maxp(4)),
             ]);
             let cmap = "beginbfrange <0001> <0001> <0066> <0002> <0002> <0069> <0003> <0003> <0000> endbfrange";
-            let font = type0_with_program(&mut resolver, program, Some(cmap), None);
-            let font = load(&resolver, font);
+            let font = type0_with_program(&mut resolver, &program, Some(cmap), None);
+            let font = load(&resolver, &font);
             assert_eq!(
                 decode(&font, &[0, 1, 0, 3]).0,
                 "ffi",
@@ -1445,7 +1442,7 @@ mod tests {
         let cmap = "beginbfrange <0001> <0003> <0041> endbfrange";
         let mut font = type0_with_program(
             &mut resolver,
-            truetype_ligature_font(Vec::new()),
+            &truetype_ligature_font(Vec::new()),
             Some(cmap),
             None,
         );
@@ -1456,7 +1453,7 @@ mod tests {
                 Object::Array(vec![Object::Integer(500)]),
             ]),
         );
-        let font = load(&resolver, font);
+        let font = load(&resolver, &font);
         match &font.inner {
             FontKind::Composite(composite) => assert!(composite.program.is_none()),
             FontKind::Simple(_) => panic!("composite expected"),
@@ -1482,8 +1479,8 @@ mod tests {
             table.extend(b"t_i");
             sfnt(&[(b"post", table), (b"maxp", maxp(4))])
         };
-        let font = type0_with_program(&mut resolver, program, Some(cmap), Some(map));
-        let font = load(&resolver, font);
+        let font = type0_with_program(&mut resolver, &program, Some(cmap), Some(map));
+        let font = load(&resolver, &font);
         assert_eq!(decode(&font, &[0, 0x10]).0, "X");
         assert_eq!(decode(&font, &[0, 0x30]).0, "ti");
     }
@@ -1504,7 +1501,7 @@ mod tests {
         let tu = resolver.add_stream(Dict::default(), b"beginbfchar <03> <0043> endbfchar");
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("TrueType")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
@@ -1535,7 +1532,7 @@ mod tests {
         );
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("TrueType")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
@@ -1568,7 +1565,7 @@ mod tests {
         ])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type1")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(0x41)),
@@ -1589,7 +1586,7 @@ mod tests {
         ])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type1")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
@@ -1630,7 +1627,7 @@ mod tests {
         ])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type0")),
                 ("Encoding", name("Identity-H")),
                 ("DescendantFonts", Object::Array(vec![descendant])),
@@ -1658,7 +1655,7 @@ mod tests {
         ])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type0")),
                 ("Encoding", stream),
                 ("ToUnicode", tu),
@@ -1697,7 +1694,7 @@ mod tests {
         ])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type0")),
                 ("Encoding", child),
                 ("DescendantFonts", Object::Array(vec![descendant])),
@@ -1727,7 +1724,7 @@ mod tests {
         ] {
             let font = load(
                 &resolver,
-                dict(vec![
+                &dict(vec![
                     ("Subtype", name("Type0")),
                     ("Encoding", name(cmap)),
                     ("DescendantFonts", Object::Array(vec![descendant.clone()])),
@@ -1769,7 +1766,7 @@ mod tests {
         ])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type0")),
                 ("Encoding", name("Identity-V")),
                 ("DescendantFonts", Object::Array(vec![descendant])),
@@ -1795,7 +1792,7 @@ mod tests {
         let descendant = resolver.add(Object::Dict(dict(vec![("Subtype", name("CIDFontType2"))])));
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type0")),
                 ("Encoding", name("Identity-H")),
                 ("DescendantFonts", Object::Array(vec![descendant])),
@@ -1815,7 +1812,7 @@ mod tests {
         ] {
             let font = load(
                 &resolver,
-                dict(vec![
+                &dict(vec![
                     ("Subtype", name("Type3")),
                     ("FontMatrix", numbers(&matrix)),
                     ("FirstChar", Object::Integer(0x41)),
@@ -1835,7 +1832,7 @@ mod tests {
         let resolver = TestResolver::default();
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type3")),
                 (
                     "Encoding",
@@ -1861,7 +1858,7 @@ mod tests {
         ] {
             let font = load(
                 &resolver,
-                dict(vec![
+                &dict(vec![
                     ("Subtype", name("Type1")),
                     ("Encoding", name(encoding)),
                 ]),
@@ -1886,7 +1883,7 @@ mod tests {
         let resolver = TestResolver::default();
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type1")),
                 ("BaseFont", name("Symbol")),
             ]),
@@ -1899,7 +1896,7 @@ mod tests {
         let resolver = TestResolver::default();
         let font = load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("TrueType")),
                 (
                     "Encoding",
@@ -1939,7 +1936,7 @@ mod tests {
     #[test]
     fn word_space_flag_only_for_single_byte_space() {
         let resolver = TestResolver::default();
-        let font = load(&resolver, dict(vec![("Subtype", name("Type1"))]));
+        let font = load(&resolver, &dict(vec![("Subtype", name("Type1"))]));
         let (_, glyphs) = decode(&font, b"a b");
         assert!(!glyphs[0].is_word_space);
         assert!(glyphs[1].is_word_space);
@@ -1983,19 +1980,19 @@ mod tests {
         let mut fonts = Vec::new();
         let program = truetype_ligature_font(Vec::new());
         let ligature =
-            type0_with_program(&mut resolver, program, None, Some(vec![0, 1, 0, 2, 0, 3]));
-        fonts.push(load(&resolver, ligature));
+            type0_with_program(&mut resolver, &program, None, Some(vec![0, 1, 0, 2, 0, 3]));
+        fonts.push(load(&resolver, &ligature));
         let descendant = resolver.add(Object::Dict(dict(vec![("Subtype", name("CIDFontType0"))])));
         fonts.push(load(
             &resolver,
-            dict(vec![
+            &dict(vec![
                 ("Subtype", name("Type0")),
                 ("Encoding", stream.clone()),
                 ("ToUnicode", stream),
                 ("DescendantFonts", Object::Array(vec![descendant])),
             ]),
         ));
-        fonts.push(load(&resolver, dict(vec![("Subtype", name("Type1"))])));
+        fonts.push(load(&resolver, &dict(vec![("Subtype", name("Type1"))])));
         let mut seed = 0x1234_5678_u32;
         for _ in 0..200 {
             let mut bytes = Vec::new();

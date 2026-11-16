@@ -44,7 +44,7 @@ fn quarter_of(direction: (f64, f64)) -> usize {
 
 fn page_quarter(rotate: i32) -> usize {
     let normalized = rotate.rem_euclid(360);
-    usize::try_from(normalized / 90).unwrap_or(0) % 4
+    usize::try_from(normalized.div_euclid(90)).unwrap_or(0) % 4
 }
 
 #[derive(Clone, Copy)]
@@ -769,8 +769,8 @@ fn layout_pool(
         let (found, consumed) = aligned_tables(free, &segments, &ranges);
         if !found.is_empty() {
             tables.extend(found);
-            let mut flags = consumed.into_iter();
-            ranges.retain(|_| !flags.next().unwrap_or(false));
+            let mut taken = consumed.into_iter();
+            ranges.retain(|_| !taken.next().unwrap_or(false));
         }
     }
     if mode.text {
@@ -1118,7 +1118,7 @@ pub(crate) fn document_text(
     bytes: &[u8],
     page_indexes: Option<&[u32]>,
     limits: &Limits,
-    options: &TextOptions,
+    options: TextOptions,
 ) -> Outcome<Vec<String>> {
     if bytes.len() > limits.max_pdf_bytes {
         return Err(Failure::limit("pdf exceeds size limit"));
@@ -1400,7 +1400,7 @@ mod tests {
             state
         };
         for fixture in fixtures {
-            assert!(document_text(fixture, None, &limits, &OPTIONS).is_ok());
+            assert!(document_text(fixture, None, &limits, OPTIONS).is_ok());
             for _ in 0..150 {
                 let mut bytes = fixture.to_vec();
                 for _ in 0..=(next() % 8) {
@@ -1413,7 +1413,7 @@ mod tests {
                 if next() % 4 == 0 {
                     bytes.truncate(cut);
                 }
-                drop(black_box(document_text(&bytes, None, &limits, &OPTIONS)));
+                drop(black_box(document_text(&bytes, None, &limits, OPTIONS)));
             }
         }
     }
@@ -1421,13 +1421,13 @@ mod tests {
     #[test]
     fn page_selection_validates_indexes() {
         let limits = text_limits();
-        let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits, &OPTIONS).unwrap_err();
+        let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits, OPTIONS).unwrap_err();
         assert_eq!(error.code, crate::failure::FailureCode::InvalidPdf);
         let oversized = Limits {
             max_pdf_bytes: 4,
             ..Limits::default()
         };
-        let error_2 = document_text(b"%PDF-1.4\n", None, &oversized, &OPTIONS).unwrap_err();
+        let error_2 = document_text(b"%PDF-1.4\n", None, &oversized, OPTIONS).unwrap_err();
         assert_eq!(error_2.code, crate::failure::FailureCode::LimitExceeded);
     }
 }
@@ -1452,7 +1452,7 @@ mod structure_tests {
         document_tables(bytes, None, &text_limits()).unwrap()
     }
 
-    fn pages_of(bytes: &[u8], options: &TextOptions) -> Vec<String> {
+    fn pages_of(bytes: &[u8], options: TextOptions) -> Vec<String> {
         document_text(bytes, None, &text_limits(), options).unwrap()
     }
 
@@ -1490,9 +1490,9 @@ mod structure_tests {
         assert_eq!(cell(table, 2, 1).text, "8,00");
         assert!((table.bbox[0] - 50.0).abs() < 1e-6 && (table.bbox[2] - 350.0).abs() < 1e-6);
         assert!((table.bbox[1] - 640.0).abs() < 1e-6 && (table.bbox[3] - 700.0).abs() < 1e-6);
-        let pages = pages_of(&bytes, &PLAIN);
+        let pages = pages_of(&bytes, PLAIN);
         assert_eq!(pages, ["Item Valor\nCimento 12,50\nAreia 8,00"]);
-        let markdown = pages_of(&bytes, &MARKDOWN);
+        let markdown = pages_of(&bytes, MARKDOWN);
         assert_eq!(
             markdown,
             ["| Item | Valor |\n| --- | --- |\n| Cimento | 12,50 |\n| Areia | 8,00 |"]
@@ -1521,7 +1521,7 @@ mod structure_tests {
         assert_eq!(header.text, "Precos unitarios");
         assert!((header.bbox[0] - 50.0).abs() < 1e-6 && (header.bbox[2] - 350.0).abs() < 1e-6);
         assert!(table.cells.iter().all(|cell| cell.col <= 1));
-        let markdown = pages_of(&bytes, &MARKDOWN);
+        let markdown = pages_of(&bytes, MARKDOWN);
         assert_eq!(
             markdown,
             ["| Precos unitarios |  |\n| --- | --- |\n| Cimento | 12,50 |"]
@@ -1577,14 +1577,14 @@ mod structure_tests {
         assert_eq!((table.rows, table.cols), (4, 3));
         assert_eq!(cell(table, 1, 2).text, "125,00");
         assert_eq!(cell(table, 3, 0).text, "Brita");
-        let markdown = pages_of(&bytes, &MARKDOWN);
+        let markdown = pages_of(&bytes, MARKDOWN);
         assert_eq!(
             markdown,
             [
                 "| Item | Qtd | Valor |\n| --- | --- | --- |\n| Cimento | 10 | 125,00 |\n| Areia | 4 | 32,00 |\n| Brita | 7 | 91,00 |"
             ]
         );
-        let plain = pages_of(&bytes, &PLAIN);
+        let plain = pages_of(&bytes, PLAIN);
         assert_eq!(
             plain,
             ["Item Qtd Valor\nCimento 10 125,00\nAreia 4 32,00\nBrita 7 91,00"]
@@ -1609,7 +1609,7 @@ mod structure_tests {
         }
         let bytes = document(&[page(content)], &[]);
         assert!(tables_of(&bytes).is_empty());
-        let markdown = pages_of(&bytes, &MARKDOWN);
+        let markdown = pages_of(&bytes, MARKDOWN);
         assert!(!markdown[0].contains("| --- |"), "{}", markdown[0]);
         assert!(is_marker("(12)"));
         assert!(is_marker("IV."));
@@ -1650,7 +1650,7 @@ mod structure_tests {
         let tables = tables_of(&bytes);
         assert_eq!(tables[0].cells.len(), 9);
         assert_eq!(cell(&tables[0], 2, 0).text, "Areia");
-        let markdown = pages_of(&bytes, &MARKDOWN);
+        let markdown = pages_of(&bytes, MARKDOWN);
         assert!(markdown[0].ends_with("| Areia | 4 | 32,00 |\n\nObservacoes"));
         let mut large = borderless(
             &[
@@ -1678,7 +1678,7 @@ mod structure_tests {
                 .iter()
                 .all(|cell| !cell.text.contains("Informacoes"))
         );
-        let pages = pages_of(&bytes, &PLAIN);
+        let pages = pages_of(&bytes, PLAIN);
         assert!(pages[0].ends_with("Areia 8,00\n\nInformacoes Adicionais"));
     }
 
@@ -1714,7 +1714,7 @@ mod structure_tests {
         content.push_str(&price_table(740.0));
         content.push_str(&text(50.0, 600.0, 10.0, "Os valores incluem tributos."));
         let bytes = document(&[page(content)], &[]);
-        let markdown = pages_of(&bytes, &MARKDOWN);
+        let markdown = pages_of(&bytes, MARKDOWN);
         let page_text = &markdown[0];
         let intro = page_text.find("Introducao").unwrap();
         let table = page_text.find("| Item | Valor |").unwrap();
@@ -1722,7 +1722,7 @@ mod structure_tests {
         assert!(intro < table && table < outro, "{page_text}");
         assert!(page_text.contains("Introducao ao termo de referencia desta compra.\nO quadro"));
         assert!(page_text.contains("| Areia | 8,00 |\n\nOs valores incluem tributos."));
-        let plain = pages_of(&bytes, &PLAIN);
+        let plain = pages_of(&bytes, PLAIN);
         assert!(plain[0].contains("Item Valor\nCimento 12,50\nAreia 8,00\n\nOs valores"));
     }
 
@@ -1752,7 +1752,7 @@ mod structure_tests {
             table.bbox
         );
         assert_eq!(
-            pages_of(&bytes, &PLAIN),
+            pages_of(&bytes, PLAIN),
             ["Item Valor\nCimento 12,50\nAreia 8,00"]
         );
     }
@@ -1763,7 +1763,7 @@ mod structure_tests {
         content.push_str(&text(50.0, 600.0, 10.0, "Texto solto"));
         let bytes = document(&[page(content)], &[]);
         assert!(tables_of(&bytes).is_empty());
-        assert_eq!(pages_of(&bytes, &PLAIN), ["Texto solto"]);
+        assert_eq!(pages_of(&bytes, PLAIN), ["Texto solto"]);
         let underline = format!(
             "{}{}",
             text(50.0, 700.0, 10.0, "Titulo sublinhado"),
@@ -1846,14 +1846,14 @@ mod structure_tests {
     #[test]
     fn running_headers_and_footers_are_dropped() {
         let bytes = running_document(|_| "Prefeitura Municipal de Marilac".to_owned());
-        let kept = pages_of(&bytes, &PLAIN);
+        let kept = pages_of(&bytes, PLAIN);
         assert!(kept[0].contains("Prefeitura Municipal de Marilac"));
         assert!(kept[0].contains("Edital 12/2026 - pg. 1"));
         let options = TextOptions {
             markdown: false,
             drop_running: true,
         };
-        let dropped = pages_of(&bytes, &options);
+        let dropped = pages_of(&bytes, options);
         assert_eq!(
             dropped,
             [
@@ -1874,7 +1874,7 @@ mod structure_tests {
             markdown: false,
             drop_running: true,
         };
-        let pages = pages_of(&bytes, &options);
+        let pages = pages_of(&bytes, options);
         assert!(pages[0].starts_with("Capitulo A"));
         assert!(pages[1].starts_with("Capitulo B"));
         assert!(!pages[1].contains("Pagina 2"));
@@ -1888,7 +1888,7 @@ mod structure_tests {
             markdown: false,
             drop_running: true,
         };
-        let one = document_text(&bytes, Some(&[0]), &text_limits(), &options).unwrap();
+        let one = document_text(&bytes, Some(&[0]), &text_limits(), options).unwrap();
         assert!(one[0].contains("Prefeitura Municipal de Marilac"));
     }
 
@@ -1918,7 +1918,7 @@ mod structure_tests {
             drop_running: true,
         };
         assert_eq!(
-            pages_of(&bytes, &options),
+            pages_of(&bytes, options),
             [
                 "Corpo do documento",
                 "Corpo do documento",
@@ -1952,7 +1952,7 @@ mod structure_tests {
                 }
             }
             drop(black_box(document_tables(&bytes, None, &limits)));
-            drop(black_box(document_text(&bytes, None, &limits, &MARKDOWN)));
+            drop(black_box(document_text(&bytes, None, &limits, MARKDOWN)));
         }
     }
 
@@ -1971,6 +1971,6 @@ mod structure_tests {
         content.push_str(&text(50.0, 700.0, 10.0, "texto"));
         let bytes = document(&[page(content)], &[]);
         assert!(document_tables(&bytes, None, &text_limits()).is_ok());
-        assert!(document_text(&bytes, None, &text_limits(), &MARKDOWN).is_ok());
+        assert!(document_text(&bytes, None, &text_limits(), MARKDOWN).is_ok());
     }
 }
