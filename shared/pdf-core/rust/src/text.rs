@@ -416,6 +416,30 @@ enum Join {
     Split,
 }
 
+struct PendingRun {
+    open: bool,
+    text: String,
+    bounds: [f64; 4],
+    size: f64,
+    dir: (f64, f64),
+    end: (f64, f64),
+    bold: bool,
+}
+
+impl Default for PendingRun {
+    fn default() -> Self {
+        Self {
+            open: false,
+            text: String::new(),
+            bounds: [0.0; 4],
+            size: 0.0,
+            dir: (1.0, 0.0),
+            end: (0.0, 0.0),
+            bold: false,
+        }
+    }
+}
+
 struct Interpreter<'d, 'a> {
     document: &'d Document<'a>,
     limits: &'d Limits,
@@ -429,16 +453,9 @@ struct Interpreter<'d, 'a> {
     text_bytes: usize,
     glyphs: Vec<Glyph>,
     decoded: String,
-    open: bool,
-    open_text: String,
-    open_bounds: [f64; 4],
-    open_size: f64,
-    open_dir: (f64, f64),
-    open_end: (f64, f64),
-    open_bold: bool,
-    split_repositioned: bool,
+    pending: PendingRun,
+    capture: Capture,
     repositioned: bool,
-    structure: bool,
     rulings: Vec<Ruling>,
     ruling_cap: usize,
     page_extent: (f64, f64),
@@ -536,16 +553,9 @@ pub(crate) fn extract_content(
         text_bytes: 0,
         glyphs: Vec::new(),
         decoded: String::new(),
-        open: false,
-        open_text: String::new(),
-        open_bounds: [0.0; 4],
-        open_size: 0.0,
-        open_dir: (1.0, 0.0),
-        open_end: (0.0, 0.0),
-        open_bold: false,
-        split_repositioned: capture.split_repositioned,
+        pending: PendingRun::default(),
+        capture,
         repositioned: false,
-        structure: capture.structure,
         rulings: Vec::new(),
         ruling_cap: limits.max_items_per_page,
         page_extent: ((mx1 - mx0).abs(), (my1 - my0).abs()),
@@ -615,7 +625,8 @@ impl Interpreter<'_, '_> {
                 }
                 Ok(ContentToken::Operator(name)) => name,
             };
-            match op(name) {
+            let code = op(name);
+            match code {
                 OP_SAVE => {
                     if stack.len() >= max_stack {
                         return Err(Failure::limit("graphics state nesting exceeds limit"));
@@ -627,162 +638,16 @@ impl Interpreter<'_, '_> {
                         *state = previous;
                     }
                 }
-                OP_CM => {
-                    if let Some(matrix) = tail_numbers::<6>(&operands) {
-                        state.ctm = multiply(&matrix, &state.ctm);
-                    }
+                OP_BMC | OP_BDC | OP_EMC => {
+                    self.marked_content(code, &operands, &mut marked, max_stack);
                 }
-                OP_BT => {
-                    self.repositioned = true;
-                    matrices.tm = IDENTITY;
-                    matrices.tlm = IDENTITY;
-                }
-                OP_TC => {
-                    if let Some([value]) = tail_numbers::<1>(&operands) {
-                        state.char_space = value;
-                    }
-                }
-                OP_TW => {
-                    if let Some([value]) = tail_numbers::<1>(&operands) {
-                        state.word_space = value;
-                    }
-                }
-                OP_TZ => {
-                    if let Some([value]) = tail_numbers::<1>(&operands) {
-                        state.scale = value / 100.0;
-                    }
-                }
-                OP_TL => {
-                    if let Some([value]) = tail_numbers::<1>(&operands) {
-                        state.leading = value;
-                    }
-                }
-                OP_TS => {
-                    if let Some([value]) = tail_numbers::<1>(&operands) {
-                        state.rise = value;
-                    }
-                }
-                OP_TF => self.set_font(&operands, scope, state),
-                OP_GS => self.apply_ext_gstate(&operands, scope, state),
-                OP_TD => {
-                    self.repositioned = true;
-                    if let Some([tx, ty]) = tail_numbers::<2>(&operands) {
-                        matrices.line_move(tx, ty);
-                    }
-                }
-                OP_TD_LEADING => {
-                    self.repositioned = true;
-                    if let Some([tx, ty]) = tail_numbers::<2>(&operands) {
-                        state.leading = -ty;
-                        matrices.line_move(tx, ty);
-                    }
-                }
-                OP_TM => {
-                    self.repositioned = true;
-                    if let Some(matrix) = tail_numbers::<6>(&operands) {
-                        matrices.tm = matrix;
-                        matrices.tlm = matrix;
-                    }
-                }
-                OP_TSTAR => {
-                    self.repositioned = true;
-                    matrices.line_move(0.0, -state.leading);
-                }
-                OP_TJ => {
-                    if let Some(Object::String(bytes)) = operands.last() {
-                        self.show(state, matrices, bytes)?;
-                    }
-                }
-                OP_QUOTE => {
-                    self.repositioned = true;
-                    matrices.line_move(0.0, -state.leading);
-                    if let Some(Object::String(bytes)) = operands.last() {
-                        self.show(state, matrices, bytes)?;
-                    }
-                }
-                OP_DQUOTE => {
-                    self.repositioned = true;
-                    if let Some([word, character]) = operands
-                        .len()
-                        .checked_sub(3)
-                        .and_then(|start| operands.get(start..start.saturating_add(2)))
-                        .and_then(tail_numbers::<2>)
+                _ => {
+                    if !self.state_operator(code, &operands, scope, state, matrices)
+                        && !self.path_operator(code, &operands, state, &mut path)
                     {
-                        state.word_space = word;
-                        state.char_space = character;
-                    }
-                    matrices.line_move(0.0, -state.leading);
-                    if let Some(Object::String(bytes)) = operands.last() {
-                        self.show(state, matrices, bytes)?;
+                        self.show_operator(code, &operands, scope, state, matrices, depth)?;
                     }
                 }
-                OP_TJ_ARRAY => {
-                    if let Some(Object::Array(items)) = operands.last() {
-                        self.show_array(state, matrices, items)?;
-                    }
-                }
-                OP_DO => {
-                    if let Some(Object::Name(xobject)) = operands.last() {
-                        self.do_xobject(xobject, scope, state, matrices, depth)?;
-                    }
-                }
-                OP_LINE_WIDTH => {
-                    if let Some([width]) = tail_numbers::<1>(&operands) {
-                        state.line_width = width;
-                    }
-                }
-                OP_MOVE if self.structure => {
-                    if let Some([x, y]) = tail_numbers::<2>(&operands) {
-                        path.move_to(apply(&state.ctm, x, y));
-                    }
-                }
-                OP_LINE if self.structure => {
-                    if let Some([x, y]) = tail_numbers::<2>(&operands) {
-                        path.line_to(apply(&state.ctm, x, y), self.ruling_cap);
-                    }
-                }
-                OP_CURVE | OP_CURVE_V | OP_CURVE_Y if self.structure => {
-                    if let Some([x, y]) = tail_numbers::<2>(&operands) {
-                        path.move_current(apply(&state.ctm, x, y));
-                    }
-                }
-                OP_RECT if self.structure => {
-                    if let Some([x, y, width, height]) = tail_numbers::<4>(&operands) {
-                        path.rect(&state.ctm, [x, y, width, height], self.ruling_cap);
-                    }
-                }
-                OP_CLOSE if self.structure => path.close(self.ruling_cap),
-                OP_NO_PAINT if self.structure => path.clear(),
-                OP_STROKE if self.structure => self.paint(&mut path, state, true),
-                OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO
-                    if self.structure =>
-                {
-                    path.close(self.ruling_cap);
-                    self.paint(&mut path, state, true);
-                }
-                OP_FILL | OP_FILL_OLD | OP_FILL_EO if self.structure => {
-                    self.paint(&mut path, state, false);
-                }
-                OP_FILL_STROKE | OP_FILL_STROKE_EO if self.structure => {
-                    self.paint(&mut path, state, true);
-                }
-                OP_BMC if self.structure && marked.len() < max_stack => marked.push(false),
-                OP_BDC if self.structure => {
-                    let replacement = if self.actual.is_none() {
-                        actual_text(&operands)
-                    } else {
-                        None
-                    };
-                    if marked.len() < max_stack {
-                        marked.push(replacement.is_some());
-                        if replacement.is_some() {
-                            self.actual = replacement;
-                            self.actual_emitted = false;
-                        }
-                    }
-                }
-                OP_EMC if self.structure && marked.pop() == Some(true) => self.actual = None,
-                _ => {}
             }
             operands.clear();
         }
@@ -790,6 +655,214 @@ impl Interpreter<'_, '_> {
             self.actual = None;
         }
         Ok(())
+    }
+
+    fn marked_content(
+        &mut self,
+        code: u32,
+        operands: &[Object],
+        marked: &mut Vec<bool>,
+        max_stack: usize,
+    ) {
+        if !self.capture.structure {
+            return;
+        }
+        match code {
+            OP_BMC if marked.len() < max_stack => marked.push(false),
+            OP_BDC => {
+                let replacement = if self.actual.is_none() {
+                    actual_text(operands)
+                } else {
+                    None
+                };
+                if marked.len() < max_stack {
+                    marked.push(replacement.is_some());
+                    if replacement.is_some() {
+                        self.actual = replacement;
+                        self.actual_emitted = false;
+                    }
+                }
+            }
+            OP_EMC if marked.pop() == Some(true) => self.actual = None,
+            _ => {}
+        }
+    }
+
+    fn state_operator(
+        &mut self,
+        code: u32,
+        operands: &[Object],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+    ) -> bool {
+        match code {
+            OP_CM => {
+                if let Some(matrix) = tail_numbers::<6>(operands) {
+                    state.ctm = multiply(&matrix, &state.ctm);
+                }
+            }
+            OP_BT => {
+                self.repositioned = true;
+                matrices.tm = IDENTITY;
+                matrices.tlm = IDENTITY;
+            }
+            OP_TC => {
+                if let Some([value]) = tail_numbers::<1>(operands) {
+                    state.char_space = value;
+                }
+            }
+            OP_TW => {
+                if let Some([value]) = tail_numbers::<1>(operands) {
+                    state.word_space = value;
+                }
+            }
+            OP_TZ => {
+                if let Some([value]) = tail_numbers::<1>(operands) {
+                    state.scale = value / 100.0;
+                }
+            }
+            OP_TL => {
+                if let Some([value]) = tail_numbers::<1>(operands) {
+                    state.leading = value;
+                }
+            }
+            OP_TS => {
+                if let Some([value]) = tail_numbers::<1>(operands) {
+                    state.rise = value;
+                }
+            }
+            OP_TF => self.set_font(operands, scope, state),
+            OP_GS => self.apply_ext_gstate(operands, scope, state),
+            OP_TD => {
+                self.repositioned = true;
+                if let Some([tx, ty]) = tail_numbers::<2>(operands) {
+                    matrices.line_move(tx, ty);
+                }
+            }
+            OP_TD_LEADING => {
+                self.repositioned = true;
+                if let Some([tx, ty]) = tail_numbers::<2>(operands) {
+                    state.leading = -ty;
+                    matrices.line_move(tx, ty);
+                }
+            }
+            OP_TM => {
+                self.repositioned = true;
+                if let Some(matrix) = tail_numbers::<6>(operands) {
+                    matrices.tm = matrix;
+                    matrices.tlm = matrix;
+                }
+            }
+            OP_TSTAR => {
+                self.repositioned = true;
+                matrices.line_move(0.0, -state.leading);
+            }
+            OP_LINE_WIDTH => {
+                if let Some([width]) = tail_numbers::<1>(operands) {
+                    state.line_width = width;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn show_operator(
+        &mut self,
+        code: u32,
+        operands: &[Object],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+        depth: usize,
+    ) -> Outcome<()> {
+        match code {
+            OP_TJ => {
+                if let Some(Object::String(bytes)) = operands.last() {
+                    self.show(state, matrices, bytes)?;
+                }
+            }
+            OP_QUOTE => {
+                self.repositioned = true;
+                matrices.line_move(0.0, -state.leading);
+                if let Some(Object::String(bytes)) = operands.last() {
+                    self.show(state, matrices, bytes)?;
+                }
+            }
+            OP_DQUOTE => {
+                self.repositioned = true;
+                if let Some([word, character]) = operands
+                    .len()
+                    .checked_sub(3)
+                    .and_then(|start| operands.get(start..start.saturating_add(2)))
+                    .and_then(tail_numbers::<2>)
+                {
+                    state.word_space = word;
+                    state.char_space = character;
+                }
+                matrices.line_move(0.0, -state.leading);
+                if let Some(Object::String(bytes)) = operands.last() {
+                    self.show(state, matrices, bytes)?;
+                }
+            }
+            OP_TJ_ARRAY => {
+                if let Some(Object::Array(items)) = operands.last() {
+                    self.show_array(state, matrices, items)?;
+                }
+            }
+            OP_DO => {
+                if let Some(Object::Name(xobject)) = operands.last() {
+                    self.do_xobject(xobject, scope, state, matrices, depth)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn path_operator(
+        &mut self,
+        code: u32,
+        operands: &[Object],
+        state: &GState,
+        path: &mut PathBuilder,
+    ) -> bool {
+        if !self.capture.structure {
+            return false;
+        }
+        match code {
+            OP_MOVE => {
+                if let Some([x, y]) = tail_numbers::<2>(operands) {
+                    path.move_to(apply(&state.ctm, x, y));
+                }
+            }
+            OP_LINE => {
+                if let Some([x, y]) = tail_numbers::<2>(operands) {
+                    path.line_to(apply(&state.ctm, x, y), self.ruling_cap);
+                }
+            }
+            OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
+                if let Some([x, y]) = tail_numbers::<2>(operands) {
+                    path.move_current(apply(&state.ctm, x, y));
+                }
+            }
+            OP_RECT => {
+                if let Some([x, y, width, height]) = tail_numbers::<4>(operands) {
+                    path.rect(&state.ctm, [x, y, width, height], self.ruling_cap);
+                }
+            }
+            OP_CLOSE => path.close(self.ruling_cap),
+            OP_NO_PAINT => path.clear(),
+            OP_STROKE | OP_FILL_STROKE | OP_FILL_STROKE_EO => self.paint(path, state, true),
+            OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO => {
+                path.close(self.ruling_cap);
+                self.paint(path, state, true);
+            }
+            OP_FILL | OP_FILL_OLD | OP_FILL_EO => self.paint(path, state, false),
+            _ => return false,
+        }
+        true
     }
 
     fn paint(&mut self, path: &mut PathBuilder, state: &GState, stroke: bool) {
@@ -1135,7 +1208,7 @@ impl Interpreter<'_, '_> {
                     (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
                 );
                 let mut join = self.join(origin, direction, effective_size);
-                if self.split_repositioned
+                if self.capture.split_repositioned
                     && repositioned
                     && matches!(join, Join::Same | Join::Spaced)
                 {
@@ -1147,9 +1220,9 @@ impl Interpreter<'_, '_> {
                     if visible {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
                         self.merge_bounds(bounds);
-                        self.open_bold &= entry.bold;
+                        self.pending.bold &= entry.bold;
                     }
-                    self.open_end = end;
+                    self.pending.end = end;
                 } else {
                     if join == Join::Split {
                         self.flush()?;
@@ -1175,16 +1248,17 @@ impl Interpreter<'_, '_> {
     }
 
     fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64) -> Join {
-        if !self.open {
+        if !self.pending.open {
             return Join::Closed;
         }
-        let dx = origin.0 - self.open_end.0;
-        let dy = origin.1 - self.open_end.1;
-        let (ux, uy) = self.open_dir;
+        let dx = origin.0 - self.pending.end.0;
+        let dy = origin.1 - self.pending.end.1;
+        let (ux, uy) = self.pending.dir;
         let along = dx * ux + dy * uy;
         let across = dy * ux - dx * uy;
         let aligned = direction.0 * ux + direction.1 * uy > DIRECTION_COSINE;
-        let similar = (size - self.open_size).abs() <= SIZE_TOLERANCE * self.open_size.max(size);
+        let similar =
+            (size - self.pending.size).abs() <= SIZE_TOLERANCE * self.pending.size.max(size);
         let on_line = across.abs() <= BASELINE_TOLERANCE * size;
         let near = along >= -BACK_GAP * size && along <= BREAK_GAP * size;
         if aligned && similar && on_line && near {
@@ -1207,34 +1281,35 @@ impl Interpreter<'_, '_> {
         end: (f64, f64),
         bold: bool,
     ) {
-        self.open = true;
-        self.open_bold = bold;
-        self.open_text.clear();
-        self.open_text.push_str(text);
-        self.open_bounds = bounds;
-        self.open_size = size;
-        self.open_dir = direction;
-        self.open_end = end;
+        self.pending.open = true;
+        self.pending.bold = bold;
+        self.pending.text.clear();
+        self.pending.text.push_str(text);
+        self.pending.bounds = bounds;
+        self.pending.size = size;
+        self.pending.dir = direction;
+        self.pending.end = end;
     }
 
     fn extend(&mut self, text: &str, visible: bool, spaced: bool) {
         if spaced && visible {
             let tail_space = self
-                .open_text
+                .pending
+                .text
                 .chars()
                 .next_back()
                 .is_none_or(char::is_whitespace);
             let head_space = text.chars().next().is_none_or(char::is_whitespace);
             if !tail_space && !head_space {
-                self.open_text.push(' ');
+                self.pending.text.push(' ');
             }
         }
-        self.open_text.push_str(text);
+        self.pending.text.push_str(text);
     }
 
     const fn merge_bounds(&mut self, bounds: [f64; 4]) {
         let [x0, y0, x1, y1] = bounds;
-        let [ox0, oy0, ox1, oy1] = &mut self.open_bounds;
+        let [ox0, oy0, ox1, oy1] = &mut self.pending.bounds;
         *ox0 = ox0.min(x0);
         *oy0 = oy0.min(y0);
         *ox1 = ox1.max(x1);
@@ -1242,13 +1317,13 @@ impl Interpreter<'_, '_> {
     }
 
     fn flush(&mut self) -> Outcome<()> {
-        if !self.open {
+        if !self.pending.open {
             return Ok(());
         }
-        self.open = false;
-        let trimmed = self.open_text.trim();
+        self.pending.open = false;
+        let trimmed = self.pending.text.trim();
         if trimmed.is_empty() {
-            self.open_text.clear();
+            self.pending.text.clear();
             return Ok(());
         }
         if self.items.len() >= self.limits.max_items_per_page {
@@ -1259,15 +1334,15 @@ impl Interpreter<'_, '_> {
             return Err(Failure::limit("page text bytes exceed limit"));
         }
         let text = trimmed.to_owned();
-        self.open_text.clear();
+        self.pending.text.clear();
         self.items.push(Run {
             item: TextItem {
-                rect: self.open_bounds,
-                font_size: self.open_size,
+                rect: self.pending.bounds,
+                font_size: self.pending.size,
                 text,
             },
-            direction: self.open_dir,
-            bold: self.open_bold,
+            direction: self.pending.dir,
+            bold: self.pending.bold,
         });
         Ok(())
     }
@@ -1331,7 +1406,7 @@ impl Interpreter<'_, '_> {
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
-        if self.structure
+        if self.capture.structure
             && let Some(bounds) = stream
                 .dict
                 .get(b"BBox")
