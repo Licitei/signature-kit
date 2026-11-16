@@ -91,14 +91,16 @@ fn scan_shows(data: &[u8]) -> Shows {
         rest.iter()
             .position(|byte| matches!(byte, b'T' | b'D' | b'\'' | b'"'))
     }) {
-        let index = at + offset;
+        let index = at.saturating_add(offset);
         match data.get(index) {
             Some(b'\'' | b'"') => return Shows::Text,
-            Some(b'T') if matches!(data.get(index + 1), Some(b'j' | b'J')) => return Shows::Text,
-            Some(b'D') if data.get(index + 1) == Some(&b'o') => forms = true,
+            Some(b'T') if matches!(data.get(index.saturating_add(1)), Some(b'j' | b'J')) => {
+                return Shows::Text;
+            }
+            Some(b'D') if data.get(index.saturating_add(1)) == Some(&b'o') => forms = true,
             _ => {}
         }
-        at = index + 1;
+        at = index.saturating_add(1);
     }
     if forms { Shows::Forms } else { Shows::Nothing }
 }
@@ -704,7 +706,7 @@ impl Interpreter<'_, '_> {
                     if let Some([word, character]) = operands
                         .len()
                         .checked_sub(3)
-                        .and_then(|start| operands.get(start..start + 2))
+                        .and_then(|start| operands.get(start..start.saturating_add(2)))
                         .and_then(tail_numbers::<2>)
                     {
                         state.word_space = word;
@@ -1363,7 +1365,7 @@ impl Interpreter<'_, '_> {
             &mut inner_scope,
             &mut inner_state,
             &mut inner_matrices,
-            depth + 1,
+            depth.saturating_add(1),
         );
         if reference.is_some() {
             self.active.pop();
@@ -1406,7 +1408,7 @@ mod tests {
         }
         let xref = bytes.len();
         let max = objects.iter().map(|(number, _)| *number).max().unwrap_or(0);
-        bytes.extend_from_slice(format!("xref\n0 {}\n", max + 1).as_bytes());
+        bytes.extend_from_slice(format!("xref\n0 {}\n", max.saturating_add(1)).as_bytes());
         for number in 0..=max {
             match offsets.iter().find(|(n, _)| *n == number) {
                 Some((_, offset)) => {
@@ -1418,7 +1420,7 @@ mod tests {
         bytes.extend_from_slice(
             format!(
                 "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-                max + 1
+                max.saturating_add(1)
             )
             .as_bytes(),
         );
@@ -2133,7 +2135,7 @@ mod tests {
 
         fn skip(bytes: &[u8], pos: &mut usize) {
             while bytes.get(*pos).is_some_and(u8::is_ascii_whitespace) {
-                *pos += 1;
+                *pos = (*pos).saturating_add(1);
             }
         }
 
@@ -2141,80 +2143,82 @@ mod tests {
             Self::skip(bytes, pos);
             match bytes[*pos] {
                 b'{' => {
-                    *pos += 1;
+                    *pos = (*pos).saturating_add(1);
                     let mut entries = Vec::new();
                     loop {
                         Self::skip(bytes, pos);
                         if bytes[*pos] == b'}' {
-                            *pos += 1;
+                            *pos = (*pos).saturating_add(1);
                             return Value::Map(entries);
                         }
                         if bytes[*pos] == b',' {
-                            *pos += 1;
+                            *pos = (*pos).saturating_add(1);
                             continue;
                         }
                         let Value::Text(key) = Self::value(bytes, pos) else {
                             panic!("key");
                         };
                         Self::skip(bytes, pos);
-                        *pos += 1;
+                        *pos = (*pos).saturating_add(1);
                         entries.push((key, Self::value(bytes, pos)));
                     }
                 }
                 b'[' => {
-                    *pos += 1;
+                    *pos = (*pos).saturating_add(1);
                     let mut items = Vec::new();
                     loop {
                         Self::skip(bytes, pos);
                         if bytes[*pos] == b']' {
-                            *pos += 1;
+                            *pos = (*pos).saturating_add(1);
                             return Value::List(items);
                         }
                         if bytes[*pos] == b',' {
-                            *pos += 1;
+                            *pos = (*pos).saturating_add(1);
                             continue;
                         }
                         items.push(Self::value(bytes, pos));
                     }
                 }
                 b'"' => {
-                    *pos += 1;
+                    *pos = (*pos).saturating_add(1);
                     let mut out = Vec::new();
                     while bytes[*pos] != b'"' {
                         if bytes[*pos] == b'\\' {
-                            *pos += 1;
+                            *pos = (*pos).saturating_add(1);
                             match bytes[*pos] {
                                 b'n' => out.push(b'\n'),
                                 b't' => out.push(b'\t'),
                                 b'u' => {
-                                    let code =
-                                        std::str::from_utf8(&bytes[*pos + 1..*pos + 5]).unwrap();
+                                    let code = std::str::from_utf8(
+                                        &bytes[(*pos).saturating_add(1)..(*pos).saturating_add(5)],
+                                    )
+                                    .unwrap();
                                     let ch = char::from_u32(u32::from_str_radix(code, 16).unwrap())
                                         .unwrap();
                                     let mut buffer = [0_u8; 4];
                                     out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
-                                    *pos += 4;
+                                    *pos = (*pos).saturating_add(4);
                                 }
                                 other => out.push(other),
                             }
                         } else {
                             out.push(bytes[*pos]);
                         }
-                        *pos += 1;
+                        *pos = (*pos).saturating_add(1);
                     }
-                    *pos += 1;
+                    *pos = (*pos).saturating_add(1);
                     Value::Text(String::from_utf8(out).unwrap())
                 }
                 b't' => {
-                    *pos += 4;
+                    *pos = (*pos).saturating_add(4);
                     Value::Bool(true)
                 }
                 b'f' => {
-                    *pos += 5;
+                    *pos = (*pos).saturating_add(5);
                     Value::Bool(false)
                 }
                 b'n' => {
-                    *pos += 4;
+                    *pos = (*pos).saturating_add(4);
                     Value::Null
                 }
                 _ => {
@@ -2223,7 +2227,7 @@ mod tests {
                         .get(*pos)
                         .is_some_and(|b| b.is_ascii_digit() || b"+-.eE".contains(b))
                     {
-                        *pos += 1;
+                        *pos = (*pos).saturating_add(1);
                     }
                     Value::Number(
                         std::str::from_utf8(&bytes[start..*pos])

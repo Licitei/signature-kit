@@ -530,7 +530,7 @@ fn png_predict(
             .ok_or_else(|| Failure::invalid("png row"))?;
         let prev_start = out.len().saturating_sub(row_bytes);
         for (col, &raw) in row.iter().enumerate() {
-            let up = if prev_start + col < out.len() {
+            let up = if prev_start.saturating_add(col) < out.len() {
                 out.get(prev_start.saturating_add(col))
                     .copied()
                     .unwrap_or(0)
@@ -542,7 +542,7 @@ fn png_predict(
             } else {
                 0
             };
-            let up_left = if col > 0 && prev_start + col > prev_start {
+            let up_left = if col > 0 && prev_start.saturating_add(col) > prev_start {
                 out.get(prev_start.saturating_add(col).saturating_sub(1))
                     .copied()
                     .unwrap_or(0)
@@ -552,7 +552,7 @@ fn png_predict(
             let filter_type = if predictor == 15 {
                 filter
             } else {
-                (predictor - 10) as u8
+                (predictor.saturating_sub(10)) as u8
             };
             let value = paeth_filter(filter_type, raw, left, up, up_left);
             if out.len() >= max_output {
@@ -590,9 +590,9 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let p = i16::from(a)
         .saturating_add(i16::from(b))
         .saturating_sub(i16::from(c));
-    let pa = (p - i16::from(a)).abs();
-    let pb = (p - i16::from(b)).abs();
-    let pc = (p - i16::from(c)).abs();
+    let pa = (p.saturating_sub(i16::from(a))).abs();
+    let pb = (p.saturating_sub(i16::from(b))).abs();
+    let pc = (p.saturating_sub(i16::from(c))).abs();
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {

@@ -32,9 +32,9 @@ const fn is_number_start(byte: u8) -> bool {
 
 const fn hex_value(byte: u8) -> Option<u8> {
     match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
+        b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
+        b'a'..=b'f' => Some((byte.saturating_sub(b'a')).saturating_add(10)),
+        b'A'..=b'F' => Some((byte.saturating_sub(b'A')).saturating_add(10)),
         _ => None,
     }
 }
@@ -42,14 +42,14 @@ const fn hex_value(byte: u8) -> Option<u8> {
 pub(crate) fn skip_whitespace_at(data: &[u8], mut pos: usize) -> usize {
     while let Some(&byte) = data.get(pos) {
         if is_whitespace(byte) {
-            pos += 1;
+            pos = pos.saturating_add(1);
         } else if byte == b'%' {
-            pos += 1;
+            pos = pos.saturating_add(1);
             while let Some(&next) = data.get(pos) {
                 if next == b'\n' || next == b'\r' {
                     break;
                 }
-                pos += 1;
+                pos = pos.saturating_add(1);
             }
         } else {
             break;
@@ -66,8 +66,10 @@ pub(crate) fn read_unsigned(data: &[u8], pos: &mut usize) -> Option<u64> {
         if !byte.is_ascii_digit() {
             break;
         }
-        value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
-        cursor += 1;
+        value = value
+            .checked_mul(10)?
+            .checked_add(u64::from(byte.saturating_sub(b'0')))?;
+        cursor = cursor.saturating_add(1);
     }
     if cursor == start {
         return None;
@@ -81,19 +83,19 @@ pub(crate) fn find_bytes(data: &[u8], from: usize, needle: &[u8]) -> Option<usiz
     let mut index = from;
     while let Some(rest) = data.get(index..) {
         let offset = rest.iter().position(|&byte| byte == first)?;
-        let start = index + offset;
-        if data.get(start..start + needle.len()) == Some(needle) {
+        let start = index.saturating_add(offset);
+        if data.get(start..start.saturating_add(needle.len())) == Some(needle) {
             return Some(start);
         }
-        index = start + 1;
+        index = start.saturating_add(1);
     }
     None
 }
 
 pub(crate) fn keyword_at(data: &[u8], pos: usize, keyword: &[u8]) -> bool {
-    data.get(pos..pos + keyword.len()) == Some(keyword)
+    data.get(pos..pos.saturating_add(keyword.len())) == Some(keyword)
         && !data
-            .get(pos + keyword.len())
+            .get(pos.saturating_add(keyword.len()))
             .copied()
             .is_some_and(is_regular)
 }
@@ -143,7 +145,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn peek_at(&self, ahead: usize) -> Option<u8> {
-        self.data.get(self.pos + ahead).copied()
+        self.data.get(self.pos.saturating_add(ahead)).copied()
     }
 
     fn slice(&self, start: usize, end: usize) -> &'a [u8] {
@@ -165,7 +167,7 @@ impl<'a> Parser<'a> {
             if !is_regular(byte) {
                 break;
             }
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
         self.slice(start, self.pos)
     }
@@ -192,7 +194,7 @@ impl<'a> Parser<'a> {
             b'[' => self.array(depth),
             b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
             b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 Err(Reject::Garbage)
             }
             _ => {
@@ -214,8 +216,10 @@ impl<'a> Parser<'a> {
         }
         let start = self.pos;
         let mut end = start;
-        while end - start < KEYWORD_PROBE && self.data.get(end).copied().is_some_and(is_regular) {
-            end += 1;
+        while end.saturating_sub(start) < KEYWORD_PROBE
+            && self.data.get(end).copied().is_some_and(is_regular)
+        {
+            end = end.saturating_add(1);
         }
         let run = self.slice(start, end);
         if matches!(run, b"true" | b"false" | b"null") {
@@ -234,17 +238,17 @@ impl<'a> Parser<'a> {
 
     fn array(&mut self, depth: usize) -> Parsed<Object> {
         if depth >= self.max_depth {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             return Err(Reject::TooDeep);
         }
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1);
         let mut items = Vec::new();
         loop {
             self.skip_whitespace();
             match self.peek() {
                 None => break,
                 Some(b']') => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     break;
                 }
                 Some(_) => {}
@@ -254,7 +258,7 @@ impl<'a> Parser<'a> {
                 Some(false) => continue,
                 None => {}
             }
-            match self.value(depth + 1) {
+            match self.value(depth.saturating_add(1)) {
                 Ok(item) => items.push(item),
                 Err(Reject::TooDeep) => return Err(Reject::TooDeep),
                 Err(Reject::Garbage) => {}
@@ -265,20 +269,20 @@ impl<'a> Parser<'a> {
 
     fn dictionary(&mut self, depth: usize) -> Parsed<Object> {
         if depth >= self.max_depth {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             return Err(Reject::TooDeep);
         }
-        self.pos += 2;
+        self.pos = self.pos.saturating_add(2);
         let mut dict = Dict::default();
         loop {
             self.skip_whitespace();
             let Some(byte) = self.peek() else { break };
             if byte == b'>' {
                 if self.peek_at(1) == Some(b'>') {
-                    self.pos += 2;
+                    self.pos = self.pos.saturating_add(2);
                     break;
                 }
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 continue;
             }
             if byte != b'/' {
@@ -287,7 +291,7 @@ impl<'a> Parser<'a> {
                     Some(false) => continue,
                     None => {}
                 }
-                match self.value(depth + 1) {
+                match self.value(depth.saturating_add(1)) {
                     Err(Reject::TooDeep) => return Err(Reject::TooDeep),
                     _ => continue,
                 }
@@ -304,7 +308,7 @@ impl<'a> Parser<'a> {
                 Some(false) => continue,
                 None => {}
             }
-            match self.value(depth + 1) {
+            match self.value(depth.saturating_add(1)) {
                 Ok(value) => dict.entries.push((key, value)),
                 Err(Reject::TooDeep) => return Err(Reject::TooDeep),
                 Err(Reject::Garbage) => {}
@@ -314,7 +318,7 @@ impl<'a> Parser<'a> {
     }
 
     fn name(&mut self) -> Vec<u8> {
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1);
         let raw = self.regular_run();
         if !raw.contains(&b'#') {
             return raw.to_vec();
@@ -323,25 +327,31 @@ impl<'a> Parser<'a> {
         let mut index = 0;
         while let Some(&byte) = raw.get(index) {
             if byte == b'#'
-                && let Some(high) = raw.get(index + 1).copied().and_then(hex_value)
-                && let Some(low) = raw.get(index + 2).copied().and_then(hex_value)
+                && let Some(high) = raw
+                    .get(index.saturating_add(1))
+                    .copied()
+                    .and_then(hex_value)
+                && let Some(low) = raw
+                    .get(index.saturating_add(2))
+                    .copied()
+                    .and_then(hex_value)
             {
                 out.push(high << 4 | low);
-                index += 3;
+                index = index.saturating_add(3);
             } else {
                 out.push(byte);
-                index += 1;
+                index = index.saturating_add(1);
             }
         }
         out
     }
 
     fn hex_string(&mut self) -> Vec<u8> {
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1);
         let mut out = Vec::new();
         let mut high: Option<u8> = None;
         while let Some(byte) = self.peek() {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             if byte == b'>' {
                 break;
             }
@@ -359,7 +369,7 @@ impl<'a> Parser<'a> {
     }
 
     fn literal_string(&mut self) -> Vec<u8> {
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1);
         let mut out = Vec::new();
         let mut depth = 1_usize;
         loop {
@@ -368,18 +378,18 @@ impl<'a> Parser<'a> {
                 if matches!(byte, b'(' | b')' | b'\\' | b'\r') {
                     break;
                 }
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
             }
             out.extend_from_slice(self.slice(start, self.pos));
             let Some(byte) = self.peek() else { break };
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             match byte {
                 b'(' => {
-                    depth += 1;
+                    depth = depth.saturating_add(1);
                     out.push(b'(');
                 }
                 b')' => {
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
                         break;
                     }
@@ -387,13 +397,13 @@ impl<'a> Parser<'a> {
                 }
                 b'\r' => {
                     if self.peek() == Some(b'\n') {
-                        self.pos += 1;
+                        self.pos = self.pos.saturating_add(1);
                     }
                     out.push(b'\n');
                 }
                 _ => {
                     let Some(escaped) = self.peek() else { break };
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     match escaped {
                         b'n' => out.push(b'\n'),
                         b'r' => out.push(b'\r'),
@@ -402,17 +412,18 @@ impl<'a> Parser<'a> {
                         b'f' => out.push(12),
                         b'\r' => {
                             if self.peek() == Some(b'\n') {
-                                self.pos += 1;
+                                self.pos = self.pos.saturating_add(1);
                             }
                         }
                         b'\n' => {}
                         b'0'..=b'7' => {
-                            let mut value = u32::from(escaped - b'0');
+                            let mut value = u32::from(escaped.saturating_sub(b'0'));
                             for _ in 0..2 {
                                 match self.peek() {
                                     Some(digit @ b'0'..=b'7') => {
-                                        value = value * 8 + u32::from(digit - b'0');
-                                        self.pos += 1;
+                                        value = (value.saturating_mul(8))
+                                            .saturating_add(u32::from(digit.saturating_sub(b'0')));
+                                        self.pos = self.pos.saturating_add(1);
                                     }
                                     _ => break,
                                 }
@@ -433,14 +444,14 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(b'+') => {
                 signed = true;
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
             }
             Some(b'-') => {
                 signed = true;
                 negative = true;
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 while self.peek() == Some(b'-') {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                 }
             }
             _ => {}
@@ -451,24 +462,25 @@ impl<'a> Parser<'a> {
         while let Some(byte @ b'0'..=b'9') = self.peek() {
             match whole
                 .checked_mul(10)
-                .and_then(|value| value.checked_add(u64::from(byte - b'0')))
+                .and_then(|value| value.checked_add(u64::from(byte.saturating_sub(b'0'))))
             {
                 Some(value) => whole = value,
                 None => overflow = true,
             }
-            digits += 1;
-            self.pos += 1;
+            digits = digits.saturating_add(1);
+            self.pos = self.pos.saturating_add(1);
         }
         if self.peek() == Some(b'.') {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             let mut fraction: u64 = 0;
             let mut scale = 0_usize;
             while let Some(byte @ b'0'..=b'9') = self.peek() {
                 if scale < 18 {
-                    fraction = fraction * 10 + u64::from(byte - b'0');
-                    scale += 1;
+                    fraction = (fraction.saturating_mul(10))
+                        .saturating_add(u64::from(byte.saturating_sub(b'0')));
+                    scale = scale.saturating_add(1);
                 }
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
             }
             let divisor = 10_f64.powi(i32::try_from(scale).unwrap_or(0));
             let magnitude = whole as f64 + fraction as f64 / divisor;
@@ -489,7 +501,11 @@ impl<'a> Parser<'a> {
             self.pos = end;
             return reference;
         }
-        Object::Integer(if negative { -integer } else { integer })
+        Object::Integer(if negative {
+            integer.saturating_neg()
+        } else {
+            integer
+        })
     }
 
     fn reference(&self, number: u64) -> Option<(Object, usize)> {
@@ -498,7 +514,7 @@ impl<'a> Parser<'a> {
         let mut index = self.pos;
         let gap = index;
         while data.get(index).copied().is_some_and(is_whitespace) {
-            index += 1;
+            index = index.saturating_add(1);
         }
         if index == gap {
             return None;
@@ -509,18 +525,19 @@ impl<'a> Parser<'a> {
             if !byte.is_ascii_digit() {
                 break;
             }
-            if index - digits_start >= 5 {
+            if index.saturating_sub(digits_start) >= 5 {
                 return None;
             }
-            generation = generation * 10 + u32::from(byte - b'0');
-            index += 1;
+            generation = (generation.saturating_mul(10))
+                .saturating_add(u32::from(byte.saturating_sub(b'0')));
+            index = index.saturating_add(1);
         }
         if index == digits_start {
             return None;
         }
         let gap = index;
         while data.get(index).copied().is_some_and(is_whitespace) {
-            index += 1;
+            index = index.saturating_add(1);
         }
         if index == gap || !keyword_at(data, index, b"R") {
             return None;
@@ -529,7 +546,7 @@ impl<'a> Parser<'a> {
             number,
             generation: u16::try_from(generation).unwrap_or(u16::MAX),
         };
-        Some((Object::Ref(reference), index + 1))
+        Some((Object::Ref(reference), index.saturating_add(1)))
     }
 
     fn inline_image(&mut self) -> Outcome<ContentToken<'a>> {
@@ -540,11 +557,11 @@ impl<'a> Parser<'a> {
                 return Ok(ContentToken::Operator(b"EI"));
             };
             if self.keyword_here(b"ID") {
-                self.pos += 2;
+                self.pos = self.pos.saturating_add(2);
                 break;
             }
             if self.keyword_here(b"EI") {
-                self.pos += 2;
+                self.pos = self.pos.saturating_add(2);
                 return Ok(ContentToken::Operator(b"EI"));
             }
             if byte == b'/' {
@@ -569,9 +586,9 @@ impl<'a> Parser<'a> {
         if let Some(byte) = self.peek()
             && is_whitespace(byte)
         {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             if byte == b'\r' && self.peek() == Some(b'\n') {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
             }
         }
         self.pos = inline_image_end(self.data, self.pos, length);
@@ -585,7 +602,7 @@ fn image_terminated(data: &[u8], pos: usize) -> bool {
 }
 
 fn textual_after(data: &[u8], pos: usize) -> bool {
-    let end = data.len().min(pos + IMAGE_END_PROBE);
+    let end = data.len().min(pos.saturating_add(IMAGE_END_PROBE));
     data.get(pos..end)
         .unwrap_or_default()
         .iter()
@@ -598,10 +615,12 @@ fn inline_image_end(data: &[u8], start: usize, length: Option<usize>) -> usize {
     {
         let mut after = end;
         while data.get(after).copied().is_some_and(is_whitespace) {
-            after += 1;
+            after = after.saturating_add(1);
         }
-        if data.get(after..after + 2) == Some(b"EI") && image_terminated(data, after + 2) {
-            return after + 2;
+        if data.get(after..after.saturating_add(2)) == Some(b"EI")
+            && image_terminated(data, after.saturating_add(2))
+        {
+            return after.saturating_add(2);
         }
     }
     let mut from = start;
@@ -612,10 +631,13 @@ fn inline_image_end(data: &[u8], start: usize, length: Option<usize>) -> usize {
                 .and_then(|before| data.get(before))
                 .copied()
                 .is_some_and(is_whitespace);
-        if preceded && image_terminated(data, found + 2) && textual_after(data, found + 2) {
-            return found + 2;
+        if preceded
+            && image_terminated(data, found.saturating_add(2))
+            && textual_after(data, found.saturating_add(2))
+        {
+            return found.saturating_add(2);
         }
-        from = found + 1;
+        from = found.saturating_add(1);
     }
     data.len()
 }
@@ -655,7 +677,7 @@ impl<'a> Iterator for ContentLexer<'a> {
             },
             b')' | b']' | b'>' | b'{' | b'}' | b'%' => {
                 let start = parser.pos;
-                parser.pos += 1;
+                parser.pos = parser.pos.saturating_add(1);
                 ContentToken::Operator(parser.slice(start, parser.pos))
             }
             _ => {
@@ -698,37 +720,37 @@ pub(crate) fn parse_object_header(data: &[u8], offset: usize) -> Option<(ObjRef,
         number: u32::try_from(number).ok()?,
         generation: u16::try_from(generation).unwrap_or(u16::MAX),
     };
-    Some((reference, pos + 3))
+    Some((reference, pos.saturating_add(3)))
 }
 
 fn stream_start(data: &[u8], keyword_end: usize) -> usize {
     let mut probe = keyword_end;
     while matches!(data.get(probe), Some(b' ' | b'\t')) {
-        probe += 1;
+        probe = probe.saturating_add(1);
     }
     match data.get(probe) {
         Some(b'\r') => {
-            let next = probe + 1;
+            let next = probe.saturating_add(1);
             if data.get(next) == Some(&b'\n') {
-                next + 1
+                next.saturating_add(1)
             } else {
                 next
             }
         }
-        Some(b'\n') => probe + 1,
+        Some(b'\n') => probe.saturating_add(1),
         _ => keyword_end,
     }
 }
 
 fn trim_stream_end(data: &[u8], start: usize, end: usize) -> usize {
     let mut end = end;
-    if end > start && data.get(end - 1) == Some(&b'\n') {
-        end -= 1;
-        if end > start && data.get(end - 1) == Some(&b'\r') {
-            end -= 1;
+    if end > start && data.get(end.saturating_sub(1)) == Some(&b'\n') {
+        end = end.saturating_sub(1);
+        if end > start && data.get(end.saturating_sub(1)) == Some(&b'\r') {
+            end = end.saturating_sub(1);
         }
-    } else if end > start && data.get(end - 1) == Some(&b'\r') {
-        end -= 1;
+    } else if end > start && data.get(end.saturating_sub(1)) == Some(&b'\r') {
+        end = end.saturating_sub(1);
     }
     end
 }
@@ -736,7 +758,7 @@ fn trim_stream_end(data: &[u8], start: usize, end: usize) -> usize {
 fn end_marker_follows(data: &[u8], pos: usize) -> bool {
     let mut cursor = pos;
     while data.get(cursor).copied().is_some_and(is_whitespace) {
-        cursor += 1;
+        cursor = cursor.saturating_add(1);
     }
     keyword_at(data, cursor, b"endstream") || keyword_at(data, cursor, b"endobj")
 }
@@ -763,10 +785,10 @@ fn stream_range(data: &[u8], start: usize, declared: Option<usize>) -> Range<usi
 fn object_tail(data: &[u8], from: usize) -> usize {
     let mut pos = skip_whitespace_at(data, from);
     if keyword_at(data, pos, b"endstream") {
-        pos = skip_whitespace_at(data, pos + 9);
+        pos = skip_whitespace_at(data, pos.saturating_add(9));
     }
     if keyword_at(data, pos, b"endobj") {
-        pos += 6;
+        pos = pos.saturating_add(6);
     }
     pos
 }
@@ -798,7 +820,7 @@ pub(crate) fn parse_indirect_object(
                 }
                 _ => None,
             };
-            let start = stream_start(data, keyword + 6);
+            let start = stream_start(data, keyword.saturating_add(6));
             let range = stream_range(data, start, declared);
             let end = object_tail(data, range.end);
             Ok(IndirectObject {

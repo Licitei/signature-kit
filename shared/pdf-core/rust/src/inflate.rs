@@ -107,9 +107,9 @@ impl<'a> BitReader<'a> {
         {
             let word = u64::from_le_bytes(bytes);
             self.bit_buf |= word << self.bit_count;
-            let consumed = (63 - self.bit_count) >> 3;
-            self.pos += consumed as usize;
-            self.bit_count += consumed << 3;
+            let consumed = 63_u32.saturating_sub(self.bit_count) >> 3;
+            self.pos = self.pos.saturating_add(consumed as usize);
+            self.bit_count = self.bit_count.saturating_add(consumed << 3);
             return;
         }
         while self.bit_count <= 56 {
@@ -117,8 +117,8 @@ impl<'a> BitReader<'a> {
                 break;
             };
             self.bit_buf |= u64::from(*byte) << self.bit_count;
-            self.bit_count += 8;
-            self.pos += 1;
+            self.bit_count = self.bit_count.saturating_add(8);
+            self.pos = self.pos.saturating_add(1);
         }
     }
 
@@ -134,9 +134,9 @@ impl<'a> BitReader<'a> {
                 return None;
             }
         }
-        let value = (self.bit_buf & ((1_u64 << count) - 1)) as u32;
+        let value = (self.bit_buf & ((1_u64 << count).saturating_sub(1))) as u32;
         self.bit_buf >>= count;
-        self.bit_count -= count;
+        self.bit_count = self.bit_count.saturating_sub(count);
         Some(value)
     }
 
@@ -242,14 +242,14 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         if len32 > FAST_BITS || code >= (1_u32 << len32) {
             continue;
         }
-        let reversed = code.reverse_bits() >> (32 - len32);
+        let reversed = code.reverse_bits() >> 32_u32.saturating_sub(len32);
         let entry = (len32 << 16) | u32::from(sym);
         let mut index = reversed as usize;
         while index < FAST_SIZE {
             if let Some(cell) = fast.get_mut(index) {
                 *cell = entry;
             }
-            index += 1_usize << len32;
+            index = index.saturating_add(1_usize << len32);
         }
     }
 
@@ -268,7 +268,7 @@ fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
     if bits.bit_count < MAX_BITS as u32 {
         bits.refill();
     }
-    let window = (bits.bit_buf & (FAST_SIZE as u64 - 1)) as usize;
+    let window = (bits.bit_buf & ((FAST_SIZE as u64).saturating_sub(1))) as usize;
     let entry = tree.fast.get(window).copied().unwrap_or(0);
     if entry != 0 {
         let len = entry >> 16;
@@ -276,7 +276,7 @@ fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
             return None;
         }
         bits.bit_buf >>= len;
-        bits.bit_count -= len;
+        bits.bit_count = bits.bit_count.saturating_sub(len);
         return Some((entry & 0xffff) as u16);
     }
     decode_slow(bits, tree)
@@ -291,7 +291,7 @@ fn decode_slow(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
         }
         let bit = (bits.bit_buf & 1) as u32;
         bits.bit_buf >>= 1;
-        bits.bit_count -= 1;
+        bits.bit_count = bits.bit_count.saturating_sub(1);
         code = (code << 1) | bit;
         let slot = usize::from(len);
         let count = tree.counts.get(slot).copied().unwrap_or(0);
@@ -317,18 +317,18 @@ fn copy_match(out: &mut Vec<u8>, distance: usize, length: usize, max: usize) -> 
     if out.len().saturating_add(length) > max {
         return Err(Failure::limit("inflate output exceeds limit"));
     }
-    let start = out.len() - distance;
+    let start = out.len().saturating_sub(distance);
     if distance == 1 {
         let byte = out.get(start).copied().unwrap_or(0);
-        out.resize(out.len() + length, byte);
+        out.resize(out.len().saturating_add(length), byte);
         return Ok(());
     }
     let mut remaining = length;
     while remaining > 0 {
-        let available = out.len() - start;
+        let available = out.len().saturating_sub(start);
         let chunk = remaining.min(available);
-        out.extend_from_within(start..start + chunk);
-        remaining -= chunk;
+        out.extend_from_within(start..start.saturating_add(chunk));
+        remaining = remaining.saturating_sub(chunk);
     }
     Ok(())
 }
@@ -606,8 +606,8 @@ mod tests {
         let mut a = 1_u32;
         let mut b = 0_u32;
         for byte in data {
-            a = (a + u32::from(*byte)) % 65521;
-            b = (b + a) % 65521;
+            a = (a.saturating_add(u32::from(*byte))) % 65521;
+            b = (b.saturating_add(a)) % 65521;
         }
         b << 16 | a
     }

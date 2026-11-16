@@ -383,7 +383,7 @@ impl CompositeFont {
     fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
         let mut offset = 0_usize;
         while let Some((code, consumed)) = self.cmap.read(bytes, offset) {
-            offset += consumed;
+            offset = offset.saturating_add(consumed);
             let cid = self.cmap.cid(code, consumed);
             let advance = self.horizontal.width(cid) / 1000.0;
             let text_start = text.len() as u32;
@@ -678,7 +678,12 @@ fn load_cmap(
             let mut cmap = parsed.cmap;
             if depth < MAX_CMAP_DEPTH {
                 let parent = match stream.dict.get(b"UseCMap") {
-                    Some(use_cmap) => Some(load_cmap(resolver, Some(use_cmap), limits, depth + 1)),
+                    Some(use_cmap) => Some(load_cmap(
+                        resolver,
+                        Some(use_cmap),
+                        limits,
+                        depth.saturating_add(1),
+                    )),
                     None => parsed.parent.as_deref().map(predefined),
                 };
                 if let Some(parent) = parent {
@@ -811,10 +816,10 @@ fn load_cid_widths(descendant: &Dict) -> CidWidths {
                 .get(index)
                 .and_then(Object::as_integer)
                 .and_then(|value| u32::try_from(value).ok());
-            index += 1;
+            index = index.saturating_add(1);
             match items.get(index) {
                 Some(Object::Array(inner)) => {
-                    index += 1;
+                    index = index.saturating_add(1);
                     let Some(start) = start else { continue };
                     for (step, item) in inner.iter().enumerate() {
                         if let Some(width) = item.as_number() {
@@ -824,8 +829,10 @@ fn load_cid_widths(descendant: &Dict) -> CidWidths {
                     }
                 }
                 Some(Object::Integer(end)) => {
-                    let width = items.get(index + 1).and_then(Object::as_number);
-                    index += 2;
+                    let width = items
+                        .get(index.saturating_add(1))
+                        .and_then(Object::as_number);
+                    index = index.saturating_add(2);
                     if let (Some(start), Ok(end), Some(width)) = (start, u32::try_from(*end), width)
                         && start <= end
                     {
@@ -836,7 +843,7 @@ fn load_cid_widths(descendant: &Dict) -> CidWidths {
                         ));
                     }
                 }
-                _ => index += 1,
+                _ => index = index.saturating_add(1),
             }
         }
     }
@@ -869,10 +876,10 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                 .get(index)
                 .and_then(Object::as_integer)
                 .and_then(|value| u32::try_from(value).ok());
-            index += 1;
+            index = index.saturating_add(1);
             match items.get(index) {
                 Some(Object::Array(inner)) => {
-                    index += 1;
+                    index = index.saturating_add(1);
                     let Some(start) = start else { continue };
                     for (step, triple) in inner.chunks_exact(3).enumerate() {
                         let values: Vec<f64> =
@@ -885,10 +892,14 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                 }
                 Some(Object::Integer(end)) => {
                     let values: Vec<f64> = (1..=3)
-                        .filter_map(|offset| items.get(index + offset).and_then(Object::as_number))
+                        .filter_map(|offset| {
+                            items
+                                .get(index.saturating_add(offset))
+                                .and_then(Object::as_number)
+                        })
                         .collect();
                     let end = u32::try_from(*end).ok();
-                    index += 4;
+                    index = index.saturating_add(4);
                     if let (Some(start), Some(end), [advance, origin_x, origin_y]) =
                         (start, end, values.as_slice())
                         && start <= end
@@ -900,7 +911,7 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                         ));
                     }
                 }
-                _ => index += 1,
+                _ => index = index.saturating_add(1),
             }
         }
     }
@@ -983,7 +994,7 @@ fn standard14_from_base_font(name: Option<&Object>) -> Option<Standard14Font> {
 
 fn strip_subset_prefix(name: &[u8]) -> &[u8] {
     match name.iter().position(|byte| *byte == b'+') {
-        Some(index) => name.get(index + 1..).unwrap_or(name),
+        Some(index) => name.get(index.saturating_add(1)..).unwrap_or(name),
         None => name,
     }
 }
@@ -1019,7 +1030,7 @@ fn read_number(value: Option<&Object>) -> Option<f64> {
 
 const fn symbolic_fallback(code: u32) -> u32 {
     if code >= 0xF000 {
-        return code - 0xF000;
+        return code.saturating_sub(0xF000);
     }
     if code <= 0xFF {
         return code;
@@ -1058,7 +1069,7 @@ mod tests {
 
     impl TestResolver {
         fn add(&mut self, object: Object) -> Object {
-            self.next += 1;
+            self.next = self.next.saturating_add(1);
             self.objects.insert(self.next, object);
             Object::Ref(ObjRef {
                 number: self.next,
@@ -1136,7 +1147,7 @@ mod tests {
         let mut out = be32(0x0001_0000);
         out.extend(be16(tables.len() as u16));
         out.extend([0_u8; 6]);
-        let mut offset = 12 + tables.len() * 16;
+        let mut offset = (tables.len().saturating_mul(16)).saturating_add(12);
         let mut bodies = Vec::new();
         for (tag, body) in tables {
             out.extend_from_slice(*tag);
@@ -1144,9 +1155,12 @@ mod tests {
             out.extend(be32(offset as u32));
             out.extend(be32(body.len() as u32));
             bodies.extend_from_slice(body);
-            let padded = (body.len() + 3) & !3;
-            bodies.resize(bodies.len() + padded - body.len(), 0);
-            offset += padded;
+            let padded = (body.len().saturating_add(3)) & !3;
+            bodies.resize(
+                (bodies.len().saturating_add(padded)).saturating_sub(body.len()),
+                0,
+            );
+            offset = offset.saturating_add(padded);
         }
         out.extend(bodies);
         out
@@ -1190,8 +1204,8 @@ mod tests {
             } else if *entry == ".notdef" {
                 out.extend(be16(0));
             } else {
-                out.extend(be16(258 + custom));
-                custom += 1;
+                out.extend(be16(custom.saturating_add(258)));
+                custom = custom.saturating_add(1);
                 strings.push(entry.len() as u8);
                 strings.extend_from_slice(entry.as_bytes());
             }
@@ -1380,12 +1394,16 @@ mod tests {
         let count = usize::from(u16::from_be_bytes([base[4], base[5]]));
         let mut tables: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         for index in 0..count {
-            let record = &base[12 + index * 16..28 + index * 16];
+            let record = &base[(index.saturating_mul(16)).saturating_add(12)
+                ..(index.saturating_mul(16)).saturating_add(28)];
             let offset =
                 u32::from_be_bytes([record[8], record[9], record[10], record[11]]) as usize;
             let length =
                 u32::from_be_bytes([record[12], record[13], record[14], record[15]]) as usize;
-            tables.push((record[..4].to_vec(), base[offset..offset + length].to_vec()));
+            tables.push((
+                record[..4].to_vec(),
+                base[offset..offset.saturating_add(length)].to_vec(),
+            ));
         }
         tables.push((b"cmap".to_vec(), cmap));
         let borrowed: Vec<(&[u8; 4], Vec<u8>)> = tables

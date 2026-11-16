@@ -271,7 +271,7 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
             })
             .collect();
         for (offset, segment) in line.iter().enumerate() {
-            let segment_index = start + offset;
+            let segment_index = start.saturating_add(offset);
             let claimed = targets.get(offset).copied().flatten();
             if let Some(block) = claimed.and_then(|id| blocks.get_mut(id)) {
                 block.segments.push(segment_index);
@@ -404,7 +404,7 @@ fn reading_order(blocks: &[Block], ids: Vec<usize>, depth: usize, out: &mut Vec<
         return;
     }
     for band in bands {
-        reading_order(blocks, band, depth + 1, out);
+        reading_order(blocks, band, depth.saturating_add(1), out);
     }
 }
 
@@ -524,7 +524,7 @@ fn is_list(cells: &[Cell], columns: usize) -> bool {
         if !is_marker(first) {
             return false;
         }
-        markers += 1;
+        markers = markers.saturating_add(1);
     }
     markers >= 2
 }
@@ -544,18 +544,18 @@ fn aligned_tables(
     let mut index = 0_usize;
     while let Some(first) = line_at(index) {
         if !is_row_line(first) {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         let Some(mut columns) = merge_row(&[], &spans_of(first)) else {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         };
         let base_size = line_size(first);
         let mut rows: Vec<Vec<usize>> = vec![vec![index]];
         let mut row_bold = first.iter().all(|segment| segment.bold);
         let mut last = index;
-        let mut next = index + 1;
+        let mut next = index.saturating_add(1);
         while let (Some(line), Some(previous)) = (line_at(next), line_at(last)) {
             let gap = previous.first().map_or(0.0, |segment| segment.center)
                 - line.first().map_or(0.0, |segment| segment.center);
@@ -590,14 +590,14 @@ fn aligned_tables(
                 }
             }
             last = next;
-            next += 1;
+            next = next.saturating_add(1);
         }
         let accepted = rows.len() >= 3 || (rows.len() == 2 && columns.len() >= 3);
         if !accepted {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
-        let mut cells: Vec<Cell> = Vec::with_capacity(rows.len() * columns.len());
+        let mut cells: Vec<Cell> = Vec::with_capacity(rows.len().saturating_mul(columns.len()));
         let mut bounds = [
             f64::INFINITY,
             f64::INFINITY,
@@ -625,7 +625,7 @@ fn aligned_tables(
                 let Some(column) = column_of(&columns, segment.x0, segment.x1) else {
                     continue;
                 };
-                if let Some(cell) = cells.get_mut(slot + column) {
+                if let Some(cell) = cells.get_mut(slot.saturating_add(column)) {
                     if !cell.text.is_empty() {
                         cell.text.push('\n');
                     }
@@ -638,7 +638,7 @@ fn aligned_tables(
         bounds[0] = columns.first().map_or(0.0, |column| column.0);
         bounds[2] = columns.last().map_or(0.0, |column| column.1);
         if is_list(&cells, columns.len()) {
-            index = last + 1;
+            index = last.saturating_add(1);
             continue;
         }
         tables.push(Table {
@@ -648,10 +648,10 @@ fn aligned_tables(
             cols: u32::try_from(columns.len()).unwrap_or(u32::MAX),
             cells,
         });
-        for flag in consumed.iter_mut().take(last + 1).skip(index) {
+        for flag in consumed.iter_mut().take(last.saturating_add(1)).skip(index) {
             *flag = true;
         }
-        index = last + 1;
+        index = last.saturating_add(1);
     }
     (tables, consumed)
 }
@@ -909,14 +909,14 @@ fn running_keys(pages: &[PageLayout]) -> RunningKeys {
                     digits: digits.clone(),
                     varying: false,
                 });
-                entry.count += 1;
+                entry.count = entry.count.saturating_add(1);
                 entry.varying |= entry.digits != digits;
             }
         }
     }
     counts
         .into_iter()
-        .filter(|(_, found)| found.count >= 2 && found.count * 2 >= pages.len())
+        .filter(|(_, found)| found.count >= 2 && found.count.saturating_mul(2) >= pages.len())
         .map(|(key, found)| {
             (
                 key,
@@ -931,7 +931,12 @@ fn running_keys(pages: &[PageLayout]) -> RunningKeys {
 }
 
 fn assemble(pieces: &[Piece], dropped: &RunningKeys, position: usize) -> String {
-    let mut out = String::with_capacity(pieces.iter().map(|piece| piece.text.len() + 2).sum());
+    let mut out = String::with_capacity(
+        pieces
+            .iter()
+            .map(|piece| piece.text.len().saturating_add(2))
+            .sum(),
+    );
     for piece in pieces {
         if piece.band != Band::Free
             && !dropped.is_empty()
@@ -973,7 +978,7 @@ fn page_layout(
         }
         let visible = turn(page, run.direction.0, run.direction.1);
         let quarter = quarter_of(visible);
-        let turns = (page + quarter) % 4;
+        let turns = (page.saturating_add(quarter)) % 4;
         let [x0, y0, x1, y1] = run.item.rect;
         let (ax, ay) = turn(turns, x0, y0);
         let (bx, by) = turn(turns, x1, y1);
@@ -994,7 +999,7 @@ fn page_layout(
             continue;
         }
         if let (Some(pool), Some(weight)) = (pools.get_mut(quarter), weights.get_mut(quarter)) {
-            *weight += run.item.text.len();
+            *weight = (*weight).saturating_add(run.item.text.len());
             pool.push(frag);
         }
     }
@@ -1014,7 +1019,7 @@ fn page_layout(
         let Some(pool) = pools.get(quarter) else {
             continue;
         };
-        let turns = (page + quarter) % 4;
+        let turns = (page.saturating_add(quarter)) % 4;
         let lines: Vec<Rule> = rulings
             .iter()
             .map(|ruling| {
@@ -1034,7 +1039,7 @@ fn page_layout(
             first.lead = "\n\n";
         }
         layout.pieces.append(&mut sink.pieces);
-        let back = (4 - turns % 4) % 4;
+        let back = 4_usize.saturating_sub(turns % 4) % 4;
         for mut table in sink.tables {
             table.bbox = turn_rect(back, table.bbox);
             for cell in &mut table.cells {
@@ -1842,7 +1847,7 @@ mod structure_tests {
         let pages: Vec<PageSpec> = bodies
             .iter()
             .enumerate()
-            .map(|(index, body)| running_page(index + 1, &header(index), body))
+            .map(|(index, body)| running_page(index.saturating_add(1), &header(index), body))
             .collect();
         document(&pages, &[])
     }

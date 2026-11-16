@@ -33,12 +33,12 @@ const PDF_DOC_HIGH: [char; 31] = [
 fn pdf_doc_char(byte: u8) -> char {
     match byte {
         0x18..=0x1f => PDF_DOC_LOW
-            .get(usize::from(byte - 0x18))
+            .get(usize::from(byte.saturating_sub(0x18)))
             .copied()
             .unwrap_or('\u{FFFD}'),
         0x7f | 0x9f => '\u{FFFD}',
         0x80..=0x9e => PDF_DOC_HIGH
-            .get(usize::from(byte - 0x80))
+            .get(usize::from(byte.saturating_sub(0x80)))
             .copied()
             .unwrap_or('\u{FFFD}'),
         0xa0 => '\u{20AC}',
@@ -145,9 +145,9 @@ fn find_startxref(bytes: &[u8]) -> Option<usize> {
     let mut from = tail_start;
     while let Some(at) = find_bytes(bytes, from, b"startxref") {
         found = Some(at);
-        from = at + 9;
+        from = at.saturating_add(9);
     }
-    let mut pos = skip_whitespace_at(bytes, found? + 9);
+    let mut pos = skip_whitespace_at(bytes, found?.saturating_add(9));
     let value = read_unsigned(bytes, &mut pos)?;
     usize::try_from(value).ok()
 }
@@ -162,9 +162,13 @@ fn header_shift(bytes: &[u8]) -> usize {
 fn header_before(data: &[u8], keyword_index: usize, floor: usize) -> Option<usize> {
     let back = |mut index: usize, accept: fn(u8) -> bool, limit: usize| -> Option<usize> {
         let end = index;
-        while index > floor && data.get(index - 1).is_some_and(|&byte| accept(byte)) {
-            index -= 1;
-            if end - index > limit {
+        while index > floor
+            && data
+                .get(index.saturating_sub(1))
+                .is_some_and(|&byte| accept(byte))
+        {
+            index = index.saturating_sub(1);
+            if end.saturating_sub(index) > limit {
                 return None;
             }
         }
@@ -274,7 +278,7 @@ impl<'a> Document<'a> {
                 continue;
             }
             if table.len() <= index {
-                table.resize(index + 1, Entry::Unset);
+                table.resize(index.saturating_add(1), Entry::Unset);
             }
             if let Some(slot) = table.get_mut(index)
                 && *slot == Entry::Unset
@@ -343,7 +347,7 @@ impl<'a> Document<'a> {
             }
             let pos = skip_whitespace_at(self.bytes, *candidate);
             if keyword_at(self.bytes, pos, b"xref") {
-                return self.read_classic_section(pos + 4);
+                return self.read_classic_section(pos.saturating_add(4));
             }
             if parse_object_header(self.bytes, pos).is_some() {
                 return self.read_stream_section(pos);
@@ -359,7 +363,7 @@ impl<'a> Document<'a> {
         loop {
             pos = skip_whitespace_at(data, pos);
             if keyword_at(data, pos, b"trailer") {
-                pos += 7;
+                pos = pos.saturating_add(7);
                 break;
             }
             let first = read_unsigned(data, &mut pos)
@@ -381,7 +385,7 @@ impl<'a> Document<'a> {
                     .ok_or_else(|| Failure::invalid("bad xref entry"))?;
                 pos = skip_whitespace_at(data, pos);
                 let flag = data.get(pos).copied();
-                pos += 1;
+                pos = pos.saturating_add(1);
                 let entry = match flag {
                     Some(b'n') => match usize::try_from(offset) {
                         Ok(offset) if offset > 0 => Entry::Offset(offset),
@@ -395,7 +399,7 @@ impl<'a> Document<'a> {
                     }
                     _ => return Err(Failure::invalid("bad xref entry flag")),
                 };
-                let number = u32::try_from(first + index)
+                let number = u32::try_from(first.saturating_add(index))
                     .map_err(|_| Failure::invalid("object number out of range"))?;
                 entries.push((number, entry));
             }
@@ -438,7 +442,7 @@ impl<'a> Document<'a> {
                 .ok_or_else(|| Failure::invalid("bad xref /W"))?;
         }
         let [w0, w1, w2] = w;
-        let row = w0 + w1 + w2;
+        let row = (w0.saturating_add(w1)).saturating_add(w2);
         if row == 0 {
             return Err(Failure::invalid("empty xref row"));
         }
@@ -460,16 +464,16 @@ impl<'a> Document<'a> {
                 continue;
             }
             for offset in 0..*count {
-                let Some(bytes) = data.get(cursor..cursor + row) else {
+                let Some(bytes) = data.get(cursor..cursor.saturating_add(row)) else {
                     break;
                 };
-                cursor += row;
+                cursor = cursor.saturating_add(row);
                 let (kind, rest) = bytes.split_at(w0);
                 let (second, third) = rest.split_at(w1);
                 let kind = if w0 == 0 { 1 } else { be_value(kind) };
                 let second = be_value(second);
                 let third = be_value(third);
-                let Ok(number) = u32::try_from(start + offset) else {
+                let Ok(number) = u32::try_from(start.saturating_add(offset)) else {
                     continue;
                 };
                 let entry = match kind {
@@ -509,10 +513,10 @@ impl<'a> Document<'a> {
             let Some(found) = rest.iter().position(|&byte| byte == b'o' || byte == b't') else {
                 break;
             };
-            let at = pos + found;
+            let at = pos.saturating_add(found);
             if keyword_at(data, at, b"obj") {
                 let Some(start) = header_before(data, at, pos) else {
-                    pos = at + 3;
+                    pos = at.saturating_add(3);
                     continue;
                 };
                 match parse_indirect_object(data, start, nesting, |_| None) {
@@ -521,7 +525,7 @@ impl<'a> Document<'a> {
                         let index = number as usize;
                         if index < bound {
                             if table.len() <= index {
-                                table.resize(index + 1, Entry::Unset);
+                                table.resize(index.saturating_add(1), Entry::Unset);
                             }
                             if let Some(slot) = table.get_mut(index) {
                                 *slot = Entry::Offset(start);
@@ -536,20 +540,20 @@ impl<'a> Document<'a> {
                                 object_streams.push((number, start));
                             }
                         }
-                        pos = parsed.end.max(at + 3);
+                        pos = parsed.end.max(at.saturating_add(3));
                     }
-                    Err(_) => pos = at + 3,
+                    Err(_) => pos = at.saturating_add(3),
                 }
             } else if keyword_at(data, at, b"trailer") {
-                let mut parser = Parser::new(data, at + 7, nesting, true);
+                let mut parser = Parser::new(data, at.saturating_add(7), nesting, true);
                 if let Ok(Object::Dict(dict)) = parser.parse_object() {
                     trailers.push(dict);
-                    pos = parser.position().max(at + 7);
+                    pos = parser.position().max(at.saturating_add(7));
                 } else {
-                    pos = at + 7;
+                    pos = at.saturating_add(7);
                 }
             } else {
-                pos = at + 1;
+                pos = at.saturating_add(1);
             }
         }
         let mut merged = Dict::default();
@@ -588,7 +592,7 @@ impl<'a> Document<'a> {
                     continue;
                 }
                 if table.len() <= slot_index {
-                    table.resize(slot_index + 1, Entry::Unset);
+                    table.resize(slot_index.saturating_add(1), Entry::Unset);
                 }
                 let Some(slot) = table.get_mut(slot_index) else {
                     continue;
@@ -690,12 +694,12 @@ impl<'a> Document<'a> {
         if self.depth.get() >= MAX_LENGTH_DEPTH {
             return None;
         }
-        self.depth.set(self.depth.get() + 1);
+        self.depth.set(self.depth.get().saturating_add(1));
         let length = self
             .load(reference)
             .ok()
             .and_then(|object| object.as_integer());
-        self.depth.set(self.depth.get() - 1);
+        self.depth.set(self.depth.get().saturating_sub(1));
         length
     }
 
@@ -805,14 +809,16 @@ impl<'a> Document<'a> {
         match &*resolved {
             Object::Array(items) => items
                 .iter()
-                .map(|item| self.resolve_deep(item, depth + 1))
+                .map(|item| self.resolve_deep(item, depth.saturating_add(1)))
                 .collect::<Outcome<Vec<_>>>()
                 .map(Object::Array),
             Object::Dict(dict) => {
                 let mut out = Dict::default();
                 for (key, value) in &dict.entries {
-                    out.entries
-                        .push((key.clone(), self.resolve_deep(value, depth + 1)?));
+                    out.entries.push((
+                        key.clone(),
+                        self.resolve_deep(value, depth.saturating_add(1))?,
+                    ));
                 }
                 Ok(Object::Dict(out))
             }
@@ -1230,11 +1236,13 @@ mod tests {
         }
         let xref = bytes.len();
         let max = objects.iter().map(|(number, _)| *number).max().unwrap_or(0);
-        bytes.extend_from_slice(format!("xref\n0 {}\n", max + 1).as_bytes());
+        bytes.extend_from_slice(format!("xref\n0 {}\n", max.saturating_add(1)).as_bytes());
         for number in 0..=max {
             match offsets.iter().find(|(n, _)| *n == number) {
                 Some((_, offset)) => {
-                    bytes.extend_from_slice(format!("{:010} 00000 n \n", offset + skew).as_bytes());
+                    bytes.extend_from_slice(
+                        format!("{:010} 00000 n \n", offset.saturating_add(skew)).as_bytes(),
+                    );
                 }
                 None => bytes.extend_from_slice(b"0000000000 65535 f \n"),
             }
@@ -1242,7 +1250,7 @@ mod tests {
         bytes.extend_from_slice(
             format!(
                 "trailer\n<< /Size {} /Root 1 0 R {extra} >>\nstartxref\n{xref}\n%%EOF\n",
-                max + 1
+                max.saturating_add(1)
             )
             .as_bytes(),
         );
@@ -1273,7 +1281,7 @@ mod tests {
         let at = find_bytes(bytes, 0, from).unwrap();
         let mut out = bytes[..at].to_vec();
         out.extend_from_slice(to);
-        out.extend_from_slice(&bytes[at + from.len()..]);
+        out.extend_from_slice(&bytes[at.saturating_add(from.len())..]);
         out
     }
 
@@ -1344,7 +1352,7 @@ mod tests {
     }
 
     fn be(value: u64, width: usize) -> Vec<u8> {
-        value.to_be_bytes()[8 - width..].to_vec()
+        value.to_be_bytes()[8_usize.saturating_sub(width)..].to_vec()
     }
 
     struct ObjStmFile {
@@ -2061,7 +2069,8 @@ mod tests {
         }
 
         fn below(&mut self, bound: usize) -> usize {
-            (self.next() % bound.max(1) as u64) as usize
+            let bound = u64::try_from(bound.max(1)).unwrap_or(1);
+            usize::try_from(self.next().checked_rem(bound).unwrap_or(0)).unwrap_or(0)
         }
     }
 
@@ -2078,7 +2087,7 @@ mod tests {
                 }
                 1 => {
                     let at = rng.below(bytes.len());
-                    let end = (at + rng.below(32)).min(bytes.len());
+                    let end = (at.saturating_add(rng.below(32))).min(bytes.len());
                     bytes.drain(at..end);
                 }
                 2 => {
@@ -2092,7 +2101,7 @@ mod tests {
                 }
                 4 => {
                     let at = rng.below(bytes.len());
-                    let end = (at + rng.below(64)).min(bytes.len());
+                    let end = (at.saturating_add(rng.below(64))).min(bytes.len());
                     let chunk = bytes[at..end].to_vec();
                     let to = rng.below(bytes.len());
                     bytes.splice(to..to, chunk);

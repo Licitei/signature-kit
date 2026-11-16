@@ -70,13 +70,13 @@ impl Grid {
         let left = self.xs.get(cell.col).copied().unwrap_or(0.0);
         let right = self
             .xs
-            .get(cell.col + cell.col_span)
+            .get(cell.col.saturating_add(cell.col_span))
             .copied()
             .unwrap_or(left);
         let top = self.ys.get(cell.row).copied().unwrap_or(0.0);
         let bottom = self
             .ys
-            .get(cell.row + cell.row_span)
+            .get(cell.row.saturating_add(cell.row_span))
             .copied()
             .unwrap_or(top);
         [left, bottom, right, top]
@@ -118,7 +118,7 @@ fn cluster(mut values: Vec<f64>) -> Vec<f64> {
             count = 0;
         }
         sum += value;
-        count += 1;
+        count = count.saturating_add(1);
         last = value;
     }
     if count > 0 {
@@ -150,13 +150,15 @@ fn merge_collinear(mut lines: Vec<[f64; 3]>) -> Vec<[f64; 3]> {
         if lines.get(start).is_none() {
             break;
         }
-        let mut end = start + 1;
+        let mut end = start.saturating_add(1);
         while let Some(next) = lines.get(end) {
-            let previous = lines.get(end - 1).map_or(next[0], |line| line[0]);
+            let previous = lines
+                .get(end.saturating_sub(1))
+                .map_or(next[0], |line| line[0]);
             if next[0] - previous > LEVEL_TOLERANCE {
                 break;
             }
-            end += 1;
+            end = end.saturating_add(1);
         }
         let group = lines.get_mut(start..end).unwrap_or_default();
         group.sort_unstable_by(|a, b| a[1].total_cmp(&b[1]));
@@ -219,7 +221,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
         return Vec::new();
     }
     vertical.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
-    let total = horizontal.len() + vertical.len();
+    let total = horizontal.len().saturating_add(vertical.len());
     let mut parents: Vec<usize> = (0..total).collect();
     for (h, line) in horizontal.iter().enumerate() {
         let [y, x0, x1] = *line;
@@ -230,7 +232,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
             }
             if v[1] - TOUCH <= y && y <= v[2] + TOUCH {
                 let a = find(&mut parents, h);
-                let b = find(&mut parents, horizontal.len() + offset);
+                let b = find(&mut parents, horizontal.len().saturating_add(offset));
                 if let Some(slot) = parents.get_mut(a) {
                     *slot = b;
                 }
@@ -244,7 +246,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
         if index < horizontal.len() {
             entry.0.push(index);
         } else {
-            entry.1.push(index - horizontal.len());
+            entry.1.push(index.saturating_sub(horizontal.len()));
         }
     }
     let mut ordered: Vec<(Vec<usize>, Vec<usize>)> = groups.into_values().collect();
@@ -254,7 +256,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
                 group
                     .1
                     .first()
-                    .map_or(usize::MAX, |&v| v + horizontal.len()),
+                    .map_or(usize::MAX, |&v| v.saturating_add(horizontal.len())),
             )
         };
         key(a).cmp(&key(b))
@@ -305,8 +307,8 @@ fn build_grid(
     if xs.len() < 3 || ys.len() < 3 {
         return None;
     }
-    let rows = ys.len() - 1;
-    let cols = xs.len() - 1;
+    let rows = ys.len().saturating_sub(1);
+    let cols = xs.len().saturating_sub(1);
     if rows.checked_mul(cols)? > MAX_CELLS {
         return None;
     }
@@ -332,49 +334,59 @@ fn build_grid(
         covered(spans, left, right)
     };
     let has_v = |level: usize, row: usize| {
-        let (Some(spans), Some(&top), Some(&bottom)) =
-            (v_cover.get(level), ys.get(row), ys.get(row + 1))
-        else {
+        let (Some(spans), Some(&top), Some(&bottom)) = (
+            v_cover.get(level),
+            ys.get(row),
+            ys.get(row.saturating_add(1)),
+        ) else {
             return false;
         };
         covered(spans, bottom, top)
     };
-    let mut owned = vec![false; rows * cols];
-    let mut index = vec![0_u32; rows * cols];
+    let mut owned = vec![false; rows.saturating_mul(cols)];
+    let mut index = vec![0_u32; rows.saturating_mul(cols)];
     let mut cells: Vec<GridCell> = Vec::new();
     for row in 0..rows {
         for col in 0..cols {
-            if owned.get(row * cols + col).copied().unwrap_or(true) {
+            if owned
+                .get((row.saturating_mul(cols)).saturating_add(col))
+                .copied()
+                .unwrap_or(true)
+            {
                 continue;
             }
             let mut width = 1;
-            while col + width < cols
-                && !has_v(col + width, row)
-                && !owned.get(row * cols + col + width).copied().unwrap_or(true)
+            while col.saturating_add(width) < cols
+                && !has_v(col.saturating_add(width), row)
+                && !owned
+                    .get(((row.saturating_mul(cols)).saturating_add(col)).saturating_add(width))
+                    .copied()
+                    .unwrap_or(true)
             {
-                width += 1;
+                width = width.saturating_add(1);
             }
             let mut height = 1;
-            while row + height < rows {
-                let edge = (col..col + width).any(|c| has_h(row + height, c, c + 1));
-                let taken = (col..col + width).any(|c| {
+            while row.saturating_add(height) < rows {
+                let edge = (col..col.saturating_add(width))
+                    .any(|c| has_h(row.saturating_add(height), c, c.saturating_add(1)));
+                let taken = (col..col.saturating_add(width)).any(|c| {
                     owned
-                        .get((row + height) * cols + c)
+                        .get(((row.saturating_add(height)).saturating_mul(cols)).saturating_add(c))
                         .copied()
                         .unwrap_or(true)
                 });
                 if edge || taken {
                     break;
                 }
-                height += 1;
+                height = height.saturating_add(1);
             }
             let id = u32::try_from(cells.len()).ok()?;
-            for r in row..row + height {
-                for c in col..col + width {
-                    if let Some(slot) = owned.get_mut(r * cols + c) {
+            for r in row..row.saturating_add(height) {
+                for c in col..col.saturating_add(width) {
+                    if let Some(slot) = owned.get_mut((r.saturating_mul(cols)).saturating_add(c)) {
                         *slot = true;
                     }
-                    if let Some(slot) = index.get_mut(r * cols + c) {
+                    if let Some(slot) = index.get_mut((r.saturating_mul(cols)).saturating_add(c)) {
                         *slot = id;
                     }
                 }
@@ -551,8 +563,8 @@ mod tests {
 
     fn frame(rows: &[f64], cols: &[f64]) -> Vec<Rule> {
         let mut lines = Vec::new();
-        let (left, right) = (cols[0], cols[cols.len() - 1]);
-        let (top, bottom) = (rows[0], rows[rows.len() - 1]);
+        let (left, right) = (cols[0], cols[cols.len().saturating_sub(1)]);
+        let (top, bottom) = (rows[0], rows[rows.len().saturating_sub(1)]);
         for &y in rows {
             lines.push(h(y, left, right));
         }

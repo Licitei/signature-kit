@@ -72,7 +72,12 @@ impl Writer {
     fn align(&mut self) {
         let remainder = self.buf.len() % ALIGNMENT;
         if remainder != 0 {
-            self.buf.resize(self.buf.len() + (ALIGNMENT - remainder), 0);
+            self.buf.resize(
+                self.buf
+                    .len()
+                    .saturating_add(ALIGNMENT.saturating_sub(remainder)),
+                0,
+            );
         }
     }
 
@@ -88,7 +93,9 @@ pub fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
     let link_count = len32(inspection.links.len())?;
     let text_page_count = len32(inspection.text.len())?;
     let mut out = Writer {
-        buf: Vec::with_capacity(HEADER_LEN + inspection.pages.len() * PAGE_RECORD_LEN),
+        buf: Vec::with_capacity(
+            HEADER_LEN.saturating_add(inspection.pages.len().saturating_mul(PAGE_RECORD_LEN)),
+        ),
     };
     out.u32(MAGIC);
     out.u32(VERSION);
@@ -444,9 +451,12 @@ mod tests {
 
     impl<'a> Reader<'a> {
         fn take(&mut self, len: usize) -> &'a [u8] {
-            let slice = self.data.get(self.at..self.at + len).unwrap_or(&[]);
+            let slice = self
+                .data
+                .get(self.at..self.at.saturating_add(len))
+                .unwrap_or(&[]);
             assert_eq!(slice.len(), len, "read past the end");
-            self.at += len;
+            self.at = self.at.saturating_add(len);
             slice
         }
 
@@ -467,7 +477,7 @@ mod tests {
         }
 
         fn align(&mut self) {
-            self.at = (self.at + 7) & !7;
+            self.at = (self.at.saturating_add(7)) & !7;
         }
     }
 
@@ -490,7 +500,7 @@ mod tests {
         assert_eq!(text_offset % 8, 0);
         assert_eq!(
             links_offset,
-            pages_offset + page_count as usize * PAGE_RECORD_LEN
+            pages_offset.saturating_add((page_count as usize).saturating_mul(PAGE_RECORD_LEN))
         );
         let pages = (0..page_count)
             .map(|_| {
@@ -523,7 +533,8 @@ mod tests {
             .map(|(rect, page_index, start, len)| LinkInfo {
                 page_index: *page_index,
                 rect: *rect,
-                uri: String::from_utf8_lossy(&blob[*start..*start + *len]).into_owned(),
+                uri: String::from_utf8_lossy(&blob[*start..(*start).saturating_add(*len)])
+                    .into_owned(),
             })
             .collect();
         reader.align();
@@ -550,8 +561,10 @@ mod tests {
                     .map(|(index, (rect, font_size))| TextItem {
                         rect: *rect,
                         font_size: *font_size,
-                        text: String::from_utf8_lossy(&blob[offsets[index]..offsets[index + 1]])
-                            .into_owned(),
+                        text: String::from_utf8_lossy(
+                            &blob[offsets[index]..offsets[index.saturating_add(1)]],
+                        )
+                        .into_owned(),
                     })
                     .collect();
                 PageText { page_index, items }
@@ -668,22 +681,23 @@ mod tests {
         let input = pdf_core_alloc(bytes.len());
         assert!(!input.is_null());
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), input, bytes.len()) };
-        let indexes = pdf_core_alloc(pages.len() * 4).cast::<u32>();
+        let indexes = pdf_core_alloc(pages.len().saturating_mul(4)).cast::<u32>();
         assert!(!indexes.is_null());
         unsafe { ptr::copy_nonoverlapping(pages.as_ptr(), indexes, pages.len()) };
         let result = unsafe { pdf_core_inspect(input, bytes.len(), flags, indexes, pages.len()) };
         unsafe {
             pdf_core_free(input, bytes.len());
-            pdf_core_free(indexes.cast::<u8>(), pages.len() * 4);
+            pdf_core_free(indexes.cast::<u8>(), pages.len().saturating_mul(4));
         }
         assert!(!result.is_null());
         assert_eq!(result as usize % 8, 0);
         let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
         let total = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
         let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-        let payload =
-            unsafe { std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total - 8) }
-                .to_vec();
+        let payload = unsafe {
+            std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total.saturating_sub(8))
+        }
+        .to_vec();
         Block {
             ptr: result,
             total,
@@ -713,22 +727,23 @@ mod tests {
         let input = pdf_core_alloc(bytes.len());
         assert!(!input.is_null());
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), input, bytes.len()) };
-        let indexes = pdf_core_alloc(pages.len() * 4).cast::<u32>();
+        let indexes = pdf_core_alloc(pages.len().saturating_mul(4)).cast::<u32>();
         assert!(!indexes.is_null());
         unsafe { ptr::copy_nonoverlapping(pages.as_ptr(), indexes, pages.len()) };
         let result = unsafe { entry(input, bytes.len(), flags, indexes, pages.len()) };
         unsafe {
             pdf_core_free(input, bytes.len());
-            pdf_core_free(indexes.cast::<u8>(), pages.len() * 4);
+            pdf_core_free(indexes.cast::<u8>(), pages.len().saturating_mul(4));
         }
         assert!(!result.is_null());
         assert_eq!(result as usize % 8, 0);
         let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
         let total = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
         let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-        let payload =
-            unsafe { std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total - 8) }
-                .to_vec();
+        let payload = unsafe {
+            std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total.saturating_sub(8))
+        }
+        .to_vec();
         Block {
             ptr: result,
             total,
@@ -741,9 +756,9 @@ mod tests {
         let word = |at: usize| {
             u32::from_le_bytes([
                 payload[at],
-                payload[at + 1],
-                payload[at + 2],
-                payload[at + 3],
+                payload[at.saturating_add(1)],
+                payload[at.saturating_add(2)],
+                payload[at.saturating_add(3)],
             ]) as usize
         };
         assert_eq!(word(0) as u32, TEXT_MAGIC);
@@ -751,14 +766,22 @@ mod tests {
         let count = word(8);
         let text_len = word(12);
         let offsets_at = TEXT_HEADER_LEN;
-        let blob_at = offsets_at + (((count + 1) * 4 + 7) & !7);
+        let blob_at = offsets_at
+            .saturating_add((((count.saturating_add(1)).saturating_mul(4)).saturating_add(7)) & !7);
         assert_eq!(blob_at % 8, 0);
-        assert_eq!(payload.len(), (blob_at + text_len + 7) & !7);
+        assert_eq!(
+            payload.len(),
+            ((blob_at.saturating_add(text_len)).saturating_add(7)) & !7
+        );
         (0..count)
             .map(|index| {
-                let start = word(offsets_at + index * 4);
-                let end = word(offsets_at + (index + 1) * 4);
-                String::from_utf8_lossy(&payload[blob_at + start..blob_at + end]).into_owned()
+                let start = word(offsets_at.saturating_add(index.saturating_mul(4)));
+                let end =
+                    word(offsets_at.saturating_add((index.saturating_add(1)).saturating_mul(4)));
+                String::from_utf8_lossy(
+                    &payload[blob_at.saturating_add(start)..blob_at.saturating_add(end)],
+                )
+                .into_owned()
             })
             .collect()
     }
@@ -799,44 +822,54 @@ mod tests {
         let word = |at: usize| {
             u32::from_le_bytes([
                 payload[at],
-                payload[at + 1],
-                payload[at + 2],
-                payload[at + 3],
+                payload[at.saturating_add(1)],
+                payload[at.saturating_add(2)],
+                payload[at.saturating_add(3)],
             ])
         };
-        let float = |at: usize| f64::from_le_bytes(payload[at..at + 8].try_into().unwrap());
-        let boxed = |at: usize| [float(at), float(at + 8), float(at + 16), float(at + 24)];
+        let float =
+            |at: usize| f64::from_le_bytes(payload[at..at.saturating_add(8)].try_into().unwrap());
+        let boxed = |at: usize| {
+            [
+                float(at),
+                float(at.saturating_add(8)),
+                float(at.saturating_add(16)),
+                float(at.saturating_add(24)),
+            ]
+        };
         assert_eq!(word(0), TABLES_MAGIC);
         assert_eq!(word(4), TABLES_VERSION);
         let tables = word(8) as usize;
         let cells = word(12) as usize;
-        let blob = TABLES_HEADER_LEN + tables * TABLE_RECORD_LEN + cells * CELL_RECORD_LEN;
+        let blob = (TABLES_HEADER_LEN.saturating_add(tables.saturating_mul(TABLE_RECORD_LEN)))
+            .saturating_add(cells.saturating_mul(CELL_RECORD_LEN));
         assert_eq!(blob % 8, 0);
         assert_eq!(payload.len() % 8, 0);
         let mut at = TABLES_HEADER_LEN;
         let mut out = Vec::new();
         for _ in 0..tables {
-            let count = word(at + 12) as usize;
+            let count = word(at.saturating_add(12)) as usize;
             let header = at;
-            at += TABLE_RECORD_LEN;
+            at = at.saturating_add(TABLE_RECORD_LEN);
             let mut decoded = Vec::new();
             for _ in 0..count {
-                let start = blob + word(at + 48) as usize;
-                let len = word(at + 52) as usize;
+                let start = blob.saturating_add(word(at.saturating_add(48)) as usize);
+                let len = word(at.saturating_add(52)) as usize;
                 decoded.push(DecodedCell {
                     row: word(at),
-                    col: word(at + 4),
-                    spans: (word(at + 8), word(at + 12)),
-                    bbox: boxed(at + 16),
-                    text: String::from_utf8_lossy(&payload[start..start + len]).into_owned(),
+                    col: word(at.saturating_add(4)),
+                    spans: (word(at.saturating_add(8)), word(at.saturating_add(12))),
+                    bbox: boxed(at.saturating_add(16)),
+                    text: String::from_utf8_lossy(&payload[start..start.saturating_add(len)])
+                        .into_owned(),
                 });
-                at += CELL_RECORD_LEN;
+                at = at.saturating_add(CELL_RECORD_LEN);
             }
             out.push(DecodedTable {
                 page_index: word(header),
-                rows: word(header + 4),
-                cols: word(header + 8),
-                bbox: boxed(header + 16),
+                rows: word(header.saturating_add(4)),
+                cols: word(header.saturating_add(8)),
+                bbox: boxed(header.saturating_add(16)),
                 cells: decoded,
             });
         }

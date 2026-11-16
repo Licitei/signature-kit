@@ -18,7 +18,7 @@ pub(crate) fn build(objects: &[(u32, String)]) -> Vec<u8> {
     }
     let xref = bytes.len();
     let max = objects.iter().map(|(number, _)| *number).max().unwrap_or(0);
-    bytes.extend_from_slice(format!("xref\n0 {}\n", max + 1).as_bytes());
+    bytes.extend_from_slice(format!("xref\n0 {}\n", max.saturating_add(1)).as_bytes());
     for number in 0..=max {
         match offsets.iter().find(|(n, _)| *n == number) {
             Some((_, offset)) => {
@@ -30,7 +30,7 @@ pub(crate) fn build(objects: &[(u32, String)]) -> Vec<u8> {
     bytes.extend_from_slice(
         format!(
             "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-            max + 1
+            max.saturating_add(1)
         )
         .as_bytes(),
     );
@@ -49,7 +49,12 @@ pub(crate) fn page(content: String) -> PageSpec {
 pub(crate) fn document(pages: &[PageSpec], extra: &[(u32, String)]) -> Vec<u8> {
     let first_page = 10_u32;
     let kids: Vec<String> = (0..pages.len())
-        .map(|index| format!("{} 0 R", first_page + 2 * u32::try_from(index).unwrap()))
+        .map(|index| {
+            format!(
+                "{} 0 R",
+                first_page.saturating_add(u32::try_from(index).unwrap().saturating_mul(2))
+            )
+        })
         .collect();
     let mut objects = vec![
         (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
@@ -71,16 +76,16 @@ pub(crate) fn document(pages: &[PageSpec], extra: &[(u32, String)]) -> Vec<u8> {
         ),
     ];
     for (index, spec) in pages.iter().enumerate() {
-        let number = first_page + 2 * u32::try_from(index).unwrap();
+        let number = first_page.saturating_add(u32::try_from(index).unwrap().saturating_mul(2));
         objects.push((
             number,
             format!(
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Rotate {} /Contents {} 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> >>",
                 spec.rotate,
-                number + 1
+                number.saturating_add(1)
             ),
         ));
-        objects.push((number + 1, stream_object("", &spec.content)));
+        objects.push((number.saturating_add(1), stream_object("", &spec.content)));
     }
     objects.extend_from_slice(extra);
     build(&objects)
@@ -99,8 +104,8 @@ pub(crate) fn rule(x0: f64, y0: f64, x1: f64, y1: f64) -> String {
 }
 
 pub(crate) fn grid(rows: &[f64], cols: &[f64]) -> String {
-    let (left, right) = (cols[0], cols[cols.len() - 1]);
-    let (top, bottom) = (rows[0], rows[rows.len() - 1]);
+    let (left, right) = (cols[0], cols[cols.len().saturating_sub(1)]);
+    let (top, bottom) = (rows[0], rows[rows.len().saturating_sub(1)]);
     let mut out = String::new();
     for &y in rows {
         out.push_str(&rule(left, y, right, y));

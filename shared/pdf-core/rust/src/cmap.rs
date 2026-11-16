@@ -44,7 +44,7 @@ impl<'a> Lexer<'a> {
             if !accept(*byte) {
                 break;
             }
-            self.position += 1;
+            self.position = self.position.saturating_add(1);
         }
         self.data.get(start..self.position).unwrap_or_default()
     }
@@ -52,10 +52,10 @@ impl<'a> Lexer<'a> {
     fn skip_string(&mut self) {
         let mut depth = 0_usize;
         while let Some(byte) = self.data.get(self.position).copied() {
-            self.position += 1;
+            self.position = self.position.saturating_add(1);
             match byte {
-                b'\\' => self.position += 1,
-                b'(' => depth += 1,
+                b'\\' => self.position = self.position.saturating_add(1),
+                b'(' => depth = depth.saturating_add(1),
                 b')' => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
@@ -71,38 +71,38 @@ impl<'a> Lexer<'a> {
         loop {
             let byte = *self.data.get(self.position)?;
             match byte {
-                _ if is_space(byte) => self.position += 1,
+                _ if is_space(byte) => self.position = self.position.saturating_add(1),
                 b'%' => {
                     self.take_while(|byte| !matches!(byte, b'\n' | b'\r'));
                 }
                 b'(' => self.skip_string(),
                 b'<' => {
-                    self.position += 1;
+                    self.position = self.position.saturating_add(1);
                     if self.data.get(self.position) == Some(&b'<') {
-                        self.position += 1;
+                        self.position = self.position.saturating_add(1);
                         continue;
                     }
                     let raw = self.take_while(|byte| byte != b'>');
-                    self.position += 1;
+                    self.position = self.position.saturating_add(1);
                     return Some(Token::Hex(raw));
                 }
-                b'>' | b')' | b'{' | b'}' => self.position += 1,
+                b'>' | b')' | b'{' | b'}' => self.position = self.position.saturating_add(1),
                 b'[' => {
-                    self.position += 1;
+                    self.position = self.position.saturating_add(1);
                     return Some(Token::ArrayOpen);
                 }
                 b']' => {
-                    self.position += 1;
+                    self.position = self.position.saturating_add(1);
                     return Some(Token::ArrayClose);
                 }
                 b'/' => {
-                    self.position += 1;
+                    self.position = self.position.saturating_add(1);
                     return Some(Token::Name(self.take_while(|byte| !is_delimiter(byte))));
                 }
                 _ => {
                     let word = self.take_while(|byte| !is_delimiter(byte));
                     if word.is_empty() {
-                        self.position += 1;
+                        self.position = self.position.saturating_add(1);
                         continue;
                     }
                     return Some(match parse_int(word) {
@@ -129,15 +129,15 @@ fn parse_int(word: &[u8]) -> Option<i64> {
 
 const fn nibble(byte: u8) -> Option<u8> {
     match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
+        b'A'..=b'F' => Some((byte.saturating_sub(b'A')).saturating_add(10)),
+        b'a'..=b'f' => Some((byte.saturating_sub(b'a')).saturating_add(10)),
         _ => None,
     }
 }
 
 fn hex_bytes(raw: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(raw.len() / 2 + 1);
+    let mut out = Vec::with_capacity((raw.len() / 2).saturating_add(1));
     let mut high: Option<u8> = None;
     for byte in raw {
         let Some(value) = nibble(*byte) else { continue };
@@ -166,6 +166,12 @@ fn hex_code(raw: &[u8]) -> Option<(u32, usize)> {
     Some((value, bytes.len()))
 }
 
+const fn surrogate_pair(lead: u32, trail: u32) -> u32 {
+    0x1_0000_u32
+        .saturating_add(lead.saturating_sub(0xD800) << 10)
+        .saturating_add(trail.saturating_sub(0xDC00))
+}
+
 pub(crate) fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
     if let [single] = bytes {
         return vec![u32::from(*single)];
@@ -182,7 +188,7 @@ pub(crate) fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
                 && (0xDC00..0xE000).contains(&trail)
             {
                 units = lookahead;
-                out.push(0x1_0000 + ((unit - 0xD800) << 10) + (trail - 0xDC00));
+                out.push(surrogate_pair(unit, trail));
                 continue;
             }
         }
@@ -263,7 +269,7 @@ impl UnicodeMap {
             if code > range.end {
                 continue;
             }
-            let offset = code - range.start;
+            let offset = code.saturating_sub(range.start);
             return match &range.dest {
                 RangeDest::Incrementing(base) => match &**base {
                     [] => None,
@@ -292,9 +298,14 @@ impl UnicodeMap {
                 RangeDest::Incrementing(base) => {
                     if let [single] = &**base
                         && character >= *single
-                        && character - *single <= range.end - range.start
+                        && character.saturating_sub(*single)
+                            <= range.end.saturating_sub(range.start)
                     {
-                        return Some(range.start + (character - *single));
+                        return Some(
+                            range
+                                .start
+                                .saturating_add(character.saturating_sub(*single)),
+                        );
                     }
                 }
                 RangeDest::PerCode(items) => {
@@ -427,7 +438,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     if entries >= cap {
                         break;
                     }
-                    entries += 1;
+                    entries = entries.saturating_add(1);
                     if let Some((code, _)) = hex_code(source) {
                         let text = decode_utf16(&hex_bytes(dest));
                         out.unicode.has_unusable |= !text_usable(&text);
@@ -460,7 +471,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     if entries >= cap {
                         break;
                     }
-                    entries += 1;
+                    entries = entries.saturating_add(1);
                     if let (Some(((start, _), (end, _))), Some(dest)) = (bounds, dest)
                         && start <= end
                     {
@@ -477,7 +488,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     if entries >= cap {
                         break;
                     }
-                    entries += 1;
+                    entries = entries.saturating_add(1);
                     if let (Some((code, length)), Ok(cid)) = (hex_code(source), u32::try_from(cid))
                     {
                         let range = CidRange {
@@ -505,7 +516,7 @@ fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
                     if entries >= cap {
                         break;
                     }
-                    entries += 1;
+                    entries = entries.saturating_add(1);
                     if let (Some((start, length)), Some((end, _)), Ok(cid)) =
                         (hex_code(low), hex_code(high), u32::try_from(cid))
                         && start <= end
@@ -613,7 +624,7 @@ impl CMap {
         let mut depth = 0_usize;
         let mut cursor = &parent;
         while let Some(next) = cursor.parent.as_deref() {
-            depth += 1;
+            depth = depth.saturating_add(1);
             cursor = next;
         }
         if depth < MAX_PARENT_DEPTH {
@@ -723,7 +734,7 @@ impl CMap {
     fn table_cid(&self, code: u32, length: usize) -> Option<u32> {
         let length = u8::try_from(length).ok()?;
         find_range(&self.cid_ranges, length, code)
-            .map(|range| range.cid + (code - range.low))
+            .map(|range| range.cid.saturating_add(code.saturating_sub(range.low)))
             .or_else(|| {
                 self.parent
                     .as_deref()
@@ -736,7 +747,7 @@ impl CMap {
         match self.kind {
             Kind::Ucs2 => Some(vec![code]),
             Kind::Utf16 => Some(if code > 0xFFFF {
-                vec![0x1_0000 + (((code >> 16) - 0xD800) << 10) + ((code & 0xFFFF) - 0xDC00)]
+                vec![surrogate_pair(code >> 16, code & 0xFFFF)]
             } else {
                 vec![code]
             }),

@@ -393,9 +393,9 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
         let base = 12_usize.checked_add(index.checked_mul(16)?)?;
         let tag = [
             *bytes.get(base)?,
-            *bytes.get(base + 1)?,
-            *bytes.get(base + 2)?,
-            *bytes.get(base + 3)?,
+            *bytes.get(base.saturating_add(1))?,
+            *bytes.get(base.saturating_add(2))?,
+            *bytes.get(base.saturating_add(3))?,
         ];
         let offset = usize::try_from(read_u32(bytes, base.checked_add(8)?)?).ok()?;
         let length = usize::try_from(read_u32(bytes, base.checked_add(12)?)?).ok()?;
@@ -453,7 +453,7 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
 fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut FontProgram) {
     let count = read_u16(bytes, offset.saturating_add(2)).map_or(0, usize::from);
     for index in 0..count.min(MAX_SUBTABLES) {
-        let head = offset.saturating_add(4 + index * 8);
+        let head = offset.saturating_add((index.saturating_mul(8)).saturating_add(4));
         let (Some(platform), Some(encoding), Some(relative)) = (
             read_u16(bytes, head),
             read_u16(bytes, head.saturating_add(2)),
@@ -620,7 +620,7 @@ impl FontProgram {
         }
         let (start, end) = glyph_range(&self.data, outlines, gid)?;
         let glyph = self.data.get(start..end)?;
-        let entry = usize::from(gid).min(outlines.h_metrics - 1);
+        let entry = usize::from(gid).min(outlines.h_metrics.saturating_sub(1));
         let position = outlines.hmtx.checked_add(entry.checked_mul(4)?)?;
         if position.checked_add(2)? > outlines.hmtx_end {
             return None;
@@ -656,18 +656,22 @@ impl FontProgram {
                 let mut strings: Vec<&[u8]> = Vec::new();
                 let mut position = 34_usize.saturating_add(count.saturating_mul(2));
                 while let Some(length) = table.get(position).map(|len| usize::from(*len)) {
-                    let Some(text) = table.get(position + 1..position + 1 + length) else {
+                    let Some(text) = table.get(
+                        position.saturating_add(1)
+                            ..(position.saturating_add(1)).saturating_add(length),
+                    ) else {
                         break;
                     };
                     strings.push(text);
-                    position += 1 + length;
+                    position = position.saturating_add(length.saturating_add(1));
                     if strings.len() > MAX_GLYPHS {
                         break;
                     }
                 }
                 (0..count)
                     .map(|gid| {
-                        let index = read_u16(table, 34 + gid * 2).map_or(0, usize::from);
+                        let index = read_u16(table, (gid.saturating_mul(2)).saturating_add(34))
+                            .map_or(0, usize::from);
                         let name = match index.checked_sub(POST_STANDARD_NAMES) {
                             None => POST_STANDARD_GLYPH_NAMES
                                 .get(index)
@@ -787,7 +791,7 @@ fn glyph_range(data: &[u8], outlines: &TrueTypeOutlines, gid: u16) -> Option<(us
         }
         (
             usize::try_from(read_u32(data, position)?).ok()?,
-            usize::try_from(read_u32(data, position + 4)?).ok()?,
+            usize::try_from(read_u32(data, position.saturating_add(4))?).ok()?,
         )
     } else {
         let position = outlines.loca.checked_add(index.checked_mul(2)?)?;
@@ -796,7 +800,7 @@ fn glyph_range(data: &[u8], outlines: &TrueTypeOutlines, gid: u16) -> Option<(us
         }
         (
             usize::from(read_u16(data, position)?) * 2,
-            usize::from(read_u16(data, position + 2)?) * 2,
+            usize::from(read_u16(data, position.saturating_add(2))?) * 2,
         )
     };
     if next <= first {
@@ -820,15 +824,17 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
             let code = u16::try_from(code).ok()?;
             let seg_count = usize::from(read_u16(data, offset.checked_add(6)?)?) / 2;
             let ends = offset.checked_add(14)?;
-            let starts = ends.checked_add(seg_count * 2)?.checked_add(2)?;
-            let deltas = starts.checked_add(seg_count * 2)?;
-            let ranges = deltas.checked_add(seg_count * 2)?;
+            let starts = ends
+                .checked_add(seg_count.saturating_mul(2))?
+                .checked_add(2)?;
+            let deltas = starts.checked_add(seg_count.saturating_mul(2))?;
+            let ranges = deltas.checked_add(seg_count.saturating_mul(2))?;
             let mut low = 0_usize;
             let mut high = seg_count;
             while low < high {
-                let mid = low + (high - low) / 2;
-                if read_u16(data, ends.checked_add(mid * 2)?)? < code {
-                    low = mid + 1;
+                let mid = low.saturating_add((high.saturating_sub(low)) / 2);
+                if read_u16(data, ends.checked_add(mid.saturating_mul(2))?)? < code {
+                    low = mid.saturating_add(1);
                 } else {
                     high = mid;
                 }
@@ -836,19 +842,19 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
             if low >= seg_count {
                 return None;
             }
-            let start = read_u16(data, starts.checked_add(low * 2)?)?;
+            let start = read_u16(data, starts.checked_add(low.saturating_mul(2))?)?;
             if start > code {
                 return None;
             }
-            let delta = read_u16(data, deltas.checked_add(low * 2)?)?;
-            let range = read_u16(data, ranges.checked_add(low * 2)?)?;
+            let delta = read_u16(data, deltas.checked_add(low.saturating_mul(2))?)?;
+            let range = read_u16(data, ranges.checked_add(low.saturating_mul(2))?)?;
             if range == 0 {
                 code.wrapping_add(delta)
             } else {
                 let position = ranges
-                    .checked_add(low * 2)?
+                    .checked_add(low.saturating_mul(2))?
                     .checked_add(usize::from(range))?
-                    .checked_add(usize::from(code - start) * 2)?;
+                    .checked_add(usize::from(code.saturating_sub(start)) * 2)?;
                 let glyph = read_u16(data, position)?;
                 if glyph == 0 {
                     return None;
@@ -859,14 +865,16 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
         6 => {
             let first = u32::from(read_u16(data, offset.checked_add(6)?)?);
             let count = u32::from(read_u16(data, offset.checked_add(8)?)?);
-            if code < first || code >= first + count {
+            if code < first || code >= first.saturating_add(count) {
                 return None;
             }
             read_u16(
                 data,
-                offset
-                    .checked_add(10)?
-                    .checked_add(usize::try_from(code - first).ok()? * 2)?,
+                offset.checked_add(10)?.checked_add(
+                    usize::try_from(code.saturating_sub(first))
+                        .ok()?
+                        .saturating_mul(2),
+                )?,
             )?
         }
         12 => {
@@ -875,17 +883,17 @@ fn cmap_lookup(data: &[u8], sub: &CmapSubtable, code: u32) -> Option<u16> {
             let mut low = 0_usize;
             let mut high = groups.min(MAX_REVERSE_CODES);
             while low < high {
-                let mid = low + (high - low) / 2;
+                let mid = low.saturating_add((high.saturating_sub(low)) / 2);
                 let group = base.checked_add(mid.checked_mul(12)?)?;
                 let start = read_u32(data, group)?;
                 let end = read_u32(data, group.checked_add(4)?)?;
                 if code < start {
                     high = mid;
                 } else if code > end {
-                    low = mid + 1;
+                    low = mid.saturating_add(1);
                 } else {
                     let first = read_u32(data, group.checked_add(8)?)?;
-                    return u16::try_from(first.checked_add(code - start)?)
+                    return u16::try_from(first.checked_add(code.saturating_sub(start))?)
                         .ok()
                         .filter(|gid| *gid != 0);
                 }
@@ -921,15 +929,17 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
                 return;
             };
             let ends = offset.saturating_add(14);
-            let starts = ends.saturating_add(seg_count * 2).saturating_add(2);
-            let deltas = starts.saturating_add(seg_count * 2);
-            let ranges = deltas.saturating_add(seg_count * 2);
+            let starts = ends
+                .saturating_add(seg_count.saturating_mul(2))
+                .saturating_add(2);
+            let deltas = starts.saturating_add(seg_count.saturating_mul(2));
+            let ranges = deltas.saturating_add(seg_count.saturating_mul(2));
             for seg in 0..seg_count {
                 let (Some(end), Some(start), Some(delta), Some(range)) = (
-                    read_u16(data, ends.saturating_add(seg * 2)),
-                    read_u16(data, starts.saturating_add(seg * 2)),
-                    read_u16(data, deltas.saturating_add(seg * 2)),
-                    read_u16(data, ranges.saturating_add(seg * 2)),
+                    read_u16(data, ends.saturating_add(seg.saturating_mul(2))),
+                    read_u16(data, starts.saturating_add(seg.saturating_mul(2))),
+                    read_u16(data, deltas.saturating_add(seg.saturating_mul(2))),
+                    read_u16(data, ranges.saturating_add(seg.saturating_mul(2))),
                 ) else {
                     return;
                 };
@@ -940,14 +950,14 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
                     if budget == 0 {
                         return;
                     }
-                    budget -= 1;
+                    budget = budget.saturating_sub(1);
                     let gid = if range == 0 {
                         code.wrapping_add(delta)
                     } else {
                         let position = ranges
-                            .saturating_add(seg * 2)
+                            .saturating_add(seg.saturating_mul(2))
                             .saturating_add(usize::from(range))
-                            .saturating_add(usize::from(code - start) * 2);
+                            .saturating_add(usize::from(code.saturating_sub(start)) * 2);
                         match read_u16(data, position) {
                             Some(0) | None => continue,
                             Some(glyph) => glyph.wrapping_add(delta),
@@ -967,11 +977,14 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
                 return;
             };
             for index in 0..usize::from(count) {
-                let Some(gid) = read_u16(data, offset.saturating_add(10 + index * 2)) else {
+                let Some(gid) = read_u16(
+                    data,
+                    offset.saturating_add((index.saturating_mul(2)).saturating_add(10)),
+                ) else {
                     return;
                 };
                 if gid != 0 {
-                    visit(u32::from(first) + index as u32, gid);
+                    visit(u32::from(first).saturating_add(index as u32), gid);
                 }
             }
         }
@@ -980,7 +993,7 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
                 return;
             };
             for index in 0..usize::try_from(groups).unwrap_or(0).min(MAX_REVERSE_CODES) {
-                let base = offset.saturating_add(16 + index * 12);
+                let base = offset.saturating_add((index.saturating_mul(12)).saturating_add(16));
                 let (Some(start), Some(end), Some(first)) = (
                     read_u32(data, base),
                     read_u32(data, base.saturating_add(4)),
@@ -991,11 +1004,11 @@ fn cmap_for_each(data: &[u8], sub: &CmapSubtable, visit: &mut dyn FnMut(u32, u16
                 if end < start {
                     continue;
                 }
-                for step in 0..=(end - start) {
+                for step in 0..=(end.saturating_sub(start)) {
                     if budget == 0 {
                         return;
                     }
-                    budget -= 1;
+                    budget = budget.saturating_sub(1);
                     let Ok(gid) = u16::try_from(first.saturating_add(step)) else {
                         break;
                     };
@@ -1015,27 +1028,33 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
     };
     let lookup_count = read_u16(table, lookup_list).map_or(0, usize::from);
     for index in 0..lookup_count.min(MAX_LOOKUPS) {
-        let Some(lookup) = read_u16(table, lookup_list + 2 + index * 2)
-            .map(|offset| lookup_list + usize::from(offset))
-        else {
+        let Some(lookup) = read_u16(
+            table,
+            (lookup_list.saturating_add(2)).saturating_add(index.saturating_mul(2)),
+        )
+        .map(|offset| lookup_list.saturating_add(usize::from(offset))) else {
             return;
         };
-        let (Some(kind), Some(count)) = (read_u16(table, lookup), read_u16(table, lookup + 4))
-        else {
+        let (Some(kind), Some(count)) = (
+            read_u16(table, lookup),
+            read_u16(table, lookup.saturating_add(4)),
+        ) else {
             continue;
         };
         for sub in 0..usize::from(count).min(MAX_LOOKUP_SUBTABLES) {
-            let Some(mut subtable) =
-                read_u16(table, lookup + 6 + sub * 2).map(|offset| lookup + usize::from(offset))
-            else {
+            let Some(mut subtable) = read_u16(
+                table,
+                (lookup.saturating_add(6)).saturating_add(sub.saturating_mul(2)),
+            )
+            .map(|offset| lookup.saturating_add(usize::from(offset))) else {
                 break;
             };
             let mut subtable_kind = kind;
             if kind == 7 {
                 let (Some(1), Some(inner), Some(relative)) = (
                     read_u16(table, subtable),
-                    read_u16(table, subtable + 2),
-                    read_u32(table, subtable + 4),
+                    read_u16(table, subtable.saturating_add(2)),
+                    read_u32(table, subtable.saturating_add(4)),
                 ) else {
                     continue;
                 };
@@ -1063,8 +1082,9 @@ fn read_ligature_subtable(table: &[u8], subtable: usize, out: &mut HashMap<u16, 
         return;
     }
     let (Some(coverage), Some(set_count)) = (
-        read_u16(table, subtable + 2).map(|offset| subtable + usize::from(offset)),
-        read_u16(table, subtable + 4),
+        read_u16(table, subtable.saturating_add(2))
+            .map(|offset| subtable.saturating_add(usize::from(offset))),
+        read_u16(table, subtable.saturating_add(4)),
     ) else {
         return;
     };
@@ -1072,29 +1092,39 @@ fn read_ligature_subtable(table: &[u8], subtable: usize, out: &mut HashMap<u16, 
         return;
     };
     for (set_index, first) in firsts.iter().enumerate().take(usize::from(set_count)) {
-        let Some(set) = read_u16(table, subtable + 6 + set_index * 2)
-            .map(|offset| subtable + usize::from(offset))
-        else {
+        let Some(set) = read_u16(
+            table,
+            (subtable.saturating_add(6)).saturating_add(set_index.saturating_mul(2)),
+        )
+        .map(|offset| subtable.saturating_add(usize::from(offset))) else {
             return;
         };
         let count = read_u16(table, set).map_or(0, usize::from);
         for ligature_index in 0..count.min(MAX_LIGATURES) {
-            let Some(ligature) = read_u16(table, set + 2 + ligature_index * 2)
-                .map(|offset| set + usize::from(offset))
-            else {
+            let Some(ligature) = read_u16(
+                table,
+                (set.saturating_add(2)).saturating_add(ligature_index.saturating_mul(2)),
+            )
+            .map(|offset| set.saturating_add(usize::from(offset))) else {
                 break;
             };
-            let (Some(glyph), Some(component_count)) =
-                (read_u16(table, ligature), read_u16(table, ligature + 2))
-            else {
+            let (Some(glyph), Some(component_count)) = (
+                read_u16(table, ligature),
+                read_u16(table, ligature.saturating_add(2)),
+            ) else {
                 continue;
             };
             let component_count = usize::from(component_count);
             if !(2..=MAX_LIGATURE_PARTS).contains(&component_count) {
                 continue;
             }
-            let rest: Option<Vec<u16>> = (0..component_count - 1)
-                .map(|index| read_u16(table, ligature + 4 + index * 2))
+            let rest: Option<Vec<u16>> = (0..component_count.saturating_sub(1))
+                .map(|index| {
+                    read_u16(
+                        table,
+                        (ligature.saturating_add(4)).saturating_add(index.saturating_mul(2)),
+                    )
+                })
                 .collect();
             if let Some(rest) = rest
                 && out.len() < MAX_LIGATURES
@@ -1112,21 +1142,26 @@ fn read_coverage(table: &[u8], coverage: usize) -> Option<Vec<u16>> {
         1 => {
             let count = usize::from(read_u16(table, coverage.checked_add(2)?)?);
             (0..count)
-                .map(|index| read_u16(table, coverage.checked_add(4 + index * 2)?))
+                .map(|index| {
+                    read_u16(
+                        table,
+                        coverage.checked_add((index.saturating_mul(2)).saturating_add(4))?,
+                    )
+                })
                 .collect()
         }
         2 => {
             let ranges = usize::from(read_u16(table, coverage.checked_add(2)?)?);
             let mut glyphs: Vec<u16> = Vec::new();
             for index in 0..ranges {
-                let record = coverage.checked_add(4 + index * 6)?;
+                let record = coverage.checked_add((index.saturating_mul(6)).saturating_add(4))?;
                 let start = read_u16(table, record)?;
-                let end = read_u16(table, record + 2)?;
-                let first_index = usize::from(read_u16(table, record + 4)?);
+                let end = read_u16(table, record.saturating_add(2))?;
+                let first_index = usize::from(read_u16(table, record.saturating_add(4))?);
                 if end < start {
                     continue;
                 }
-                let length = usize::from(end - start) + 1;
+                let length = usize::from(end.saturating_sub(start)) + 1;
                 let needed = first_index.checked_add(length)?;
                 if needed > MAX_GLYPHS {
                     return None;
@@ -1135,7 +1170,7 @@ fn read_coverage(table: &[u8], coverage: usize) -> Option<Vec<u16>> {
                     glyphs.resize(needed, 0);
                 }
                 for step in 0..length {
-                    *glyphs.get_mut(first_index + step)? =
+                    *glyphs.get_mut(first_index.saturating_add(step))? =
                         start.checked_add(u16::try_from(step).ok()?)?;
                 }
             }
@@ -1153,7 +1188,7 @@ fn parse_type1_encoding(bytes: &[u8]) -> Option<Type1Encoding> {
     let clear_end = find_subslice(window, b"eexec").unwrap_or(window.len());
     let clear = window.get(..clear_end)?;
     let start = find_subslice(clear, b"/Encoding")?;
-    let mut position = start + b"/Encoding".len();
+    let mut position = start.saturating_add(b"/Encoding".len());
     let mut encoding = Type1Encoding::default();
     let mut depth = 0_usize;
     let mut tokens = 0_usize;
@@ -1163,13 +1198,13 @@ fn parse_type1_encoding(bytes: &[u8]) -> Option<Type1Encoding> {
         let Some(token) = next_type1_token(clear, &mut position) else {
             break;
         };
-        tokens += 1;
+        tokens = tokens.saturating_add(1);
         match token {
             Type1Token::Word(b"StandardEncoding") => {
                 encoding.standard = true;
                 return Some(encoding);
             }
-            Type1Token::Open => depth += 1,
+            Type1Token::Open => depth = depth.saturating_add(1),
             Type1Token::Close => depth = depth.saturating_sub(1),
             Type1Token::Word(b"dup") if depth == 0 => {
                 stage = 1;
@@ -1215,13 +1250,13 @@ fn next_type1_token<'a>(bytes: &'a [u8], position: &mut usize) -> Option<Type1To
         let byte = *bytes.get(*position)?;
         if byte == b'%' {
             while let Some(next) = bytes.get(*position) {
-                *position += 1;
+                *position = (*position).saturating_add(1);
                 if matches!(next, b'\n' | b'\r') {
                     break;
                 }
             }
         } else if byte.is_ascii_whitespace() || byte == 0 {
-            *position += 1;
+            *position = (*position).saturating_add(1);
         } else {
             break;
         }
@@ -1229,33 +1264,33 @@ fn next_type1_token<'a>(bytes: &'a [u8], position: &mut usize) -> Option<Type1To
     let byte = *bytes.get(*position)?;
     match byte {
         b'{' | b'[' => {
-            *position += 1;
+            *position = (*position).saturating_add(1);
             Some(Type1Token::Open)
         }
         b'}' | b']' => {
-            *position += 1;
+            *position = (*position).saturating_add(1);
             Some(Type1Token::Close)
         }
         b'/' => {
-            let start = *position + 1;
+            let start = (*position).saturating_add(1);
             let mut end = start;
             while let Some(next) = bytes.get(end) {
                 if next.is_ascii_whitespace() || is_type1_delimiter(*next) {
                     break;
                 }
-                end += 1;
+                end = end.saturating_add(1);
             }
             *position = end;
             bytes.get(start..end).map(Type1Token::Name)
         }
         _ => {
             let start = *position;
-            let mut end = start + 1;
+            let mut end = start.saturating_add(1);
             while let Some(next) = bytes.get(end) {
                 if next.is_ascii_whitespace() || is_type1_delimiter(*next) {
                     break;
                 }
-                end += 1;
+                end = end.saturating_add(1);
             }
             *position = end;
             bytes.get(start..end).map(Type1Token::Word)
@@ -1378,7 +1413,7 @@ pub(crate) mod tests {
         let mut out = be32(version);
         out.extend(be16(tables.len() as u16));
         out.extend([0_u8; 6]);
-        let mut offset = 12 + tables.len() * 16;
+        let mut offset = (tables.len().saturating_mul(16)).saturating_add(12);
         let mut bodies = Vec::new();
         for (tag, body) in tables {
             out.extend_from_slice(*tag);
@@ -1386,9 +1421,12 @@ pub(crate) mod tests {
             out.extend(be32(offset as u32));
             out.extend(be32(body.len() as u32));
             bodies.extend_from_slice(body);
-            let padded = (body.len() + 3) & !3;
-            bodies.resize(bodies.len() + padded - body.len(), 0);
-            offset += padded;
+            let padded = (body.len().saturating_add(3)) & !3;
+            bodies.resize(
+                (bodies.len().saturating_add(padded)).saturating_sub(body.len()),
+                0,
+            );
+            offset = offset.saturating_add(padded);
         }
         out.extend(bodies);
         out
@@ -1397,12 +1435,12 @@ pub(crate) mod tests {
     fn cmap_table(subtables: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
         let mut out = be16(0);
         out.extend(be16(subtables.len() as u16));
-        let mut offset = 4 + subtables.len() * 8;
+        let mut offset = (subtables.len().saturating_mul(8)).saturating_add(4);
         for (platform, encoding, body) in subtables {
             out.extend(be16(*platform));
             out.extend(be16(*encoding));
             out.extend(be32(offset as u32));
-            offset += body.len();
+            offset = offset.saturating_add(body.len());
         }
         for (_, _, body) in subtables {
             out.extend_from_slice(body);
@@ -1411,11 +1449,11 @@ pub(crate) mod tests {
     }
 
     fn format4(segments: &[(u16, u16, u16)]) -> Vec<u8> {
-        let count = segments.len() + 1;
+        let count = segments.len().saturating_add(1);
         let mut out = be16(4);
-        out.extend(be16((16 + count * 8) as u16));
+        out.extend(be16(((count.saturating_mul(8)).saturating_add(16)) as u16));
         out.extend(be16(0));
-        out.extend(be16((count * 2) as u16));
+        out.extend(be16((count.saturating_mul(2)) as u16));
         out.extend([0_u8; 6]);
         for (_, end, _) in segments {
             out.extend(be16(*end));
@@ -1450,7 +1488,9 @@ pub(crate) mod tests {
 
     fn format6(first: u16, glyphs: &[u16]) -> Vec<u8> {
         let mut out = be16(6);
-        out.extend(be16((10 + glyphs.len() * 2) as u16));
+        out.extend(be16(
+            ((glyphs.len().saturating_mul(2)).saturating_add(10)) as u16,
+        ));
         out.extend(be16(0));
         out.extend(be16(first));
         out.extend(be16(glyphs.len() as u16));
@@ -1463,7 +1503,9 @@ pub(crate) mod tests {
     fn format12(groups: &[(u32, u32, u32)]) -> Vec<u8> {
         let mut out = be16(12);
         out.extend(be16(0));
-        out.extend(be32((16 + groups.len() * 12) as u32));
+        out.extend(be32(
+            ((groups.len().saturating_mul(12)).saturating_add(16)) as u32,
+        ));
         out.extend(be32(0));
         out.extend(be32(groups.len() as u32));
         for (start, end, gid) in groups {
@@ -1484,8 +1526,8 @@ pub(crate) mod tests {
             if let Some(index) = POST_STANDARD_GLYPH_NAMES.iter().position(|std| std == name) {
                 out.extend(be16(index as u16));
             } else {
-                out.extend(be16(258 + custom));
-                custom += 1;
+                out.extend(be16(custom.saturating_add(258)));
+                custom = custom.saturating_add(1);
                 strings.push(name.len() as u8);
                 strings.extend_from_slice(name.as_bytes());
             }
@@ -1517,7 +1559,7 @@ pub(crate) mod tests {
         coverage.extend(be16(1));
         coverage.extend(be16(first));
         let mut lig = be16(ligature);
-        lig.extend(be16(rest.len() as u16 + 1));
+        lig.extend(be16((rest.len() as u16).saturating_add(1)));
         for component in rest {
             lig.extend(be16(*component));
         }
@@ -1525,7 +1567,7 @@ pub(crate) mod tests {
         set.extend(be16(4));
         set.extend(&lig);
         let mut sub = be16(1);
-        sub.extend(be16((8 + set.len()) as u16));
+        sub.extend(be16((set.len().saturating_add(8)) as u16));
         sub.extend(be16(1));
         sub.extend(be16(8));
         sub.extend(&set);
@@ -1569,7 +1611,7 @@ pub(crate) mod tests {
             if words {
                 flags |= 0x0001;
             }
-            if index + 1 < parts.len() {
+            if index.saturating_add(1) < parts.len() {
                 flags |= 0x0020;
             }
             out.extend(be16(flags));

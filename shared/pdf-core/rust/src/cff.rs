@@ -247,7 +247,7 @@ fn read_charset(
             while gid < glyph_count {
                 *charset.get_mut(gid)? = read_u16(bytes, position)?;
                 position = position.checked_add(2)?;
-                gid += 1;
+                gid = gid.saturating_add(1);
             }
         }
         1 | 2 => {
@@ -268,7 +268,7 @@ fn read_charset(
                         break;
                     }
                     *charset.get_mut(gid)? = first.wrapping_add(u16::try_from(step).ok()?);
-                    gid += 1;
+                    gid = gid.saturating_add(1);
                 }
             }
         }
@@ -338,12 +338,12 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
     let mut operands: Vec<i32> = Vec::new();
     let mut position = 0_usize;
     while let Some(&byte) = bytes.get(position) {
-        position += 1;
+        position = position.saturating_add(1);
         match byte {
             0..=21 => {
                 let op = if byte == 12 {
                     let next = bytes.get(position).copied().unwrap_or(0);
-                    position += 1;
+                    position = position.saturating_add(1);
                     0x0C00 | u16::from(next)
                 } else {
                     u16::from(byte)
@@ -355,33 +355,45 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
             }
             28 => {
                 let value = read_u16(bytes, position).map(|value| i32::from(value as i16));
-                position += 2;
+                position = position.saturating_add(2);
                 push_operand(&mut operands, value.unwrap_or(0));
             }
             29 => {
                 let value = read_u32(bytes, position).map(|value| value as i32);
-                position += 4;
+                position = position.saturating_add(4);
                 push_operand(&mut operands, value.unwrap_or(0));
             }
             30 => {
                 while let Some(&pair) = bytes.get(position) {
-                    position += 1;
+                    position = position.saturating_add(1);
                     if pair & 0x0F == 0x0F || pair >> 4 == 0x0F {
                         break;
                     }
                 }
                 push_operand(&mut operands, 0);
             }
-            32..=246 => push_operand(&mut operands, i32::from(byte) - 139),
+            32..=246 => push_operand(&mut operands, i32::from(byte).saturating_sub(139)),
             247..=250 => {
                 let next = i32::from(bytes.get(position).copied().unwrap_or(0));
-                position += 1;
-                push_operand(&mut operands, (i32::from(byte) - 247) * 256 + next + 108);
+                position = position.saturating_add(1);
+                push_operand(
+                    &mut operands,
+                    (((i32::from(byte).saturating_sub(247)).saturating_mul(256))
+                        .saturating_add(next))
+                    .saturating_add(108),
+                );
             }
             251..=254 => {
                 let next = i32::from(bytes.get(position).copied().unwrap_or(0));
-                position += 1;
-                push_operand(&mut operands, -(i32::from(byte) - 251) * 256 - next - 108);
+                position = position.saturating_add(1);
+                push_operand(
+                    &mut operands,
+                    251_i32
+                        .saturating_sub(i32::from(byte))
+                        .saturating_mul(256)
+                        .saturating_sub(next)
+                        .saturating_sub(108),
+                );
             }
             _ => {}
         }
@@ -430,7 +442,7 @@ pub(crate) mod tests {
         let mut offset = 1_u16;
         out.extend_from_slice(&offset.to_be_bytes());
         for item in items {
-            offset += item.len() as u16;
+            offset = offset.saturating_add(item.len() as u16);
             out.extend_from_slice(&offset.to_be_bytes());
         }
         for item in items {
@@ -483,7 +495,9 @@ pub(crate) mod tests {
             dict
         };
         let probe = index(&[&dict_len(0, 0, 0)]);
-        let base = header.len() + name_index.len() + probe.len() + strings.len() + 2;
+        let base = (((header.len().saturating_add(name_index.len())).saturating_add(probe.len()))
+            .saturating_add(strings.len()))
+        .saturating_add(2);
         let charset_off = if layout.charset.is_empty() {
             layout.charset_id
         } else {
@@ -492,9 +506,10 @@ pub(crate) mod tests {
         let enc_off = if layout.encoding.is_empty() {
             layout.encoding_id
         } else {
-            (base + layout.charset.len()) as i32
+            (base.saturating_add(layout.charset.len())) as i32
         };
-        let cs_off = (base + layout.charset.len() + layout.encoding.len()) as i32;
+        let cs_off = ((base.saturating_add(layout.charset.len()))
+            .saturating_add(layout.encoding.len())) as i32;
         let top = index(&[&dict_len(charset_off, enc_off, cs_off)]);
         let mut out = Vec::new();
         out.extend_from_slice(&header);
