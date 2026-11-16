@@ -130,7 +130,7 @@ mod tests {
         let pages = document.pages().expect("pages");
         assert_eq!(pages.len(), 1);
         let content = document.content(&pages[0]).expect("content");
-        assert!(!content.is_empty());
+        assert_ne!(content, []);
         let inspection = inspect_full(fixture("object-streams.pdf"));
         assert_eq!(inspection.pages.len(), 1);
         assert_eq!(inspection.text.len(), 1);

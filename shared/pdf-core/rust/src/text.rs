@@ -251,10 +251,7 @@ fn text_string(bytes: &[u8]) -> String {
 }
 
 fn decode_utf16(bytes: &[u8], read: fn([u8; 2]) -> u16) -> String {
-    let units = bytes
-        .chunks_exact(2)
-        .filter_map(|pair| <[u8; 2]>::try_from(pair).ok())
-        .map(read);
+    let units = bytes.as_chunks::<2>().0.iter().map(|pair| read(*pair));
     char::decode_utf16(units)
         .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect()
@@ -885,9 +882,9 @@ impl Interpreter<'_, '_> {
                 let (w, h) = (x1 - x0, y1 - y0);
                 let thin = w.min(h) <= THIN_FILL && w.max(h) >= MIN_RULING;
                 if thin && w >= h {
-                    self.push_ruling([x0, (y0 + y1) * 0.5, x1, (y0 + y1) * 0.5], h);
+                    self.push_ruling([x0, f64::midpoint(y0, y1), x1, f64::midpoint(y0, y1)], h);
                 } else if thin {
-                    self.push_ruling([(x0 + x1) * 0.5, y0, (x0 + x1) * 0.5, y1], w);
+                    self.push_ruling([f64::midpoint(x0, x1), y0, f64::midpoint(x0, x1), y1], w);
                 }
             }
         }
@@ -906,7 +903,7 @@ impl Interpreter<'_, '_> {
         let [x0, y0, x1, y1] = segment;
         let (dx, dy) = ((x1 - x0).abs(), (y1 - y0).abs());
         let ruling = if dy <= AXIS_TOLERANCE && dx >= MIN_RULING {
-            let y = (y0 + y1) * 0.5;
+            let y = f64::midpoint(y0, y1);
             Ruling {
                 x0: x0.min(x1),
                 y0: y,
@@ -915,7 +912,7 @@ impl Interpreter<'_, '_> {
                 width,
             }
         } else if dx <= AXIS_TOLERANCE && dy >= MIN_RULING {
-            let x = (x0 + x1) * 0.5;
+            let x = f64::midpoint(x0, x1);
             Ruling {
                 x0: x,
                 y0: y0.min(y1),
@@ -1019,20 +1016,17 @@ impl Interpreter<'_, '_> {
             return true;
         }
         let descriptor_forces = |descriptor: &Object| {
-            self.document
-                .follow(descriptor)
-                .ok()
-                .is_some_and(|resolved| {
-                    resolved.as_dict().is_some_and(|dict| {
-                        dict.get(b"Flags")
+            self.document.follow(descriptor).is_ok_and(|resolved| {
+                resolved.as_dict().is_some_and(|dict| {
+                    dict.get(b"Flags")
+                        .and_then(Object::as_number)
+                        .is_some_and(|flags| f64_to_i64(flags) & FORCE_BOLD != 0)
+                        || dict
+                            .get(b"FontWeight")
                             .and_then(Object::as_number)
-                            .is_some_and(|flags| f64_to_i64(flags) & FORCE_BOLD != 0)
-                            || dict
-                                .get(b"FontWeight")
-                                .and_then(Object::as_number)
-                                .is_some_and(|weight| weight >= 600.0)
-                    })
+                            .is_some_and(|weight| weight >= 600.0)
                 })
+            })
         };
         font.get(b"FontDescriptor").is_some_and(descriptor_forces)
     }
@@ -1996,10 +1990,9 @@ mod tests {
         assert!(scan_shows(b"1 2 (a)\"") == Shows::Text);
         assert!(scan_shows(b"/X Do") == Shows::Forms);
         let content = "q ".repeat(1000);
-        assert!(
-            extract_with(&simple_pdf(&content), &Limits::default())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            extract_with(&simple_pdf(&content), &Limits::default()).unwrap(),
+            []
         );
     }
 

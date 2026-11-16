@@ -468,7 +468,7 @@ impl CompositeFont {
                 .gid_to_cid
                 .get_or_init(|| {
                     let mut map = HashMap::new();
-                    for (cid, pair) in table.chunks_exact(2).enumerate() {
+                    for (cid, pair) in table.as_chunks::<2>().0.iter().enumerate() {
                         let mapped = (u16::from(pair.first().copied().unwrap_or(0)) << 8)
                             | u16::from(pair.get(1).copied().unwrap_or(0));
                         map.entry(mapped)
@@ -884,7 +884,7 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                 Some(Object::Array(inner)) => {
                     index = index.saturating_add(1);
                     let Some(start) = start else { continue };
-                    for (step, triple) in inner.chunks_exact(3).enumerate() {
+                    for (step, triple) in inner.as_chunks::<3>().0.iter().enumerate() {
                         let values: Vec<f64> =
                             triple.iter().filter_map(Object::as_number).collect();
                         if let [vertical_advance, origin_x, shift_y] = values.as_slice() {
@@ -999,7 +999,7 @@ fn strip_subset_prefix(name: &[u8]) -> &[u8] {
         })
 }
 
-fn builtin_from_name(name: &[u8]) -> BuiltinEncoding {
+const fn builtin_from_name(name: &[u8]) -> BuiltinEncoding {
     match name {
         b"WinAnsiEncoding" => BuiltinEncoding::WinAnsi,
         b"StandardEncoding" => BuiltinEncoding::Standard,

@@ -164,7 +164,7 @@ pub(crate) fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
         return vec![u32::from(*single)];
     }
     let mut out = Vec::with_capacity(bytes.len().div_euclid(2));
-    let mut units = bytes.chunks_exact(2).map(|pair| {
+    let mut units = bytes.as_chunks::<2>().0.iter().map(|pair| {
         (u32::from(pair.first().copied().unwrap_or(0)) << 8)
             | u32::from(pair.get(1).copied().unwrap_or(0))
     });

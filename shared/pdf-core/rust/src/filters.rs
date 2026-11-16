@@ -749,7 +749,7 @@ mod tests {
             0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49,
         ];
         let out = decode_stream(&dict, &partial, 1024).expect("partial");
-        assert!(!out.is_empty());
+        assert_ne!(out, []);
     }
 
     #[test]

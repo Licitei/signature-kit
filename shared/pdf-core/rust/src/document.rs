@@ -1338,11 +1338,11 @@ mod tests {
         let bytes = basic_pdf();
         let result = inspect_all(&bytes).unwrap();
         assert_eq!(result.pages.len(), 1);
-        assert!(result.links.is_empty());
+        assert_eq!(result.links, []);
         assert_eq!(result.text.len(), 1);
         assert_eq!(result.text[0].page_index, 0);
         let plain = inspect(&bytes, &InspectOptions::default(), &Limits::default()).unwrap();
-        assert!(plain.text.is_empty());
+        assert_eq!(plain.text, []);
     }
 
     #[test]
@@ -1551,7 +1551,7 @@ mod tests {
         );
         let document = open(&bytes);
         let pages = document.pages().unwrap();
-        assert!(document.content(&pages[0]).unwrap().is_empty());
+        assert_eq!(document.content(&pages[0]).unwrap(), []);
     }
 
     #[test]
@@ -1912,7 +1912,7 @@ mod tests {
         let indirect = build_classic(&link_objects("/Annots 10 0 R"), "", 0).bytes;
         assert_eq!(inspect_all(&indirect).unwrap().links.len(), 2);
         let none = inspect(&indirect, &InspectOptions::default(), &Limits::default()).unwrap();
-        assert!(none.links.is_empty());
+        assert_eq!(none.links, []);
     }
 
     #[test]
@@ -1952,7 +1952,7 @@ mod tests {
         ];
         let bytes = build_classic(&objects, "", 0).bytes;
         let result = inspect_all(&bytes).unwrap();
-        assert!(result.pages.is_empty());
+        assert_eq!(result.pages, []);
     }
 
     #[test]

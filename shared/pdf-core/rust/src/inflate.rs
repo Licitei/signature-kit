@@ -672,7 +672,7 @@ mod tests {
     fn truncated_stream_returns_the_decoded_prefix() {
         let cut = ZLIB_SKEWED.get(..ZLIB_SKEWED.len() >> 1).expect("prefix");
         let out = inflate(cut, 1024 * 1024).expect("partial");
-        assert!(!out.is_empty());
+        assert_ne!(out, []);
         assert!(out.len() < 67_500);
     }
 

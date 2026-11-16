@@ -975,7 +975,7 @@ mod tests {
         assert_eq!(block.status, STATUS_OK);
         let pages = decode_text(&block.payload);
         assert_eq!(pages.len(), 1);
-        assert!(!pages[0].trim().is_empty());
+        assert_ne!(pages[0].trim(), "");
         release(&block);
     }
 
@@ -1033,8 +1033,8 @@ mod tests {
         assert_eq!(block.status, STATUS_OK);
         let decoded = decode(&block.payload);
         assert_eq!(decoded.pages.len(), 1);
-        assert!(decoded.links.is_empty());
-        assert!(decoded.text.is_empty());
+        assert_eq!(decoded.links, []);
+        assert_eq!(decoded.text, []);
         release(&block);
     }
 
@@ -1055,7 +1055,7 @@ mod tests {
     fn failures_carry_code_and_reason() {
         let block = call(b"not a pdf", 0, &[]);
         assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
-        assert!(!block.payload.is_empty());
+        assert_ne!(block.payload, []);
         assert!(std::str::from_utf8(&block.payload).is_ok());
         release(&block);
     }

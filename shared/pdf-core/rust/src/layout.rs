@@ -59,8 +59,8 @@ struct Frag<'a> {
 }
 
 impl Frag<'_> {
-    fn center(&self) -> f64 {
-        (self.y0 + self.y1) * 0.5
+    const fn center(&self) -> f64 {
+        f64::midpoint(self.y0, self.y1)
     }
 
     fn height(&self) -> f64 {
@@ -678,7 +678,10 @@ fn ruled_tables<'a>(frags: &[Frag<'a>], rulings: &[Rule]) -> Option<(Vec<Frag<'a
         .collect();
     let mut rest: Vec<Frag<'a>> = Vec::new();
     for frag in frags {
-        let (cx, cy) = ((frag.x0 + frag.x1) * 0.5, (frag.y0 + frag.y1) * 0.5);
+        let (cx, cy) = (
+            f64::midpoint(frag.x0, frag.x1),
+            f64::midpoint(frag.y0, frag.y1),
+        );
         let home = grids
             .iter()
             .enumerate()
@@ -1373,13 +1376,13 @@ mod tests {
             runs.push(run(x, y, 30.0, "ab"));
         }
         let text = page_text(&runs, 270);
-        assert!(!text.is_empty());
+        assert_ne!(text, "");
         let mut nested = Vec::new();
         for index in 0..200 {
             let offset = f64::from(index) * 2.0;
             nested.push(run(offset, 700.0 - offset, 500.0 - offset, "n"));
         }
-        assert!(!page_text(&nested, 0).is_empty());
+        assert_ne!(page_text(&nested, 0), "");
     }
 
     #[test]
@@ -1609,7 +1612,7 @@ mod structure_tests {
             content.push_str(&text(120.0, baseline, 10.0, body));
         }
         let bytes = document(&[page(content)], &[]);
-        assert!(tables_of(&bytes).is_empty());
+        assert_eq!(tables_of(&bytes), []);
         let markdown = pages_of(&bytes, MARKDOWN);
         assert!(!markdown[0].contains("| --- |"), "{}", markdown[0]);
         assert!(is_marker("(12)"));
@@ -1763,14 +1766,14 @@ mod structure_tests {
         let mut content = grid(&[700.0, 680.0, 660.0], &[50.0, 200.0, 350.0]);
         content.push_str(&text(50.0, 600.0, 10.0, "Texto solto"));
         let bytes = document(&[page(content)], &[]);
-        assert!(tables_of(&bytes).is_empty());
+        assert_eq!(tables_of(&bytes), []);
         assert_eq!(pages_of(&bytes, PLAIN), ["Texto solto"]);
         let underline = format!(
             "{}{}",
             text(50.0, 700.0, 10.0, "Titulo sublinhado"),
             rule(50.0, 697.0, 150.0, 697.0)
         );
-        assert!(tables_of(&document(&[page(underline)], &[])).is_empty());
+        assert_eq!(tables_of(&document(&[page(underline)], &[])), []);
     }
 
     #[test]
@@ -1787,7 +1790,7 @@ mod structure_tests {
             "0 0 600 800 re S {}",
             text(40.0, 700.0, 10.0, "Somente moldura")
         );
-        assert!(tables_of(&document(&[page(frame_only)], &[])).is_empty());
+        assert_eq!(tables_of(&document(&[page(frame_only)], &[])), []);
     }
 
     #[test]
@@ -1809,7 +1812,7 @@ mod structure_tests {
             ));
         }
         let bytes = document(&[page(content)], &[]);
-        assert!(tables_of(&bytes).is_empty());
+        assert_eq!(tables_of(&bytes), []);
     }
 
     fn running_page(index: usize, header: &str, body: &[&str]) -> PageSpec {

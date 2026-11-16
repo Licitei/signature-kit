@@ -209,9 +209,9 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
     for line in lines {
         let (width, height) = (line.x1 - line.x0, line.y1 - line.y0);
         if width >= height {
-            horizontal.push([(line.y0 + line.y1) * 0.5, line.x0, line.x1]);
+            horizontal.push([f64::midpoint(line.y0, line.y1), line.x0, line.x1]);
         } else {
-            vertical.push([(line.x0 + line.x1) * 0.5, line.y0, line.y1]);
+            vertical.push([f64::midpoint(line.x0, line.x1), line.y0, line.y1]);
         }
     }
     let horizontal = merge_collinear(horizontal);
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(widened, vec![(5.0, 50.0), (100.0, 190.0)]);
         assert!(merge_row(&first, &[(30.0, 120.0)]).is_none());
         assert!(merge_row(&first, &[(10.0, 20.0), (30.0, 40.0)]).is_none());
-        assert!(merge_row(&first, &[(200.0, 240.0)]).unwrap().len() == 3);
+        assert_eq!(merge_row(&first, &[(200.0, 240.0)]).unwrap().len(), 3);
         assert_eq!(column_of(&first, 12.0, 30.0), Some(0));
         assert_eq!(column_of(&first, 60.0, 90.0), None);
         assert_eq!(column_of(&first, 20.0, 120.0), None);
