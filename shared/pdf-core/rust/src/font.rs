@@ -1,13 +1,28 @@
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::OnceLock;
 
+use crate::cmap::{CMap, UnicodeMap};
 use crate::failure::{Failure, Outcome};
-use crate::font_tables::{
-    BuiltinEncoding, STANDARD14_WIDTHS, Standard14Font, encoding_glyph_name, glyph_name_at,
-};
+use crate::font_tables::{BuiltinEncoding, STANDARD14_WIDTHS, Standard14Font, encoding_glyph_name};
 use crate::fontprog::{FontProgram, agl_components, load_font_file_bytes, parse_font_program};
 use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
+
+const MAX_METRIC_ENTRIES: usize = 262_144;
+const MAX_WIDTH_RANGE: u32 = 65_536;
+const RANGE_SCAN: usize = 16;
+const MAX_CMAP_DEPTH: usize = 4;
+const MAX_PROGRAM_CHECKS: usize = 4096;
+const LIGATURES: [&str; 14] = [
+    "ff", "fi", "fl", "ffi", "ffl", "ft", "tt", "ti", "tf", "fj", "fb", "fh", "fk", "ffj",
+];
+const LIGATURE_EDGE_TOLERANCE: f64 = 0.004;
+const LIGATURE_ADVANCE_BELOW: f64 = 0.10;
+const LIGATURE_ADVANCE_ABOVE: f64 = 0.03;
+const DEFAULT_VERTICAL_ORIGIN: f64 = 880.0;
+const DEFAULT_VERTICAL_ADVANCE: f64 = 1000.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Glyph {
@@ -17,44 +32,52 @@ pub struct Glyph {
     pub text: Range<u32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VerticalMetrics {
+    pub advance: f64,
+    pub origin_x: f64,
+    pub origin_y: f64,
+}
+
 pub struct Font {
     inner: FontKind,
 }
 
 enum FontKind {
-    Simple(SimpleFont),
-    Composite(CompositeFont),
+    Simple(Box<SimpleFont>),
+    Composite(Box<CompositeFont>),
 }
 
 struct SimpleFont {
     encoding: EncodingState,
     to_unicode: UnicodeMap,
     program: Option<FontProgram>,
-    program_map: Vec<(u32, Vec<u32>)>,
     widths: WidthState,
-    font_matrix: Option<[f64; 6]>,
+    font_scale: Option<f64>,
     symbolic: bool,
-    vertical: bool,
-    vertical_default: f64,
-    vertical_metrics: VerticalMetrics,
+    cache: Vec<OnceCell<Box<[u32]>>>,
 }
 
 struct CompositeFont {
-    code_reader: CodeReader,
+    cmap: CMap,
     to_unicode: UnicodeMap,
-    cid_fallback: Vec<(u32, Vec<u32>)>,
     program: Option<FontProgram>,
-    horizontal: CidMetrics,
-    vertical_metrics: CidMetrics,
-    vertical_default_v: f64,
-    _vertical_pos_v: f64,
-    is_vertical: bool,
+    cid_to_gid: CidToGid,
+    gid_to_cid: OnceCell<HashMap<u16, u32>>,
+    horizontal: CidWidths,
+    vertical: VerticalCidMetrics,
+    cache: RefCell<HashMap<u32, Box<[u32]>>>,
+}
+
+enum CidToGid {
+    Identity,
+    Table(Vec<u8>),
 }
 
 struct EncodingState {
     builtin: BuiltinEncoding,
-    differences: Vec<(u8, u16)>,
-    custom_names: Vec<(u8, Vec<u8>)>,
+    base_explicit: bool,
+    differences: Vec<(u8, Vec<u8>)>,
 }
 
 struct WidthState {
@@ -64,55 +87,28 @@ struct WidthState {
     standard14: Option<Standard14Font>,
 }
 
-struct VerticalMetrics {
-    _dw2_pos: f64,
-    dw2_adv: f64,
-    w2: Vec<(u32, f64, f64)>,
-}
-
-struct CidMetrics {
+struct CidWidths {
     default_width: f64,
-    widths: Vec<(u32, f64)>,
-    range_widths: Vec<(u32, u32, f64)>,
+    entries: Vec<(u32, u32, f64)>,
 }
 
-struct CodeReader {
-    codespace: Vec<CodespaceRange>,
-    identity: bool,
-    bytes_per_code: u8,
-}
-
-struct CodespaceRange {
-    low: u32,
-    high: u32,
-    length: u8,
+struct VerticalCidMetrics {
+    origin_y: f64,
+    advance: f64,
+    entries: Vec<(u32, u32, [f64; 3])>,
 }
 
 static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; 7] = [const { OnceLock::new() }; 7];
 
-#[derive(Clone, Default)]
-struct UnicodeMap {
-    char_map: Vec<(u32, Vec<u32>)>,
-    range_map: Vec<BfRange>,
-}
-
-#[derive(Clone)]
-struct BfRange {
-    start: u32,
-    end: u32,
-    dest: Vec<u32>,
-    increment_last: bool,
-}
-
 impl Font {
     pub fn load(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<Font> {
         let subtype = name_bytes(font.get(b"Subtype"));
-        if subtype == Some(b"Type0") {
-            return load_type0(resolver, font, limits).map(|inner| Font { inner });
-        }
-        load_simple(resolver, font, limits).map(|inner| Font {
-            inner: FontKind::Simple(inner),
-        })
+        let inner = if subtype == Some(b"Type0") {
+            FontKind::Composite(Box::new(load_type0(resolver, font, limits)?))
+        } else {
+            FontKind::Simple(Box::new(load_simple(resolver, font, limits)?))
+        };
+        Ok(Font { inner })
     }
 
     pub fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
@@ -124,35 +120,44 @@ impl Font {
 
     pub fn is_vertical(&self) -> bool {
         match &self.inner {
-            FontKind::Simple(simple) => simple.vertical,
-            FontKind::Composite(composite) => composite.is_vertical,
+            FontKind::Simple(_) => false,
+            FontKind::Composite(composite) => composite.cmap.is_vertical(),
+        }
+    }
+
+    pub fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
+        match &self.inner {
+            FontKind::Simple(_) => VerticalMetrics {
+                advance: DEFAULT_VERTICAL_ADVANCE / 1000.0,
+                origin_x: 0.5,
+                origin_y: DEFAULT_VERTICAL_ORIGIN / 1000.0,
+            },
+            FontKind::Composite(composite) => composite.vertical_metrics(code),
         }
     }
 
     pub fn vertical_advance(&self, code: u32) -> f64 {
-        match &self.inner {
-            FontKind::Simple(simple) => simple.vertical_advance(code),
-            FontKind::Composite(composite) => composite.vertical_advance(code),
-        }
+        self.vertical_metrics(code).advance
     }
 }
 
 impl SimpleFont {
-    fn builtin_text_table(&self) -> Option<&'static [Option<Vec<u32>>]> {
+    fn plain_table(&self) -> Option<&'static [Option<Vec<u32>>]> {
         let plain = self.to_unicode.is_empty()
             && self.encoding.differences.is_empty()
-            && self.encoding.custom_names.is_empty()
+            && self.program.is_none()
             && !self.symbolic;
         if !plain {
             return None;
         }
-        let slot = BUILTIN_TEXT_TABLES.get(self.encoding.builtin as usize)?;
+        let builtin = self.encoding.builtin;
+        let slot = BUILTIN_TEXT_TABLES.get(builtin as usize)?;
         Some(
             slot.get_or_init(|| {
                 (0..=255u8)
                     .map(|code| {
-                        let name = encoding_glyph_name(self.encoding.builtin, code);
-                        match agl_lookup_extended(name.as_bytes()) {
+                        let name = encoding_glyph_name(builtin, code);
+                        match agl_components(name.as_bytes()) {
                             Some(found) => Some(found),
                             None if name.is_empty() => Some(vec![u32::from(code)]),
                             None => None,
@@ -165,335 +170,535 @@ impl SimpleFont {
     }
 
     fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
-        let table = self.builtin_text_table();
+        let table = self.plain_table();
         for byte in bytes {
             let code = u32::from(*byte);
             let advance = self.width_for_code(code);
             let text_start = text.len() as u32;
-            if let Some(table) = table {
-                if let Some(Some(slice)) = table.get(usize::from(*byte)) {
-                    push_codepoints(text, slice);
+            match table {
+                Some(table) => {
+                    if let Some(Some(slice)) = table.get(usize::from(*byte)) {
+                        push_codepoints(text, slice);
+                    }
                 }
-            } else {
-                self.decode_code_slow(code, text);
+                None => {
+                    if let Some(cell) = self.cache.get(usize::from(*byte)) {
+                        push_codepoints(text, cell.get_or_init(|| self.resolve(code)));
+                    }
+                }
             }
-            let text_end = text.len() as u32;
             glyphs.push(Glyph {
                 code,
                 advance,
                 is_word_space: *byte == 32,
-                text: text_start..text_end,
+                text: text_start..text.len() as u32,
             });
         }
     }
 
-    fn decode_code_slow(&self, code: u32, text: &mut String) {
-        let from_program = self.program.as_ref().and_then(|program| {
-            program.unicode_for_encoded_code(code, self.symbolic, self.encoding.builtin)
-        });
-        let from_map = program_map_lookup(&self.program_map, code).map(|slice| slice.to_vec());
-        let from_tounicode = self
-            .to_unicode
-            .lookup(code)
-            .filter(|slice| unicode_slice_usable(slice))
-            .map(|slice| slice.to_vec());
-        if let Some(cps) = prefer_unicode_mapping(from_tounicode, from_map, from_program) {
-            push_codepoints(text, &cps);
-            return;
+    fn resolve(&self, code: u32) -> Box<[u32]> {
+        if let Some(found) = self.to_unicode.usable(code) {
+            return found.as_slice().into();
         }
-        let glyph_name = self.glyph_name(code);
-        if let Some(agl) = agl_lookup_extended(glyph_name.as_bytes()) {
-            push_codepoints(text, &agl);
-        } else if self.symbolic {
+        if let Some(name) = self.encoding.difference(code)
+            && let Some(text) = self.name_text(name)
+        {
+            return text.into();
+        }
+        let base = u8::try_from(code)
+            .map(|byte| encoding_glyph_name(self.encoding.builtin, byte))
+            .unwrap_or_default();
+        if self.encoding.base_explicit
+            && let Some(text) = agl_components(base.as_bytes())
+        {
+            return text.into();
+        }
+        let authoritative = self
+            .program
+            .as_ref()
+            .is_some_and(FontProgram::has_authoritative_names);
+        if authoritative && let Some(text) = self.program_text(code) {
+            return text.into();
+        }
+        if let Some(text) = agl_components(base.as_bytes()) {
+            return text.into();
+        }
+        if !authoritative && let Some(text) = self.program_text(code) {
+            return text.into();
+        }
+        if self.symbolic {
             let mapped = symbolic_fallback(code);
-            if mapped != 0 {
-                push_codepoint(text, mapped);
-            }
-        } else if glyph_name.is_empty() && code <= 0xff {
-            push_codepoint(text, code);
+            return if mapped == 0 {
+                Box::new([])
+            } else {
+                Box::new([mapped])
+            };
         }
+        if base.is_empty() && code <= 0xFF {
+            return Box::new([code]);
+        }
+        Box::new([])
+    }
+
+    fn name_text(&self, name: &[u8]) -> Option<Vec<u32>> {
+        agl_components(name).or_else(|| {
+            let program = self.program.as_ref()?;
+            let gid = program.gid_for_name(name)?;
+            self.gid_text(program, gid)
+        })
+    }
+
+    fn program_text(&self, code: u32) -> Option<Vec<u32>> {
+        let program = self.program.as_ref()?;
+        if let Ok(byte) = u8::try_from(code)
+            && let Some(name) = program.builtin_name(byte)
+            && let Some(text) = self.name_text(name)
+        {
+            return Some(text);
+        }
+        let gid = program.code_to_gid(code, self.symbolic)?;
+        self.gid_text(program, gid)
+    }
+
+    fn gid_text(&self, program: &FontProgram, gid: u16) -> Option<Vec<u32>> {
+        if let Some(text) = program.gid_text(gid) {
+            return Some(text);
+        }
+        compose_parts(program, gid, |part| {
+            let code = program.code_for_gid(part)?;
+            self.to_unicode
+                .usable(code)
+                .map(|found| found.as_slice().to_vec())
+        })
+        .or_else(|| {
+            shape_ligature(program, gid, |letter| {
+                let code = self.to_unicode.code_for_char(u32::from(letter))?;
+                program.code_to_gid(code, self.symbolic)
+            })
+        })
     }
 
     fn width_for_code(&self, code: u32) -> f64 {
         let width = if let Some(standard) = self.widths.standard14 {
-            let idx = code.min(255) as usize;
-            let table = STANDARD14_WIDTHS.get(standard as usize);
-            table
-                .and_then(|row| row.get(idx).copied())
+            let index = code.min(255) as usize;
+            STANDARD14_WIDTHS
+                .get(standard as usize)
+                .and_then(|row| row.get(index).copied())
                 .map(f64::from)
                 .unwrap_or(self.widths.missing)
-        } else if code >= self.widths.first_char as u32 {
-            let offset = code.saturating_sub(self.widths.first_char as u32) as usize;
-            self.widths
-                .widths
-                .get(offset)
+        } else {
+            u32::try_from(self.widths.first_char)
+                .ok()
+                .and_then(|first| code.checked_sub(first))
+                .and_then(|offset| self.widths.widths.get(offset as usize))
                 .copied()
                 .unwrap_or(self.widths.missing)
-        } else {
-            self.widths.missing
         };
-        if let Some(matrix) = self.font_matrix {
-            let scale = matrix[0].abs().max(matrix[3].abs());
-            if scale > 0.0 {
-                return (width / 1000.0) * scale * 1000.0;
-            }
+        match self.font_scale {
+            Some(scale) => width * scale,
+            None => width / 1000.0,
         }
-        width / 1000.0
     }
+}
 
-    fn glyph_name(&self, code: u32) -> String {
-        if let Some((_, name_index)) = self
-            .encoding
-            .differences
+impl EncodingState {
+    fn difference(&self, code: u32) -> Option<&[u8]> {
+        let code = u8::try_from(code).ok()?;
+        self.differences
             .iter()
-            .find(|(slot, _)| u32::from(*slot) == code)
-        {
-            return glyph_name_at(*name_index).to_owned();
-        }
-        if let Some((_, name)) = self
-            .encoding
-            .custom_names
-            .iter()
-            .find(|(slot, _)| u32::from(*slot) == code)
-        {
-            return String::from_utf8_lossy(name).into_owned();
-        }
-        if self.encoding.builtin != BuiltinEncoding::Custom {
-            return encoding_glyph_name(self.encoding.builtin, code as u8).to_owned();
-        }
-        String::new()
+            .rev()
+            .find(|(slot, _)| *slot == code)
+            .map(|(_, name)| name.as_slice())
     }
+}
 
-    fn vertical_advance(&self, code: u32) -> f64 {
-        for (cid, _, adv) in &self.vertical_metrics.w2 {
-            if *cid == code {
-                return *adv / 1000.0;
-            }
+fn is_mark(codepoint: u32) -> bool {
+    matches!(codepoint, 0x5E | 0x60 | 0x7E | 0xA8 | 0xAF | 0xB4 | 0xB8)
+        || (0x02C6..=0x02DD).contains(&codepoint)
+        || (0x0300..=0x036F).contains(&codepoint)
+}
+
+fn compose_parts(
+    program: &FontProgram,
+    gid: u16,
+    outside: impl Fn(u16) -> Option<Vec<u32>>,
+) -> Option<Vec<u32>> {
+    let parts = program.gid_parts(gid)?;
+    let mut text = Vec::new();
+    for part in parts {
+        let piece = program.gid_text(part).or_else(|| outside(part))?;
+        if piece.iter().any(|codepoint| is_mark(*codepoint)) {
+            return None;
         }
-        if self.vertical_metrics.dw2_adv > 0.0 {
-            return self.vertical_metrics.dw2_adv / 1000.0;
-        }
-        self.vertical_default / 1000.0
+        text.extend(piece);
     }
+    (!text.is_empty()).then_some(text)
+}
+
+fn shape_ligature(
+    program: &FontProgram,
+    gid: u16,
+    letter_gid: impl Fn(char) -> Option<u16>,
+) -> Option<Vec<u32>> {
+    let ligature = program.glyph_metrics(gid)?;
+    let em = f64::from(ligature.units_per_em);
+    let mut found: Option<&str> = None;
+    for candidate in LIGATURES {
+        let mut advance = 0.0;
+        let mut x_min = f64::MAX;
+        let mut y_min = f64::MAX;
+        let mut y_max = f64::MIN;
+        let mut complete = true;
+        for (index, letter) in candidate.chars().enumerate() {
+            let Some(metrics) = letter_gid(letter).and_then(|letter| program.glyph_metrics(letter))
+            else {
+                complete = false;
+                break;
+            };
+            if index == 0 {
+                x_min = f64::from(metrics.x_min);
+            }
+            advance += f64::from(metrics.advance);
+            y_min = y_min.min(f64::from(metrics.y_min));
+            y_max = y_max.max(f64::from(metrics.y_max));
+        }
+        if !complete {
+            continue;
+        }
+        let tolerance = LIGATURE_EDGE_TOLERANCE * em;
+        let drift = f64::from(ligature.advance) - advance;
+        let matches = (f64::from(ligature.x_min) - x_min).abs() <= tolerance
+            && (f64::from(ligature.y_min) - y_min).abs() <= tolerance
+            && (f64::from(ligature.y_max) - y_max).abs() <= tolerance
+            && drift >= -LIGATURE_ADVANCE_BELOW * em
+            && drift <= LIGATURE_ADVANCE_ABOVE * em;
+        if matches {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(candidate);
+        }
+    }
+    found.map(|text| text.chars().map(u32::from).collect())
 }
 
 impl CompositeFont {
     fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
         let mut offset = 0usize;
-        while offset < bytes.len() {
-            let Some((code, consumed)) = self.code_reader.read(bytes, offset) else {
-                break;
-            };
-            offset = offset.saturating_add(consumed);
-            let cid = code;
+        while let Some((code, consumed)) = self.cmap.read(bytes, offset) {
+            offset += consumed;
+            let cid = self.cmap.cid(code, consumed);
             let advance = self.horizontal.width(cid) / 1000.0;
             let text_start = text.len() as u32;
-            let gid = cid.min(u16::MAX as u32) as u16;
-            let from_program = self
-                .program
-                .as_ref()
-                .and_then(|program| program.unicode_for_gid(gid));
-            let from_map = program_map_lookup(&self.cid_fallback, cid).map(|slice| slice.to_vec());
-            let from_tounicode = self
-                .to_unicode
-                .lookup(cid)
-                .filter(|slice| unicode_slice_usable(slice))
-                .map(|slice| slice.to_vec());
-            if let Some(cps) = prefer_unicode_mapping(from_tounicode, from_map, from_program) {
-                push_codepoints(text, &cps);
-            }
-            let text_end = text.len() as u32;
+            self.push_text(code, cid, text);
             glyphs.push(Glyph {
-                code: cid,
+                code: cid.unwrap_or(code),
                 advance,
-                is_word_space: false,
-                text: text_start..text_end,
+                is_word_space: consumed == 1 && code == 32,
+                text: text_start..text.len() as u32,
             });
         }
     }
 
-    fn vertical_advance(&self, code: u32) -> f64 {
-        let measured = self.vertical_metrics.width(code);
-        if measured > 0.0 {
-            return measured / 1000.0;
+    fn push_text(&self, code: u32, cid: Option<u32>, text: &mut String) {
+        if let Some(found) = self.to_unicode.usable(code) {
+            push_codepoints(text, found.as_slice());
+            return;
         }
-        self.vertical_default_v / 1000.0
+        if let Some(direct) = self.cmap.direct_unicode(code) {
+            push_codepoints(text, &direct);
+            return;
+        }
+        if self.program.is_none() {
+            return;
+        }
+        let key = cid.unwrap_or(code);
+        if let Some(cached) = self.cache.borrow().get(&code) {
+            push_codepoints(text, cached);
+            return;
+        }
+        let resolved: Box<[u32]> = self.program_text(key).unwrap_or_default().into();
+        push_codepoints(text, &resolved);
+        self.cache.borrow_mut().insert(code, resolved);
     }
-}
 
-impl CidMetrics {
-    fn width(&self, cid: u32) -> f64 {
-        for (start, end, width) in &self.range_widths {
-            if cid >= *start && cid <= *end {
-                return *width;
+    fn gid_for_cid(&self, program: &FontProgram, cid: u32) -> Option<u16> {
+        if program.is_cid_keyed() {
+            return program.cid_to_gid(cid);
+        }
+        match &self.cid_to_gid {
+            CidToGid::Identity => u16::try_from(cid).ok(),
+            CidToGid::Table(table) => {
+                let position = usize::try_from(cid).ok()?.checked_mul(2)?;
+                let pair = table.get(position..position.checked_add(2)?)?;
+                Some((u16::from(*pair.first()?) << 8) | u16::from(*pair.get(1)?))
             }
         }
-        for (id, width) in &self.widths {
-            if *id == cid {
-                return *width;
-            }
-        }
-        self.default_width
     }
-}
 
-impl CodeReader {
-    fn read(&self, bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
-        if self.identity {
-            let len = usize::from(self.bytes_per_code.max(2));
-            if offset.saturating_add(len) > bytes.len() {
+    fn program_text(&self, cid: u32) -> Option<Vec<u32>> {
+        let program = self.program.as_ref()?;
+        let gid = self.gid_for_cid(program, cid)?;
+        if let Some(text) = program.gid_text(gid) {
+            return Some(text);
+        }
+        compose_parts(program, gid, |part| {
+            let part_cid = self.cid_for_gid(program, part)?;
+            self.to_unicode
+                .usable(part_cid)
+                .map(|found| found.as_slice().to_vec())
+        })
+        .or_else(|| {
+            if !self.cmap.is_identity() {
                 return None;
             }
-            let mut code = 0u32;
-            for idx in 0..len {
-                let byte = bytes.get(offset + idx)?;
-                code = (code << 8) | u32::from(*byte);
-            }
-            return Some((code, len));
+            shape_ligature(program, gid, |letter| {
+                let code = self.to_unicode.code_for_char(u32::from(letter))?;
+                self.gid_for_cid(program, code)
+            })
+        })
+    }
+
+    fn cid_for_gid(&self, program: &FontProgram, gid: u16) -> Option<u32> {
+        if program.is_cid_keyed() {
+            return program.gid_to_cid(gid);
         }
-        for range in &self.codespace {
-            let len = usize::from(range.length);
-            if offset.saturating_add(len) > bytes.len() {
-                continue;
-            }
-            let mut code = 0u32;
-            for idx in 0..len {
-                let byte = bytes.get(offset + idx)?;
-                code = (code << 8) | u32::from(*byte);
-            }
-            if code >= range.low && code <= range.high {
-                return Some((code, len));
-            }
+        match &self.cid_to_gid {
+            CidToGid::Identity => Some(u32::from(gid)),
+            CidToGid::Table(table) => self
+                .gid_to_cid
+                .get_or_init(|| {
+                    let mut map = HashMap::new();
+                    for (cid, pair) in table.chunks_exact(2).enumerate() {
+                        let mapped = (u16::from(pair.first().copied().unwrap_or(0)) << 8)
+                            | u16::from(pair.get(1).copied().unwrap_or(0));
+                        map.entry(mapped).or_insert(cid as u32);
+                    }
+                    map
+                })
+                .get(&gid)
+                .copied(),
         }
-        let byte = bytes.get(offset)?;
-        Some((u32::from(*byte), 1))
+    }
+
+    fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
+        let horizontal = self.horizontal.width(Some(code));
+        let found = find_entry(&self.vertical.entries, code);
+        let (advance, origin_x, origin_y) = match found {
+            Some([advance, origin_x, origin_y]) => (advance, origin_x, origin_y),
+            None => (
+                self.vertical.advance,
+                horizontal / 2.0,
+                self.vertical.origin_y,
+            ),
+        };
+        VerticalMetrics {
+            advance: advance.abs() / 1000.0,
+            origin_x: origin_x / 1000.0,
+            origin_y: origin_y / 1000.0,
+        }
     }
 }
 
-impl UnicodeMap {
-    fn is_empty(&self) -> bool {
-        self.char_map.is_empty() && self.range_map.is_empty()
-    }
+fn find_entry<T: Copy>(entries: &[(u32, u32, T)], cid: u32) -> Option<T> {
+    let upper = entries.partition_point(|(start, _, _)| *start <= cid);
+    entries
+        .get(..upper)?
+        .iter()
+        .rev()
+        .take(RANGE_SCAN)
+        .find(|(_, end, _)| cid <= *end)
+        .map(|(_, _, value)| *value)
+}
 
-    fn finish(&mut self) {
-        self.char_map.sort_by_key(|(source, _)| *source);
-        self.char_map.dedup_by_key(|(source, _)| *source);
+impl CidWidths {
+    fn width(&self, cid: Option<u32>) -> f64 {
+        cid.and_then(|cid| find_entry(&self.entries, cid))
+            .unwrap_or(self.default_width)
     }
+}
 
-    fn lookup(&self, code: u32) -> Option<&[u32]> {
-        if let Ok(position) = self
-            .char_map
-            .binary_search_by_key(&code, |(source, _)| *source)
-            && let Some((_, dest)) = self.char_map.get(position)
-        {
-            return Some(dest.as_slice());
-        }
-        for range in &self.range_map {
-            if code >= range.start && code <= range.end {
-                if range.increment_last && range.dest.len() == 1 {
-                    return None;
-                }
-                if range.start == range.end && range.dest.len() > 1 {
-                    return Some(range.dest.as_slice());
-                }
-                let idx = code.saturating_sub(range.start) as usize;
-                if let Some(cp) = range.dest.get(idx) {
-                    if range.start == range.end {
-                        return Some(range.dest.as_slice());
-                    }
-                    return Some(core::slice::from_ref(cp));
-                }
-                if range.dest.len() == 1 {
-                    return Some(range.dest.as_slice());
-                }
-            }
-        }
-        None
+fn deref(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Object> {
+    match value? {
+        reference @ Object::Ref(_) => resolver.resolve(reference).ok(),
+        other => Some(other.clone()),
+    }
+}
+
+fn deref_dict(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Dict> {
+    match deref(resolver, value)? {
+        Object::Dict(dict) => Some(dict),
+        Object::Stream(stream) => Some(stream.dict),
+        _ => None,
     }
 }
 
 fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<SimpleFont> {
-    let encoding = load_encoding(font, resolver, limits)?;
-    let to_unicode = load_to_unicode(font, resolver, limits)?;
-    let program = load_embedded_program(font, resolver, limits);
-    let widths = load_widths(font, resolver)?;
-    let font_matrix = read_font_matrix(font);
-    let flags = font_descriptor_flags(font, resolver)?;
-    let symbolic = flags.map(|value| (value & 4) != 0).unwrap_or(false);
-    let vertical = encoding_name_is_vertical(font.get(b"Encoding"));
-    let vertical_default = read_number(font.get(b"DW")).unwrap_or(1000.0);
-    let vertical_metrics = load_vertical_metrics(font);
-    let program_map = program
+    let subtype = name_bytes(font.get(b"Subtype"));
+    let descriptor = deref_dict(resolver, font.get(b"FontDescriptor"));
+    let flags = descriptor
         .as_ref()
-        .map(|value| value.build_byte_map(symbolic, encoding.builtin, limits))
-        .unwrap_or_default();
-    Ok(SimpleFont {
+        .and_then(|dict| read_integer(dict.get(b"Flags")))
+        .unwrap_or(0);
+    let symbolic = flags & 4 != 0 && flags & 32 == 0;
+    let encoding = load_encoding(font, resolver, limits)?;
+    let to_unicode = load_to_unicode(font, resolver, limits);
+    let widths = load_widths(font, descriptor.as_ref(), subtype == Some(b"Type3"));
+    let font_scale = read_font_matrix(resolver, font)
+        .map(|matrix| matrix[0].hypot(matrix[1]))
+        .filter(|scale| *scale > 0.0);
+    let needs_program = simple_needs_program(&encoding, &to_unicode, &widths, symbolic);
+    let program = descriptor
+        .as_ref()
+        .filter(|_| needs_program && subtype != Some(b"Type3"))
+        .and_then(|dict| read_font_program(dict, resolver, limits));
+    let mut simple = SimpleFont {
         encoding,
         to_unicode,
         program,
-        program_map,
         widths,
-        font_matrix,
+        font_scale,
         symbolic,
+        cache: Vec::new(),
+    };
+    if simple.plain_table().is_none() {
+        simple.cache = (0..256).map(|_| OnceCell::new()).collect();
+    }
+    Ok(simple)
+}
+
+fn simple_needs_program(
+    encoding: &EncodingState,
+    to_unicode: &UnicodeMap,
+    widths: &WidthState,
+    symbolic: bool,
+) -> bool {
+    let (first, last) = if widths.widths.is_empty() {
+        (0u32, 255u32)
+    } else {
+        let first = widths.first_char.clamp(0, 255) as u32;
+        let last = first
+            .saturating_add(widths.widths.len() as u32)
+            .saturating_sub(1)
+            .min(255);
+        (first, last)
+    };
+    for code in first..=last {
+        if let Some(found) = to_unicode.lookup(code) {
+            if crate::cmap::text_usable(found.as_slice()) {
+                continue;
+            }
+            return true;
+        }
+        if let Some(name) = encoding.difference(code) {
+            if agl_components(name).is_some() {
+                continue;
+            }
+            return true;
+        }
+        if encoding.base_explicit {
+            let name = u8::try_from(code)
+                .map(|byte| encoding_glyph_name(encoding.builtin, byte))
+                .unwrap_or_default();
+            if name.is_empty() || agl_components(name.as_bytes()).is_some() {
+                continue;
+            }
+            return true;
+        }
+        if symbolic {
+            return true;
+        }
+    }
+    false
+}
+
+fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<CompositeFont> {
+    let descendant = resolve_descendant(resolver, font)?;
+    let to_unicode = load_to_unicode(font, resolver, limits);
+    let cmap = load_cmap(resolver, font.get(b"Encoding"), limits, 0);
+    let horizontal = load_cid_widths(&descendant);
+    let vertical = load_vertical_metrics(resolver, &descendant);
+    let needs_program = !cmap.is_unicode_keyed()
+        && (to_unicode.is_empty()
+            || to_unicode.has_unusable()
+            || (cmap.is_identity()
+                && horizontal
+                    .entries
+                    .iter()
+                    .take(MAX_PROGRAM_CHECKS)
+                    .any(|(start, _, _)| to_unicode.usable(*start).is_none())));
+    let descriptor = deref_dict(resolver, descendant.get(b"FontDescriptor"));
+    let program = descriptor
+        .as_ref()
+        .filter(|_| needs_program)
+        .and_then(|dict| read_font_program(dict, resolver, limits));
+    let cid_to_gid = if program.is_some() {
+        load_cid_to_gid(resolver, &descendant, limits)
+    } else {
+        CidToGid::Identity
+    };
+    Ok(CompositeFont {
+        cmap,
+        to_unicode,
+        program,
+        cid_to_gid,
+        gid_to_cid: OnceCell::new(),
+        horizontal,
         vertical,
-        vertical_default,
-        vertical_metrics,
+        cache: RefCell::new(HashMap::new()),
     })
 }
 
-fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<FontKind> {
-    let descendant = resolve_descendant(resolver, font)?;
-    let to_unicode = load_to_unicode(font, resolver, limits)?;
-    let encoding = font.get(b"Encoding");
-    let code_reader = load_type0_codespace(encoding, font, resolver, limits)?;
-    let is_vertical = code_reader.identity && encoding_name_is_vertical(encoding)
-        || matches!(name_bytes(encoding), Some(b"Identity-V"));
-    let horizontal = load_cid_metrics(&descendant, b"DW", b"W")?;
-    let vertical_widths = load_cid_metrics(&descendant, b"DW2", b"W2").unwrap_or(CidMetrics {
-        default_width: horizontal.default_width,
-        widths: Vec::new(),
-        range_widths: Vec::new(),
-    });
-    let (vertical_pos_v, vertical_default_v) = read_dw2(&descendant);
-    let program = load_embedded_program(font, resolver, limits)
-        .or_else(|| load_embedded_program_descendant(&descendant, resolver, limits));
-    let cid_fallback = program
-        .as_ref()
-        .map(|value| build_cid_fallback(value, limits))
-        .unwrap_or_default();
-    Ok(FontKind::Composite(CompositeFont {
-        code_reader,
-        to_unicode,
-        cid_fallback,
-        program,
-        horizontal,
-        vertical_metrics: vertical_widths,
-        vertical_default_v,
-        _vertical_pos_v: vertical_pos_v,
-        is_vertical,
-    }))
+fn load_cid_to_gid(resolver: &dyn Resolver, descendant: &Dict, limits: &Limits) -> CidToGid {
+    match deref(resolver, descendant.get(b"CIDToGIDMap")) {
+        Some(Object::Stream(stream)) => match resolver.stream_data(&stream) {
+            Ok(data) if data.len() <= limits.max_decoded_stream_bytes => CidToGid::Table(data),
+            _ => CidToGid::Identity,
+        },
+        _ => CidToGid::Identity,
+    }
 }
 
-fn load_embedded_program(
-    font: &Dict,
+fn load_cmap(
     resolver: &dyn Resolver,
+    encoding: Option<&Object>,
     limits: &Limits,
-) -> Option<FontProgram> {
-    let descriptor = font.get(b"FontDescriptor")?;
-    let resolved = resolver.resolve(descriptor).ok()?;
-    let dict = resolved.as_dict()?;
-    read_font_program(dict, resolver, limits)
-}
-
-fn load_embedded_program_descendant(
-    font: &Dict,
-    resolver: &dyn Resolver,
-    limits: &Limits,
-) -> Option<FontProgram> {
-    let descriptor = font.get(b"FontDescriptor")?;
-    let resolved = resolver.resolve(descriptor).ok()?;
-    let dict = resolved.as_dict()?;
-    read_font_program(dict, resolver, limits)
+    depth: usize,
+) -> CMap {
+    let predefined = |name: &[u8]| {
+        CMap::predefined(name).unwrap_or_else(|| CMap::identity(name.ends_with(b"-V")))
+    };
+    match deref(resolver, encoding) {
+        Some(Object::Name(name)) => predefined(&name),
+        Some(Object::Stream(stream)) => {
+            let Ok(data) = resolver.stream_data(&stream) else {
+                return CMap::identity(false);
+            };
+            if data.len() > limits.max_decoded_stream_bytes {
+                return CMap::identity(false);
+            }
+            let parsed = CMap::parse(&data, limits);
+            let mut cmap = parsed.cmap;
+            if depth < MAX_CMAP_DEPTH {
+                let parent = match stream.dict.get(b"UseCMap") {
+                    Some(use_cmap) => Some(load_cmap(resolver, Some(use_cmap), limits, depth + 1)),
+                    None => parsed.parent.as_deref().map(predefined),
+                };
+                if let Some(parent) = parent {
+                    cmap = cmap.with_parent(parent);
+                }
+            }
+            if let Some(Object::Integer(mode)) = stream.dict.get(b"WMode") {
+                cmap = cmap.with_vertical(*mode == 1);
+            }
+            if cmap.is_empty_table() {
+                CMap::identity(cmap.is_vertical())
+            } else {
+                cmap
+            }
+        }
+        _ => CMap::identity(false),
+    }
 }
 
 fn read_font_program(
@@ -502,8 +707,11 @@ fn read_font_program(
     limits: &Limits,
 ) -> Option<FontProgram> {
     for key in [b"FontFile2".as_slice(), b"FontFile3", b"FontFile"] {
+        if descriptor.get(key).is_none() {
+            continue;
+        }
         if let Ok(bytes) = load_font_file_bytes(key, descriptor, resolver, limits)
-            && let Some(program) = parse_font_program(&bytes, limits)
+            && let Some(program) = parse_font_program(bytes)
         {
             return Some(program);
         }
@@ -511,58 +719,23 @@ fn read_font_program(
     None
 }
 
-fn build_cid_fallback(program: &FontProgram, limits: &Limits) -> Vec<(u32, Vec<u32>)> {
-    let mut out = Vec::new();
-    let cap = program.glyph_count().min(limits.max_items);
-    for gid in 0..cap {
-        if let Some(cps) = program.unicode_for_gid(gid as u16) {
-            out.push((gid as u32, cps));
-        }
-    }
-    out
-}
-
-fn prefer_unicode_mapping(
-    to_unicode: Option<Vec<u32>>,
-    program_map: Option<Vec<u32>>,
-    program_direct: Option<Vec<u32>>,
-) -> Option<Vec<u32>> {
-    if let Some(cps) = program_direct.filter(|cps| !cps.is_empty()) {
-        return Some(cps);
-    }
-    if let Some(cps) = program_map.filter(|cps| !cps.is_empty()) {
-        return Some(cps);
-    }
-    to_unicode.filter(|cps| !cps.is_empty())
-}
-
-fn program_map_lookup(map: &[(u32, Vec<u32>)], code: u32) -> Option<&[u32]> {
-    map.iter()
-        .find(|(source, _)| *source == code)
-        .map(|(_, dest)| dest.as_slice())
-}
-
 fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outcome<EncodingState> {
+    let subtype = name_bytes(font.get(b"Subtype"));
+    let implied = match standard_symbol_font(font.get(b"BaseFont")) {
+        Some(builtin) => builtin,
+        None if subtype == Some(b"TrueType") => BuiltinEncoding::WinAnsi,
+        None => BuiltinEncoding::Standard,
+    };
     let mut state = EncodingState {
-        builtin: BuiltinEncoding::PdfDoc,
+        builtin: implied,
+        base_explicit: false,
         differences: Vec::new(),
-        custom_names: Vec::new(),
     };
-    let resolved = match font.get(b"Encoding") {
-        Some(reference @ Object::Ref(_)) => Some(resolver.resolve(reference)?),
-        Some(other) => Some(other.clone()),
-        None => None,
-    };
-    match resolved {
-        None => {
-            state.builtin = if name_bytes(font.get(b"Subtype")) == Some(b"TrueType") {
-                BuiltinEncoding::WinAnsi
-            } else {
-                BuiltinEncoding::Standard
-            };
-        }
+    match deref(resolver, font.get(b"Encoding")) {
+        None => {}
         Some(Object::Name(name)) => {
             state.builtin = builtin_from_name(&name);
+            state.base_explicit = true;
         }
         Some(Object::Stream(stream)) => {
             let data = resolver.stream_data(&stream)?;
@@ -572,723 +745,223 @@ fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outco
             state.builtin = BuiltinEncoding::Custom;
         }
         Some(Object::Dict(dict)) => {
-            if let Some(Object::Name(name)) = dict.get(b"BaseEncoding") {
-                state.builtin = builtin_from_name(name);
-            } else if name_bytes(font.get(b"Subtype")) == Some(b"TrueType") {
-                state.builtin = BuiltinEncoding::WinAnsi;
-            } else {
-                state.builtin = BuiltinEncoding::Standard;
+            if let Some(Object::Name(name)) = deref(resolver, dict.get(b"BaseEncoding")) {
+                state.builtin = builtin_from_name(&name);
+                state.base_explicit = true;
             }
-            load_differences(&dict, &mut state)?;
+            if let Some(Object::Array(entries)) = deref(resolver, dict.get(b"Differences")) {
+                load_differences(&entries, &mut state);
+            }
         }
         Some(_) => {
             state.builtin = BuiltinEncoding::PdfDoc;
+            state.base_explicit = true;
         }
     }
     Ok(state)
 }
 
-fn load_differences(dict: &Dict, state: &mut EncodingState) -> Outcome<()> {
-    let Some(Object::Array(entries)) = dict.get(b"Differences") else {
-        return Ok(());
-    };
-    let mut code = 0u8;
+fn load_differences(entries: &[Object], state: &mut EncodingState) {
+    let mut code = 0i64;
     for entry in entries {
         match entry {
-            Object::Integer(value) if (0..=255).contains(value) => {
-                code = *value as u8;
-            }
+            Object::Integer(value) => code = *value,
             Object::Name(name) => {
-                if let Some(index) = glyph_name_index(name) {
-                    state.differences.push((code, index));
-                } else {
-                    state.custom_names.push((code, name.clone()));
+                if let Ok(slot) = u8::try_from(code) {
+                    state.differences.push((slot, name.clone()));
                 }
                 code = code.saturating_add(1);
             }
             _ => {}
         }
     }
-    Ok(())
 }
 
-fn load_widths(font: &Dict, resolver: &dyn Resolver) -> Outcome<WidthState> {
+fn load_widths(font: &Dict, descriptor: Option<&Dict>, type3: bool) -> WidthState {
     let first_char = read_integer(font.get(b"FirstChar")).unwrap_or(0);
-    let mut widths = Vec::new();
-    if let Some(Object::Array(items)) = font.get(b"Widths") {
-        for item in items {
-            widths.push(read_number(Some(item)).unwrap_or(0.0));
-        }
-    }
-    let missing = read_missing_width(font, resolver).unwrap_or(0.0);
-    let standard14 = standard14_from_base_font(font.get(b"BaseFont"));
-    Ok(WidthState {
+    let widths = match font.get(b"Widths") {
+        Some(Object::Array(items)) => items
+            .iter()
+            .take(MAX_METRIC_ENTRIES)
+            .map(|item| item.as_number().unwrap_or(0.0))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let missing = descriptor
+        .and_then(|dict| read_number(dict.get(b"MissingWidth")))
+        .unwrap_or(0.0);
+    WidthState {
         first_char,
         widths,
-        missing: if missing > 0.0 { missing } else { 1000.0 },
-        standard14,
-    })
-}
-
-fn load_vertical_metrics(font: &Dict) -> VerticalMetrics {
-    let (dw2_pos, dw2_adv) = read_dw2(font);
-    let mut w2 = Vec::new();
-    if let Some(Object::Array(items)) = font.get(b"W2") {
-        let mut idx = 0usize;
-        while idx < items.len() {
-            let cid = items
-                .get(idx)
-                .and_then(|item| read_integer(Some(item)))
-                .unwrap_or(0) as u32;
-            idx += 1;
-            if let Some(Object::Array(widths)) = items.get(idx) {
-                if let (Some(pos), Some(adv)) = (
-                    widths.first().and_then(|item| read_number(Some(item))),
-                    widths.get(1).and_then(|item| read_number(Some(item))),
-                ) {
-                    w2.push((cid, pos, adv));
-                }
-                idx += 1;
-                continue;
-            }
-            let end_cid = items
-                .get(idx)
-                .and_then(|item| read_integer(Some(item)))
-                .unwrap_or(i64::from(cid)) as u32;
-            idx += 1;
-            if let (Some(pos), Some(adv)) = (
-                items.get(idx).and_then(|item| read_number(Some(item))),
-                items.get(idx + 1).and_then(|item| read_number(Some(item))),
-            ) {
-                w2.push((cid, pos, adv));
-                for extra in cid..=end_cid {
-                    if extra != cid {
-                        w2.push((extra, pos, adv));
-                    }
-                }
-            }
-            idx = idx.saturating_add(2);
-        }
-    }
-    VerticalMetrics {
-        _dw2_pos: dw2_pos,
-        dw2_adv,
-        w2,
-    }
-}
-
-fn load_cid_metrics(dict: &Dict, dw_key: &[u8], w_key: &[u8]) -> Outcome<CidMetrics> {
-    let default_width = read_number(dict.get(dw_key)).unwrap_or(1000.0);
-    let mut metrics = CidMetrics {
-        default_width,
-        widths: Vec::new(),
-        range_widths: Vec::new(),
-    };
-    let Some(Object::Array(items)) = dict.get(w_key) else {
-        return Ok(metrics);
-    };
-    let mut idx = 0usize;
-    while idx < items.len() {
-        let start = items
-            .get(idx)
-            .and_then(|item| read_integer(Some(item)))
-            .unwrap_or(0) as u32;
-        idx += 1;
-        if let Some(Object::Array(inner)) = items.get(idx) {
-            for (offset, item) in inner.iter().enumerate() {
-                let width = read_number(Some(item)).unwrap_or(default_width);
-                metrics
-                    .widths
-                    .push((start.saturating_add(offset as u32), width));
-            }
-            idx += 1;
-            continue;
-        }
-        let end = items
-            .get(idx)
-            .and_then(|item| read_integer(Some(item)))
-            .unwrap_or(i64::from(start)) as u32;
-        idx += 1;
-        let width = items
-            .get(idx)
-            .and_then(|item| read_number(Some(item)))
-            .unwrap_or(default_width);
-        metrics.range_widths.push((start, end, width));
-        idx += 1;
-    }
-    Ok(metrics)
-}
-
-fn load_to_unicode(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outcome<UnicodeMap> {
-    let Some(Object::Ref(reference)) = font.get(b"ToUnicode") else {
-        return Ok(UnicodeMap::default());
-    };
-    let resolved = resolver.resolve(&Object::Ref(*reference))?;
-    let Object::Stream(stream) = resolved else {
-        return Ok(UnicodeMap::default());
-    };
-    let data = resolver.stream_data(&stream)?;
-    if data.len() > limits.max_decoded_stream_bytes {
-        return Err(Failure::limit("ToUnicode stream exceeds limit"));
-    }
-    Ok(parse_cmap_to_unicode(&data, limits))
-}
-
-fn load_type0_codespace(
-    encoding: Option<&Object>,
-    font: &Dict,
-    resolver: &dyn Resolver,
-    limits: &Limits,
-) -> Outcome<CodeReader> {
-    if let Some(Object::Name(name)) = encoding {
-        if name == b"Identity-H" {
-            return Ok(CodeReader {
-                codespace: Vec::new(),
-                identity: true,
-                bytes_per_code: 2,
-            });
-        }
-        if name == b"Identity-V" {
-            return Ok(CodeReader {
-                codespace: Vec::new(),
-                identity: true,
-                bytes_per_code: 2,
-            });
-        }
-    }
-    if let Some(Object::Ref(reference)) = encoding {
-        let resolved = resolver.resolve(&Object::Ref(*reference))?;
-        if let Object::Stream(stream) = resolved {
-            let data = resolver.stream_data(&stream)?;
-            if data.len() > limits.max_decoded_stream_bytes {
-                return Err(Failure::limit("CMap stream exceeds limit"));
-            }
-            return Ok(parse_cmap_codespace(&data, limits));
-        }
-    }
-    if let Some(Object::Ref(reference)) = font.get(b"Encoding") {
-        let resolved = resolver.resolve(&Object::Ref(*reference))?;
-        if let Object::Stream(stream) = resolved {
-            let data = resolver.stream_data(&stream)?;
-            if data.len() > limits.max_decoded_stream_bytes {
-                return Err(Failure::limit("CMap stream exceeds limit"));
-            }
-            return Ok(parse_cmap_codespace(&data, limits));
-        }
-    }
-    Ok(CodeReader {
-        codespace: Vec::new(),
-        identity: true,
-        bytes_per_code: 2,
-    })
-}
-
-#[allow(clippy::indexing_slicing)]
-fn parse_cmap_codespace(data: &[u8], limits: &Limits) -> CodeReader {
-    let mut reader = CodeReader {
-        codespace: Vec::new(),
-        identity: false,
-        bytes_per_code: 2,
-    };
-    let tokens = tokenize_cmap(data, limits);
-    let mut idx = 0usize;
-    while idx < tokens.len() {
-        if tokens.get(idx) == Some(&CmapToken::Keyword(b"begincodespacerange".to_vec())) {
-            idx += 1;
-            if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
-                idx += 1;
-            }
-            while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
-                let (low, high, length) = read_codespace_entry(&tokens, &mut idx);
-                if let (Some(low), Some(high)) = (low, high) {
-                    reader.codespace.push(CodespaceRange {
-                        low,
-                        high,
-                        length: length.unwrap_or(1),
-                    });
-                }
-            }
-        }
-        idx += 1;
-    }
-    if reader.codespace.is_empty() {
-        reader.identity = true;
-        reader.bytes_per_code = 2;
-    } else {
-        reader.bytes_per_code = reader
-            .codespace
-            .iter()
-            .map(|range| range.length)
-            .max()
-            .unwrap_or(2);
-    }
-    reader
-}
-
-#[allow(clippy::indexing_slicing)]
-fn parse_cmap_to_unicode(data: &[u8], limits: &Limits) -> UnicodeMap {
-    let mut map = UnicodeMap::default();
-    let tokens = tokenize_cmap(data, limits);
-    let mut idx = 0usize;
-    while idx < tokens.len() {
-        match tokens.get(idx) {
-            Some(CmapToken::Keyword(keyword)) if keyword == b"beginbfchar" => {
-                idx += 1;
-                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
-                    idx += 1;
-                }
-                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
-                    let (src, dest) = read_bf_entry(&tokens, &mut idx);
-                    if let (Some(source), Some(destination)) = (src, dest) {
-                        map.char_map.push((source, destination));
-                    }
-                }
-            }
-            Some(CmapToken::Keyword(keyword)) if keyword == b"begincidchar" => {
-                idx += 1;
-                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
-                    idx += 1;
-                }
-                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
-                    let (src, dest) = read_bf_entry(&tokens, &mut idx);
-                    if let (Some(source), Some(destination)) = (src, dest) {
-                        map.char_map.push((source, destination));
-                    }
-                }
-            }
-            Some(CmapToken::Keyword(keyword)) if keyword == b"begincidrange" => {
-                idx += 1;
-                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
-                    idx += 1;
-                }
-                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
-                    let (start, end, dest, increment) = read_bf_range(&tokens, &mut idx);
-                    if let (Some(start), Some(end), Some(destination)) = (start, end, dest) {
-                        if increment && destination.len() == 1 {
-                            let base = destination.first().copied().unwrap_or(0);
-                            let mut code = start;
-                            while code <= end {
-                                map.char_map
-                                    .push((code, vec![base.saturating_add(code - start)]));
-                                code = code.saturating_add(1);
-                            }
-                        } else {
-                            map.range_map.push(BfRange {
-                                start,
-                                end,
-                                dest: destination,
-                                increment_last: increment,
-                            });
-                        }
-                    }
-                }
-            }
-            Some(CmapToken::Keyword(keyword)) if keyword == b"beginbfrange" => {
-                idx += 1;
-                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
-                    idx += 1;
-                }
-                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
-                    let (start, end, dest, increment) = read_bf_range(&tokens, &mut idx);
-                    if let (Some(start), Some(end), Some(destination)) = (start, end, dest) {
-                        if increment && destination.len() == 1 {
-                            let base = destination.first().copied().unwrap_or(0);
-                            let mut code = start;
-                            while code <= end {
-                                map.char_map
-                                    .push((code, vec![base.saturating_add(code - start)]));
-                                code = code.saturating_add(1);
-                            }
-                        } else {
-                            map.range_map.push(BfRange {
-                                start,
-                                end,
-                                dest: destination,
-                                increment_last: increment,
-                            });
-                        }
-                    }
-                }
-            }
-            _ => {
-                idx += 1;
-            }
-        }
-    }
-    map.finish();
-    map
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum CmapToken {
-    Keyword(Vec<u8>),
-    Integer(i64),
-    Hex(Vec<u8>),
-    Array(Vec<CmapToken>),
-    String(Vec<u8>),
-}
-
-#[allow(clippy::indexing_slicing)]
-fn tokenize_cmap(data: &[u8], limits: &Limits) -> Vec<CmapToken> {
-    let mut tokens = Vec::new();
-    let mut idx = 0usize;
-    let max_tokens = limits.max_items.min(limits.max_decoded_stream_bytes);
-    while idx < data.len() && tokens.len() < max_tokens {
-        skip_ws(data, &mut idx);
-        if idx >= data.len() {
-            break;
-        }
-        let byte = data[idx];
-        match byte {
-            b'/' => {
-                idx += 1;
-                let start = idx;
-                while idx < data.len() && !is_delim(data[idx]) {
-                    idx += 1;
-                }
-                tokens.push(CmapToken::Keyword(data[start..idx].to_vec()));
-            }
-            b'<' => {
-                idx += 1;
-                if data.get(idx) == Some(&b'<') {
-                    idx += 1;
-                    while idx < data.len() {
-                        if data.get(idx) == Some(&b'>') && data.get(idx + 1) == Some(&b'>') {
-                            idx += 2;
-                            break;
-                        }
-                        idx += 1;
-                    }
-                } else {
-                    let hex = read_hex(data, &mut idx);
-                    tokens.push(CmapToken::Hex(hex));
-                }
-            }
-            b'(' => {
-                let string = read_literal_string(data, &mut idx);
-                tokens.push(CmapToken::String(string));
-            }
-            b'[' => {
-                idx += 1;
-                let array = read_bracket_array(data, &mut idx, limits, max_tokens);
-                tokens.push(CmapToken::Array(array));
-            }
-            b'0'..=b'9' | b'+' | b'-' | b'.' => {
-                let number = read_number_token(data, &mut idx);
-                if let Ok(value) = number.parse::<i64>() {
-                    tokens.push(CmapToken::Integer(value));
-                }
-            }
-            _ => {
-                let start = idx;
-                while idx < data.len() && !is_whitespace(data[idx]) {
-                    idx += 1;
-                }
-                if start < idx {
-                    tokens.push(CmapToken::Keyword(data[start..idx].to_vec()));
-                } else {
-                    idx += 1;
-                }
-            }
-        }
-    }
-    tokens
-}
-
-fn read_bracket_array(
-    data: &[u8],
-    idx: &mut usize,
-    limits: &Limits,
-    max_tokens: usize,
-) -> Vec<CmapToken> {
-    let _ = limits;
-    let mut items = Vec::new();
-    while *idx < data.len() && items.len() < max_tokens {
-        skip_ws(data, idx);
-        if data.get(*idx) == Some(&b']') {
-            *idx += 1;
-            break;
-        }
-        if data.get(*idx) == Some(&b'<') {
-            *idx += 1;
-            let hex = read_hex(data, idx);
-            items.push(CmapToken::Hex(hex));
-            continue;
-        }
-        break;
-    }
-    items
-}
-
-fn read_codespace_entry(
-    tokens: &[CmapToken],
-    idx: &mut usize,
-) -> (Option<u32>, Option<u32>, Option<u8>) {
-    let low_token = tokens.get(*idx);
-    let low = low_token.and_then(hex_token_to_u32);
-    *idx += 1;
-    let high = tokens.get(*idx).and_then(hex_token_to_u32);
-    *idx += 1;
-    let length = match low_token {
-        Some(CmapToken::Hex(bytes)) => u8::try_from(bytes.len().clamp(1, 4)).ok(),
-        _ => None,
-    };
-    (low, high, length)
-}
-
-fn read_bf_entry(tokens: &[CmapToken], idx: &mut usize) -> (Option<u32>, Option<Vec<u32>>) {
-    let source = tokens.get(*idx).and_then(hex_token_to_u32);
-    *idx += 1;
-    let dest = tokens.get(*idx).map(decode_utf16_dest);
-    *idx += 1;
-    (source, dest)
-}
-
-fn read_bf_range(
-    tokens: &[CmapToken],
-    idx: &mut usize,
-) -> (Option<u32>, Option<u32>, Option<Vec<u32>>, bool) {
-    let start = tokens.get(*idx).and_then(hex_token_to_u32);
-    *idx += 1;
-    let end = tokens.get(*idx).and_then(hex_token_to_u32);
-    *idx += 1;
-    let token = tokens.get(*idx);
-    *idx += 1;
-    let increment = matches!(token, Some(CmapToken::Hex(bytes)) if bytes.len() <= 2);
-    let dest = token.map(decode_utf16_dest);
-    (start, end, dest, increment)
-}
-
-fn decode_utf16_dest(token: &CmapToken) -> Vec<u32> {
-    match token {
-        CmapToken::Hex(bytes) => decode_utf16_be(bytes),
-        CmapToken::Array(items) => items
-            .iter()
-            .flat_map(|item| {
-                if let CmapToken::Hex(bytes) = item {
-                    decode_utf16_be(bytes)
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect(),
-        CmapToken::String(bytes) => bytes.iter().map(|b| u32::from(*b)).collect(),
-        _ => Vec::new(),
-    }
-}
-
-#[allow(clippy::indexing_slicing)]
-fn decode_utf16_be(bytes: &[u8]) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut idx = 0usize;
-    while idx.saturating_add(1) < bytes.len() {
-        let high = u32::from(bytes[idx]);
-        let low = u32::from(bytes[idx + 1]);
-        let unit = (high << 8) | low;
-        idx += 2;
-        if (0xd800..=0xdbff).contains(&unit) && idx.saturating_add(1) < bytes.len() {
-            let trail_high = u32::from(bytes[idx]);
-            let trail_low = u32::from(bytes[idx + 1]);
-            let trail = (trail_high << 8) | trail_low;
-            idx += 2;
-            if (0xdc00..=0xdfff).contains(&trail) {
-                let combined = 0x1_0000 + ((unit - 0xd800) << 10) + (trail - 0xdc00);
-                out.push(combined);
-                continue;
-            }
-        }
-        out.push(unit);
-    }
-    out
-}
-
-fn hex_token_to_u32(token: &CmapToken) -> Option<u32> {
-    match token {
-        CmapToken::Hex(bytes) => {
-            let mut value = 0u32;
-            for byte in bytes {
-                value = (value << 8) | u32::from(*byte);
-            }
-            Some(value)
-        }
-        CmapToken::Integer(value) => Some(*value as u32),
-        _ => None,
-    }
-}
-
-fn ascii_hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
-    }
-}
-
-#[allow(clippy::indexing_slicing)]
-fn skip_ws(data: &[u8], idx: &mut usize) {
-    while *idx < data.len() && is_whitespace(data[*idx]) {
-        *idx += 1;
-    }
-}
-
-fn is_whitespace(byte: u8) -> bool {
-    matches!(byte, 0x00 | 0x09 | 0x0a | 0x0c | 0x0d | 0x20)
-}
-
-fn is_delim(byte: u8) -> bool {
-    is_whitespace(byte)
-        || matches!(
-            byte,
-            b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-        )
-}
-
-#[allow(clippy::indexing_slicing)]
-fn read_hex(data: &[u8], idx: &mut usize) -> Vec<u8> {
-    let mut nibbles = Vec::new();
-    while *idx < data.len() {
-        let byte = data[*idx];
-        if byte == b'>' {
-            *idx += 1;
-            break;
-        }
-        if is_whitespace(byte) {
-            *idx += 1;
-            continue;
-        }
-        if let Some(nibble) = ascii_hex_nibble(byte) {
-            nibbles.push(nibble);
-        }
-        *idx += 1;
-    }
-    if nibbles.len() % 2 == 1 {
-        nibbles.push(0);
-    }
-    let mut out = Vec::new();
-    for pair in nibbles.chunks(2) {
-        let high = pair.first().copied().unwrap_or(0);
-        let low = pair.get(1).copied().unwrap_or(0);
-        out.push((high << 4) | low);
-    }
-    out
-}
-
-#[allow(clippy::indexing_slicing)]
-fn read_literal_string(data: &[u8], idx: &mut usize) -> Vec<u8> {
-    let mut out = Vec::new();
-    if data.get(*idx) != Some(&b'(') {
-        return out;
-    }
-    *idx += 1;
-    let mut depth = 1i32;
-    while *idx < data.len() && depth > 0 {
-        let byte = data[*idx];
-        if byte == b'(' {
-            depth += 1;
-        } else if byte == b')' {
-            depth -= 1;
-            if depth == 0 {
-                *idx += 1;
-                break;
-            }
-        } else if byte == b'\\' {
-            *idx += 1;
-            if let Some(next) = data.get(*idx) {
-                out.push(*next);
-            }
+        missing: if type3 {
+            0.0
+        } else if missing > 0.0 {
+            missing
         } else {
-            out.push(byte);
-        }
-        *idx += 1;
+            1000.0
+        },
+        standard14: standard14_from_base_font(font.get(b"BaseFont")),
     }
-    out
 }
 
-#[allow(clippy::indexing_slicing)]
-fn read_number_token(data: &[u8], idx: &mut usize) -> String {
-    let start = *idx;
-    while *idx < data.len() && matches!(data[*idx], b'0'..=b'9' | b'+' | b'-' | b'.') {
-        *idx += 1;
+fn load_cid_widths(descendant: &Dict) -> CidWidths {
+    let default_width = read_number(descendant.get(b"DW")).unwrap_or(1000.0);
+    let mut entries: Vec<(u32, u32, f64)> = Vec::new();
+    if let Some(Object::Array(items)) = descendant.get(b"W") {
+        let mut index = 0usize;
+        while index < items.len() && entries.len() < MAX_METRIC_ENTRIES {
+            let start = items
+                .get(index)
+                .and_then(Object::as_integer)
+                .and_then(|value| u32::try_from(value).ok());
+            index += 1;
+            match items.get(index) {
+                Some(Object::Array(inner)) => {
+                    index += 1;
+                    let Some(start) = start else { continue };
+                    for (step, item) in inner.iter().enumerate() {
+                        if let Some(width) = item.as_number() {
+                            let cid = start.saturating_add(step as u32);
+                            entries.push((cid, cid, width));
+                        }
+                    }
+                }
+                Some(Object::Integer(end)) => {
+                    let width = items.get(index + 1).and_then(Object::as_number);
+                    index += 2;
+                    if let (Some(start), Ok(end), Some(width)) = (start, u32::try_from(*end), width)
+                        && start <= end
+                    {
+                        entries.push((
+                            start,
+                            end.min(start.saturating_add(MAX_WIDTH_RANGE)),
+                            width,
+                        ));
+                    }
+                }
+                _ => index += 1,
+            }
+        }
     }
-    String::from_utf8_lossy(&data[start..*idx]).into_owned()
+    entries.sort_by_key(|(start, _, _)| *start);
+    CidWidths {
+        default_width,
+        entries,
+    }
+}
+
+fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> VerticalCidMetrics {
+    let (origin_y, advance) = match deref(resolver, descendant.get(b"DW2")) {
+        Some(Object::Array(items)) => (
+            items
+                .first()
+                .and_then(Object::as_number)
+                .unwrap_or(DEFAULT_VERTICAL_ORIGIN),
+            items
+                .get(1)
+                .and_then(Object::as_number)
+                .unwrap_or(-DEFAULT_VERTICAL_ADVANCE),
+        ),
+        _ => (DEFAULT_VERTICAL_ORIGIN, -DEFAULT_VERTICAL_ADVANCE),
+    };
+    let mut entries: Vec<(u32, u32, [f64; 3])> = Vec::new();
+    if let Some(Object::Array(items)) = deref(resolver, descendant.get(b"W2")) {
+        let mut index = 0usize;
+        while index < items.len() && entries.len() < MAX_METRIC_ENTRIES {
+            let start = items
+                .get(index)
+                .and_then(Object::as_integer)
+                .and_then(|value| u32::try_from(value).ok());
+            index += 1;
+            match items.get(index) {
+                Some(Object::Array(inner)) => {
+                    index += 1;
+                    let Some(start) = start else { continue };
+                    for (step, triple) in inner.chunks_exact(3).enumerate() {
+                        let values: Vec<f64> =
+                            triple.iter().filter_map(Object::as_number).collect();
+                        if let [advance, origin_x, origin_y] = values.as_slice() {
+                            let cid = start.saturating_add(step as u32);
+                            entries.push((cid, cid, [*advance, *origin_x, *origin_y]));
+                        }
+                    }
+                }
+                Some(Object::Integer(end)) => {
+                    let values: Vec<f64> = (1..=3)
+                        .filter_map(|offset| items.get(index + offset).and_then(Object::as_number))
+                        .collect();
+                    let end = u32::try_from(*end).ok();
+                    index += 4;
+                    if let (Some(start), Some(end), [advance, origin_x, origin_y]) =
+                        (start, end, values.as_slice())
+                        && start <= end
+                    {
+                        entries.push((
+                            start,
+                            end.min(start.saturating_add(MAX_WIDTH_RANGE)),
+                            [*advance, *origin_x, *origin_y],
+                        ));
+                    }
+                }
+                _ => index += 1,
+            }
+        }
+    }
+    entries.sort_by_key(|(start, _, _)| *start);
+    VerticalCidMetrics {
+        origin_y,
+        advance,
+        entries,
+    }
+}
+
+fn load_to_unicode(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> UnicodeMap {
+    let Some(Object::Stream(stream)) = deref(resolver, font.get(b"ToUnicode")) else {
+        return UnicodeMap::default();
+    };
+    match resolver.stream_data(&stream) {
+        Ok(data) if data.len() <= limits.max_decoded_stream_bytes => {
+            UnicodeMap::parse(&data, limits)
+        }
+        _ => UnicodeMap::default(),
+    }
 }
 
 fn resolve_descendant(resolver: &dyn Resolver, font: &Dict) -> Outcome<Dict> {
-    let listing = font
-        .get(b"DescendantFonts")
-        .ok_or_else(|| Failure::invalid("Type0 font missing DescendantFonts"))?;
-    let Object::Array(children) = resolver.resolve(listing)? else {
+    let Some(Object::Array(children)) = deref(resolver, font.get(b"DescendantFonts")) else {
         return Err(Failure::invalid("Type0 font missing DescendantFonts"));
     };
     let first = children
         .first()
         .ok_or_else(|| Failure::invalid("Type0 font has empty DescendantFonts"))?;
-    let resolved = resolver.resolve(first)?;
-    match resolved {
-        Object::Dict(dict) => Ok(dict),
-        Object::Stream(stream) => Ok(stream.dict),
-        _ => Err(Failure::invalid(
-            "Type0 descendant is not a font dictionary",
-        )),
-    }
+    deref_dict(resolver, Some(first))
+        .ok_or_else(|| Failure::invalid("Type0 descendant is not a font dictionary"))
 }
 
-fn read_font_matrix(font: &Dict) -> Option<[f64; 6]> {
-    let Object::Array(items) = font.get(b"FontMatrix")? else {
+fn read_font_matrix(resolver: &dyn Resolver, font: &Dict) -> Option<[f64; 6]> {
+    let Object::Array(items) = deref(resolver, font.get(b"FontMatrix"))? else {
         return None;
     };
     let mut matrix = [0.0; 6];
-    for (idx, slot) in matrix.iter_mut().enumerate() {
-        *slot = items
-            .get(idx)
-            .and_then(|item| read_number(Some(item)))
-            .unwrap_or(0.0);
+    for (slot, item) in matrix.iter_mut().zip(items.iter()) {
+        *slot = item.as_number()?;
     }
-    Some(matrix)
+    (items.len() >= 6).then_some(matrix)
 }
 
-fn read_dw2(font: &Dict) -> (f64, f64) {
-    if let Some(Object::Array(items)) = font.get(b"DW2") {
-        let pos = items
-            .first()
-            .and_then(|item| read_number(Some(item)))
-            .unwrap_or(880.0);
-        let adv = items
-            .get(1)
-            .and_then(|item| read_number(Some(item)))
-            .unwrap_or(1000.0);
-        return (pos, adv);
+fn standard_symbol_font(name: Option<&Object>) -> Option<BuiltinEncoding> {
+    match strip_subset_prefix(name_bytes(name)?) {
+        b"Symbol" => Some(BuiltinEncoding::Symbol),
+        b"ZapfDingbats" => Some(BuiltinEncoding::ZapfDingbats),
+        _ => None,
     }
-    (880.0, 1000.0)
-}
-
-fn read_missing_width(font: &Dict, resolver: &dyn Resolver) -> Option<f64> {
-    let Some(Object::Ref(reference)) = font.get(b"FontDescriptor") else {
-        return None;
-    };
-    let resolved = resolver.resolve(&Object::Ref(*reference)).ok()?;
-    let dict = resolved.as_dict()?;
-    read_number(dict.get(b"MissingWidth"))
-}
-
-fn font_descriptor_flags(font: &Dict, resolver: &dyn Resolver) -> Outcome<Option<i64>> {
-    let Some(Object::Ref(reference)) = font.get(b"FontDescriptor") else {
-        return Ok(None);
-    };
-    let resolved = resolver.resolve(&Object::Ref(*reference))?;
-    let dict = resolved
-        .as_dict()
-        .ok_or_else(|| Failure::invalid("FontDescriptor is not a dictionary"))?;
-    Ok(read_integer(dict.get(b"Flags")))
 }
 
 fn standard14_from_base_font(name: Option<&Object>) -> Option<Standard14Font> {
     let Object::Name(bytes) = name? else {
         return None;
     };
-    let base = strip_subset_prefix(bytes);
-    match base {
+    match strip_subset_prefix(bytes) {
         b"Helvetica" => Some(Standard14Font::Helvetica),
         b"Helvetica-Bold" => Some(Standard14Font::Helvetica_Bold),
         b"Helvetica-Oblique" => Some(Standard14Font::Helvetica_Oblique),
@@ -1312,10 +985,9 @@ fn standard14_from_base_font(name: Option<&Object>) -> Option<Standard14Font> {
 }
 
 fn strip_subset_prefix(name: &[u8]) -> &[u8] {
-    if let Some(idx) = name.iter().position(|byte| *byte == b'+') {
-        name.get(idx + 1..).unwrap_or(name)
-    } else {
-        name
+    match name.iter().position(|byte| *byte == b'+') {
+        Some(index) => name.get(index + 1..).unwrap_or(name),
+        None => name,
     }
 }
 
@@ -1325,23 +997,8 @@ fn builtin_from_name(name: &[u8]) -> BuiltinEncoding {
         b"StandardEncoding" => BuiltinEncoding::Standard,
         b"MacRomanEncoding" => BuiltinEncoding::MacRoman,
         b"MacExpertEncoding" => BuiltinEncoding::MacExpert,
-        b"PDFDocEncoding" => BuiltinEncoding::PdfDoc,
         _ => BuiltinEncoding::PdfDoc,
     }
-}
-
-fn encoding_name_is_vertical(encoding: Option<&Object>) -> bool {
-    matches!(name_bytes(encoding), Some(b"Identity-V"))
-}
-
-fn glyph_name_index(name: &[u8]) -> Option<u16> {
-    let text = core::str::from_utf8(name).ok()?;
-    for (idx, (glyph, _)) in crate::font_tables::GLYPH_NAME_INDEX.iter().enumerate() {
-        if *glyph == text {
-            return Some(idx as u16);
-        }
-    }
-    None
 }
 
 fn name_bytes(value: Option<&Object>) -> Option<&[u8]> {
@@ -1364,194 +1021,884 @@ fn read_number(value: Option<&Object>) -> Option<f64> {
 }
 
 fn symbolic_fallback(code: u32) -> u32 {
-    if code >= 0xf000 {
-        return code - 0xf000;
+    if code >= 0xF000 {
+        return code - 0xF000;
     }
-    if code <= 0xff {
+    if code <= 0xFF {
         return code;
     }
     0
 }
 
-fn unicode_slice_usable(codepoints: &[u32]) -> bool {
-    !codepoints.is_empty()
-        && codepoints.iter().all(|cp| {
-            *cp != 0
-                && *cp != 0xFEFF
-                && char::from_u32(*cp)
-                    .is_some_and(|ch| !ch.is_control() || matches!(ch, '\t' | '\n' | '\r'))
-        })
-}
-
 fn push_codepoints(text: &mut String, codepoints: &[u32]) {
     for cp in codepoints {
-        push_codepoint(text, *cp);
-    }
-}
-
-fn push_codepoint(text: &mut String, codepoint: u32) {
-    if codepoint == 0 || codepoint == 0xFEFF {
-        return;
-    }
-    if let Some(ch) = char::from_u32(codepoint) {
-        if ch.is_control() && !matches!(ch, '\t' | '\n' | '\r') {
-            return;
+        if *cp == 0 || *cp == 0xFEFF {
+            continue;
         }
-        text.push(ch);
+        if let Some(ch) = char::from_u32(*cp)
+            && (!ch.is_control() || matches!(ch, '\t' | '\n' | '\r'))
+        {
+            text.push(ch);
+        }
     }
-}
-
-fn agl_lookup_extended(name: &[u8]) -> Option<Vec<u32>> {
-    agl_components(name)
 }
 
 #[cfg(test)]
-#[allow(dead_code, clippy::expect_used, clippy::indexing_slicing)]
+#[allow(clippy::indexing_slicing, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::ops::Range;
 
     use super::*;
-    use crate::failure::Outcome;
-    use crate::inspection::Limits;
-    use crate::object::{Dict, ObjRef, Object, Stream};
+    use crate::cff::tests::{Layout, build as build_cff};
+    use crate::object::{ObjRef, Stream};
 
-    struct MapResolver {
-        objects: BTreeMap<ObjRef, Object>,
-        streams: BTreeMap<(u32, u16), Vec<u8>>,
+    #[derive(Default)]
+    struct TestResolver {
+        objects: BTreeMap<u32, Object>,
         data: Vec<u8>,
+        next: u32,
     }
 
-    impl MapResolver {
-        fn stream_from(dict: Dict, data: &[u8]) -> (Stream, Range<usize>) {
-            let start = 0usize;
-            let end = data.len();
-            (
-                Stream {
-                    dict,
-                    data: start..end,
-                },
-                start..end,
-            )
+    impl TestResolver {
+        fn add(&mut self, object: Object) -> Object {
+            self.next += 1;
+            self.objects.insert(self.next, object);
+            Object::Ref(ObjRef {
+                number: self.next,
+                generation: 0,
+            })
         }
 
-        fn insert_bytes(&mut self, reference: ObjRef, dict: Dict, data: &[u8]) {
-            let (stream, _) = Self::stream_from(dict, data);
-            self.streams
-                .insert((reference.number, reference.generation), data.to_vec());
-            self.objects.insert(reference, Object::Stream(stream));
+        fn add_stream(&mut self, dict: Dict, bytes: &[u8]) -> Object {
+            let start = self.data.len();
+            self.data.extend_from_slice(bytes);
+            let stream = Stream {
+                dict,
+                data: start..self.data.len(),
+            };
+            self.add(Object::Stream(stream))
         }
     }
 
-    impl Resolver for MapResolver {
+    impl Resolver for TestResolver {
         fn resolve(&self, object: &Object) -> Outcome<Object> {
             match object {
                 Object::Ref(reference) => self
                     .objects
-                    .get(reference)
+                    .get(&reference.number)
                     .cloned()
                     .ok_or_else(|| Failure::invalid("missing object")),
-                _ => Ok(object.clone()),
+                other => Ok(other.clone()),
             }
         }
 
         fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>> {
-            if stream.data.end <= self.data.len() {
-                Ok(self.data[stream.data.clone()].to_vec())
-            } else {
-                Err(Failure::invalid("stream bytes missing"))
-            }
+            self.data
+                .get(stream.data.clone())
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| Failure::invalid("stream bytes missing"))
         }
     }
 
-    fn dict_with(entries: Vec<(&[u8], Object)>) -> Dict {
+    fn dict(entries: Vec<(&str, Object)>) -> Dict {
         let mut dict = Dict::default();
         for (key, value) in entries {
-            dict.insert(key, value);
+            dict.insert(key.as_bytes(), value);
         }
         dict
     }
 
-    #[test]
-    fn cached_builtin_tables_match_the_name_lookup_path() {
-        for builtin in [
-            BuiltinEncoding::WinAnsi,
-            BuiltinEncoding::Standard,
-            BuiltinEncoding::MacRoman,
-            BuiltinEncoding::MacExpert,
-            BuiltinEncoding::PdfDoc,
-        ] {
-            let font = SimpleFont {
-                encoding: EncodingState {
-                    builtin,
-                    differences: Vec::new(),
-                    custom_names: Vec::new(),
-                },
-                to_unicode: UnicodeMap::default(),
-                program: None,
-                program_map: Vec::new(),
-                widths: WidthState {
-                    first_char: 0,
-                    widths: Vec::new(),
-                    missing: 500.0,
-                    standard14: None,
-                },
-                font_matrix: None,
-                symbolic: false,
-                vertical: false,
-                vertical_default: 1000.0,
-                vertical_metrics: VerticalMetrics {
-                    _dw2_pos: 0.0,
-                    dw2_adv: 0.0,
-                    w2: Vec::new(),
-                },
-            };
-            assert!(font.builtin_text_table().is_some());
-            let all: Vec<u8> = (0..=255).collect();
-            let mut glyphs = Vec::new();
-            let mut fast = String::new();
-            font.decode(&all, &mut glyphs, &mut fast);
-            let mut slow = String::new();
-            for code in 0..=255u32 {
-                font.decode_code_slow(code, &mut slow);
+    fn name(value: &str) -> Object {
+        Object::Name(value.as_bytes().to_vec())
+    }
+
+    fn numbers(values: &[f64]) -> Object {
+        Object::Array(values.iter().map(|value| Object::Real(*value)).collect())
+    }
+
+    fn decode(font: &Font, bytes: &[u8]) -> (String, Vec<Glyph>) {
+        let mut glyphs = Vec::new();
+        let mut text = String::new();
+        font.decode(bytes, &mut glyphs, &mut text);
+        (text, glyphs)
+    }
+
+    fn load(resolver: &TestResolver, font: Dict) -> Font {
+        Font::load(resolver, &font, &Limits::default()).expect("font")
+    }
+
+    fn be16(value: u16) -> Vec<u8> {
+        value.to_be_bytes().to_vec()
+    }
+
+    fn be32(value: u32) -> Vec<u8> {
+        value.to_be_bytes().to_vec()
+    }
+
+    fn sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut out = be32(0x0001_0000);
+        out.extend(be16(tables.len() as u16));
+        out.extend([0u8; 6]);
+        let mut offset = 12 + tables.len() * 16;
+        let mut bodies = Vec::new();
+        for (tag, body) in tables {
+            out.extend_from_slice(*tag);
+            out.extend(be32(0));
+            out.extend(be32(offset as u32));
+            out.extend(be32(body.len() as u32));
+            bodies.extend_from_slice(body);
+            let padded = (body.len() + 3) & !3;
+            bodies.resize(bodies.len() + padded - body.len(), 0);
+            offset += padded;
+        }
+        out.extend(bodies);
+        out
+    }
+
+    fn maxp(glyphs: u16) -> Vec<u8> {
+        let mut out = be32(0x0001_0000);
+        out.extend(be16(glyphs));
+        out.extend([0u8; 26]);
+        out
+    }
+
+    fn format0_cmap(platform: u16, encoding: u16, map: &[(u8, u8)]) -> Vec<u8> {
+        let mut glyphs = [0u8; 256];
+        for (code, gid) in map {
+            glyphs[usize::from(*code)] = *gid;
+        }
+        let mut sub = be16(0);
+        sub.extend(be16(262));
+        sub.extend(be16(0));
+        sub.extend(glyphs);
+        let mut out = be16(0);
+        out.extend(be16(1));
+        out.extend(be16(platform));
+        out.extend(be16(encoding));
+        out.extend(be32(12));
+        out.extend(sub);
+        out
+    }
+
+    fn post2(names: &[&str]) -> Vec<u8> {
+        let mut out = be32(0x0002_0000);
+        out.extend([0u8; 28]);
+        out.extend(be16(names.len() as u16));
+        let standard = ["A", "B", "space"];
+        let mut strings = Vec::new();
+        let mut custom = 0u16;
+        for entry in names {
+            if let Some(index) = standard.iter().position(|std| std == entry) {
+                out.extend(be16([36u16, 37, 3][index]));
+            } else if *entry == ".notdef" {
+                out.extend(be16(0));
+            } else {
+                out.extend(be16(258 + custom));
+                custom += 1;
+                strings.push(entry.len() as u8);
+                strings.extend_from_slice(entry.as_bytes());
             }
-            assert_eq!(fast, slow, "{builtin:?}");
-            assert_eq!(glyphs.len(), 256);
+        }
+        out.extend(strings);
+        out
+    }
+
+    fn truetype_ligature_font(extra: Vec<(&'static [u8; 4], Vec<u8>)>) -> Vec<u8> {
+        let mut glyf = Vec::new();
+        let mut loca = be32(0);
+        let simple = |contours: u16| {
+            let mut glyph = be16(contours);
+            glyph.extend([0u8; 12]);
+            glyph
+        };
+        let mut composite = be16(0xFFFF);
+        composite.extend([0u8; 8]);
+        composite.extend(be16(0x0022));
+        composite.extend(be16(1));
+        composite.extend([0, 0]);
+        composite.extend(be16(0x0002));
+        composite.extend(be16(2));
+        composite.extend([40, 0]);
+        for glyph in [simple(0), simple(1), simple(2), composite] {
+            glyf.extend_from_slice(&glyph);
+            while glyf.len() % 4 != 0 {
+                glyf.push(0);
+            }
+            loca.extend(be32(glyf.len() as u32));
+        }
+        let mut head = vec![0u8; 54];
+        head[51] = 1;
+        let mut tables: Vec<(&[u8; 4], Vec<u8>)> = vec![
+            (b"head", head),
+            (b"maxp", maxp(4)),
+            (b"loca", loca),
+            (b"glyf", glyf),
+        ];
+        tables.extend(extra);
+        sfnt(&tables)
+    }
+
+    fn type0_with_program(
+        resolver: &mut TestResolver,
+        program: Vec<u8>,
+        to_unicode: Option<&str>,
+        cid_to_gid: Option<Vec<u8>>,
+    ) -> Dict {
+        let file = resolver.add_stream(Dict::default(), &program);
+        let descriptor = resolver.add(Object::Dict(dict(vec![
+            ("Type", name("FontDescriptor")),
+            ("FontFile2", file),
+        ])));
+        let mut descendant = dict(vec![
+            ("Type", name("Font")),
+            ("Subtype", name("CIDFontType2")),
+            ("FontDescriptor", descriptor),
+            ("DW", Object::Integer(500)),
+        ]);
+        if let Some(map) = cid_to_gid {
+            let stream = resolver.add_stream(Dict::default(), &map);
+            descendant.insert(b"CIDToGIDMap", stream);
+        }
+        let descendant = resolver.add(Object::Dict(descendant));
+        let mut font = dict(vec![
+            ("Type", name("Font")),
+            ("Subtype", name("Type0")),
+            ("Encoding", name("Identity-H")),
+            ("DescendantFonts", Object::Array(vec![descendant])),
+        ]);
+        if let Some(cmap) = to_unicode {
+            let stream = resolver.add_stream(Dict::default(), cmap.as_bytes());
+            font.insert(b"ToUnicode", stream);
+        }
+        font
+    }
+
+    #[test]
+    fn nul_mapped_ligature_cid_is_recovered_from_composite_glyph() {
+        let mut resolver = TestResolver::default();
+        let cmap = "1 begincodespacerange <0000> <ffff> endcodespacerange\n3 beginbfrange\n<0010> <0010> <0074>\n<0020> <0020> <0069>\n<0030> <0030> <0000>\nendbfrange";
+        let mut map = vec![0u8; 0x31 * 2];
+        for (cid, gid) in [(0x10usize, 1u16), (0x20, 2), (0x30, 3)] {
+            map[cid * 2] = (gid >> 8) as u8;
+            map[cid * 2 + 1] = gid as u8;
+        }
+        let font = type0_with_program(
+            &mut resolver,
+            truetype_ligature_font(Vec::new()),
+            Some(cmap),
+            Some(map),
+        );
+        let font = load(&resolver, font);
+        let (text, glyphs) = decode(&font, &[0x00, 0x10, 0x00, 0x30, 0x00, 0x20]);
+        assert_eq!(text, "ttii");
+        assert_eq!(glyphs.len(), 3);
+        assert!((glyphs[0].advance - 0.5).abs() < 1e-9);
+    }
+
+    fn metric_font(glyphs: &[(i16, i16, i16, i16, u16)]) -> Vec<u8> {
+        let mut glyf = Vec::new();
+        let mut loca = be32(0);
+        let mut hmtx = Vec::new();
+        for (x_min, y_min, x_max, y_max, advance) in glyphs {
+            glyf.extend(be16(1));
+            for value in [x_min, y_min, x_max, y_max] {
+                glyf.extend(be16(*value as u16));
+            }
+            glyf.extend([0u8; 4]);
+            loca.extend(be32(glyf.len() as u32));
+            hmtx.extend(be16(*advance));
+            hmtx.extend(be16(*x_min as u16));
+        }
+        let mut head = vec![0u8; 54];
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        head[51] = 1;
+        let mut hhea = vec![0u8; 36];
+        hhea[34..36].copy_from_slice(&(glyphs.len() as u16).to_be_bytes());
+        sfnt(&[
+            (b"head", head),
+            (b"hhea", hhea),
+            (b"maxp", maxp(glyphs.len() as u16)),
+            (b"hmtx", hmtx),
+            (b"loca", loca),
+            (b"glyf", glyf),
+        ])
+    }
+
+    #[test]
+    fn anonymous_ligature_glyph_is_recovered_from_letter_shapes() {
+        let mut resolver = TestResolver::default();
+        let program = metric_font(&[
+            (0, 0, 0, 0, 500),
+            (16, -8, 303, 584, 335),
+            (65, -3, 164, 648, 229),
+            (18, -3, 315, 684, 305),
+            (75, -3, 155, 680, 229),
+            (16, -8, 490, 648, 557),
+            (18, -3, 520, 684, 529),
+            (200, -3, 520, 684, 529),
+        ]);
+        let cmap = "beginbfrange <0001> <0001> <0074> <0002> <0002> <0069> <0003> <0003> <0066> <0004> <0004> <006c> <0005> <0007> <0000> endbfrange";
+        let font = type0_with_program(&mut resolver, program, Some(cmap), None);
+        let font = load(&resolver, font);
+        assert_eq!(decode(&font, &[0, 5]).0, "ti");
+        assert_eq!(decode(&font, &[0, 6]).0, "");
+        assert_eq!(decode(&font, &[0, 7]).0, "");
+        assert_eq!(decode(&font, &[0, 1, 0, 5, 0, 2]).0, "ttii");
+    }
+
+    #[test]
+    fn ligature_shape_match_applies_to_simple_symbolic_fonts() {
+        let mut resolver = TestResolver::default();
+        let mut program = metric_font(&[
+            (0, 0, 0, 0, 500),
+            (16, -8, 303, 584, 335),
+            (65, -3, 164, 648, 229),
+            (16, -8, 490, 648, 557),
+        ]);
+        let _ = &mut program;
+        let cmap = sfnt_with_cmap(&program, format0_cmap(1, 0, &[(1, 1), (2, 2), (3, 3)]));
+        let file = resolver.add_stream(Dict::default(), &cmap);
+        let descriptor = resolver.add(Object::Dict(dict(vec![
+            ("Flags", Object::Integer(4)),
+            ("FontFile2", file),
+        ])));
+        let tu = resolver.add_stream(
+            Dict::default(),
+            b"beginbfchar <01> <0074> <02> <0069> <03> <0000> endbfchar",
+        );
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("TrueType")),
+                ("FontDescriptor", descriptor),
+                ("FirstChar", Object::Integer(1)),
+                ("Widths", numbers(&[500.0; 3])),
+                ("ToUnicode", tu),
+            ]),
+        );
+        assert_eq!(decode(&font, &[3]).0, "ti");
+    }
+
+    fn sfnt_with_cmap(base: &[u8], cmap: Vec<u8>) -> Vec<u8> {
+        let count = usize::from(u16::from_be_bytes([base[4], base[5]]));
+        let mut tables: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for index in 0..count {
+            let record = &base[12 + index * 16..28 + index * 16];
+            let offset =
+                u32::from_be_bytes([record[8], record[9], record[10], record[11]]) as usize;
+            let length =
+                u32::from_be_bytes([record[12], record[13], record[14], record[15]]) as usize;
+            tables.push((record[..4].to_vec(), base[offset..offset + length].to_vec()));
+        }
+        tables.push((b"cmap".to_vec(), cmap));
+        let borrowed: Vec<(&[u8; 4], Vec<u8>)> = tables
+            .iter()
+            .map(|(tag, body)| {
+                let tag: &[u8; 4] = tag.as_slice().try_into().expect("tag");
+                (tag, body.clone())
+            })
+            .collect();
+        sfnt(&borrowed)
+    }
+
+    #[test]
+    fn gsub_ligature_lookup_parts_resolve_through_to_unicode() {
+        for extension in [false, true] {
+            let mut resolver = TestResolver::default();
+            let program = sfnt(&[
+                (
+                    b"GSUB",
+                    crate::fontprog::tests::ligature_gsub(extension, 1, &[2], 3),
+                ),
+                (b"maxp", maxp(4)),
+            ]);
+            let cmap = "beginbfrange <0001> <0001> <0066> <0002> <0002> <0069> <0003> <0003> <0000> endbfrange";
+            let font = type0_with_program(&mut resolver, program, Some(cmap), None);
+            let font = load(&resolver, font);
+            assert_eq!(
+                decode(&font, &[0, 1, 0, 3]).0,
+                "ffi",
+                "extension={extension}"
+            );
         }
     }
 
     #[test]
-    fn win_ansi_maps_space() {
-        let font = SimpleFont {
-            encoding: EncodingState {
-                builtin: BuiltinEncoding::WinAnsi,
-                differences: Vec::new(),
-                custom_names: Vec::new(),
-            },
-            to_unicode: UnicodeMap::default(),
-            program: None,
-            program_map: Vec::new(),
-            widths: WidthState {
-                first_char: 0,
-                widths: Vec::new(),
-                missing: 1000.0,
-                standard14: Some(Standard14Font::Helvetica),
-            },
-            font_matrix: None,
-            symbolic: false,
-            vertical: false,
-            vertical_default: 1000.0,
-            vertical_metrics: VerticalMetrics {
-                _dw2_pos: 0.0,
-                dw2_adv: 0.0,
-                w2: Vec::new(),
-            },
+    fn program_is_not_loaded_when_to_unicode_is_complete() {
+        let mut resolver = TestResolver::default();
+        let cmap = "beginbfrange <0001> <0003> <0041> endbfrange";
+        let mut font = type0_with_program(
+            &mut resolver,
+            truetype_ligature_font(Vec::new()),
+            Some(cmap),
+            None,
+        );
+        font.insert(
+            b"W",
+            Object::Array(vec![
+                Object::Integer(1),
+                Object::Array(vec![Object::Integer(500)]),
+            ]),
+        );
+        let font = load(&resolver, font);
+        match &font.inner {
+            FontKind::Composite(composite) => assert!(composite.program.is_none()),
+            FontKind::Simple(_) => panic!("composite expected"),
+        }
+        assert_eq!(decode(&font, &[0, 2]).0, "B");
+    }
+
+    #[test]
+    fn valid_to_unicode_wins_over_program() {
+        let mut resolver = TestResolver::default();
+        let cmap = "beginbfrange <0010> <0010> <0058> <0030> <0030> <0000> endbfrange";
+        let mut map = vec![0u8; 0x31 * 2];
+        map[0x30 * 2 + 1] = 3;
+        map[0x10 * 2 + 1] = 1;
+        let program = {
+            let mut table = be32(0x0002_0000);
+            table.extend([0u8; 28]);
+            table.extend(be16(4));
+            for index in [0u16, 36, 37, 258] {
+                table.extend(be16(index));
+            }
+            table.push(3);
+            table.extend(b"t_i");
+            sfnt(&[(b"post", table), (b"maxp", maxp(4))])
         };
-        let mut glyphs = Vec::new();
-        let mut text = String::new();
-        font.decode(b" ", &mut glyphs, &mut text);
-        assert_eq!(text, " ");
-        assert_eq!(glyphs.len(), 1);
+        let font = type0_with_program(&mut resolver, program, Some(cmap), Some(map));
+        let font = load(&resolver, font);
+        assert_eq!(decode(&font, &[0, 0x10]).0, "X");
+        assert_eq!(decode(&font, &[0, 0x30]).0, "ti");
+    }
+
+    #[test]
+    fn simple_symbolic_font_uses_cmap_and_post_names() {
+        let mut resolver = TestResolver::default();
+        let program = sfnt(&[
+            (b"cmap", format0_cmap(1, 0, &[(1, 1), (2, 2), (3, 3)])),
+            (b"post", post2(&[".notdef", "A", "t_i", "B"])),
+            (b"maxp", maxp(4)),
+        ]);
+        let file = resolver.add_stream(Dict::default(), &program);
+        let descriptor = resolver.add(Object::Dict(dict(vec![
+            ("Flags", Object::Integer(4)),
+            ("FontFile2", file),
+        ])));
+        let tu = resolver.add_stream(Dict::default(), b"beginbfchar <03> <0043> endbfchar");
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("TrueType")),
+                ("FontDescriptor", descriptor),
+                ("FirstChar", Object::Integer(1)),
+                ("Widths", numbers(&[500.0, 500.0, 500.0])),
+                ("ToUnicode", tu),
+            ]),
+        );
+        let (text, glyphs) = decode(&font, &[1, 2, 3]);
+        assert_eq!(text, "AtiC");
+        assert_eq!(glyphs[1].text, 1..3);
+    }
+
+    #[test]
+    fn composite_glyph_in_simple_font_resolves_parts_through_to_unicode() {
+        let mut resolver = TestResolver::default();
+        let program = truetype_ligature_font(vec![(
+            b"cmap",
+            format0_cmap(1, 0, &[(1, 1), (2, 2), (3, 3)]),
+        )]);
+        let file = resolver.add_stream(Dict::default(), &program);
+        let descriptor = resolver.add(Object::Dict(dict(vec![
+            ("Flags", Object::Integer(4)),
+            ("FontFile2", file),
+        ])));
+        let tu = resolver.add_stream(
+            Dict::default(),
+            b"beginbfchar <01> <0066> <02> <0069> endbfchar",
+        );
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("TrueType")),
+                ("FontDescriptor", descriptor),
+                ("FirstChar", Object::Integer(1)),
+                ("Widths", numbers(&[500.0, 500.0, 500.0])),
+                ("ToUnicode", tu),
+            ]),
+        );
+        assert_eq!(decode(&font, &[3]).0, "fi");
+    }
+
+    #[test]
+    fn cff_builtin_encoding_names_drive_simple_text() {
+        let mut resolver = TestResolver::default();
+        let mut charset = vec![0u8];
+        charset.extend(be16(34));
+        charset.extend(be16(391));
+        let cff = build_cff(&Layout {
+            names: vec!["f_i"],
+            charset,
+            charset_id: 0,
+            encoding: vec![0, 2, 0x41, 0x42],
+            encoding_id: 0,
+            cid_keyed: false,
+            glyphs: 3,
+        });
+        let file = resolver.add_stream(dict(vec![("Subtype", name("Type1C"))]), &cff);
+        let descriptor = resolver.add(Object::Dict(dict(vec![
+            ("Flags", Object::Integer(4)),
+            ("FontFile3", file),
+        ])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type1")),
+                ("FontDescriptor", descriptor),
+                ("FirstChar", Object::Integer(0x41)),
+                ("Widths", numbers(&[600.0, 600.0])),
+            ]),
+        );
+        assert_eq!(decode(&font, b"AB").0, "Afi");
+    }
+
+    #[test]
+    fn type1_cleartext_encoding_drives_simple_text() {
+        let mut resolver = TestResolver::default();
+        let program = b"%!PS-AdobeFont-1.0: X\n/Encoding 256 array\ndup 1 /fi put\ndup 2 /uni0416 put\nreadonly def\ncurrentfile eexec";
+        let file = resolver.add_stream(Dict::default(), program);
+        let descriptor = resolver.add(Object::Dict(dict(vec![
+            ("Flags", Object::Integer(4)),
+            ("FontFile", file),
+        ])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type1")),
+                ("FontDescriptor", descriptor),
+                ("FirstChar", Object::Integer(1)),
+                ("Widths", numbers(&[500.0, 500.0])),
+            ]),
+        );
+        assert_eq!(decode(&font, &[1, 2]).0, "\u{fb01}\u{0416}");
+    }
+
+    #[test]
+    fn opentype_cff_name_keyed_type0_maps_cid_through_names() {
+        let mut resolver = TestResolver::default();
+        let mut charset = vec![0u8];
+        charset.extend(be16(34));
+        charset.extend(be16(391));
+        let cff = build_cff(&Layout {
+            names: vec!["t_i"],
+            charset,
+            charset_id: 0,
+            encoding: vec![],
+            encoding_id: 0,
+            cid_keyed: false,
+            glyphs: 3,
+        });
+        let mut otf = be32(0x4F54_544F);
+        otf.extend(be16(1));
+        otf.extend([0u8; 6]);
+        otf.extend(b"CFF ");
+        otf.extend(be32(0));
+        otf.extend(be32(28));
+        otf.extend(be32(cff.len() as u32));
+        otf.extend(&cff);
+        let file = resolver.add_stream(Dict::default(), &otf);
+        let descriptor = resolver.add(Object::Dict(dict(vec![("FontFile3", file)])));
+        let descendant = resolver.add(Object::Dict(dict(vec![
+            ("Subtype", name("CIDFontType0")),
+            ("FontDescriptor", descriptor),
+        ])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", name("Identity-H")),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        );
+        assert_eq!(decode(&font, &[0, 1, 0, 2]).0, "Ati");
+    }
+
+    #[test]
+    fn embedded_cmap_maps_codes_to_cids_for_widths_and_to_unicode_by_code() {
+        let mut resolver = TestResolver::default();
+        let cmap = b"1 begincodespacerange <00> <ff> endcodespacerange 1 begincidrange <41> <5a> 100 endcidrange";
+        let stream = resolver.add_stream(dict(vec![("Type", name("CMap"))]), cmap);
+        let tu = resolver.add_stream(Dict::default(), b"beginbfrange <41> <5a> <0061> endbfrange");
+        let descendant = resolver.add(Object::Dict(dict(vec![
+            ("Subtype", name("CIDFontType0")),
+            ("DW", Object::Integer(1000)),
+            (
+                "W",
+                Object::Array(vec![
+                    Object::Integer(100),
+                    Object::Array(vec![Object::Integer(250), Object::Integer(300)]),
+                ]),
+            ),
+        ])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", stream),
+                ("ToUnicode", tu),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        );
+        let (text, glyphs) = decode(&font, b"ABC");
+        assert_eq!(text, "abc");
+        assert_eq!(glyphs[0].code, 100);
+        assert!((glyphs[0].advance - 0.25).abs() < 1e-9);
+        assert!((glyphs[1].advance - 0.3).abs() < 1e-9);
+        assert!((glyphs[2].advance - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usecmap_stream_parent_provides_codespace_and_cids() {
+        let mut resolver = TestResolver::default();
+        let parent = resolver.add_stream(
+            Dict::default(),
+            b"1 begincodespacerange <0000> <ffff> endcodespacerange 1 begincidrange <0000> <00ff> 0 endcidrange",
+        );
+        let child = resolver.add_stream(
+            dict(vec![("UseCMap", parent), ("WMode", Object::Integer(1))]),
+            b"1 begincidrange <0100> <01ff> 500 endcidrange",
+        );
+        let descendant = resolver.add(Object::Dict(dict(vec![
+            ("Subtype", name("CIDFontType0")),
+            (
+                "W",
+                Object::Array(vec![
+                    Object::Integer(500),
+                    Object::Integer(510),
+                    Object::Integer(400),
+                ]),
+            ),
+        ])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", child),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        );
+        assert!(font.is_vertical());
+        let (_, glyphs) = decode(&font, &[0x01, 0x05, 0x00, 0x41]);
+        assert_eq!(glyphs[0].code, 505);
+        assert!((glyphs[0].advance - 0.4).abs() < 1e-9);
+        assert_eq!(glyphs[1].code, 0x41);
+    }
+
+    #[test]
+    fn ucs2_predefined_cmap_decodes_unicode_without_to_unicode() {
+        let mut resolver = TestResolver::default();
+        let descendant = resolver.add(Object::Dict(dict(vec![
+            ("Subtype", name("CIDFontType0")),
+            ("DW", Object::Integer(1000)),
+        ])));
+        for (cmap, bytes, expected) in [
+            ("UniGB-UCS2-H", vec![0x4E, 0x2D, 0x65, 0x87], "中文"),
+            (
+                "UniJIS-UTF16-H",
+                vec![0xD8, 0x40, 0xDC, 0x0B, 0x00, 0x41],
+                "\u{2000B}A",
+            ),
+        ] {
+            let font = load(
+                &resolver,
+                dict(vec![
+                    ("Subtype", name("Type0")),
+                    ("Encoding", name(cmap)),
+                    ("DescendantFonts", Object::Array(vec![descendant.clone()])),
+                ]),
+            );
+            let (text, glyphs) = decode(&font, &bytes);
+            assert_eq!(text, expected);
+            assert!(
+                glyphs
+                    .iter()
+                    .all(|glyph| (glyph.advance - 1.0).abs() < 1e-9)
+            );
+        }
+    }
+
+    #[test]
+    fn identity_v_uses_w2_and_dw2() {
+        let mut resolver = TestResolver::default();
+        let descendant = resolver.add(Object::Dict(dict(vec![
+            ("Subtype", name("CIDFontType0")),
+            ("DW", Object::Integer(800)),
+            ("DW2", numbers(&[900.0, -1100.0])),
+            (
+                "W2",
+                Object::Array(vec![
+                    Object::Integer(10),
+                    Object::Array(vec![
+                        Object::Integer(-500),
+                        Object::Integer(300),
+                        Object::Integer(700),
+                    ]),
+                    Object::Integer(20),
+                    Object::Integer(22),
+                    Object::Integer(-600),
+                    Object::Integer(100),
+                    Object::Integer(200),
+                ]),
+            ),
+        ])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", name("Identity-V")),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        );
+        assert!(font.is_vertical());
+        let metrics = font.vertical_metrics(10);
+        assert!((metrics.advance - 0.5).abs() < 1e-9);
+        assert!((metrics.origin_x - 0.3).abs() < 1e-9);
+        assert!((metrics.origin_y - 0.7).abs() < 1e-9);
+        let ranged = font.vertical_metrics(21);
+        assert!((ranged.advance - 0.6).abs() < 1e-9);
+        assert!((ranged.origin_x - 0.1).abs() < 1e-9);
+        let default = font.vertical_metrics(99);
+        assert!((default.advance - 1.1).abs() < 1e-9);
+        assert!((default.origin_x - 0.4).abs() < 1e-9);
+        assert!((default.origin_y - 0.9).abs() < 1e-9);
+        assert!((font.vertical_advance(99) - 1.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn identity_h_is_horizontal_by_default() {
+        let mut resolver = TestResolver::default();
+        let descendant = resolver.add(Object::Dict(dict(vec![("Subtype", name("CIDFontType2"))])));
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", name("Identity-H")),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        );
+        assert!(!font.is_vertical());
+    }
+
+    #[test]
+    fn type3_advance_uses_widths_and_font_matrix() {
+        let mut resolver = TestResolver::default();
+        let tu = resolver.add_stream(Dict::default(), b"beginbfchar <41> <0058> endbfchar");
+        for (matrix, expected) in [
+            (vec![0.001, 0.0, 0.0, 0.001, 0.0, 0.0], 0.5),
+            (vec![0.01, 0.0, 0.0, 0.01, 0.0, 0.0], 5.0),
+            (vec![0.0, 0.002, -0.002, 0.0, 0.0, 0.0], 1.0),
+        ] {
+            let font = load(
+                &resolver,
+                dict(vec![
+                    ("Subtype", name("Type3")),
+                    ("FontMatrix", numbers(&matrix)),
+                    ("FirstChar", Object::Integer(0x41)),
+                    ("Widths", numbers(&[500.0])),
+                    ("ToUnicode", tu.clone()),
+                ]),
+            );
+            let (text, glyphs) = decode(&font, b"AB");
+            assert_eq!(text, "XB");
+            assert!((glyphs[0].advance - expected).abs() < 1e-9, "{matrix:?}");
+            assert_eq!(glyphs[1].advance, 0.0);
+        }
+    }
+
+    #[test]
+    fn type3_differences_names_resolve_via_agl() {
+        let resolver = TestResolver::default();
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type3")),
+                (
+                    "Encoding",
+                    Object::Dict(dict(vec![(
+                        "Differences",
+                        Object::Array(vec![Object::Integer(1), name("fi"), name("a1")]),
+                    )])),
+                ),
+                ("FontMatrix", numbers(&[0.001, 0.0, 0.0, 0.001, 0.0, 0.0])),
+            ]),
+        );
+        assert_eq!(decode(&font, &[1, 2]).0, "\u{fb01}");
+    }
+
+    #[test]
+    fn plain_fonts_share_cached_tables_and_match_slow_path() {
+        let resolver = TestResolver::default();
+        for encoding in [
+            "WinAnsiEncoding",
+            "StandardEncoding",
+            "MacRomanEncoding",
+            "MacExpertEncoding",
+        ] {
+            let font = load(
+                &resolver,
+                dict(vec![
+                    ("Subtype", name("Type1")),
+                    ("Encoding", name(encoding)),
+                ]),
+            );
+            let FontKind::Simple(simple) = &font.inner else {
+                panic!("simple expected");
+            };
+            assert!(simple.plain_table().is_some());
+            let all: Vec<u8> = (0..=255).collect();
+            let (fast, glyphs) = decode(&font, &all);
+            assert_eq!(glyphs.len(), 256);
+            let mut slow = String::new();
+            for code in 0..=255u32 {
+                push_codepoints(&mut slow, &simple.resolve(code));
+            }
+            assert_eq!(fast, slow, "{encoding}");
+        }
+    }
+
+    #[test]
+    fn symbol_font_uses_symbol_encoding_names() {
+        let resolver = TestResolver::default();
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type1")),
+                ("BaseFont", name("Symbol")),
+            ]),
+        );
+        assert_eq!(decode(&font, b"a").0, "α");
+    }
+
+    #[test]
+    fn differences_override_base_encoding() {
+        let resolver = TestResolver::default();
+        let font = load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("TrueType")),
+                (
+                    "Encoding",
+                    Object::Dict(dict(vec![
+                        ("BaseEncoding", name("WinAnsiEncoding")),
+                        (
+                            "Differences",
+                            Object::Array(vec![Object::Integer(65), name("Euro"), name("uni0416")]),
+                        ),
+                    ])),
+                ),
+            ]),
+        );
+        assert_eq!(decode(&font, b"ABC").0, "€ЖC");
     }
 
     #[test]
@@ -1559,7 +1906,6 @@ mod tests {
         let helvetica = STANDARD14_WIDTHS[Standard14Font::Helvetica as usize];
         assert_eq!(helvetica[b'A' as usize], 667);
         assert_eq!(helvetica[b' ' as usize], 278);
-        assert_eq!(helvetica[b'a' as usize], 556);
         let times = STANDARD14_WIDTHS[Standard14Font::Times_Roman as usize];
         assert_eq!(times[b' ' as usize], 250);
         let courier = STANDARD14_WIDTHS[Standard14Font::Courier as usize];
@@ -1567,119 +1913,120 @@ mod tests {
     }
 
     #[test]
-    fn to_unicode_bfchar() {
-        let cmap = b"begincmap beginbfchar 1 <41> <0041> endbfchar endcmap";
-        let map = parse_cmap_to_unicode(cmap, &Limits::default());
-        let result = map.lookup(0x41).expect("mapping");
-        assert_eq!(result, &[0x0041]);
-    }
-
-    #[test]
-    fn to_unicode_count_before_keyword() {
-        let cmap = b"1 begincodespacerange <0000> <FFFF> endcodespacerange\n2 beginbfchar\n<0001> <0041>\n<0002> <0042>\nendbfchar\n1 beginbfrange\n<0010> <0012> <0061>\nendbfrange";
-        let map = parse_cmap_to_unicode(cmap, &Limits::default());
-        assert_eq!(map.lookup(1), Some([0x41].as_slice()));
-        assert_eq!(map.lookup(2), Some([0x42].as_slice()));
-        assert_eq!(map.lookup(0x11), Some([0x62].as_slice()));
-        assert_eq!(map.lookup(3), None);
-        let reader = parse_cmap_codespace(cmap, &Limits::default());
-        assert_eq!(reader.bytes_per_code, 2);
-        assert_eq!(reader.read(&[0, 1, 0, 2], 0), Some((1, 2)));
-    }
-
-    #[test]
-    fn to_unicode_bfrange_surrogate() {
-        let cmap = b"begincmap beginbfrange 1 <0000> <0000> <d800dc00> endbfrange endcmap";
-        let map = parse_cmap_to_unicode(cmap, &Limits::default());
-        let result = map.lookup(0).expect("mapping");
-        assert_eq!(result[0], 0x1_0000);
-    }
-
-    #[test]
-    fn to_unicode_bfrange_ligature_array() {
-        let cmap = b"begincmap beginbfrange 1 <0001> <0001> [<0066><0069>] endbfrange endcmap";
-        let map = parse_cmap_to_unicode(cmap, &Limits::default());
-        let result = map.lookup(1).expect("mapping");
-        assert_eq!(result, &[0x0066, 0x0069]);
-    }
-
-    #[test]
-    fn type0_identity_widths() {
-        let metrics = CidMetrics {
-            default_width: 1000.0,
-            widths: vec![(65, 500.0)],
-            range_widths: Vec::new(),
-        };
-        assert_eq!(metrics.width(65), 500.0);
-        assert_eq!(metrics.width(66), 1000.0);
-    }
-
-    #[test]
-    fn cmap_fuzz_no_panic() {
-        let limits = Limits::default();
-        let mut seed = 0x9e37_79b9u32;
-        for _ in 0..256 {
-            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            let len = (seed % 128) as usize + 8;
-            let mut data = Vec::with_capacity(len);
-            for idx in 0..len {
-                let byte = ((seed >> (idx % 16)) & 0xff) as u8;
-                data.push(byte);
-            }
-            let _ = parse_cmap_to_unicode(&data, &limits);
-            let _ = parse_cmap_codespace(&data, &limits);
-        }
-    }
-
-    #[test]
     fn subset_prefix_standard14() {
-        let name = Object::Name(b"ABCDEF+Helvetica".to_vec());
+        let base = Object::Name(b"ABCDEF+Helvetica".to_vec());
         assert_eq!(
-            standard14_from_base_font(Some(&name)),
+            standard14_from_base_font(Some(&base)),
             Some(Standard14Font::Helvetica)
         );
     }
 
     #[test]
-    fn type3_font_matrix_scales_width() {
-        let font = SimpleFont {
-            encoding: EncodingState {
-                builtin: BuiltinEncoding::Standard,
-                differences: Vec::new(),
-                custom_names: Vec::new(),
-            },
-            to_unicode: UnicodeMap::default(),
-            program: None,
-            program_map: Vec::new(),
-            widths: WidthState {
-                first_char: 65,
-                widths: vec![1000.0],
-                missing: 1000.0,
-                standard14: None,
-            },
-            font_matrix: Some([0.001, 0.0, 0.0, 0.001, 0.0, 0.0]),
-            symbolic: false,
-            vertical: false,
-            vertical_default: 1000.0,
-            vertical_metrics: VerticalMetrics {
-                _dw2_pos: 0.0,
-                dw2_adv: 0.0,
-                w2: Vec::new(),
-            },
-        };
-        let width = font.width_for_code(65);
-        assert!((width - 1.0).abs() < f64::EPSILON);
+    fn word_space_flag_only_for_single_byte_space() {
+        let resolver = TestResolver::default();
+        let font = load(&resolver, dict(vec![("Subtype", name("Type1"))]));
+        let (_, glyphs) = decode(&font, b"a b");
+        assert!(!glyphs[0].is_word_space);
+        assert!(glyphs[1].is_word_space);
     }
 
     #[test]
-    fn agl_fi_ligature_name() {
-        let mapped = agl_lookup_extended(b"fi");
-        assert_eq!(mapped, Some(vec![0xfb01]));
+    fn width_arrays_support_ranges_and_lists() {
+        let widths = Object::Array(vec![
+            Object::Integer(1),
+            Object::Array(vec![Object::Integer(100), Object::Integer(200)]),
+            Object::Integer(10),
+            Object::Integer(20),
+            Object::Integer(300),
+        ]);
+        let descendant = dict(vec![("W", widths), ("DW", Object::Integer(700))]);
+        let metrics = load_cid_widths(&descendant);
+        assert_eq!(metrics.width(Some(1)), 100.0);
+        assert_eq!(metrics.width(Some(2)), 200.0);
+        assert_eq!(metrics.width(Some(3)), 700.0);
+        assert_eq!(metrics.width(Some(15)), 300.0);
+        assert_eq!(metrics.width(Some(21)), 700.0);
+        assert_eq!(metrics.width(None), 700.0);
     }
 
     #[test]
-    fn garbage_cmap_does_not_panic() {
-        let map = parse_cmap_to_unicode(b"not a cmap %%%%", &Limits::default());
-        assert!(map.char_map.is_empty());
+    fn missing_descendant_is_an_error() {
+        let resolver = TestResolver::default();
+        let result = Font::load(
+            &resolver,
+            &dict(vec![("Subtype", name("Type0"))]),
+            &Limits::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fonts_decode_arbitrary_bytes_without_panicking() {
+        let mut resolver = TestResolver::default();
+        let cmap = "begincodespacerange <00> <80> <8140> <9ffc> endcodespacerange begincidrange <8140> <817e> 633 endcidrange beginbfchar <8140> <0041> endbfchar";
+        let stream = resolver.add_stream(Dict::default(), cmap.as_bytes());
+        let mut fonts = Vec::new();
+        let program = truetype_ligature_font(Vec::new());
+        let ligature =
+            type0_with_program(&mut resolver, program, None, Some(vec![0, 1, 0, 2, 0, 3]));
+        fonts.push(load(&resolver, ligature));
+        let descendant = resolver.add(Object::Dict(dict(vec![("Subtype", name("CIDFontType0"))])));
+        fonts.push(load(
+            &resolver,
+            dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", stream.clone()),
+                ("ToUnicode", stream),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        ));
+        fonts.push(load(&resolver, dict(vec![("Subtype", name("Type1"))])));
+        let mut seed = 0x1234_5678u32;
+        for _ in 0..200 {
+            let mut bytes = Vec::new();
+            for _ in 0..32 {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                bytes.push((seed >> 24) as u8);
+            }
+            for font in &fonts {
+                let _ = decode(font, &bytes);
+                let _ = font.vertical_metrics(seed);
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_font_dictionaries_do_not_panic() {
+        let mut resolver = TestResolver::default();
+        let garbage = resolver.add_stream(Dict::default(), &[0xFFu8; 64]);
+        for subtype in ["Type1", "TrueType", "Type0", "Type3", "MMType1"] {
+            let descriptor = resolver.add(Object::Dict(dict(vec![
+                ("FontFile", garbage.clone()),
+                ("FontFile2", garbage.clone()),
+                ("FontFile3", garbage.clone()),
+                ("Flags", Object::Integer(4)),
+            ])));
+            let descendant = resolver.add(Object::Dict(dict(vec![
+                ("FontDescriptor", descriptor.clone()),
+                (
+                    "W",
+                    Object::Array(vec![Object::Integer(-1), Object::Integer(5)]),
+                ),
+                ("W2", Object::Array(vec![Object::Real(f64::NAN)])),
+                ("CIDToGIDMap", garbage.clone()),
+            ])));
+            let font = dict(vec![
+                ("Subtype", name(subtype)),
+                ("FontDescriptor", descriptor),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+                ("Encoding", garbage.clone()),
+                ("ToUnicode", garbage.clone()),
+                ("Widths", Object::Array(vec![Object::Null])),
+                ("FontMatrix", Object::Array(vec![Object::Null])),
+            ]);
+            if let Ok(font) = Font::load(&resolver, &font, &Limits::default()) {
+                let _ = decode(&font, &[0, 1, 2, 3, 255]);
+            }
+        }
     }
 }

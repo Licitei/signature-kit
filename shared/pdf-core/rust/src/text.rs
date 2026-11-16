@@ -727,10 +727,11 @@ impl Interpreter<'_, '_> {
                 };
             let (x0, y0, x1, y1, step_x, step_y);
             if vertical {
-                let span = entry.font.vertical_advance(glyph.code) * size;
-                let half = 0.5 * size.abs() * scale;
-                x0 = pen_x - half;
-                x1 = pen_x + half;
+                let metrics = entry.font.vertical_metrics(glyph.code);
+                let span = metrics.advance * size;
+                let em = size.abs() * scale;
+                x0 = pen_x - metrics.origin_x * em;
+                x1 = x0 + glyph.advance * em;
                 y1 = pen_y + state.rise;
                 y0 = y1 - span;
                 step_x = 0.0;
@@ -1854,5 +1855,39 @@ mod tests {
             );
             let _ = extract_with(&bytes, &Limits::default());
         }
+    }
+
+    #[test]
+    fn identity_v_text_flows_top_to_bottom_around_the_vertical_origin() {
+        let to_unicode = stream_object(
+            "",
+            "1 begincodespacerange <0000> <ffff> endcodespacerange 1 beginbfrange <0001> <0003> <0041> endbfrange",
+        );
+        let bytes = page_pdf(
+            "<< /Font << /F1 5 0 R >> >>",
+            "BT /F1 10 Tf 100 700 Td <000100020003> Tj ET",
+            &[
+                (
+                    5,
+                    "<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding /Identity-V /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>".to_string(),
+                ),
+                (
+                    6,
+                    "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Test /DW 800 /DW2 [900 -1200] /W2 [2 [-600 100 800]] >>".to_string(),
+                ),
+                (7, to_unicode),
+            ],
+        );
+        let items = extract(&bytes);
+        assert_eq!(texts(&items), ["ABC"]);
+        let item = items.first().unwrap();
+        assert!(close(item.rect[0], 100.0 - 4.0), "{:?}", item.rect);
+        assert!(close(item.rect[2], 99.0 + 8.0), "{:?}", item.rect);
+        assert!(close(item.rect[3], 700.0), "{:?}", item.rect);
+        assert!(
+            close(item.rect[3] - item.rect[1], 12.0 + 6.0 + 12.0),
+            "{:?}",
+            item.rect
+        );
     }
 }
