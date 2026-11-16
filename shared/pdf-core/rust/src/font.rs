@@ -12,6 +12,7 @@ use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
 
 const MAX_METRIC_ENTRIES: usize = 262_144;
+const MAX_METRIC_ITEMS: usize = 1_048_576;
 const MAX_WIDTH_RANGE: u32 = 65_536;
 const RANGE_SCAN: usize = 16;
 const MAX_CMAP_DEPTH: usize = 4;
@@ -545,7 +546,12 @@ fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome
     let symbolic = flags & 4 != 0 && flags & 32 == 0;
     let encoding = load_encoding(font, resolver, limits)?;
     let to_unicode = load_to_unicode(font, resolver, limits);
-    let widths = load_widths(font, descriptor.as_ref(), subtype == Some(b"Type3"));
+    let widths = load_widths(
+        resolver,
+        font,
+        descriptor.as_ref(),
+        subtype == Some(b"Type3"),
+    );
     let font_scale = read_font_matrix(resolver, font)
         .map(|matrix| matrix[0].hypot(matrix[1]))
         .filter(|scale| *scale > 0.0);
@@ -618,7 +624,7 @@ fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<
     let descendant = resolve_descendant(resolver, font)?;
     let to_unicode = load_to_unicode(font, resolver, limits);
     let cmap = load_cmap(resolver, font.get(b"Encoding"), limits, 0);
-    let horizontal = load_cid_widths(&descendant);
+    let horizontal = load_cid_widths(resolver, &descendant);
     let vertical = load_vertical_metrics(resolver, &descendant);
     let needs_program = !cmap.is_unicode_keyed()
         && (to_unicode.is_empty()
@@ -782,18 +788,58 @@ fn load_differences(entries: &[Object], state: &mut EncodingState) {
     }
 }
 
-fn load_widths(font: &Dict, descriptor: Option<&Dict>, type3: bool) -> WidthState {
-    let first_char = read_integer(font.get(b"FirstChar")).unwrap_or(0);
-    let widths = match font.get(b"Widths") {
-        Some(Object::Array(items)) => items
-            .iter()
-            .take(MAX_METRIC_ENTRIES)
-            .map(|item| item.as_number().unwrap_or(0.0))
-            .collect(),
-        _ => Vec::new(),
+fn resolved_items(
+    resolver: &dyn Resolver,
+    value: Option<&Object>,
+    limit: usize,
+) -> Option<Vec<Object>> {
+    let Some(Object::Array(items)) = deref(resolver, value) else {
+        return None;
     };
+    let resolve_one = |item: &Object| deref(resolver, Some(item)).unwrap_or(Object::Null);
+    Some(
+        items
+            .iter()
+            .take(limit)
+            .map(|item| match resolve_one(item) {
+                Object::Array(inner) => {
+                    Object::Array(inner.iter().take(limit).map(resolve_one).collect())
+                }
+                other @ (Object::Null
+                | Object::Bool(_)
+                | Object::Integer(_)
+                | Object::Real(_)
+                | Object::Name(_)
+                | Object::String(_)
+                | Object::Dict(_)
+                | Object::Stream(_)
+                | Object::Ref(_)) => other,
+            })
+            .collect(),
+    )
+}
+
+fn deref_number(resolver: &dyn Resolver, value: Option<&Object>) -> Option<f64> {
+    deref(resolver, value)?.as_number()
+}
+
+fn load_widths(
+    resolver: &dyn Resolver,
+    font: &Dict,
+    descriptor: Option<&Dict>,
+    type3: bool,
+) -> WidthState {
+    let first_char = deref(resolver, font.get(b"FirstChar"))
+        .as_ref()
+        .and_then(Object::as_integer)
+        .unwrap_or(0);
+    let widths = resolved_items(resolver, font.get(b"Widths"), MAX_METRIC_ENTRIES)
+        .unwrap_or_default()
+        .iter()
+        .map(|item| item.as_number().unwrap_or(0.0))
+        .collect();
     let missing = descriptor
-        .and_then(|dict| read_number(dict.get(b"MissingWidth")))
+        .and_then(|dict| deref_number(resolver, dict.get(b"MissingWidth")))
         .unwrap_or(0.0);
     WidthState {
         first_char,
@@ -809,10 +855,10 @@ fn load_widths(font: &Dict, descriptor: Option<&Dict>, type3: bool) -> WidthStat
     }
 }
 
-fn load_cid_widths(descendant: &Dict) -> CidWidths {
-    let default_width = read_number(descendant.get(b"DW")).unwrap_or(1000.0);
+fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
+    let default_width = deref_number(resolver, descendant.get(b"DW")).unwrap_or(1000.0);
     let mut entries: Vec<(u32, u32, f64)> = Vec::new();
-    if let Some(Object::Array(items)) = descendant.get(b"W") {
+    if let Some(items) = resolved_items(resolver, descendant.get(b"W"), MAX_METRIC_ITEMS) {
         let mut index = 0_usize;
         while index < items.len() && entries.len() < MAX_METRIC_ENTRIES {
             let start = items
@@ -872,7 +918,7 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
         _ => (DEFAULT_VERTICAL_ORIGIN, -DEFAULT_VERTICAL_ADVANCE),
     };
     let mut entries: Vec<(u32, u32, [f64; 3])> = Vec::new();
-    if let Some(Object::Array(items)) = deref(resolver, descendant.get(b"W2")) {
+    if let Some(items) = resolved_items(resolver, descendant.get(b"W2"), MAX_METRIC_ITEMS) {
         let mut index = 0_usize;
         while index < items.len() && entries.len() < MAX_METRIC_ENTRIES {
             let start = items
@@ -1022,10 +1068,6 @@ const fn read_integer(value: Option<&Object>) -> Option<i64> {
         Some(Object::Real(v)) => Some(f64_to_i64(*v)),
         _ => None,
     }
-}
-
-fn read_number(value: Option<&Object>) -> Option<f64> {
-    value.and_then(Object::as_number)
 }
 
 const fn symbolic_fallback(code: u32) -> u32 {
@@ -1953,13 +1995,51 @@ mod tests {
             Object::Integer(300),
         ]);
         let descendant = dict(vec![("W", widths), ("DW", Object::Integer(700))]);
-        let metrics = load_cid_widths(&descendant);
+        let metrics = load_cid_widths(&TestResolver::default(), &descendant);
         assert_exact(&[metrics.width(Some(1))], &[100.0]);
         assert_exact(&[metrics.width(Some(2))], &[200.0]);
         assert_exact(&[metrics.width(Some(3))], &[700.0]);
         assert_exact(&[metrics.width(Some(15))], &[300.0]);
         assert_exact(&[metrics.width(Some(21))], &[700.0]);
         assert_exact(&[metrics.width(None)], &[700.0]);
+    }
+
+    #[test]
+    fn indirect_simple_widths_are_resolved() {
+        let mut resolver = TestResolver::default();
+        let width = resolver.add(Object::Integer(250));
+        let widths = resolver.add(Object::Array(vec![width, Object::Integer(300)]));
+        let first = resolver.add(Object::Integer(65));
+        let font = load(
+            &resolver,
+            &dict(vec![
+                ("Subtype", name("Type1")),
+                ("FirstChar", first),
+                ("Widths", widths),
+            ]),
+        );
+        let (_, glyphs) = decode(&font, b"AB");
+        assert_exact(&[glyphs[0].advance, glyphs[1].advance], &[0.25, 0.3]);
+    }
+
+    #[test]
+    fn indirect_cid_widths_are_resolved() {
+        let mut resolver = TestResolver::default();
+        let width = resolver.add(Object::Integer(100));
+        let list = resolver.add(Object::Array(vec![width, Object::Integer(200)]));
+        let start = resolver.add(Object::Integer(1));
+        let ranges = resolver.add(Object::Array(vec![start, list]));
+        let default_width = resolver.add(Object::Integer(700));
+        let descendant = dict(vec![("W", ranges), ("DW", default_width)]);
+        let metrics = load_cid_widths(&resolver, &descendant);
+        assert_exact(
+            &[
+                metrics.width(Some(1)),
+                metrics.width(Some(2)),
+                metrics.width(Some(3)),
+            ],
+            &[100.0, 200.0, 700.0],
+        );
     }
 
     #[test]
