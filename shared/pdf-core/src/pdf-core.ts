@@ -9,14 +9,26 @@ import {
   PdfCoreInspectOptionsSchema,
   PdfCoreOperationValue,
   PdfCoreSchemaNameValue,
+  PdfCoreTextOptionsSchema,
+  PdfCoreTextSchema,
 } from "./config.js";
-import type { PdfCoreInspection, PdfCoreInspectOptions } from "./config.js";
+import type {
+  PdfCoreInspection,
+  PdfCoreInspectOptions,
+  PdfCoreOperation,
+  PdfCoreText,
+  PdfCoreTextOptions,
+} from "./config.js";
 
 export type PdfCoreService = {
   readonly inspect: (
     pdf: Uint8Array,
     options: PdfCoreInspectOptions,
   ) => Effect.Effect<PdfCoreInspection, PdfCoreError>;
+  readonly text: (
+    pdf: Uint8Array,
+    options?: PdfCoreTextOptions,
+  ) => Effect.Effect<PdfCoreText, PdfCoreError>;
 };
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
@@ -29,6 +41,9 @@ const FLAG_PAGE_INDEXES = 4;
 const STATUS_OK = 0;
 const MAGIC = 0x4346_4450;
 const VERSION = 1;
+const TEXT_MAGIC = 0x5854_4450;
+const TEXT_VERSION = 1;
+const TEXT_HEADER_BYTES = 16;
 const RESULT_HEADER_BYTES = 8;
 const PAGE_RECORD_BYTES = 72;
 const LINK_RECORD_BYTES = 48;
@@ -41,6 +56,13 @@ const utf8 = new TextDecoder();
 const align8 = (value: number): number => (value + 7) & ~7;
 
 type Allocation = { readonly pointer: number; readonly length: number };
+type Entry = (
+  pdfPointer: number,
+  pdfLength: number,
+  flags: number,
+  pagesPointer: number,
+  pagesLength: number,
+) => number;
 
 export const makePdfCore = (
   module: WebAssembly.Module,
@@ -68,7 +90,10 @@ export const makePdfCore = (
       ),
     );
 
-    const allocate = (length: number): Effect.Effect<Allocation, PdfCoreError, Scope.Scope> =>
+    const allocate = (
+      operation: PdfCoreOperation,
+      length: number,
+    ): Effect.Effect<Allocation, PdfCoreError, Scope.Scope> =>
       Effect.acquireRelease(
         Effect.suspend(() => {
           const pointer = length > MAX_UINT32 ? 0 : core.pdf_core_alloc(length) >>> 0;
@@ -76,7 +101,7 @@ export const makePdfCore = (
             ? Effect.fail(
                 new PdfCoreError({
                   code: PdfCoreErrorCodeValue.limitExceeded,
-                  operation: PdfCoreOperationValue.inspect,
+                  operation,
                   reason: "The PDF core could not allocate memory for the document.",
                 }),
               )
@@ -87,31 +112,31 @@ export const makePdfCore = (
       );
 
     const readBlock = (
+      operation: PdfCoreOperation,
+      entry: Entry,
       pdf: Uint8Array,
       flags: number,
       pageIndexes: ReadonlyArray<number>,
     ): Effect.Effect<ArrayBuffer, PdfCoreError> =>
       Effect.scoped(
         Effect.gen(function* () {
-          const input = yield* allocate(pdf.byteLength);
-          const pages = yield* allocate(pageIndexes.length * Uint32Array.BYTES_PER_ELEMENT);
+          const input = yield* allocate(operation, pdf.byteLength);
+          const pages = yield* allocate(
+            operation,
+            pageIndexes.length * Uint32Array.BYTES_PER_ELEMENT,
+          );
           new Uint8Array(core.memory.buffer, input.pointer, pdf.byteLength).set(pdf);
           new Uint32Array(core.memory.buffer, pages.pointer, pageIndexes.length).set(pageIndexes);
           const result = yield* Effect.acquireRelease(
             Effect.suspend(() => {
               const pointer =
-                core.pdf_core_inspect(
-                  input.pointer,
-                  pdf.byteLength,
-                  flags,
-                  pages.pointer,
-                  pageIndexes.length,
-                ) >>> 0;
+                entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length) >>>
+                0;
               if (pointer === 0) {
                 return Effect.fail(
                   new PdfCoreError({
                     code: PdfCoreErrorCodeValue.limitExceeded,
-                    operation: PdfCoreOperationValue.inspect,
+                    operation,
                     reason: "The PDF core could not allocate memory for the result.",
                   }),
                 );
@@ -122,7 +147,7 @@ export const makePdfCore = (
                 ? Effect.fail(
                     new PdfCoreError({
                       code: PdfCoreErrorCodeValue.wasmLoadFailed,
-                      operation: PdfCoreOperationValue.inspect,
+                      operation,
                       reason: "The PDF core returned a malformed result block.",
                     }),
                   )
@@ -134,63 +159,73 @@ export const makePdfCore = (
         }),
       );
 
+    const failStatus = (
+      operation: PdfCoreOperation,
+      block: ArrayBuffer,
+    ): Effect.Effect<never, PdfCoreError> => {
+      const status = new DataView(block).getUint32(4, true);
+      const reason = utf8.decode(new Uint8Array(block, RESULT_HEADER_BYTES));
+      return Effect.fail(
+        Match.value(status).pipe(
+          Match.when(
+            1,
+            () =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.invalidPdf,
+                operation,
+                status,
+                reason,
+              }),
+          ),
+          Match.when(
+            2,
+            () =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.encryptedPdf,
+                operation,
+                status,
+                reason,
+              }),
+          ),
+          Match.when(
+            3,
+            () =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.limitExceeded,
+                operation,
+                status,
+                reason,
+              }),
+          ),
+          Match.when(
+            4,
+            () =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.unsupportedFeature,
+                operation,
+                status,
+                reason,
+              }),
+          ),
+          Match.orElse(
+            () =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                operation,
+                status,
+                reason: "The PDF core returned an unknown status.",
+              }),
+          ),
+        ),
+      );
+    };
+
     const decodeBlock = (block: ArrayBuffer): Effect.Effect<PdfCoreInspection, PdfCoreError> =>
       Effect.gen(function* () {
         const view = new DataView(block);
         const status = view.getUint32(4, true);
         if (status !== STATUS_OK) {
-          const reason = utf8.decode(new Uint8Array(block, RESULT_HEADER_BYTES));
-          return yield* Match.value(status).pipe(
-            Match.when(
-              1,
-              () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.invalidPdf,
-                  operation: PdfCoreOperationValue.inspect,
-                  status,
-                  reason,
-                }),
-            ),
-            Match.when(
-              2,
-              () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.encryptedPdf,
-                  operation: PdfCoreOperationValue.inspect,
-                  status,
-                  reason,
-                }),
-            ),
-            Match.when(
-              3,
-              () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.limitExceeded,
-                  operation: PdfCoreOperationValue.inspect,
-                  status,
-                  reason,
-                }),
-            ),
-            Match.when(
-              4,
-              () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.unsupportedFeature,
-                  operation: PdfCoreOperationValue.inspect,
-                  status,
-                  reason,
-                }),
-            ),
-            Match.orElse(
-              () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.wasmLoadFailed,
-                  operation: PdfCoreOperationValue.inspect,
-                  status,
-                  reason: "The PDF core returned an unknown status.",
-                }),
-            ),
-          );
+          return yield* failStatus(PdfCoreOperationValue.inspect, block);
         }
         const base = RESULT_HEADER_BYTES;
         if (view.getUint32(base, true) !== MAGIC || view.getUint32(base + 4, true) !== VERSION) {
@@ -293,11 +328,80 @@ export const makePdfCore = (
         (options.text ? FLAG_TEXT : 0) |
         (options.links ? FLAG_LINKS : 0) |
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES);
-      const block = yield* readBlock(pdf, flags, pageIndexes);
+      const block = yield* readBlock(
+        PdfCoreOperationValue.inspect,
+        core.pdf_core_inspect,
+        pdf,
+        flags,
+        pageIndexes,
+      );
       return yield* decodeBlock(block);
     });
 
-    return { inspect };
+    const decodeTextBlock = (block: ArrayBuffer): Effect.Effect<PdfCoreText, PdfCoreError> =>
+      Effect.gen(function* () {
+        const view = new DataView(block);
+        if (view.getUint32(4, true) !== STATUS_OK) {
+          return yield* failStatus(PdfCoreOperationValue.text, block);
+        }
+        const base = RESULT_HEADER_BYTES;
+        if (
+          view.getUint32(base, true) !== TEXT_MAGIC ||
+          view.getUint32(base + 4, true) !== TEXT_VERSION
+        ) {
+          return yield* new PdfCoreError({
+            code: PdfCoreErrorCodeValue.wasmLoadFailed,
+            operation: PdfCoreOperationValue.text,
+            reason: "The PDF core text format is not supported by this package version.",
+          });
+        }
+        const pageCount = view.getUint32(base + 8, true);
+        const offsetsAt = base + TEXT_HEADER_BYTES;
+        const blobAt = align8(offsetsAt + (pageCount + 1) * Uint32Array.BYTES_PER_ELEMENT);
+        const pages = Array.from({ length: pageCount }, (_, index) => {
+          const start = view.getUint32(offsetsAt + index * 4, true);
+          const end = view.getUint32(offsetsAt + (index + 1) * 4, true);
+          return utf8.decode(new Uint8Array(block, blobAt + start, end - start));
+        });
+        return yield* Schema.decodeUnknownEffect(PdfCoreTextSchema)(pages).pipe(
+          Effect.mapError(
+            (issue) =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                operation: PdfCoreOperationValue.text,
+                schemaName: PdfCoreSchemaNameValue.text,
+                reason: "The PDF core returned an invalid text result.",
+                issueMessage: String(issue),
+              }),
+          ),
+        );
+      });
+
+    const text = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreTextOptions = {}) {
+      const options = yield* Schema.decodeUnknownEffect(PdfCoreTextOptionsSchema)(rawOptions).pipe(
+        Effect.mapError(
+          (issue) =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.invalidOptions,
+              operation: PdfCoreOperationValue.text,
+              schemaName: PdfCoreSchemaNameValue.textOptions,
+              issueMessage: String(issue),
+            }),
+        ),
+      );
+      const pageIndexes = options.pageIndexes ?? [];
+      const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
+      const block = yield* readBlock(
+        PdfCoreOperationValue.text,
+        core.pdf_core_text,
+        pdf,
+        flags,
+        pageIndexes,
+      );
+      return yield* decodeTextBlock(block);
+    });
+
+    return { inspect, text };
   });
 
 export const pdfCoreLayer = (module: WebAssembly.Module): Layer.Layer<PdfCore, PdfCoreError> =>

@@ -8,6 +8,7 @@ pub mod font;
 pub mod font_tables;
 pub mod inflate;
 pub mod inspection;
+pub mod layout;
 pub mod object;
 pub mod syntax;
 pub mod text;

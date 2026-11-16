@@ -46,23 +46,32 @@ export const pdfCoreErrorMessages = {
   },
 } satisfies Record<PdfCoreErrorMessageLocale, Record<PdfCoreErrorCode, string>>;
 
-export const PdfCoreOperationSchema = Schema.Literals(["pdfCore.load", "pdfCore.inspect"]);
+export const PdfCoreOperationSchema = Schema.Literals([
+  "pdfCore.load",
+  "pdfCore.inspect",
+  "pdfCore.text",
+]);
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
   load: "pdfCore.load",
   inspect: "pdfCore.inspect",
+  text: "pdfCore.text",
 } satisfies Record<string, PdfCoreOperation>;
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreExports",
   "PdfCoreInspectOptions",
   "PdfCoreInspection",
+  "PdfCoreTextOptions",
+  "PdfCoreText",
 ]);
 export type PdfCoreSchemaName = (typeof PdfCoreSchemaNameSchema)["Type"];
 export const PdfCoreSchemaNameValue = {
   exports: "PdfCoreExports",
   inspectOptions: "PdfCoreInspectOptions",
   inspection: "PdfCoreInspection",
+  textOptions: "PdfCoreTextOptions",
+  text: "PdfCoreText",
 } satisfies Record<string, PdfCoreSchemaName>;
 
 export class PdfCoreError extends Schema.TaggedError<
@@ -90,6 +99,14 @@ export const PdfCoreInspectOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
 });
 export type PdfCoreInspectOptions = (typeof PdfCoreInspectOptionsSchema)["Type"];
+
+export const PdfCoreTextOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+});
+export type PdfCoreTextOptions = (typeof PdfCoreTextOptionsSchema)["Type"];
+
+export const PdfCoreTextSchema = Schema.Array(Schema.String);
+export type PdfCoreText = (typeof PdfCoreTextSchema)["Type"];
 
 export const PdfCoreBoxSchema = Schema.Tuple([
   Schema.Finite,
@@ -141,11 +158,13 @@ const isInspectFunction = (
   pagesPointer: number,
   pagesLength: number,
 ) => number => typeof value === "function" && value.length === 5;
+const isTextFunction = isInspectFunction;
 
 export const PdfCoreExportsSchema = Schema.Struct({
   memory: Schema.instanceOf(WebAssembly.Memory),
   pdf_core_alloc: Schema.declare(isAllocFunction, { identifier: "pdf_core_alloc" }),
   pdf_core_free: Schema.declare(isFreeFunction, { identifier: "pdf_core_free" }),
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
+  pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];

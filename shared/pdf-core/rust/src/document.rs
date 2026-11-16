@@ -978,9 +978,14 @@ impl<'a> Document<'a> {
             let Some(data) = lenient(self.stream_data(stream))? else {
                 return Ok(());
             };
-            if !out.is_empty() {
-                out.push(b'\n');
+            if out.is_empty() {
+                if data.len() > max {
+                    return Err(Failure::limit("page content exceeds limit"));
+                }
+                out = data;
+                return Ok(());
             }
+            out.push(b'\n');
             if out.len().saturating_add(data.len()) > max {
                 return Err(Failure::limit("page content exceeds limit"));
             }
