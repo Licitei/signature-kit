@@ -307,11 +307,18 @@ impl CodeReader {
 }
 
 impl UnicodeMap {
+    fn finish(&mut self) {
+        self.char_map.sort_by_key(|(source, _)| *source);
+        self.char_map.dedup_by_key(|(source, _)| *source);
+    }
+
     fn lookup(&self, code: u32) -> Option<&[u32]> {
-        for (source, dest) in &self.char_map {
-            if *source == code {
-                return Some(dest.as_slice());
-            }
+        if let Ok(position) = self
+            .char_map
+            .binary_search_by_key(&code, |(source, _)| *source)
+            && let Some((_, dest)) = self.char_map.get(position)
+        {
+            return Some(dest.as_slice());
         }
         for range in &self.range_map {
             if code >= range.start && code <= range.end {
@@ -628,18 +635,17 @@ fn parse_cmap_codespace(data: &[u8], limits: &Limits) -> CodeReader {
     while idx < tokens.len() {
         if tokens.get(idx) == Some(&CmapToken::Keyword(b"begincodespacerange".to_vec())) {
             idx += 1;
-            if let Some(CmapToken::Integer(count)) = tokens.get(idx) {
-                let entry_count = (*count).max(0) as usize;
+            if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
                 idx += 1;
-                for _ in 0..entry_count {
-                    let (low, high, length) = read_codespace_entry(&tokens, &mut idx);
-                    if let (Some(low), Some(high)) = (low, high) {
-                        reader.codespace.push(CodespaceRange {
-                            low,
-                            high,
-                            length: length.unwrap_or(1),
-                        });
-                    }
+            }
+            while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
+                let (low, high, length) = read_codespace_entry(&tokens, &mut idx);
+                if let (Some(low), Some(high)) = (low, high) {
+                    reader.codespace.push(CodespaceRange {
+                        low,
+                        high,
+                        length: length.unwrap_or(1),
+                    });
                 }
             }
         }
@@ -668,15 +674,10 @@ fn parse_cmap_to_unicode(data: &[u8], limits: &Limits) -> UnicodeMap {
         match tokens.get(idx) {
             Some(CmapToken::Keyword(keyword)) if keyword == b"beginbfchar" => {
                 idx += 1;
-                let count = tokens
-                    .get(idx)
-                    .and_then(|token| match token {
-                        CmapToken::Integer(value) => Some(*value as usize),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                idx += 1;
-                for _ in 0..count {
+                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
+                    idx += 1;
+                }
+                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
                     let (src, dest) = read_bf_entry(&tokens, &mut idx);
                     if let (Some(source), Some(destination)) = (src, dest) {
                         map.char_map.push((source, destination));
@@ -685,15 +686,10 @@ fn parse_cmap_to_unicode(data: &[u8], limits: &Limits) -> UnicodeMap {
             }
             Some(CmapToken::Keyword(keyword)) if keyword == b"beginbfrange" => {
                 idx += 1;
-                let count = tokens
-                    .get(idx)
-                    .and_then(|token| match token {
-                        CmapToken::Integer(value) => Some(*value as usize),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                idx += 1;
-                for _ in 0..count {
+                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
+                    idx += 1;
+                }
+                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
                     let (start, end, dest, increment) = read_bf_range(&tokens, &mut idx);
                     if let (Some(start), Some(end), Some(destination)) = (start, end, dest) {
                         if increment && destination.len() == 1 {
@@ -720,6 +716,7 @@ fn parse_cmap_to_unicode(data: &[u8], limits: &Limits) -> UnicodeMap {
             }
         }
     }
+    map.finish();
     map
 }
 
@@ -828,20 +825,15 @@ fn read_codespace_entry(
     tokens: &[CmapToken],
     idx: &mut usize,
 ) -> (Option<u32>, Option<u32>, Option<u8>) {
-    let low = tokens.get(*idx).and_then(hex_token_to_u32);
+    let low_token = tokens.get(*idx);
+    let low = low_token.and_then(hex_token_to_u32);
     *idx += 1;
     let high = tokens.get(*idx).and_then(hex_token_to_u32);
     *idx += 1;
-    let length = low.map(|value| {
-        let bytes = value.to_be_bytes();
-        let mut len = 0u8;
-        for byte in bytes {
-            if byte != 0 {
-                len = len.saturating_add(1);
-            }
-        }
-        if len == 0 { 1 } else { len }
-    });
+    let length = match low_token {
+        Some(CmapToken::Hex(bytes)) => u8::try_from(bytes.len().clamp(1, 4)).ok(),
+        _ => None,
+    };
     (low, high, length)
 }
 
@@ -1341,6 +1333,19 @@ mod tests {
         let map = parse_cmap_to_unicode(cmap, &Limits::default());
         let result = map.lookup(0x41).expect("mapping");
         assert_eq!(result, &[0x0041]);
+    }
+
+    #[test]
+    fn to_unicode_count_before_keyword() {
+        let cmap = b"1 begincodespacerange <0000> <FFFF> endcodespacerange\n2 beginbfchar\n<0001> <0041>\n<0002> <0042>\nendbfchar\n1 beginbfrange\n<0010> <0012> <0061>\nendbfrange";
+        let map = parse_cmap_to_unicode(cmap, &Limits::default());
+        assert_eq!(map.lookup(1), Some([0x41].as_slice()));
+        assert_eq!(map.lookup(2), Some([0x42].as_slice()));
+        assert_eq!(map.lookup(0x11), Some([0x62].as_slice()));
+        assert_eq!(map.lookup(3), None);
+        let reader = parse_cmap_codespace(cmap, &Limits::default());
+        assert_eq!(reader.bytes_per_code, 2);
+        assert_eq!(reader.read(&[0, 1, 0, 2], 0), Some((1, 2)));
     }
 
     #[test]
