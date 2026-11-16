@@ -277,25 +277,26 @@ impl SimpleFont {
     }
 
     fn width_for_code(&self, code: u32) -> f64 {
-        let width = if let Some(standard) = self.widths.standard14 {
-            let index = usize::try_from(code.min(255)).unwrap_or_default();
-            standard
-                .widths()
-                .get(index)
-                .copied()
-                .map_or(self.widths.missing, f64::from)
-        } else {
-            u32::try_from(self.widths.first_char)
-                .ok()
-                .and_then(|first| code.checked_sub(first))
-                .and_then(|offset| self.widths.widths.get(widen(offset)))
-                .copied()
-                .unwrap_or(self.widths.missing)
-        };
-        match self.font_scale {
-            Some(scale) => width * scale,
-            None => width / 1000.0,
-        }
+        let width = self.widths.standard14.map_or_else(
+            || {
+                u32::try_from(self.widths.first_char)
+                    .ok()
+                    .and_then(|first| code.checked_sub(first))
+                    .and_then(|offset| self.widths.widths.get(widen(offset)))
+                    .copied()
+                    .unwrap_or(self.widths.missing)
+            },
+            |standard| {
+                let index = usize::try_from(code.min(255)).unwrap_or_default();
+                standard
+                    .widths()
+                    .get(index)
+                    .copied()
+                    .map_or(self.widths.missing, f64::from)
+            },
+        );
+        self.font_scale
+            .map_or_else(|| width / 1000.0, |scale| width * scale)
     }
 }
 
@@ -471,7 +472,7 @@ impl CompositeFont {
                         let mapped = (u16::from(pair.first().copied().unwrap_or(0)) << 8)
                             | u16::from(pair.get(1).copied().unwrap_or(0));
                         map.entry(mapped)
-                            .or_insert(u32::try_from(cid).unwrap_or(u32::MAX));
+                            .or_insert_with(|| u32::try_from(cid).unwrap_or(u32::MAX));
                     }
                     map
                 })
@@ -972,33 +973,30 @@ fn standard14_from_base_font(name: Option<&Object>) -> Option<Standard14Font> {
         return None;
     };
     match strip_subset_prefix(bytes) {
-        b"Helvetica" => Some(Standard14Font::Helvetica),
-        b"Helvetica-Bold" => Some(Standard14Font::HelveticaBold),
+        b"Helvetica-Bold" | b"Arial,Bold" | b"Arial-Bold" => Some(Standard14Font::HelveticaBold),
         b"Helvetica-Oblique" => Some(Standard14Font::HelveticaOblique),
         b"Helvetica-BoldOblique" => Some(Standard14Font::HelveticaBoldOblique),
-        b"Times-Roman" => Some(Standard14Font::TimesRoman),
+        b"Times-Roman" | b"TimesNewRoman" => Some(Standard14Font::TimesRoman),
         b"Times-Bold" => Some(Standard14Font::TimesBold),
         b"Times-Italic" => Some(Standard14Font::TimesItalic),
         b"Times-BoldItalic" => Some(Standard14Font::TimesBoldItalic),
-        b"Courier" => Some(Standard14Font::Courier),
+        b"Courier" | b"CourierNew" => Some(Standard14Font::Courier),
         b"Courier-Bold" => Some(Standard14Font::CourierBold),
         b"Courier-Oblique" => Some(Standard14Font::CourierOblique),
         b"Courier-BoldOblique" => Some(Standard14Font::CourierBoldOblique),
         b"Symbol" => Some(Standard14Font::Symbol),
         b"ZapfDingbats" => Some(Standard14Font::ZapfDingbats),
-        b"Arial" => Some(Standard14Font::Helvetica),
-        b"Arial,Bold" | b"Arial-Bold" => Some(Standard14Font::HelveticaBold),
-        b"TimesNewRoman" => Some(Standard14Font::TimesRoman),
-        b"CourierNew" => Some(Standard14Font::Courier),
+        b"Helvetica" | b"Arial" => Some(Standard14Font::Helvetica),
         _ => None,
     }
 }
 
 fn strip_subset_prefix(name: &[u8]) -> &[u8] {
-    match name.iter().position(|byte| *byte == b'+') {
-        Some(index) => name.get(index.saturating_add(1)..).unwrap_or(name),
-        None => name,
-    }
+    name.iter()
+        .position(|byte| *byte == b'+')
+        .map_or(name, |index| {
+            name.get(index.saturating_add(1)..).unwrap_or(name)
+        })
 }
 
 fn builtin_from_name(name: &[u8]) -> BuiltinEncoding {

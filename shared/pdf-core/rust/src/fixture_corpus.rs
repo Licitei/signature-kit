@@ -145,13 +145,11 @@ mod tests {
     }
 
     fn load_page_fonts(document: &Document<'_>, page: &Page) -> Vec<Font> {
-        let fonts_value = match page.resources.get(b"Font") {
-            Some(value) => value,
-            None => return Vec::new(),
+        let Some(fonts_value) = page.resources.get(b"Font") else {
+            return Vec::new();
         };
-        let fonts_dict = match document.resolve(fonts_value) {
-            Ok(Object::Dict(dict)) => dict,
-            _ => return Vec::new(),
+        let Ok(Object::Dict(fonts_dict)) = document.resolve(fonts_value) else {
+            return Vec::new();
         };
         let mut fonts = Vec::new();
         for (_, entry) in &fonts_dict.entries {

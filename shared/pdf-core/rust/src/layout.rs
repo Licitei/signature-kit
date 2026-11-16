@@ -261,9 +261,8 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
                     .iter()
                     .copied()
                     .filter(|&id| blocks.get(id).is_some_and(|block| fits(block, segment)));
-                let target = match (matches.next(), matches.next()) {
-                    (Some(id), None) => id,
-                    _ => return None,
+                let (Some(target), None) = (matches.next(), matches.next()) else {
+                    return None;
                 };
                 let exclusive = blocks.get(target).is_some_and(|block| {
                     line.iter().filter(|other| fits(block, other)).count() == 1
@@ -581,7 +580,7 @@ fn aligned_tables(
                         if let Some(column) = column {
                             used.push(column);
                         }
-                        fresh && !(segment.bold && !row_bold)
+                        fresh && !segment.bold || row_bold
                     });
                 if !wraps {
                     break;

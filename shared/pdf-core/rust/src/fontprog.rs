@@ -673,12 +673,14 @@ impl FontProgram {
                     .map(|gid| {
                         let index = read_u16(table, (gid.saturating_mul(2)).saturating_add(34))
                             .map_or(0, usize::from);
-                        let name = match index.checked_sub(POST_STANDARD_NAMES) {
-                            None => POST_STANDARD_GLYPH_NAMES
-                                .get(index)
-                                .map(|name| name.as_bytes()),
-                            Some(custom) => strings.get(custom).copied(),
-                        };
+                        let name = index.checked_sub(POST_STANDARD_NAMES).map_or_else(
+                            || {
+                                POST_STANDARD_GLYPH_NAMES
+                                    .get(index)
+                                    .map(|name| name.as_bytes())
+                            },
+                            |custom| strings.get(custom).copied(),
+                        );
                         name.map(<[u8]>::to_vec).unwrap_or_default()
                     })
                     .collect()
@@ -1053,8 +1055,7 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
             .map(|offset| lookup.saturating_add(usize::from(offset))) else {
                 break;
             };
-            let mut subtable_kind = kind;
-            if kind == 7 {
+            let subtable_kind = if kind == 7 {
                 let (Some(1), Some(inner), Some(relative)) = (
                     read_u16(table, subtable),
                     read_u16(table, subtable.saturating_add(2)),
@@ -1069,8 +1070,10 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
                     continue;
                 };
                 subtable = target;
-                subtable_kind = inner;
-            }
+                inner
+            } else {
+                kind
+            };
             if subtable_kind == 4 {
                 read_ligature_subtable(table, subtable, out);
             }
@@ -1578,15 +1581,16 @@ pub(crate) mod tests {
         sub.extend(be16(8));
         sub.extend(&set);
         sub.extend(&coverage);
-        let mut kind = 4_u16;
-        if extension {
+        let kind = if extension {
             let mut wrapped = be16(1);
             wrapped.extend(be16(4));
             wrapped.extend(be32(8));
             wrapped.extend(&sub);
             sub = wrapped;
-            kind = 7;
-        }
+            7
+        } else {
+            4_u16
+        };
         let mut lookup = be16(kind);
         lookup.extend(be16(0));
         lookup.extend(be16(1));

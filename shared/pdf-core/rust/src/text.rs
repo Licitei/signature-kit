@@ -399,10 +399,7 @@ impl Scope {
                 .and_then(|dict| dict.get(key))
                 .and_then(|entry| document.follow(entry).ok())
                 .filter(|resolved| resolved.as_dict().is_some());
-            *slot = match found {
-                Some(resolved) => Lazy::Found(resolved),
-                None => Lazy::Missing,
-            };
+            *slot = found.map_or(Lazy::Missing, |resolved| Lazy::Found(resolved));
         }
         match slot {
             Lazy::Found(resolved) => Some(Rc::clone(resolved)),
@@ -757,7 +754,9 @@ impl Interpreter<'_, '_> {
                 OP_CLOSE if self.structure => path.close(self.ruling_cap),
                 OP_NO_PAINT if self.structure => path.clear(),
                 OP_STROKE if self.structure => self.paint(&mut path, state, true),
-                OP_CLOSE_STROKE if self.structure => {
+                OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO
+                    if self.structure =>
+                {
                     path.close(self.ruling_cap);
                     self.paint(&mut path, state, true);
                 }
@@ -765,10 +764,6 @@ impl Interpreter<'_, '_> {
                     self.paint(&mut path, state, false);
                 }
                 OP_FILL_STROKE | OP_FILL_STROKE_EO if self.structure => {
-                    self.paint(&mut path, state, true);
-                }
-                OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO if self.structure => {
-                    path.close(self.ruling_cap);
                     self.paint(&mut path, state, true);
                 }
                 OP_BMC if self.structure && marked.len() < max_stack => marked.push(false),
@@ -1348,15 +1343,14 @@ impl Interpreter<'_, '_> {
         {
             let [x0, y0, x1, y1] =
                 transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
-            self.clip = Some(match outer_clip {
-                Some(outer) => [
+            self.clip = Some(outer_clip.map_or([x0, y0, x1, y1], |outer| {
+                [
                     outer[0].max(x0),
                     outer[1].max(y0),
                     outer[2].min(x1),
                     outer[3].min(y1),
-                ],
-                None => [x0, y0, x1, y1],
-            });
+                ]
+            }));
         }
         let mut inner_matrices = *matrices;
         if let Some(reference) = reference {

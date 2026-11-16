@@ -407,9 +407,8 @@ impl<'a> Document<'a> {
             }
         }
         let mut parser = Parser::new(data, pos, self.limits.max_nesting, true);
-        let trailer = match parser.parse_object()? {
-            Object::Dict(dict) => dict,
-            _ => return Err(Failure::invalid("trailer is not a dictionary")),
+        let Object::Dict(trailer) = parser.parse_object()? else {
+            return Err(Failure::invalid("trailer is not a dictionary"));
         };
         let hybrid = trailer
             .get(b"XRefStm")
@@ -453,10 +452,14 @@ impl<'a> Document<'a> {
             .get(b"Size")
             .and_then(Object::as_integer)
             .unwrap_or(0);
-        let index: Vec<i64> = match stream.dict.get(b"Index").and_then(Object::as_array) {
-            Some(items) => items.iter().filter_map(Object::as_integer).collect(),
-            None => vec![0, size],
-        };
+        let index: Vec<i64> = stream
+            .dict
+            .get(b"Index")
+            .and_then(Object::as_array)
+            .map_or_else(
+                || vec![0, size],
+                |items| items.iter().filter_map(Object::as_integer).collect(),
+            );
         let data = self.stream_data(&stream)?;
         let mut entries = Vec::new();
         let mut cursor = 0_usize;
@@ -480,10 +483,9 @@ impl<'a> Document<'a> {
                 };
                 let entry = match kind {
                     0 => Entry::Free,
-                    1 => match usize::try_from(second) {
-                        Ok(offset) => Entry::Offset(offset),
-                        Err(_) => Entry::Free,
-                    },
+                    1 => {
+                        usize::try_from(second).map_or(Entry::Free, |offset| Entry::Offset(offset))
+                    }
                     2 => match (u32::try_from(second), u32::try_from(third)) {
                         (Ok(stream), Ok(index)) => Entry::Compressed { stream, index },
                         _ => Entry::Free,
@@ -894,13 +896,14 @@ impl<'a> Document<'a> {
         let mut visited: HashSet<u32> = HashSet::new();
         let mut stack: Vec<(Object, Inherited)> = vec![(root.clone(), Inherited::default())];
         while let Some((node, inherited)) = stack.pop() {
-            let mut obj_ref = None;
-            if let Object::Ref(reference) = &node {
+            let obj_ref = if let Object::Ref(reference) = &node {
                 if !visited.insert(reference.number) {
                     continue;
                 }
-                obj_ref = Some(*reference);
-            }
+                Some(*reference)
+            } else {
+                None
+            };
             if visited.len() > self.limits.max_objects {
                 return Err(Failure::limit("page tree too large"));
             }
@@ -1195,7 +1198,7 @@ pub(crate) fn inspect(
 mod tests {
     use super::*;
     use std::hint::black_box;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     const CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R >>";
     const PAGES: &str = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
@@ -2171,8 +2174,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn perf_two_thousand_pages() {
+    fn two_thousand_pages_open_within_budget() {
         let pages = 2000_u32;
         let mut objects = vec![(1_u32, CATALOG.to_owned())];
         let kids: String = (0..pages).map(|i| format!("{} 0 R ", 10 + i * 3)).collect();
@@ -2206,19 +2208,21 @@ mod tests {
         let linked = Instant::now();
         let links = document.links(&list).unwrap();
         let links_time = linked.elapsed();
-        println!(
-            "bytes={} open={opened:?} pages={} ({pages_time:?}) links={} ({links_time:?})",
-            bytes.len(),
-            list.len(),
-            links.len()
-        );
+        let budget = Duration::from_secs(5);
+        assert!(opened < budget, "open took {opened:?}");
+        assert!(pages_time < budget, "pages took {pages_time:?}");
+        assert!(links_time < budget, "links took {links_time:?}");
         assert_eq!(list.len(), widen(pages));
         assert_eq!(links.len(), widen(pages));
         let repaired = replace(&bytes, b"startxref\n", b"startxref\n9");
         let started_3 = Instant::now();
         let document_3 = Document::open(&repaired, &Limits::default()).unwrap();
         let count = document_3.pages().unwrap().len();
-        println!("repair open+pages={:?} pages={count}", started_3.elapsed());
+        assert!(
+            started_3.elapsed() < budget,
+            "repair took {:?}",
+            started_3.elapsed()
+        );
         assert_eq!(count, widen(pages));
     }
 }

@@ -379,12 +379,10 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
                 .get(usize::from(prev))
                 .ok_or_else(|| Failure::invalid("lzw previous"))?
                 .clone();
-            if let Some(first) = base.first().copied() {
+            base.first().copied().map_or(None, |first| {
                 base.push(first);
                 Some(base)
-            } else {
-                None
-            }
+            })
         } else {
             None
         };
@@ -571,7 +569,6 @@ fn png_predict(
 
 fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
     let pred = match filter {
-        0 => 0_u8,
         1 => left,
         2 => up,
         3 => avg(left, up),
@@ -618,7 +615,6 @@ const fn is_ws(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::num::usize_to_f64;
     use crate::object::Object;
     use std::hint::black_box;
     fn dict_filter(filter: &[u8], parms: Option<Object>) -> Dict {
@@ -833,37 +829,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn inflate_throughput_benchmark() {
-        let payload = repetitive_deflate_mb();
+    fn inflate_megabyte_within_budget() {
+        let payload = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
         let dict = dict_filter(b"FlateDecode", None);
         let start = std::time::Instant::now();
-        black_box(decode_stream(&dict, &payload, 8 * 1024 * 1024).expect("bench"));
-        let elapsed = start.elapsed().as_secs_f64();
-        let mb = usize_to_f64(payload.len()) / (1024.0 * 1024.0);
-        println!("inflate {:.1} MB/s", mb / elapsed);
-    }
-
-    fn stored_bytes(raw: &[u8]) -> Vec<u8> {
-        let len = u16::try_from(raw.len()).unwrap();
-        let nlen = len ^ 0xffff;
-        let mut block = Vec::new();
-        block.push(0x01);
-        block.extend_from_slice(&[0, 0]);
-        block.extend_from_slice(&len.to_le_bytes());
-        block.extend_from_slice(&nlen.to_le_bytes());
-        block.extend_from_slice(raw);
-        let mut out = vec![0x78_u8, 0x01];
-        out.extend_from_slice(&block);
-        out.extend_from_slice(&[0, 0, 0, 0]);
-        out
-    }
-
-    fn repetitive_deflate_mb() -> Vec<u8> {
-        let mut raw = Vec::with_capacity(1_048_576);
-        for _ in 0..(1_048_576 / 4) {
-            raw.extend_from_slice(b"ABCD");
-        }
-        stored_bytes(&raw)
+        black_box(decode_stream(&dict, payload, 8 * 1024 * 1024).expect("bench"));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "inflate took {elapsed:?}"
+        );
     }
 }

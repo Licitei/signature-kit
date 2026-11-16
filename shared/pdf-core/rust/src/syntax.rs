@@ -8,12 +8,12 @@ const CONTENT_NESTING: usize = 32;
 const KEYWORD_PROBE: usize = 16;
 const IMAGE_END_PROBE: usize = 10;
 
-#[inline(always)]
+#[inline]
 pub(crate) const fn is_whitespace(byte: u8) -> bool {
     matches!(byte, 0 | 9 | 10 | 12 | 13 | 32)
 }
 
-#[inline(always)]
+#[inline]
 pub(crate) const fn is_delimiter(byte: u8) -> bool {
     matches!(
         byte,
@@ -21,12 +21,12 @@ pub(crate) const fn is_delimiter(byte: u8) -> bool {
     )
 }
 
-#[inline(always)]
+#[inline]
 pub(crate) const fn is_regular(byte: u8) -> bool {
     !is_whitespace(byte) && !is_delimiter(byte)
 }
 
-#[inline(always)]
+#[inline]
 const fn is_number_start(byte: u8) -> bool {
     matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.')
 }
@@ -139,12 +139,12 @@ impl<'a> Parser<'a> {
         self.pos
     }
 
-    #[inline(always)]
+    #[inline]
     fn peek(&self) -> Option<u8> {
         self.data.get(self.pos).copied()
     }
 
-    #[inline(always)]
+    #[inline]
     fn peek_at(&self, ahead: usize) -> Option<u8> {
         self.data.get(self.pos.saturating_add(ahead)).copied()
     }
@@ -871,7 +871,7 @@ mod tests {
         assert_eq!(parse(b"-.5"), Object::Real(-0.5));
         assert_eq!(parse(b"5."), Object::Real(5.0));
         assert_eq!(parse(b"3.25"), Object::Real(3.25));
-        assert_eq!(parse(b"0.000001"), Object::Real(0.000001));
+        assert_eq!(parse(b"0.000001"), Object::Real(0.000_001));
         assert_eq!(parse(b"612.0"), Object::Real(612.0));
     }
 

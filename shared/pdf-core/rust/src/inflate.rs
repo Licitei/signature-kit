@@ -349,15 +349,12 @@ fn inflate_block(
     dist: &Huffman,
 ) -> Outcome<bool> {
     loop {
-        let sym = match decode_symbol(bits, lit) {
-            Some(s) => s,
-            None => {
-                return if out.is_empty() {
-                    Err(Failure::invalid("truncated deflate stream"))
-                } else {
-                    Ok(false)
-                };
-            }
+        let Some(sym) = decode_symbol(bits, lit) else {
+            return if out.is_empty() {
+                Err(Failure::invalid("truncated deflate stream"))
+            } else {
+                Ok(false)
+            };
         };
         if sym < 256 {
             if out.len() >= max {
@@ -386,15 +383,12 @@ fn inflate_block(
             ),
         };
         let length = base.saturating_add(extra);
-        let dist_sym = match decode_symbol(bits, dist) {
-            Some(s) => s,
-            None => {
-                return if out.is_empty() {
-                    Err(Failure::invalid("truncated distance"))
-                } else {
-                    Ok(false)
-                };
-            }
+        let Some(dist_sym) = decode_symbol(bits, dist) else {
+            return if out.is_empty() {
+                Err(Failure::invalid("truncated distance"))
+            } else {
+                Ok(false)
+            };
         };
         let dist_idx = usize::from(dist_sym);
         let dist_base = DIST_BASE
@@ -451,9 +445,8 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
 
     let mut lengths = Vec::new();
     while lengths.len() < hlit.saturating_add(hdist) {
-        let sym = match decode_symbol(bits, &cl_tree) {
-            Some(s) => s,
-            None => return Err(Failure::invalid("truncated code lengths")),
+        let Some(sym) = decode_symbol(bits, &cl_tree) else {
+            return Err(Failure::invalid("truncated code lengths"));
         };
         if sym < 16 {
             lengths.push(u8::try_from(sym).unwrap_or(u8::MAX));
@@ -516,10 +509,7 @@ fn skip_zlib_header(data: &[u8]) -> usize {
 pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max_output));
     let skip = skip_zlib_header(data);
-    let payload = match data.get(skip..) {
-        Some(slice) => slice,
-        None => data,
-    };
+    let payload = data.get(skip..).map_or(data, |slice| slice);
     if payload.is_empty() && !data.is_empty() {
         return Ok(out);
     }
@@ -527,10 +517,7 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     let mut final_block = false;
 
     while !final_block {
-        let hdr = match bits.take_bits(3) {
-            Some(v) => v,
-            None => break,
-        };
+        let Some(hdr) = bits.take_bits(3) else { break };
         final_block = (hdr & 1) != 0;
         let btype = (hdr >> 1) & 3;
         match btype {
@@ -677,8 +664,8 @@ mod tests {
     fn skewed_alphabet_exercises_long_codes_and_overlapping_matches() {
         let out = inflate(ZLIB_SKEWED, 1024 * 1024).expect("skewed");
         assert_eq!(out.len(), 67_500);
-        assert_eq!(crc32(&out), 0x5C834526);
-        assert_eq!(adler32(&out), 0xD0BD5B93);
+        assert_eq!(crc32(&out), 0x5C83_4526);
+        assert_eq!(adler32(&out), 0xD0BD_5B93);
     }
 
     #[test]
