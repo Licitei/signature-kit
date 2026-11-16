@@ -1,8 +1,9 @@
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
-import { bunStorePackageRoot, repoRoot, workspaceModuleUrl } from "./workspace-modules.ts";
+import { repoRoot } from "./workspace-modules.ts";
 
 const {
   PDFDocument,
@@ -10,11 +11,11 @@ const {
   PDFString,
   rgb,
   StandardFonts,
-} = await import(workspaceModuleUrl("formats/pdf/node_modules/@cantoo/pdf-lib/es/index.js"));
+} = await import("@cantoo/pdf-lib/es/index.js");
 const { renderToBuffer, Document, Page, Text, View, Font, StyleSheet } = await import(
-  workspaceModuleUrl("apps/docs/node_modules/@react-pdf/renderer/lib/react-pdf.js"),
+  "@react-pdf/renderer/lib/react-pdf.js",
 );
-const React = await import(workspaceModuleUrl("apps/docs/node_modules/react/index.js"));
+const React = await import("react");
 
 const FIXED_DATE = new Date("2024-01-15T10:30:00.000Z");
 const CORPUS_CREATOR = "signature-kit-pdf-core-corpus";
@@ -89,8 +90,10 @@ const buildHelveticaWinansi = async (): Promise<Uint8Array> => {
   return document.save({ useObjectStreams: false });
 };
 
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
 const liberationFontPath = (): string =>
-  join(bunStorePackageRoot("pdfjs-dist"), "standard_fonts/LiberationSans-Regular.ttf");
+  join(packageRoot, "node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf");
 
 const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
   Font.register({

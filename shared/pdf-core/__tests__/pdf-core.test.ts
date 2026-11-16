@@ -1,53 +1,109 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Result } from "effect";
 
-import { createPdfFixture } from "../../../tooling/testing/fixtures";
 import { PdfCoreError, PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
 import { PdfCore, makePdfCore } from "../dist/pdf-core.js";
+import {
+  CORPUS_FIXTURE_NAMES,
+  LINK_FIXTURE_URIS,
+  PDF_CORE_FIXTURES_DIR,
+  type CorpusFixtureName,
+} from "./corpus.ts";
 
 const MAX_WASM_BYTES = 1024 * 1024;
 const wasmUrl = new URL("../dist/pdf-core.wasm", import.meta.url);
-
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 
-const encode = (value: string): Uint8Array => new TextEncoder().encode(value);
+const readFixture = (name: CorpusFixtureName): Uint8Array =>
+  new Uint8Array(readFileSync(join(PDF_CORE_FIXTURES_DIR, name)));
+
+const LITEPARSE_DIMS: Readonly<Record<CorpusFixtureName, readonly [number, number]>> = {
+  "links.pdf": [612, 792],
+  "helvetica-winansi.pdf": [612, 792],
+  "react-pdf-declaration.pdf": [595.28, 841.89],
+  "rotated-cropped.pdf": [612, 792],
+  "object-streams.pdf": [612, 792],
+  "incremental-update.pdf": [612, 792],
+  "broken-xref.pdf": [612, 792],
+  "icp-signed.pdf": [300, 200],
+  "habilitacao-150.pdf": [612, 792],
+};
+
+const encryptedFixture = (): Uint8Array => {
+  const body = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n",
+  ].join("");
+  const encoder = new TextEncoder();
+  let pdf = `%PDF-1.7\n${body}`;
+  const xref = encoder.encode(pdf).byteLength;
+  pdf += `trailer\n<< /Size 4 /Root 1 0 R /Encrypt << /Filter /Standard >> >>\nstartxref\n${xref}\n%%EOF\n`;
+  return encoder.encode(pdf);
+};
 
 describe("PdfCore", () => {
-  it.effect("inspects page geometry, links and text of a PDF", () =>
+  it.effect("inspects page geometry, links and text of the corpus", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const inspection = yield* core.inspect(createPdfFixture(), { text: true, links: true });
+      const inspection = yield* core.inspect(readFixture("links.pdf"), { text: true, links: true });
       expect(inspection.pages).toHaveLength(1);
-      for (const page of inspection.pages) {
-        expect(page.mediaBox).toHaveLength(4);
-        expect(page.cropBox).toHaveLength(4);
-        expect(page.mediaBox.every(Number.isFinite)).toBe(true);
-        expect(Number.isInteger(page.rotate)).toBe(true);
-      }
+      const [width, height] = LITEPARSE_DIMS["links.pdf"];
+      const media = inspection.pages[0]?.mediaBox;
+      expect(media?.[2]! - media?.[0]!).toBeCloseTo(width, 0);
+      expect(media?.[3]! - media?.[1]!).toBeCloseTo(height, 0);
+      expect(inspection.pages[0]?.rotate).toBe(0);
+      expect(inspection.links).toHaveLength(3);
+      const uris = inspection.links.map((link) => link.uri);
+      expect(uris).toContain(LINK_FIXTURE_URIS.primary);
+      expect(uris).toContain(LINK_FIXTURE_URIS.secondary);
+      expect(uris).toContain(LINK_FIXTURE_URIS.indirect);
       for (const link of inspection.links) {
         expect(link.rect).toHaveLength(4);
-        expect(link.pageIndex).toBeLessThan(inspection.pages.length);
-        expect(link.uri.length).toBeGreaterThan(0);
+        expect(link.pageIndex).toBe(0);
       }
-      for (const page of inspection.text) {
-        const items = page.rects.length / 5;
-        expect(Number.isInteger(items)).toBe(true);
-        expect(page.offsets).toHaveLength(items + 1);
-        expect(page.offsets[0]).toBe(0);
-        expect(page.offsets.at(-1)).toBe(encode(page.text).byteLength);
-        for (let index = 1; index < page.offsets.length; index += 1) {
-          expect(page.offsets[index]).toBeGreaterThanOrEqual(page.offsets[index - 1] ?? 0);
-        }
+      expect(inspection.text).toHaveLength(1);
+      expect(inspection.text[0]?.pageIndex).toBe(0);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("matches corpus fixture page counts and media boxes", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      for (const name of CORPUS_FIXTURE_NAMES) {
+        const inspection = yield* core.inspect(readFixture(name), { text: false, links: false });
+        const expectedCount = name === "habilitacao-150.pdf" ? 150 : name === "rotated-cropped.pdf" ? 2 : 1;
+        expect(inspection.pages).toHaveLength(expectedCount);
+        const [width, height] = LITEPARSE_DIMS[name];
+        const media = inspection.pages[0]?.mediaBox;
+        expect(media?.[2]! - media?.[0]!).toBeCloseTo(width, 0);
+        expect(media?.[3]! - media?.[1]!).toBeCloseTo(height, 0);
       }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("returns rotated page metadata and rotated link uri", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const inspection = yield* core.inspect(readFixture("rotated-cropped.pdf"), {
+        text: false,
+        links: true,
+      });
+      expect(inspection.pages).toHaveLength(2);
+      expect(inspection.pages[0]?.rotate).toBe(90);
+      expect(inspection.pages[1]?.rotate).toBe(270);
+      expect(inspection.links.every((link) => link.uri === LINK_FIXTURE_URIS.rotated)).toBe(true);
     }).pipe(Effect.provide(layer)),
   );
 
   it.effect("skips links and text unless requested", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const inspection = yield* core.inspect(createPdfFixture(), { text: false, links: false });
+      const inspection = yield* core.inspect(readFixture("links.pdf"), { text: false, links: false });
       expect(inspection.pages).toHaveLength(1);
       expect(inspection.links).toHaveLength(0);
       expect(inspection.text).toHaveLength(0);
@@ -57,23 +113,23 @@ describe("PdfCore", () => {
   it.effect("restricts text to the requested page indexes", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const inspection = yield* core.inspect(createPdfFixture(), {
+      const inspection = yield* core.inspect(readFixture("rotated-cropped.pdf"), {
         text: true,
         links: false,
         pageIndexes: [0],
       });
-      expect(inspection.text.every((page) => page.pageIndex === 0)).toBe(true);
+      expect(inspection.text).toHaveLength(1);
+      expect(inspection.text[0]?.pageIndex).toBe(0);
     }).pipe(Effect.provide(layer)),
   );
 
   it.effect("returns arrays that survive later calls", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const first = yield* core.inspect(createPdfFixture(), { text: true, links: true });
+      const first = yield* core.inspect(readFixture("links.pdf"), { text: true, links: true });
       const snapshot = first.text.map((page) => [...page.rects]);
-      yield* Effect.forEach(
-        Array.from({ length: 20 }, () => createPdfFixture()),
-        (pdf) => core.inspect(pdf, { text: true, links: true }),
+      yield* Effect.forEach(CORPUS_FIXTURE_NAMES.slice(0, 4), (name) =>
+        core.inspect(readFixture(name), { text: true, links: true }),
       );
       expect(first.text.map((page) => [...page.rects])).toEqual(snapshot);
     }).pipe(Effect.provide(layer)),
@@ -83,7 +139,7 @@ describe("PdfCore", () => {
     Effect.gen(function* () {
       const core = yield* PdfCore;
       const result = yield* Effect.result(
-        core.inspect(encode("this is not a pdf"), { text: true, links: true }),
+        core.inspect(new TextEncoder().encode("this is not a pdf"), { text: true, links: true }),
       );
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
@@ -95,12 +151,19 @@ describe("PdfCore", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("rejects encrypted input with a typed error", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const error = yield* Effect.flip(core.inspect(encryptedFixture(), { text: false, links: false }));
+      expect(error.code).toBe(PdfCoreErrorCodeValue.encryptedPdf);
+      expect(error.status).toBe(2);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("rejects empty input with a typed error", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const error = yield* Effect.flip(
-        core.inspect(new Uint8Array(0), { text: false, links: false }),
-      );
+      const error = yield* Effect.flip(core.inspect(new Uint8Array(0), { text: false, links: false }));
       expect(error.code).toBe(PdfCoreErrorCodeValue.invalidPdf);
     }).pipe(Effect.provide(layer)),
   );
@@ -109,7 +172,7 @@ describe("PdfCore", () => {
     Effect.gen(function* () {
       const core = yield* PdfCore;
       const error = yield* Effect.flip(
-        core.inspect(createPdfFixture(), { text: true, links: true, pageIndexes: [-1] }),
+        core.inspect(readFixture("links.pdf"), { text: true, links: true, pageIndexes: [-1] }),
       );
       expect(error.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
     }).pipe(Effect.provide(layer)),
@@ -119,9 +182,7 @@ describe("PdfCore", () => {
     Effect.gen(function* () {
       const core = yield* PdfCore;
       const results = yield* Effect.all(
-        Array.from({ length: 32 }, () =>
-          core.inspect(createPdfFixture(), { text: true, links: true }),
-        ),
+        Array.from({ length: 16 }, () => core.inspect(readFixture("links.pdf"), { text: true, links: true })),
         { concurrency: "unbounded" },
       );
       expect(results.every((inspection) => inspection.pages.length === 1)).toBe(true);
@@ -134,21 +195,20 @@ describe("PdfCore", () => {
       Effect.gen(function* () {
         const core = yield* PdfCore;
         const bulk = new Uint8Array(48 * 1024 * 1024);
-        bulk.set(encode("%PDF-1.4\n"));
+        bulk.set(new TextEncoder().encode("%PDF-1.4\n"));
         const outcomes = yield* Effect.forEach(
           Array.from({ length: 100 }, (_, index) => index),
           (index) =>
             core
-              .inspect(index % 10 === 9 ? createPdfFixture() : bulk, { text: true, links: true })
+              .inspect(index % 10 === 9 ? readFixture("links.pdf") : bulk, { text: true, links: true })
               .pipe(Effect.result),
         );
         const exhausted = outcomes.filter(
           (outcome) =>
-            Result.isFailure(outcome) &&
-            outcome.failure.code === PdfCoreErrorCodeValue.limitExceeded,
+            Result.isFailure(outcome) && outcome.failure.code === PdfCoreErrorCodeValue.limitExceeded,
         );
         expect(exhausted).toHaveLength(0);
-        const after = yield* core.inspect(createPdfFixture(), { text: false, links: false });
+        const after = yield* core.inspect(readFixture("links.pdf"), { text: false, links: false });
         expect(after.pages).toHaveLength(1);
       }).pipe(Effect.provide(layer)),
     60_000,

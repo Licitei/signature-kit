@@ -1961,19 +1961,52 @@ mod tests {
         );
     }
 
+    fn append_binary_stream_pdf(dict: &str, data: &[u8]) -> Vec<u8> {
+        let objects = [
+            (1u32, CATALOG),
+            (2u32, PAGES),
+            (3u32, PAGE),
+            (5u32, "/FlateDecode"),
+        ];
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (number, body) in objects {
+            offsets.push((number, bytes.len()));
+            bytes.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+        }
+        let stream_obj = bytes.len();
+        offsets.push((4, stream_obj));
+        bytes.extend_from_slice(b"4 0 obj\n");
+        bytes.extend_from_slice(
+            format!(
+                "<< /Length {} {} /Filter 5 0 R >>\nstream\n",
+                data.len(),
+                dict
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(data);
+        bytes.extend_from_slice(b"\nendstream\nendobj\n");
+        let xref = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for number in 1..=5 {
+            let offset = offsets
+                .iter()
+                .find(|(n, _)| *n == number)
+                .map(|(_, o)| *o)
+                .unwrap_or(0);
+            bytes.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        bytes.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        bytes
+    }
+
     #[test]
     fn stream_data_resolves_indirect_filter_to_filters_module() {
-        let objects = vec![
-            (1, CATALOG.to_string()),
-            (2, PAGES.to_string()),
-            (3, PAGE.to_string()),
-            (
-                4,
-                "<< /Length 2 /Filter 5 0 R >>\nstream\nab\nendstream".to_string(),
-            ),
-            (5, "/FlateDecode".to_string()),
-        ];
-        let bytes = build_classic(&objects, "", 0).bytes;
+        let flate_ab = [0x78u8, 0x9c, 0x4b, 0x4c, 0x02, 0x00, 0x01, 0x26, 0x00, 0xc4];
+        let bytes = append_binary_stream_pdf("", &flate_ab);
         let document = open(&bytes);
         let object = document
             .load(ObjRef {
@@ -1984,10 +2017,7 @@ mod tests {
         let Object::Stream(stream) = &*object else {
             panic!("not a stream");
         };
-        assert_eq!(
-            document.stream_data(stream).unwrap_err().code,
-            FailureCode::UnsupportedFeature
-        );
+        assert_eq!(document.stream_data(stream).unwrap(), b"ab");
     }
 
     #[test]

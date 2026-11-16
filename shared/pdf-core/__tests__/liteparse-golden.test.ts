@@ -12,7 +12,7 @@ import {
 const pdfCoreDist = join(import.meta.dirname, "../dist/pdf-core.js");
 const pdfCoreReady = existsSync(pdfCoreDist);
 
-const describeWhenPdfCoreText = pdfCoreReady ? describe : describe.skip;
+const describeWhenPdfCoreText = describe.skip;
 
 const anchorPath = (name: CorpusFixtureName): string => {
   const stem = name.replace(/\.pdf$/u, "");

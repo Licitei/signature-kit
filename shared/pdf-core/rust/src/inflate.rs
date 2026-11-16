@@ -497,7 +497,47 @@ pub fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
 #[allow(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::inflate;
-    include!(".scratch_mb_zlib.rs");
+
+    const ZLIB_MB: &[u8] = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
+
+    const CRC32_TABLE: [u32; 256] = {
+        let mut table = [0u32; 256];
+        let mut index = 0usize;
+        while index < 256 {
+            let mut value = index as u32;
+            let mut bit = 0u8;
+            while bit < 8 {
+                value = if value & 1 == 0 {
+                    value >> 1
+                } else {
+                    0xEDB8_8320 ^ (value >> 1)
+                };
+                bit += 1;
+            }
+            table[index] = value;
+            index += 1;
+        }
+        table
+    };
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut hash = 0xFFFF_FFFFu32;
+        for byte in data {
+            let idx = ((hash ^ u32::from(*byte)) & 0xff) as usize;
+            hash = CRC32_TABLE[idx] ^ (hash >> 8);
+        }
+        hash ^ 0xFFFF_FFFF
+    }
+
+    fn adler32(data: &[u8]) -> u32 {
+        let mut a = 1u32;
+        let mut b = 0u32;
+        for byte in data {
+            a = (a + u32::from(*byte)) % 65521;
+            b = (b + a) % 65521;
+        }
+        b << 16 | a
+    }
 
     #[test]
     fn fixed_tree_layout() {
@@ -548,6 +588,8 @@ mod tests {
         assert_eq!(out.len(), 1_048_576);
         assert_eq!(&out[..4], b"ABCD");
         assert_eq!(&out[out.len().saturating_sub(4)..], b"ABCD");
+        assert_eq!(crc32(&out), 0x73B9_1CF3);
+        assert_eq!(adler32(&out), 0x59E3_3E59);
     }
 
     #[test]

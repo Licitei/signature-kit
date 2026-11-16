@@ -473,7 +473,7 @@ fn usize_from(parms: Option<&Dict>, key: &[u8], default: usize) -> Outcome<usize
     if value < 0 {
         return Err(Failure::invalid("negative predictor parameter"));
     }
-    Ok(value as usize)
+    usize::try_from(value).map_err(|_| Failure::invalid("predictor parameter overflow"))
 }
 
 fn tiff_predict(data: &mut [u8], row_bytes: usize, max_output: usize) -> Outcome<()> {
@@ -764,6 +764,55 @@ mod tests {
         let data = [0x00u8, 0x83, 0x08, 0x09, 0x08];
         let out = decode_stream(&dict, &data, 1024).expect("lzw");
         assert_eq!(out, b"AB");
+    }
+
+    fn png_decode_stored(stored: &[u8], predictor: i64) -> Vec<u8> {
+        let mut dict = Dict::default();
+        dict.insert(b"Filter", Object::Name(b"FlateDecode".to_vec()));
+        let mut parms = Dict::default();
+        parms.insert(b"Predictor", Object::Integer(predictor));
+        parms.insert(b"Colors", Object::Integer(1));
+        parms.insert(b"BitsPerComponent", Object::Integer(8));
+        parms.insert(b"Columns", Object::Integer(2));
+        dict.insert(b"DecodeParms", Object::Dict(parms));
+        decode_stream(&dict, stored, 1024).expect("png decode")
+    }
+
+    #[test]
+    fn png_predictor_up_average_paeth_and_mixed() {
+        let up = [
+            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0x62, 0x66, 0x05, 0x00, 0x00, 0x99, 0x00, 0x29,
+        ];
+        assert_eq!(png_decode_stored(&up, 12), vec![10u8, 20, 13, 25]);
+        let average = [
+            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe6, 0xe2, 0x00, 0x00, 0x00, 0xad, 0x00, 0x34,
+        ];
+        assert_eq!(png_decode_stored(&average, 13), vec![10u8, 25, 15, 28]);
+        let paeth = [
+            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe1, 0xe2, 0x06, 0x00, 0x00, 0xb3, 0x00, 0x38,
+        ];
+        assert_eq!(png_decode_stored(&paeth, 14), vec![10u8, 20, 20, 31]);
+        let mixed = [
+            0x78u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0x64, 0xe2, 0x60, 0x62, 0x64, 0x03, 0x00, 0x01,
+            0x23, 0x00, 0x33,
+        ];
+        let mixed_out = png_decode_stored(&mixed, 15);
+        assert_eq!(mixed_out, vec![10u8, 20, 2, 10, 3, 16]);
+    }
+
+    #[test]
+    fn lzw_early_change_and_code_width_transitions() {
+        let decode = |early: i64, data: &[u8]| -> Vec<u8> {
+            let mut dict = Dict::default();
+            dict.insert(b"Filter", Object::Name(b"LZWDecode".to_vec()));
+            let mut parms = Dict::default();
+            parms.insert(b"EarlyChange", Object::Integer(early));
+            dict.insert(b"DecodeParms", Object::Dict(parms));
+            decode_stream(&dict, data, 1024).expect("lzw")
+        };
+        let short = [0x00u8, 0x83, 0x08, 0x09, 0x08];
+        assert_eq!(decode(1, &short), b"AB");
+        assert_eq!(decode(0, &short), b"AB");
     }
 
     #[test]

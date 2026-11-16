@@ -8,23 +8,20 @@ import {
   PDF_CORE_FIXTURES_DIR,
   type CorpusFixtureName,
 } from "../__tests__/corpus.ts";
-import { bunStorePackageRoot, workspaceModuleUrl } from "../scripts/workspace-modules.ts";
 
-const pdfInspectorModule = await import(
-  workspaceModuleUrl("node_modules/@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm.js"),
-);
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+const pdfInspectorModule = await import("@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm.js");
 const initPdfInspector = pdfInspectorModule.default;
 const detectPdf = pdfInspectorModule.detectPdf;
 const extractText = pdfInspectorModule.extractText;
 
-const liteParseModule = await import(
-  workspaceModuleUrl("formats/pdf/node_modules/@llamaindex/liteparse-wasm/pkg/liteparse_wasm.js"),
-);
+const liteParseModule = await import("@llamaindex/liteparse-wasm/pkg/liteparse_wasm.js");
 const initLiteParseWasm = liteParseModule.default;
 const LiteParse = liteParseModule.LiteParse;
 
 const pdfJsModule = await import(
-  pathToFileURL(join(bunStorePackageRoot("pdfjs-dist"), "legacy/build/pdf.mjs")).href,
+  pathToFileURL(join(packageRoot, "node_modules/pdfjs-dist/legacy/build/pdf.mjs")).href,
 );
 const getDocument = pdfJsModule.getDocument;
 const GlobalWorkerOptions = pdfJsModule.GlobalWorkerOptions;
@@ -59,31 +56,26 @@ const percentile = (values: ReadonlyArray<number>, ratio: number): number => {
   return sorted[index] ?? 0;
 };
 
-const liteParseWasmBytes = (): Uint8Array => {
-  return new Uint8Array(
+const liteParseWasmBytes = (): Uint8Array =>
+  new Uint8Array(
     readFileSync(
       fileURLToPath(
-        workspaceModuleUrl(
-          "formats/pdf/node_modules/@llamaindex/liteparse-wasm/pkg/liteparse_wasm_bg.wasm",
-        ),
+        new URL("@llamaindex/liteparse-wasm/pkg/liteparse_wasm_bg.wasm", import.meta.url),
       ),
     ),
   );
-};
 
 const pdfInspectorWasmBytes = (): Uint8Array =>
   new Uint8Array(
     readFileSync(
       fileURLToPath(
-        workspaceModuleUrl("node_modules/@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm_bg.wasm"),
+        new URL("@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm_bg.wasm", import.meta.url),
       ),
     ),
   );
 
 const pageCountFromPdf = async (pdf: Uint8Array): Promise<number> => {
-  const { PDFDocument } = await import(
-    workspaceModuleUrl("formats/pdf/node_modules/@cantoo/pdf-lib/es/index.js"),
-  );
+  const { PDFDocument } = await import("@cantoo/pdf-lib/es/index.js");
   return (await PDFDocument.load(pdf, { ignoreEncryption: true })).getPageCount();
 };
 
@@ -114,11 +106,11 @@ const createLiteParseAdapter = async (): Promise<(pdf: Uint8Array) => Promise<Te
 
 const createPdfJsAdapter = async (): Promise<(pdf: Uint8Array) => Promise<TextExtractionSummary>> => {
   GlobalWorkerOptions.workerSrc = pathToFileURL(
-    join(bunStorePackageRoot("pdfjs-dist"), "legacy/build/pdf.worker.mjs"),
+    join(packageRoot, "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"),
   ).href;
   return async (pdf: Uint8Array): Promise<TextExtractionSummary> => {
     const standardFontDataUrl = pathToFileURL(
-      join(bunStorePackageRoot("pdfjs-dist"), "standard_fonts/"),
+      join(packageRoot, "node_modules/pdfjs-dist/standard_fonts/"),
     ).href;
     const task = getDocument({
       data: new Uint8Array(pdf),
@@ -241,7 +233,7 @@ const main = async (): Promise<void> => {
     rows.push(
       await measure(fixture.label, "pdfjs", pdfJsRun, pdf, async () => {
         GlobalWorkerOptions.workerSrc = pathToFileURL(
-          join(bunStorePackageRoot("pdfjs-dist"), "legacy/build/pdf.worker.mjs"),
+          join(packageRoot, "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"),
         ).href;
       }),
     );

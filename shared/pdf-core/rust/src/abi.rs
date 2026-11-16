@@ -517,20 +517,24 @@ mod tests {
         unsafe { pdf_core_free(block.ptr, block.total) };
     }
 
+    const LINKS_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/links.pdf");
+    const ROTATED_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
+
     #[test]
     fn inspect_returns_a_decodable_block() {
-        let block = call(b"%PDF-1.7\n", FLAG_TEXT | FLAG_LINKS, &[]);
+        let block = call(LINKS_PDF, FLAG_TEXT | FLAG_LINKS, &[]);
         assert_eq!(block.status, STATUS_OK);
         let decoded = decode(&block.payload);
         assert_eq!(decoded.pages.len(), 1);
-        assert_eq!(decoded.links.len(), 1);
+        assert_eq!(decoded.links.len(), 3);
         assert_eq!(decoded.text.len(), 1);
+        assert_eq!(decoded.text[0].page_index, 0);
         release(&block);
     }
 
     #[test]
     fn inspect_honours_flags() {
-        let block = call(b"%PDF-1.7\n", 0, &[]);
+        let block = call(LINKS_PDF, 0, &[]);
         assert_eq!(block.status, STATUS_OK);
         let decoded = decode(&block.payload);
         assert_eq!(decoded.pages.len(), 1);
@@ -541,11 +545,14 @@ mod tests {
 
     #[test]
     fn inspect_forwards_page_indexes() {
-        let wanted = call(b"%PDF-1.7\n", FLAG_TEXT | FLAG_PAGE_INDEXES, &[0]);
-        assert_eq!(decode(&wanted.payload).text.len(), 1);
+        let wanted = call(ROTATED_PDF, FLAG_TEXT | FLAG_PAGE_INDEXES, &[0]);
+        assert_eq!(wanted.status, STATUS_OK);
+        let wanted_decoded = decode(&wanted.payload);
+        assert_eq!(wanted_decoded.text.len(), 1);
+        assert_eq!(wanted_decoded.text[0].page_index, 0);
         release(&wanted);
-        let skipped = call(b"%PDF-1.7\n", FLAG_TEXT | FLAG_PAGE_INDEXES, &[5]);
-        assert!(decode(&skipped.payload).text.is_empty());
+        let skipped = call(ROTATED_PDF, FLAG_TEXT | FLAG_PAGE_INDEXES, &[5]);
+        assert_ne!(skipped.status, STATUS_OK);
         release(&skipped);
     }
 
@@ -629,7 +636,7 @@ mod tests {
     #[test]
     fn repeated_calls_do_not_leak_or_corrupt() {
         for _ in 0..200 {
-            let block = call(b"%PDF-1.7\n", FLAG_TEXT | FLAG_LINKS, &[]);
+            let block = call(LINKS_PDF, FLAG_TEXT | FLAG_LINKS, &[]);
             assert_eq!(block.status, STATUS_OK);
             release(&block);
         }

@@ -11,3 +11,6 @@ pub mod inspection;
 pub mod object;
 pub mod syntax;
 pub mod text;
+
+#[cfg(test)]
+mod fixture_corpus;
