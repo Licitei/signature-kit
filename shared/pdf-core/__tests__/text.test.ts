@@ -31,11 +31,28 @@ describe("PdfCore.text", () => {
   it.effect("returns reading-order text for every page", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const pages = yield* core.text(readFixture("habilitacao-150.pdf"));
+      const pages = yield* core.text(readFixture("habilitacao-150.pdf"), {
+        dropRunningHeaders: false,
+      });
       expect(pages).toHaveLength(150);
       expect(pages[0]).toContain("Habilitação — folha 1");
       expect(pages[0]).toContain("Página 1: bloco sobre qualificação técnica");
       expect(pages[149]).toContain("folha 150");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("drops repeated running headers by default", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const bytes = readFixture("habilitacao-150.pdf");
+      const pages = yield* core.text(bytes);
+      expect(pages[0]).not.toContain("folha 1");
+      expect(pages[0]).toContain("Página 1: bloco sobre qualificação técnica");
+      expect(pages[1]).not.toContain("folha 2");
+      expect(pages[1]).toContain("Página 2: bloco sobre regularidade fiscal");
+      expect(pages[149]).not.toContain("folha 150");
+      const kept = yield* core.text(bytes, { dropRunningHeaders: false });
+      expect(kept[1]).toContain("folha 2");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -62,6 +79,7 @@ describe("PdfCore.text", () => {
       const core = yield* PdfCore;
       const pages = yield* core.text(readFixture("habilitacao-150.pdf"), {
         pageIndexes: [4, 1, 4],
+        dropRunningHeaders: false,
       });
       expect(pages).toHaveLength(2);
       expect(pages[0]).toContain("folha 5");

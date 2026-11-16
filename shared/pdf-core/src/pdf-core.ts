@@ -9,6 +9,8 @@ import {
   PdfCoreInspectOptionsSchema,
   PdfCoreOperationValue,
   PdfCoreSchemaNameValue,
+  PdfCoreTablesOptionsSchema,
+  PdfCoreTablesSchema,
   PdfCoreTextOptionsSchema,
   PdfCoreTextSchema,
 } from "./config.js";
@@ -16,6 +18,8 @@ import type {
   PdfCoreInspection,
   PdfCoreInspectOptions,
   PdfCoreOperation,
+  PdfCoreTables,
+  PdfCoreTablesOptions,
   PdfCoreText,
   PdfCoreTextOptions,
 } from "./config.js";
@@ -29,6 +33,10 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options?: PdfCoreTextOptions,
   ) => Effect.Effect<PdfCoreText, PdfCoreError>;
+  readonly tables: (
+    pdf: Uint8Array,
+    options?: PdfCoreTablesOptions,
+  ) => Effect.Effect<PdfCoreTables, PdfCoreError>;
 };
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
@@ -38,12 +46,19 @@ export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
 const FLAG_TEXT = 1;
 const FLAG_LINKS = 2;
 const FLAG_PAGE_INDEXES = 4;
+const FLAG_MARKDOWN = 8;
+const FLAG_DROP_RUNNING = 16;
 const STATUS_OK = 0;
 const MAGIC = 0x4346_4450;
 const VERSION = 1;
 const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
+const TABLES_MAGIC = 0x4254_4450;
+const TABLES_VERSION = 1;
+const TABLES_HEADER_BYTES = 16;
+const TABLE_RECORD_BYTES = 48;
+const CELL_RECORD_BYTES = 56;
 const RESULT_HEADER_BYTES = 8;
 const PAGE_RECORD_BYTES = 72;
 const LINK_RECORD_BYTES = 48;
@@ -390,7 +405,10 @@ export const makePdfCore = (
         ),
       );
       const pageIndexes = options.pageIndexes ?? [];
-      const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
+      const flags =
+        (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
+        (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
+        (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
       const block = yield* readBlock(
         PdfCoreOperationValue.text,
         core.pdf_core_text,
@@ -401,7 +419,109 @@ export const makePdfCore = (
       return yield* decodeTextBlock(block);
     });
 
-    return { inspect, text };
+    const decodeTablesBlock = (block: ArrayBuffer): Effect.Effect<PdfCoreTables, PdfCoreError> =>
+      Effect.gen(function* () {
+        const view = new DataView(block);
+        if (view.getUint32(4, true) !== STATUS_OK) {
+          return yield* failStatus(PdfCoreOperationValue.tables, block);
+        }
+        const base = RESULT_HEADER_BYTES;
+        if (
+          view.getUint32(base, true) !== TABLES_MAGIC ||
+          view.getUint32(base + 4, true) !== TABLES_VERSION
+        ) {
+          return yield* new PdfCoreError({
+            code: PdfCoreErrorCodeValue.wasmLoadFailed,
+            operation: PdfCoreOperationValue.tables,
+            reason: "The PDF core tables format is not supported by this package version.",
+          });
+        }
+        const tableCount = view.getUint32(base + 8, true);
+        const cellCount = view.getUint32(base + 12, true);
+        const blobAt =
+          base +
+          TABLES_HEADER_BYTES +
+          tableCount * TABLE_RECORD_BYTES +
+          cellCount * CELL_RECORD_BYTES;
+        const box = (at: number): [number, number, number, number] => [
+          view.getFloat64(at, true),
+          view.getFloat64(at + 8, true),
+          view.getFloat64(at + 16, true),
+          view.getFloat64(at + 24, true),
+        ];
+        const tables = [];
+        let cursor = base + TABLES_HEADER_BYTES;
+        for (let index = 0; index < tableCount; index += 1) {
+          const cellsInTable = view.getUint32(cursor + 12, true);
+          const cells = [];
+          let cellAt = cursor + TABLE_RECORD_BYTES;
+          for (let cell = 0; cell < cellsInTable; cell += 1) {
+            cells.push({
+              row: view.getUint32(cellAt, true),
+              col: view.getUint32(cellAt + 4, true),
+              rowSpan: view.getUint32(cellAt + 8, true),
+              colSpan: view.getUint32(cellAt + 12, true),
+              bbox: box(cellAt + 16),
+              text: utf8.decode(
+                new Uint8Array(
+                  block,
+                  blobAt + view.getUint32(cellAt + 48, true),
+                  view.getUint32(cellAt + 52, true),
+                ),
+              ),
+            });
+            cellAt += CELL_RECORD_BYTES;
+          }
+          tables.push({
+            pageIndex: view.getUint32(cursor, true),
+            rows: view.getUint32(cursor + 4, true),
+            cols: view.getUint32(cursor + 8, true),
+            bbox: box(cursor + 16),
+            cells,
+          });
+          cursor = cellAt;
+        }
+        return yield* Schema.decodeUnknownEffect(PdfCoreTablesSchema)(tables).pipe(
+          Effect.mapError(
+            (issue) =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                operation: PdfCoreOperationValue.tables,
+                schemaName: PdfCoreSchemaNameValue.tables,
+                reason: "The PDF core returned an invalid tables result.",
+                issueMessage: String(issue),
+              }),
+          ),
+        );
+      });
+
+    const tables = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreTablesOptions = {}) {
+      const options = yield* Schema.decodeUnknownEffect(PdfCoreTablesOptionsSchema)(
+        rawOptions,
+      ).pipe(
+        Effect.mapError(
+          (issue) =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.invalidOptions,
+              operation: PdfCoreOperationValue.tables,
+              schemaName: PdfCoreSchemaNameValue.tablesOptions,
+              issueMessage: String(issue),
+            }),
+        ),
+      );
+      const pageIndexes = options.pageIndexes ?? [];
+      const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
+      const block = yield* readBlock(
+        PdfCoreOperationValue.tables,
+        core.pdf_core_tables,
+        pdf,
+        flags,
+        pageIndexes,
+      );
+      return yield* decodeTablesBlock(block);
+    });
+
+    return { inspect, text, tables };
   });
 
 export const pdfCoreLayer = (module: WebAssembly.Module): Layer.Layer<PdfCore, PdfCoreError> =>

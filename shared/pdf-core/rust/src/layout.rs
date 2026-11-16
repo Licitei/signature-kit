@@ -1,10 +1,13 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::document::{Document, Page};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::text::{Run, Session, extract_runs};
+use crate::table::{
+    Cell, Rule, Table, column_of, merge_row, render_markdown, render_text, ruled_grids,
+};
+use crate::text::{Capture, PageContent, Ruling, Run, Session, extract_content};
 
 const CELL_GAP: f64 = 1.5;
 const WORD_GAP: f64 = 0.12;
@@ -43,12 +46,14 @@ fn page_quarter(rotate: i32) -> usize {
     usize::try_from(normalized / 90).unwrap_or(0) % 4
 }
 
+#[derive(Clone, Copy)]
 struct Frag<'a> {
     x0: f64,
     y0: f64,
     x1: f64,
     y1: f64,
     size: f64,
+    bold: bool,
     text: &'a str,
 }
 
@@ -77,9 +82,11 @@ struct Segment {
     size: f64,
     center: f64,
     continuation: bool,
+    bold: bool,
 }
 
 struct Block {
+    table: Option<usize>,
     segments: Vec<usize>,
     x0: f64,
     x1: f64,
@@ -185,6 +192,7 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
                 segment.y0 = segment.y0.min(frag.y0);
                 segment.y1 = segment.y1.max(frag.y1);
                 segment.size = segment.size.max(frag.size);
+                segment.bold &= frag.bold;
                 segment.center = line.center;
             }
             None => {
@@ -200,6 +208,7 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
                     size: frag.size,
                     center: line.center,
                     continuation,
+                    bold: frag.bold,
                 });
             }
         }
@@ -219,16 +228,10 @@ fn similar_size(first: f64, second: f64) -> bool {
     (first - second).abs() <= SIZE_TOLERANCE * first.max(second)
 }
 
-fn build_blocks(segments: &[Segment], line_starts: &[usize]) -> Vec<Block> {
+fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut active: Vec<usize> = Vec::new();
-    let mut ends = line_starts
-        .iter()
-        .skip(1)
-        .copied()
-        .chain(Some(segments.len()));
-    for &start in line_starts {
-        let end = ends.next().unwrap_or(segments.len());
+    for &(start, end) in ranges {
         let Some(line) = segments.get(start..end) else {
             continue;
         };
@@ -288,6 +291,7 @@ fn build_blocks(segments: &[Segment], line_starts: &[usize]) -> Vec<Block> {
                 None => {
                     active.push(blocks.len());
                     blocks.push(Block {
+                        table: None,
                         segments: vec![segment_index],
                         x0: segment.x0,
                         x1: segment.x1,
@@ -409,6 +413,51 @@ fn reading_order(blocks: &[Block], ids: Vec<usize>, depth: usize, out: &mut Vec<
     }
 }
 
+const ROW_GAP: f64 = 2.6;
+const WRAP_GAP: f64 = 1.7;
+const HEADER_BAND: f64 = 0.1;
+const ALIGNED_SIZE: f64 = 0.15;
+const MIN_FILLED_CELLS: usize = 2;
+const MARKER_CHARS: usize = 12;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Band {
+    Free,
+    Top,
+    Bottom,
+}
+
+struct Piece {
+    text: String,
+    lead: &'static str,
+    band: Band,
+}
+
+#[derive(Clone, Copy)]
+struct Mode {
+    markdown: bool,
+    aligned: bool,
+    text: bool,
+}
+
+#[derive(Default)]
+struct PoolOut {
+    pieces: Vec<Piece>,
+    tables: Vec<Table>,
+}
+
+#[derive(Default)]
+struct PageLayout {
+    pieces: Vec<Piece>,
+    tables: Vec<Table>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextOptions {
+    pub markdown: bool,
+    pub drop_running: bool,
+}
+
 fn write_segment(frags: &[Frag<'_>], segment: &Segment, out: &mut String) {
     let mut right_edge: Option<f64> = None;
     for &index in &segment.members {
@@ -428,43 +477,363 @@ fn write_segment(frags: &[Frag<'_>], segment: &Segment, out: &mut String) {
     }
 }
 
-fn layout_pool(frags: &[Frag<'_>], out: &mut String) {
+fn is_row_line(line: &[Segment]) -> bool {
+    line.len() >= 2
+        && line
+            .iter()
+            .any(|segment| (segment.x1 - segment.x0) < CELL_EM * segment.size)
+        && !line.iter().all(|segment| segment.continuation)
+}
+
+fn line_size(line: &[Segment]) -> f64 {
+    line.iter().map(|segment| segment.size).fold(0.0, f64::max)
+}
+
+fn spans_of(line: &[Segment]) -> Vec<(f64, f64)> {
+    line.iter()
+        .map(|segment| (segment.x0, segment.x1))
+        .collect()
+}
+
+fn near_size(first: f64, second: f64) -> bool {
+    (first - second).abs() <= ALIGNED_SIZE * first.max(second)
+}
+
+fn is_marker(text: &str) -> bool {
+    let text = text.trim();
+    let count = text.chars().count();
+    if count == 0 || count > MARKER_CHARS {
+        return false;
+    }
+    if text
+        .chars()
+        .all(|ch| matches!(ch, '•' | '●' | '▪' | '*' | '-' | '–' | '—' | '§'))
+    {
+        return true;
+    }
+    text.ends_with(['.', ')', ':'])
+        && text
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '(' | ')' | ':' | '°' | 'º'))
+}
+
+fn is_list(cells: &[Cell], columns: usize) -> bool {
+    let Some(last) = columns.checked_sub(1) else {
+        return false;
+    };
+    let mut markers = 0usize;
+    for cell in cells.iter().filter(|cell| cell.col as usize != last) {
+        let Some(first) = cell.text.lines().next() else {
+            continue;
+        };
+        if !is_marker(first) {
+            return false;
+        }
+        markers += 1;
+    }
+    markers >= 2
+}
+
+fn aligned_tables(
+    frags: &[Frag<'_>],
+    segments: &[Segment],
+    ranges: &[(usize, usize)],
+) -> (Vec<Table>, Vec<bool>) {
+    let mut tables: Vec<Table> = Vec::new();
+    let mut consumed = vec![false; ranges.len()];
+    let line_at = |index: usize| {
+        ranges
+            .get(index)
+            .and_then(|&(start, end)| segments.get(start..end))
+    };
+    let mut index = 0usize;
+    while let Some(first) = line_at(index) {
+        if !is_row_line(first) {
+            index += 1;
+            continue;
+        }
+        let Some(mut columns) = merge_row(&[], &spans_of(first)) else {
+            index += 1;
+            continue;
+        };
+        let base_size = line_size(first);
+        let mut rows: Vec<Vec<usize>> = vec![vec![index]];
+        let mut row_bold = first.iter().all(|segment| segment.bold);
+        let mut last = index;
+        let mut next = index + 1;
+        while let (Some(line), Some(previous)) = (line_at(next), line_at(last)) {
+            let gap = previous.first().map_or(0.0, |segment| segment.center)
+                - line.first().map_or(0.0, |segment| segment.center);
+            let size = line_size(line);
+            if is_row_line(line) {
+                if gap > ROW_GAP * base_size || !near_size(base_size, size) {
+                    break;
+                }
+                let Some(merged) = merge_row(&columns, &spans_of(line)) else {
+                    break;
+                };
+                columns = merged;
+                row_bold = line.iter().all(|segment| segment.bold);
+                rows.push(vec![next]);
+            } else {
+                let mut used: Vec<usize> = Vec::new();
+                let wraps = gap <= WRAP_GAP * base_size
+                    && near_size(base_size, size)
+                    && line.iter().all(|segment| {
+                        let column = column_of(&columns, segment.x0, segment.x1);
+                        let fresh = column.is_some_and(|column| !used.contains(&column));
+                        if let Some(column) = column {
+                            used.push(column);
+                        }
+                        fresh && !(segment.bold && !row_bold)
+                    });
+                if !wraps {
+                    break;
+                }
+                if let Some(row) = rows.last_mut() {
+                    row.push(next);
+                }
+            }
+            last = next;
+            next += 1;
+        }
+        let accepted = rows.len() >= 3 || (rows.len() == 2 && columns.len() >= 3);
+        if !accepted {
+            index += 1;
+            continue;
+        }
+        let mut cells: Vec<Cell> = Vec::with_capacity(rows.len() * columns.len());
+        let mut bounds = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for (row_index, lines) in rows.iter().enumerate() {
+            let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
+            for segment in lines.iter().filter_map(|&line| line_at(line)).flatten() {
+                top = top.max(segment.y1);
+                bottom = bottom.min(segment.y0);
+            }
+            let slot = cells.len();
+            for (column_index, &(left, right)) in columns.iter().enumerate() {
+                cells.push(Cell {
+                    row: u32::try_from(row_index).unwrap_or(u32::MAX),
+                    col: u32::try_from(column_index).unwrap_or(u32::MAX),
+                    row_span: 1,
+                    col_span: 1,
+                    bbox: [left, bottom, right, top],
+                    text: String::new(),
+                });
+            }
+            for segment in lines.iter().filter_map(|&line| line_at(line)).flatten() {
+                let Some(column) = column_of(&columns, segment.x0, segment.x1) else {
+                    continue;
+                };
+                if let Some(cell) = cells.get_mut(slot + column) {
+                    if !cell.text.is_empty() {
+                        cell.text.push('\n');
+                    }
+                    write_segment(frags, segment, &mut cell.text);
+                }
+            }
+            bounds[1] = bounds[1].min(bottom);
+            bounds[3] = bounds[3].max(top);
+        }
+        bounds[0] = columns.first().map_or(0.0, |column| column.0);
+        bounds[2] = columns.last().map_or(0.0, |column| column.1);
+        if is_list(&cells, columns.len()) {
+            index = last + 1;
+            continue;
+        }
+        tables.push(Table {
+            page_index: 0,
+            bbox: bounds,
+            rows: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+            cols: u32::try_from(columns.len()).unwrap_or(u32::MAX),
+            cells,
+        });
+        for flag in consumed.iter_mut().take(last + 1).skip(index) {
+            *flag = true;
+        }
+        index = last + 1;
+    }
+    (tables, consumed)
+}
+
+fn cell_text(frags: &[Frag<'_>]) -> String {
+    let mut sink = PoolOut::default();
+    let mode = Mode {
+        markdown: false,
+        aligned: false,
+        text: true,
+    };
+    layout_pool(frags, &[], None, mode, &mut sink);
+    assemble(&sink.pieces, &HashMap::new(), 0).replace("\n\n", "\n")
+}
+
+fn ruled_tables<'a>(frags: &[Frag<'a>], rulings: &[Rule]) -> Option<(Vec<Frag<'a>>, Vec<Table>)> {
+    let grids = ruled_grids(rulings);
+    if grids.is_empty() {
+        return None;
+    }
+    let mut members: Vec<Vec<Vec<Frag<'a>>>> = grids
+        .iter()
+        .map(|grid| vec![Vec::new(); grid.cells.len()])
+        .collect();
+    let mut rest: Vec<Frag<'a>> = Vec::new();
+    for frag in frags {
+        let (cx, cy) = ((frag.x0 + frag.x1) * 0.5, (frag.y0 + frag.y1) * 0.5);
+        let home = grids
+            .iter()
+            .enumerate()
+            .find_map(|(grid, shape)| shape.locate(cx, cy).map(|cell| (grid, cell)));
+        match home
+            .and_then(|(grid, cell)| members.get_mut(grid).and_then(|cells| cells.get_mut(cell)))
+        {
+            Some(cell) => cell.push(*frag),
+            None => rest.push(*frag),
+        }
+    }
+    let mut tables = Vec::new();
+    for (grid, cells) in grids.iter().zip(members) {
+        let filled = cells.iter().filter(|cell| !cell.is_empty()).count();
+        if filled < MIN_FILLED_CELLS {
+            rest.extend(cells.into_iter().flatten());
+            continue;
+        }
+        let converted: Vec<Cell> = grid
+            .cells
+            .iter()
+            .zip(&cells)
+            .map(|(shape, inside)| Cell {
+                row: u32::try_from(shape.row).unwrap_or(u32::MAX),
+                col: u32::try_from(shape.col).unwrap_or(u32::MAX),
+                row_span: u32::try_from(shape.row_span).unwrap_or(1),
+                col_span: u32::try_from(shape.col_span).unwrap_or(1),
+                bbox: grid.cell_rect(shape),
+                text: cell_text(inside),
+            })
+            .collect();
+        tables.push(Table {
+            page_index: 0,
+            bbox: grid.bounds(),
+            rows: u32::try_from(grid.rows()).unwrap_or(u32::MAX),
+            cols: u32::try_from(grid.cols()).unwrap_or(u32::MAX),
+            cells: converted,
+        });
+    }
+    Some((rest, tables))
+}
+
+fn band_of(extent: Option<[f64; 4]>, bottom: f64, top: f64) -> Band {
+    let Some([_, low, _, high]) = extent else {
+        return Band::Free;
+    };
+    let reach = HEADER_BAND * (high - low);
+    if bottom >= high - reach {
+        Band::Top
+    } else if top <= low + reach {
+        Band::Bottom
+    } else {
+        Band::Free
+    }
+}
+
+fn layout_pool(
+    frags: &[Frag<'_>],
+    rulings: &[Rule],
+    extent: Option<[f64; 4]>,
+    mode: Mode,
+    out: &mut PoolOut,
+) {
     if frags.is_empty() {
         return;
     }
-    let lines = cluster_lines(frags);
+    let ruled = if rulings.is_empty() {
+        None
+    } else {
+        ruled_tables(frags, rulings)
+    };
+    let (owned, mut tables) = match ruled {
+        Some((rest, tables)) => (Some(rest), tables),
+        None => (None, Vec::new()),
+    };
+    let free: &[Frag<'_>] = owned.as_deref().unwrap_or(frags);
+    let lines = cluster_lines(free);
     let mut segments: Vec<Segment> = Vec::with_capacity(lines.len());
-    let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len());
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(lines.len());
     for line in &lines {
         let before = segments.len();
-        split_segments(frags, line, &mut segments);
+        split_segments(free, line, &mut segments);
         if segments.len() > before {
-            line_starts.push(before);
+            ranges.push((before, segments.len()));
         }
     }
-    let blocks = build_blocks(&segments, &line_starts);
-    let ids: Vec<usize> = (0..blocks.len()).collect();
-    let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
-    reading_order(&blocks, ids, 0, &mut order);
-    let mut previous: Option<&Block> = None;
-    for id in order {
-        let Some(block) = blocks.get(id) else {
-            continue;
-        };
-        if let Some(before) = previous {
-            out.push_str(separator(&segments, before, block));
+    if mode.aligned {
+        let (found, consumed) = aligned_tables(free, &segments, &ranges);
+        if !found.is_empty() {
+            tables.extend(found);
+            let mut flags = consumed.into_iter();
+            ranges.retain(|_| !flags.next().unwrap_or(false));
         }
-        for (row, &segment_index) in block.segments.iter().enumerate() {
-            let Some(segment) = segments.get(segment_index) else {
+    }
+    if mode.text {
+        let mut blocks = build_blocks(&segments, &ranges);
+        for (index, table) in tables.iter().enumerate() {
+            let [x0, y0, x1, y1] = table.bbox;
+            blocks.push(Block {
+                table: Some(index),
+                segments: Vec::new(),
+                x0,
+                x1,
+                top: y1,
+                bottom: y0,
+                last: 0,
+                last_x0: x0,
+                last_x1: x1,
+                last_center: y1,
+                last_size: 0.0,
+            });
+        }
+        let ids: Vec<usize> = (0..blocks.len()).collect();
+        let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
+        reading_order(&blocks, ids, 0, &mut order);
+        let mut previous: Option<&Block> = None;
+        for id in order {
+            let Some(block) = blocks.get(id) else {
                 continue;
             };
-            if row > 0 {
-                out.push('\n');
+            if let Some(table) = block.table.and_then(|index| tables.get(index)) {
+                out.pieces.push(Piece {
+                    text: if mode.markdown {
+                        render_markdown(table)
+                    } else {
+                        render_text(table)
+                    },
+                    lead: if previous.is_some() { "\n\n" } else { "" },
+                    band: band_of(extent, table.bbox[1], table.bbox[3]),
+                });
+                previous = Some(block);
+                continue;
             }
-            write_segment(frags, segment, out);
+            let leading = previous.map_or("", |before| separator(&segments, before, block));
+            for (row, &segment_index) in block.segments.iter().enumerate() {
+                let Some(segment) = segments.get(segment_index) else {
+                    continue;
+                };
+                let mut text = String::new();
+                write_segment(free, segment, &mut text);
+                out.pieces.push(Piece {
+                    text,
+                    lead: if row == 0 { leading } else { "\n" },
+                    band: band_of(extent, segment.center, segment.center),
+                });
+            }
+            previous = Some(block);
         }
-        previous = Some(block);
     }
+    out.tables.extend(tables);
 }
 
 fn separator(segments: &[Segment], before: &Block, after: &Block) -> &'static str {
@@ -487,7 +856,118 @@ fn separator(segments: &[Segment], before: &Block, after: &Block) -> &'static st
     }
 }
 
-pub fn page_text(runs: &[Run], rotate: i32) -> String {
+fn running_key(text: &str) -> String {
+    let mut key = String::with_capacity(text.len());
+    let mut digits = false;
+    let mut space = false;
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            if !digits {
+                key.push('#');
+            }
+            digits = true;
+            space = false;
+        } else if ch.is_whitespace() {
+            if !space && !key.is_empty() {
+                key.push(' ');
+            }
+            space = true;
+            digits = false;
+        } else {
+            key.extend(ch.to_lowercase());
+            digits = false;
+            space = false;
+        }
+    }
+    key.truncate(key.trim_end().len());
+    key
+}
+
+type RunningKeys = HashMap<(bool, String), usize>;
+
+struct Recurrence {
+    count: usize,
+    first: usize,
+    digits: String,
+    varying: bool,
+}
+
+fn running_keys(pages: &[PageLayout]) -> RunningKeys {
+    let mut counts: HashMap<(bool, String), Recurrence> = HashMap::new();
+    for (position, page) in pages.iter().enumerate() {
+        let mut seen: HashSet<(bool, String)> = HashSet::new();
+        for piece in &page.pieces {
+            let top = match piece.band {
+                Band::Free => continue,
+                Band::Top => true,
+                Band::Bottom => false,
+            };
+            let key = running_key(&piece.text);
+            if key.is_empty() {
+                continue;
+            }
+            if seen.insert((top, key.clone())) {
+                let digits: String = piece.text.chars().filter(char::is_ascii_digit).collect();
+                let entry = counts.entry((top, key)).or_insert_with(|| Recurrence {
+                    count: 0,
+                    first: position,
+                    digits: digits.clone(),
+                    varying: false,
+                });
+                entry.count += 1;
+                entry.varying |= entry.digits != digits;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, found)| found.count >= 2 && found.count * 2 >= pages.len())
+        .map(|(key, found)| {
+            (
+                key,
+                if found.varying {
+                    usize::MAX
+                } else {
+                    found.first
+                },
+            )
+        })
+        .collect()
+}
+
+fn assemble(pieces: &[Piece], dropped: &RunningKeys, position: usize) -> String {
+    let mut out = String::with_capacity(pieces.iter().map(|piece| piece.text.len() + 2).sum());
+    for piece in pieces {
+        if piece.band != Band::Free
+            && !dropped.is_empty()
+            && dropped
+                .get(&(piece.band == Band::Top, running_key(&piece.text)))
+                .is_some_and(|&first| first != position)
+        {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(piece.lead);
+        }
+        out.push_str(&piece.text);
+    }
+    out
+}
+
+fn turn_rect(quarter: usize, rect: [f64; 4]) -> [f64; 4] {
+    let [x0, y0, x1, y1] = rect;
+    let (ax, ay) = turn(quarter, x0, y0);
+    let (bx, by) = turn(quarter, x1, y1);
+    [ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)]
+}
+
+fn page_layout(
+    runs: &[Run],
+    rulings: &[Ruling],
+    rotate: i32,
+    extent: Option<[f64; 4]>,
+    mode: Mode,
+) -> PageLayout {
     let page = page_quarter(rotate);
     let mut pools: [Vec<Frag<'_>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     let mut weights = [0usize; 4];
@@ -508,6 +988,7 @@ pub fn page_text(runs: &[Run], rotate: i32) -> String {
             x1: ax.max(bx),
             y1: ay.max(by),
             size: run.item.font_size.abs().max(1e-3),
+            bold: run.bold,
             text: &run.item.text,
         };
         if !(frag.x0.is_finite()
@@ -533,17 +1014,51 @@ pub fn page_text(runs: &[Run], rotate: i32) -> String {
             .cmp(&weights.get(a).copied().unwrap_or(0))
             .then(a.cmp(&b))
     });
-    let mut out = String::new();
-    for quarter in ranking {
+    let mut layout = PageLayout::default();
+    for (rank, quarter) in ranking.into_iter().enumerate() {
         let Some(pool) = pools.get(quarter) else {
             continue;
         };
-        if !out.is_empty() {
-            out.push_str("\n\n");
+        let turns = (page + quarter) % 4;
+        let lines: Vec<Rule> = rulings
+            .iter()
+            .map(|ruling| {
+                let [x0, y0, x1, y1] =
+                    turn_rect(turns, [ruling.x0, ruling.y0, ruling.x1, ruling.y1]);
+                Rule { x0, y0, x1, y1 }
+            })
+            .collect();
+        let pool_extent = extent
+            .filter(|_| rank == 0)
+            .map(|rect| turn_rect(turns, rect));
+        let mut sink = PoolOut::default();
+        layout_pool(pool, &lines, pool_extent, mode, &mut sink);
+        if !layout.pieces.is_empty()
+            && let Some(first) = sink.pieces.first_mut()
+        {
+            first.lead = "\n\n";
         }
-        layout_pool(pool, &mut out);
+        layout.pieces.append(&mut sink.pieces);
+        let back = (4 - turns % 4) % 4;
+        for mut table in sink.tables {
+            table.bbox = turn_rect(back, table.bbox);
+            for cell in &mut table.cells {
+                cell.bbox = turn_rect(back, cell.bbox);
+            }
+            layout.tables.push(table);
+        }
     }
-    out
+    layout
+}
+
+pub fn page_text(runs: &[Run], rotate: i32) -> String {
+    let mode = Mode {
+        markdown: false,
+        aligned: false,
+        text: true,
+    };
+    let layout = page_layout(runs, &[], rotate, None, mode);
+    assemble(&layout.pieces, &HashMap::new(), 0)
 }
 
 pub fn text_limits() -> Limits {
@@ -555,41 +1070,83 @@ pub fn text_limits() -> Limits {
     }
 }
 
-pub fn document_text(
-    bytes: &[u8],
-    page_indexes: Option<&[u32]>,
-    limits: &Limits,
-) -> Outcome<Vec<String>> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
-    let document = Document::open(bytes, limits)?;
-    let pages = document.pages()?;
-    let selected: Vec<usize> = match page_indexes {
+fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcome<Vec<usize>> {
+    match page_indexes {
         Some(indexes) => {
             let mut seen = HashSet::new();
             let mut chosen = Vec::with_capacity(indexes.len());
             for &index in indexes {
                 let position = usize::try_from(index)
                     .ok()
-                    .filter(|position| *position < pages.len())
+                    .filter(|position| *position < count)
                     .ok_or_else(|| Failure::invalid(format!("page index {index} out of range")))?;
                 if seen.insert(position) {
                     chosen.push(position);
                 }
             }
-            chosen
+            Ok(chosen)
         }
-        None => (0..pages.len()).collect(),
+        None => Ok((0..count).collect()),
+    }
+}
+
+fn single_page(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    session: &mut Session,
+    mode: Mode,
+) -> PageLayout {
+    let capture = Capture {
+        split_repositioned: true,
+        structure: true,
+    };
+    match extract_content(document, page, limits, capture, session) {
+        Ok(PageContent { runs, rulings }) => page_layout(
+            &runs,
+            &rulings,
+            page.info.rotate,
+            Some(page.info.crop_box),
+            mode,
+        ),
+        Err(_) => PageLayout::default(),
+    }
+}
+
+pub fn document_text(
+    bytes: &[u8],
+    page_indexes: Option<&[u32]>,
+    limits: &Limits,
+    options: &TextOptions,
+) -> Outcome<Vec<String>> {
+    if bytes.len() > limits.max_pdf_bytes {
+        return Err(Failure::limit("pdf exceeds size limit"));
+    }
+    let document = Document::open(bytes, limits)?;
+    let pages = document.pages()?;
+    let selected = select_pages(pages.len(), page_indexes)?;
+    let mode = Mode {
+        markdown: options.markdown,
+        aligned: options.markdown,
+        text: true,
     };
     let mut session = Session::default();
-    let mut texts = Vec::with_capacity(selected.len());
-    let mut total_bytes = 0usize;
+    let mut layouts: Vec<PageLayout> = Vec::with_capacity(selected.len());
     for position in selected {
         let Some(page) = pages.get(position) else {
             continue;
         };
-        let text = single_page(&document, page, limits, &mut session);
+        layouts.push(single_page(&document, page, limits, &mut session, mode));
+    }
+    let dropped = if options.drop_running {
+        running_keys(&layouts)
+    } else {
+        HashMap::new()
+    };
+    let mut texts = Vec::with_capacity(layouts.len());
+    let mut total_bytes = 0usize;
+    for (position, layout) in layouts.iter().enumerate() {
+        let text = assemble(&layout.pieces, &dropped, position);
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
@@ -599,16 +1156,43 @@ pub fn document_text(
     Ok(texts)
 }
 
-fn single_page(
-    document: &Document<'_>,
-    page: &Page,
+pub fn document_tables(
+    bytes: &[u8],
+    page_indexes: Option<&[u32]>,
     limits: &Limits,
-    session: &mut Session,
-) -> String {
-    match extract_runs(document, page, limits, true, session) {
-        Ok(runs) => page_text(&runs, page.info.rotate),
-        Err(_) => String::new(),
+) -> Outcome<Vec<Table>> {
+    if bytes.len() > limits.max_pdf_bytes {
+        return Err(Failure::limit("pdf exceeds size limit"));
     }
+    let document = Document::open(bytes, limits)?;
+    let pages = document.pages()?;
+    let selected = select_pages(pages.len(), page_indexes)?;
+    let mode = Mode {
+        markdown: false,
+        aligned: true,
+        text: false,
+    };
+    let mut session = Session::default();
+    let mut tables: Vec<Table> = Vec::new();
+    let mut total_bytes = 0usize;
+    for position in selected {
+        let Some(page) = pages.get(position) else {
+            continue;
+        };
+        let layout = single_page(&document, page, limits, &mut session, mode);
+        for mut table in layout.tables {
+            table.page_index = u32::try_from(position).unwrap_or(u32::MAX);
+            total_bytes = table
+                .cells
+                .iter()
+                .fold(total_bytes, |sum, cell| sum.saturating_add(cell.text.len()));
+            tables.push(table);
+        }
+        if total_bytes > limits.max_text_bytes {
+            return Err(Failure::limit("table text bytes exceed limit"));
+        }
+    }
+    Ok(tables)
 }
 
 #[cfg(test)]
@@ -623,6 +1207,10 @@ mod tests {
     use crate::inspection::TextItem;
 
     const SIZE: f64 = 10.0;
+    const OPTIONS: TextOptions = TextOptions {
+        markdown: false,
+        drop_running: true,
+    };
 
     fn run(x: f64, baseline: f64, width: f64, text: &str) -> Run {
         Run {
@@ -632,6 +1220,7 @@ mod tests {
                 text: text.to_owned(),
             },
             direction: (1.0, 0.0),
+            bold: false,
         }
     }
 
@@ -643,6 +1232,7 @@ mod tests {
                 text: text.to_owned(),
             },
             direction,
+            bold: false,
         }
     }
 
@@ -772,6 +1362,7 @@ mod tests {
                     text: "x".to_owned(),
                 },
                 direction: (f64::NAN, 0.0),
+                bold: false,
             },
         ];
         assert_eq!(page_text(&runs, 0), "");
@@ -813,7 +1404,7 @@ mod tests {
             state
         };
         for fixture in fixtures {
-            assert!(document_text(fixture, None, &limits).is_ok());
+            assert!(document_text(fixture, None, &limits, &OPTIONS).is_ok());
             for _ in 0..150 {
                 let mut bytes = fixture.to_vec();
                 for _ in 0..(1 + next() % 8) {
@@ -826,7 +1417,7 @@ mod tests {
                 if next() % 4 == 0 {
                     bytes.truncate(cut);
                 }
-                let _ = document_text(&bytes, None, &limits);
+                let _ = document_text(&bytes, None, &limits, &OPTIONS);
             }
         }
     }
@@ -834,13 +1425,560 @@ mod tests {
     #[test]
     fn page_selection_validates_indexes() {
         let limits = text_limits();
-        let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits).unwrap_err();
+        let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits, &OPTIONS).unwrap_err();
         assert_eq!(error.code, crate::failure::FailureCode::InvalidPdf);
         let oversized = Limits {
             max_pdf_bytes: 4,
             ..Limits::default()
         };
-        let error = document_text(b"%PDF-1.4\n", None, &oversized).unwrap_err();
+        let error = document_text(b"%PDF-1.4\n", None, &oversized, &OPTIONS).unwrap_err();
         assert_eq!(error.code, crate::failure::FailureCode::LimitExceeded);
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod structure_tests {
+    use super::*;
+    use crate::test_pdf::{PageSpec, bold, document, grid, page, rule, text};
+
+    const PLAIN: TextOptions = TextOptions {
+        markdown: false,
+        drop_running: false,
+    };
+    const MARKDOWN: TextOptions = TextOptions {
+        markdown: true,
+        drop_running: false,
+    };
+
+    fn tables_of(bytes: &[u8]) -> Vec<Table> {
+        document_tables(bytes, None, &text_limits()).unwrap()
+    }
+
+    fn pages_of(bytes: &[u8], options: &TextOptions) -> Vec<String> {
+        document_text(bytes, None, &text_limits(), options).unwrap()
+    }
+
+    fn cell(table: &Table, row: u32, col: u32) -> &Cell {
+        table
+            .cells
+            .iter()
+            .find(|cell| cell.row == row && cell.col == col)
+            .unwrap()
+    }
+
+    fn price_table(top: f64) -> String {
+        let rows = [top, top - 20.0, top - 40.0, top - 60.0];
+        let mut out = grid(&rows, &[50.0, 200.0, 350.0]);
+        for (index, (left, right)) in [("Item", "Valor"), ("Cimento", "12,50"), ("Areia", "8,00")]
+            .into_iter()
+            .enumerate()
+        {
+            let baseline = top - 12.0 - 20.0 * index as f64;
+            out.push_str(&text(55.0, baseline, 10.0, left));
+            out.push_str(&text(205.0, baseline, 10.0, right));
+        }
+        out
+    }
+
+    #[test]
+    fn ruled_grid_becomes_a_table() {
+        let bytes = document(&[page(price_table(700.0))], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!((table.page_index, table.rows, table.cols), (0, 3, 2));
+        assert_eq!(table.cells.len(), 6);
+        assert_eq!(cell(table, 0, 0).text, "Item");
+        assert_eq!(cell(table, 2, 1).text, "8,00");
+        assert!((table.bbox[0] - 50.0).abs() < 1e-6 && (table.bbox[2] - 350.0).abs() < 1e-6);
+        assert!((table.bbox[1] - 640.0).abs() < 1e-6 && (table.bbox[3] - 700.0).abs() < 1e-6);
+        let pages = pages_of(&bytes, &PLAIN);
+        assert_eq!(pages, ["Item Valor\nCimento 12,50\nAreia 8,00"]);
+        let markdown = pages_of(&bytes, &MARKDOWN);
+        assert_eq!(
+            markdown,
+            ["| Item | Valor |\n| --- | --- |\n| Cimento | 12,50 |\n| Areia | 8,00 |"]
+        );
+    }
+
+    #[test]
+    fn merged_cells_report_spans() {
+        let mut content = String::new();
+        for y in [700.0, 680.0, 660.0] {
+            content.push_str(&rule(50.0, y, 350.0, y));
+        }
+        content.push_str(&rule(50.0, 660.0, 50.0, 700.0));
+        content.push_str(&rule(350.0, 660.0, 350.0, 700.0));
+        content.push_str(&rule(200.0, 660.0, 200.0, 680.0));
+        content.push_str(&text(60.0, 688.0, 10.0, "Precos unitarios"));
+        content.push_str(&text(60.0, 668.0, 10.0, "Cimento"));
+        content.push_str(&text(210.0, 668.0, 10.0, "12,50"));
+        let bytes = document(&[page(content)], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!((table.rows, table.cols, table.cells.len()), (2, 2, 3));
+        let header = cell(table, 0, 0);
+        assert_eq!((header.row_span, header.col_span), (1, 2));
+        assert_eq!(header.text, "Precos unitarios");
+        assert!((header.bbox[0] - 50.0).abs() < 1e-6 && (header.bbox[2] - 350.0).abs() < 1e-6);
+        assert!(table.cells.iter().all(|cell| cell.col <= 1));
+        let markdown = pages_of(&bytes, &MARKDOWN);
+        assert_eq!(
+            markdown,
+            ["| Precos unitarios |  |\n| --- | --- |\n| Cimento | 12,50 |"]
+        );
+    }
+
+    #[test]
+    fn row_spans_cover_missing_horizontal_edges() {
+        let mut content = grid(&[700.0, 680.0, 660.0, 640.0], &[50.0, 200.0, 350.0]);
+        content = content.replace(
+            "0.5 w 50 660 m 350 660 l S\n",
+            "0.5 w 200 660 m 350 660 l S\n",
+        );
+        content.push_str(&text(55.0, 668.0, 10.0, "Grupo"));
+        content.push_str(&text(205.0, 688.0, 10.0, "a"));
+        content.push_str(&text(205.0, 668.0, 10.0, "b"));
+        content.push_str(&text(205.0, 648.0, 10.0, "c"));
+        let tables = tables_of(&document(&[page(content)], &[]));
+        let spanning = tables[0]
+            .cells
+            .iter()
+            .find(|cell| cell.text == "Grupo")
+            .unwrap();
+        assert_eq!((spanning.row, spanning.row_span), (1, 2));
+    }
+
+    fn borderless(rows: &[(&str, &str, &str)], top: f64) -> String {
+        let mut out = String::new();
+        for (index, (a, b, c)) in rows.iter().enumerate() {
+            let baseline = top - 14.0 * index as f64;
+            out.push_str(&text(50.0, baseline, 10.0, a));
+            out.push_str(&text(200.0, baseline, 10.0, b));
+            out.push_str(&text(350.0, baseline, 10.0, c));
+        }
+        out
+    }
+
+    #[test]
+    fn borderless_aligned_columns_become_a_table() {
+        let content = borderless(
+            &[
+                ("Item", "Qtd", "Valor"),
+                ("Cimento", "10", "125,00"),
+                ("Areia", "4", "32,00"),
+                ("Brita", "7", "91,00"),
+            ],
+            700.0,
+        );
+        let bytes = document(&[page(content)], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!((table.rows, table.cols), (4, 3));
+        assert_eq!(cell(table, 1, 2).text, "125,00");
+        assert_eq!(cell(table, 3, 0).text, "Brita");
+        let markdown = pages_of(&bytes, &MARKDOWN);
+        assert_eq!(
+            markdown,
+            [
+                "| Item | Qtd | Valor |\n| --- | --- | --- |\n| Cimento | 10 | 125,00 |\n| Areia | 4 | 32,00 |\n| Brita | 7 | 91,00 |"
+            ]
+        );
+        let plain = pages_of(&bytes, &PLAIN);
+        assert_eq!(
+            plain,
+            ["Item Qtd Valor\nCimento 10 125,00\nAreia 4 32,00\nBrita 7 91,00"]
+        );
+    }
+
+    #[test]
+    fn numbered_clauses_are_not_tables() {
+        let mut content = String::new();
+        for (index, (marker, body)) in [
+            ("3.1.", "Os licitantes cadastrarao a proposta no sistema."),
+            ("3.2.", "A fase de habilitacao sucedera a de lances."),
+            ("3.2.1.", "Documentos poderao ser exigidos depois."),
+            ("a)", "Declaracao de inexistencia de fatos."),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let baseline = 700.0 - 14.0 * index as f64;
+            content.push_str(&text(50.0, baseline, 10.0, marker));
+            content.push_str(&text(120.0, baseline, 10.0, body));
+        }
+        let bytes = document(&[page(content)], &[]);
+        assert!(tables_of(&bytes).is_empty());
+        let markdown = pages_of(&bytes, &MARKDOWN);
+        assert!(!markdown[0].contains("| --- |"), "{}", markdown[0]);
+        assert!(is_marker("(12)"));
+        assert!(is_marker("IV."));
+        assert!(is_marker("•"));
+        assert!(!is_marker("12"));
+        assert!(!is_marker("Valor:  total geral do item"));
+    }
+
+    #[test]
+    fn wrapped_cell_lines_stay_in_their_row() {
+        let mut content = borderless(
+            &[
+                ("Item", "Qtd", "Valor"),
+                ("Cimento", "10", "125,00"),
+                ("Areia", "4", "32,00"),
+            ],
+            700.0,
+        );
+        content.push_str(&text(50.0, 660.0, 10.0, "fina lavada"));
+        let tables = tables_of(&document(&[page(content)], &[]));
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].rows, 3);
+        assert_eq!(cell(&tables[0], 2, 0).text, "Areia\nfina lavada");
+    }
+
+    #[test]
+    fn heading_below_a_table_is_not_merged_into_the_last_cell() {
+        let mut content = borderless(
+            &[
+                ("Item", "Qtd", "Valor"),
+                ("Cimento", "10", "125,00"),
+                ("Areia", "4", "32,00"),
+            ],
+            700.0,
+        );
+        content.push_str(&bold(50.0, 658.0, 10.0, "Observacoes"));
+        let bytes = document(&[page(content.clone())], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables[0].cells.len(), 9);
+        assert_eq!(cell(&tables[0], 2, 0).text, "Areia");
+        let markdown = pages_of(&bytes, &MARKDOWN);
+        assert!(markdown[0].ends_with("| Areia | 4 | 32,00 |\n\nObservacoes"));
+        let mut large = borderless(
+            &[
+                ("Item", "Qtd", "Valor"),
+                ("Cimento", "10", "125,00"),
+                ("Areia", "4", "32,00"),
+            ],
+            700.0,
+        );
+        large.push_str(&text(50.0, 658.0, 14.0, "Observacoes"));
+        let tables = tables_of(&document(&[page(large)], &[]));
+        assert_eq!(cell(&tables[0], 2, 0).text, "Areia");
+    }
+
+    #[test]
+    fn ruled_table_does_not_swallow_the_heading_below_it() {
+        let mut content = price_table(700.0);
+        content.push_str(&bold(50.0, 622.0, 12.0, "Informacoes Adicionais"));
+        let bytes = document(&[page(content)], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables.len(), 1);
+        assert!(
+            tables[0]
+                .cells
+                .iter()
+                .all(|cell| !cell.text.contains("Informacoes"))
+        );
+        let pages = pages_of(&bytes, &PLAIN);
+        assert!(pages[0].ends_with("Areia 8,00\n\nInformacoes Adicionais"));
+    }
+
+    #[test]
+    fn tables_split_by_a_page_break_are_reported_per_page() {
+        let bytes = document(&[page(price_table(160.0)), page(price_table(780.0))], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables.len(), 2);
+        assert_eq!((tables[0].page_index, tables[1].page_index), (0, 1));
+        assert_eq!(tables[0].rows, tables[1].rows);
+        let second = document_tables(&bytes, Some(&[1]), &text_limits()).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].page_index, 1);
+        let missing = document_tables(&bytes, Some(&[5]), &text_limits()).unwrap_err();
+        assert_eq!(missing.code, crate::failure::FailureCode::InvalidPdf);
+    }
+
+    #[test]
+    fn prose_and_table_share_a_page_in_reading_order() {
+        let mut content = String::new();
+        content.push_str(&text(
+            50.0,
+            780.0,
+            10.0,
+            "Introducao ao termo de referencia desta compra.",
+        ));
+        content.push_str(&text(
+            50.0,
+            766.0,
+            10.0,
+            "O quadro abaixo lista os itens previstos.",
+        ));
+        content.push_str(&price_table(740.0));
+        content.push_str(&text(50.0, 600.0, 10.0, "Os valores incluem tributos."));
+        let bytes = document(&[page(content)], &[]);
+        let markdown = pages_of(&bytes, &MARKDOWN);
+        let page_text = &markdown[0];
+        let intro = page_text.find("Introducao").unwrap();
+        let table = page_text.find("| Item | Valor |").unwrap();
+        let outro = page_text.find("Os valores").unwrap();
+        assert!(intro < table && table < outro, "{page_text}");
+        assert!(page_text.contains("Introducao ao termo de referencia desta compra.\nO quadro"));
+        assert!(page_text.contains("| Areia | 8,00 |\n\nOs valores incluem tributos."));
+        let plain = pages_of(&bytes, &PLAIN);
+        assert!(plain[0].contains("Item Valor\nCimento 12,50\nAreia 8,00\n\nOs valores"));
+    }
+
+    #[test]
+    fn rotated_pages_report_tables_in_visible_orientation() {
+        let content = format!("q 0 1 -1 0 600 0 cm\n{}Q\n", price_table(500.0));
+        let spec = PageSpec {
+            content,
+            rotate: 90,
+        };
+        let bytes = document(&[spec], &[]);
+        let tables = tables_of(&bytes);
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!((table.rows, table.cols), (3, 2));
+        assert_eq!(cell(table, 0, 0).text, "Item");
+        assert_eq!(cell(table, 2, 1).text, "8,00");
+        let [x0, y0, x1, y1] = table.bbox;
+        assert!(
+            (x0 - 100.0).abs() < 1e-6 && (x1 - 160.0).abs() < 1e-6,
+            "{:?}",
+            table.bbox
+        );
+        assert!(
+            (y0 - 50.0).abs() < 1e-6 && (y1 - 350.0).abs() < 1e-6,
+            "{:?}",
+            table.bbox
+        );
+        assert_eq!(
+            pages_of(&bytes, &PLAIN),
+            ["Item Valor\nCimento 12,50\nAreia 8,00"]
+        );
+    }
+
+    #[test]
+    fn decorative_rules_and_empty_grids_are_not_tables() {
+        let mut content = grid(&[700.0, 680.0, 660.0], &[50.0, 200.0, 350.0]);
+        content.push_str(&text(50.0, 600.0, 10.0, "Texto solto"));
+        let bytes = document(&[page(content)], &[]);
+        assert!(tables_of(&bytes).is_empty());
+        assert_eq!(pages_of(&bytes, &PLAIN), ["Texto solto"]);
+        let underline = format!(
+            "{}{}",
+            text(50.0, 700.0, 10.0, "Titulo sublinhado"),
+            rule(50.0, 697.0, 150.0, 697.0)
+        );
+        assert!(tables_of(&document(&[page(underline)], &[])).is_empty());
+    }
+
+    #[test]
+    fn page_sized_frames_do_not_count_as_tables() {
+        let mut content = String::from("0.5 w 0 0 600 800 re S\n");
+        content.push_str("30 30 540 740 re S\n");
+        content.push_str(&rule(30.0, 400.0, 570.0, 400.0));
+        content.push_str(&rule(300.0, 30.0, 300.0, 770.0));
+        content.push_str(&text(40.0, 700.0, 10.0, "Quadro externo"));
+        content.push_str(&text(310.0, 700.0, 10.0, "Coluna direita"));
+        let tables = tables_of(&document(&[page(content)], &[]));
+        assert!(tables.len() <= 1);
+        let frame_only = format!(
+            "0 0 600 800 re S {}",
+            text(40.0, 700.0, 10.0, "Somente moldura")
+        );
+        assert!(tables_of(&document(&[page(frame_only)], &[])).is_empty());
+    }
+
+    #[test]
+    fn two_text_columns_are_not_mistaken_for_a_table() {
+        let mut content = String::new();
+        for index in 0..8 {
+            let baseline = 700.0 - 12.0 * f64::from(index);
+            content.push_str(&text(
+                50.0,
+                baseline,
+                10.0,
+                "A coluna da esquerda traz um texto corrido bem longo que ocupa a largura toda",
+            ));
+            content.push_str(&text(
+                320.0,
+                baseline,
+                10.0,
+                "A coluna da direita traz outro texto corrido bem longo que ocupa a largura",
+            ));
+        }
+        let bytes = document(&[page(content)], &[]);
+        assert!(tables_of(&bytes).is_empty());
+    }
+
+    fn running_page(index: usize, header: &str, body: &[&str]) -> PageSpec {
+        let mut content = String::new();
+        content.push_str(&text(50.0, 50.0, 9.0, "Contato 3716-9911"));
+        content.push_str(&text(50.0, 770.0, 9.0, header));
+        content.push_str(&text(480.0, 770.0, 9.0, &format!("Pagina {index} de 4")));
+        for (line, value) in body.iter().enumerate() {
+            content.push_str(&text(50.0, 600.0 - 14.0 * line as f64, 10.0, value));
+        }
+        content.push_str(&text(
+            50.0,
+            30.0,
+            9.0,
+            &format!("Edital 12/2026 - pg. {index}"),
+        ));
+        page(content)
+    }
+
+    fn running_document(header: impl Fn(usize) -> String) -> Vec<u8> {
+        let bodies: [&[&str]; 4] = [
+            &["Primeira linha do edital", "a sessao sera realizada na"],
+            &["plataforma eletronica indicada", "Segunda linha"],
+            &["Terceira pagina"],
+            &["Quarta pagina"],
+        ];
+        let pages: Vec<PageSpec> = bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| running_page(index + 1, &header(index), body))
+            .collect();
+        document(&pages, &[])
+    }
+
+    #[test]
+    fn running_headers_and_footers_are_dropped() {
+        let bytes = running_document(|_| "Prefeitura Municipal de Marilac".to_owned());
+        let kept = pages_of(&bytes, &PLAIN);
+        assert!(kept[0].contains("Prefeitura Municipal de Marilac"));
+        assert!(kept[0].contains("Edital 12/2026 - pg. 1"));
+        let options = TextOptions {
+            markdown: false,
+            drop_running: true,
+        };
+        let dropped = pages_of(&bytes, &options);
+        assert_eq!(
+            dropped,
+            [
+                "Prefeitura Municipal de Marilac\n\nPrimeira linha do edital\na sessao sera realizada na\n\nContato 3716-9911",
+                "plataforma eletronica indicada\nSegunda linha",
+                "Terceira pagina",
+                "Quarta pagina",
+            ]
+        );
+        let joined = dropped[..2].join("\n\n");
+        assert!(joined.contains("realizada na\n\nContato 3716-9911\n\nplataforma"));
+    }
+
+    #[test]
+    fn varying_headers_below_half_of_the_pages_are_kept() {
+        let bytes = running_document(|index| format!("Capitulo {}", ["A", "B", "C", "D"][index]));
+        let options = TextOptions {
+            markdown: false,
+            drop_running: true,
+        };
+        let pages = pages_of(&bytes, &options);
+        assert!(pages[0].starts_with("Capitulo A"));
+        assert!(pages[1].starts_with("Capitulo B"));
+        assert!(!pages[1].contains("Pagina 2"));
+        assert!(!pages[1].contains("Edital 12/2026"));
+    }
+
+    #[test]
+    fn single_pages_and_selected_pages_never_lose_their_header() {
+        let bytes = running_document(|_| "Prefeitura Municipal de Marilac".to_owned());
+        let options = TextOptions {
+            markdown: false,
+            drop_running: true,
+        };
+        let one = document_text(&bytes, Some(&[0]), &text_limits(), &options).unwrap();
+        assert!(one[0].contains("Prefeitura Municipal de Marilac"));
+    }
+
+    #[test]
+    fn running_keys_normalize_digits_and_spacing() {
+        assert_eq!(running_key("Pagina  12  de 120"), "pagina # de #");
+        assert_eq!(running_key("  7 "), "#");
+        assert_eq!(running_key("Edital 12/2026"), "edital #/#");
+        assert_eq!(running_key(""), "");
+    }
+
+    #[test]
+    fn tables_inside_the_header_band_are_dropped_when_repeated() {
+        let mut pages = Vec::new();
+        for index in 0..3 {
+            let mut content = grid(&[780.0, 760.0, 740.0], &[50.0, 250.0, 450.0]);
+            content.push_str(&text(55.0, 768.0, 9.0, "Orgao"));
+            content.push_str(&text(255.0, 768.0, 9.0, &format!("Pagina {}", index + 1)));
+            content.push_str(&text(55.0, 748.0, 9.0, "Edital"));
+            content.push_str(&text(255.0, 748.0, 9.0, "12/2026"));
+            content.push_str(&text(50.0, 500.0, 10.0, "Corpo do documento"));
+            pages.push(page(content));
+        }
+        let bytes = document(&pages, &[]);
+        let options = TextOptions {
+            markdown: false,
+            drop_running: true,
+        };
+        assert_eq!(
+            pages_of(&bytes, &options),
+            [
+                "Corpo do documento",
+                "Corpo do documento",
+                "Corpo do documento"
+            ]
+        );
+    }
+
+    #[test]
+    fn mutated_structured_documents_never_panic() {
+        let mut content = price_table(700.0);
+        content.push_str(&borderless(
+            &[("A", "B", "C"), ("D", "E", "F"), ("G", "H", "I")],
+            500.0,
+        ));
+        let fixture = document(&[page(content)], &[]);
+        let limits = text_limits();
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..300 {
+            let mut bytes = fixture.clone();
+            for _ in 0..(1 + next() % 6) {
+                let at = usize::try_from(next()).unwrap_or(0) % bytes.len();
+                if let Some(byte) = bytes.get_mut(at) {
+                    *byte = u8::try_from(next() % 255).unwrap_or(1).max(1);
+                }
+            }
+            let _ = document_tables(&bytes, None, &limits);
+            let _ = document_text(&bytes, None, &limits, &MARKDOWN);
+        }
+    }
+
+    #[test]
+    fn hostile_rulings_stay_bounded() {
+        let mut content = String::new();
+        for index in 0..3000 {
+            let y = 10.0 + f64::from(index % 700);
+            let x = 10.0 + f64::from(index % 500);
+            content.push_str(&format!(
+                "{x} {y} m {} {y} l S {x} {y} m {x} {} l S ",
+                x + 40.0,
+                y + 30.0
+            ));
+        }
+        content.push_str(&text(50.0, 700.0, 10.0, "texto"));
+        let bytes = document(&[page(content)], &[]);
+        assert!(document_tables(&bytes, None, &text_limits()).is_ok());
+        assert!(document_text(&bytes, None, &text_limits(), &MARKDOWN).is_ok());
     }
 }
