@@ -262,10 +262,10 @@ fn decode_utf16(bytes: &[u8], read: fn([u8; 2]) -> u16) -> String {
 
 fn actual_text(operands: &[Object]) -> Option<String> {
     let properties = operands.last()?.as_dict()?;
-    match properties.get(b"ActualText")? {
-        Object::String(bytes) => Some(text_string(bytes)),
-        _ => None,
-    }
+    let Object::String(bytes) = properties.get(b"ActualText")? else {
+        return None;
+    };
+    Some(text_string(bytes))
 }
 
 fn is_bold_name(name: &[u8]) -> bool {
@@ -399,7 +399,7 @@ impl Scope {
                 .and_then(|dict| dict.get(key))
                 .and_then(|entry| document.follow(entry).ok())
                 .filter(|resolved| resolved.as_dict().is_some());
-            *slot = found.map_or(Lazy::Missing, |resolved| Lazy::Found(resolved));
+            *slot = found.map_or(Lazy::Missing, Lazy::Found);
         }
         match slot {
             Lazy::Found(resolved) => Some(Rc::clone(resolved)),
@@ -983,9 +983,10 @@ impl Interpreter<'_, '_> {
             .iter()
             .enumerate()
             .find(|(_, (key, _))| key.as_slice() == name)?;
-        let key = match entry {
-            Object::Ref(reference) => FontKey::Indirect(*reference),
-            _ => FontKey::Inline(scope.id, u32::try_from(index).ok()?),
+        let key = if let Object::Ref(reference) = entry {
+            FontKey::Indirect(*reference)
+        } else {
+            FontKey::Inline(scope.id, u32::try_from(index).ok()?)
         };
         if let Some(hit) = self.fonts.get(&key) {
             return hit.clone();
@@ -1091,17 +1092,14 @@ impl Interpreter<'_, '_> {
             .as_ref()
             .is_some_and(|entry| entry.font.is_vertical());
         for item in items {
-            match item {
-                Object::String(bytes) => self.show(state, matrices, bytes)?,
-                other => {
-                    if let Some(amount) = other.as_number() {
-                        let shift = -amount / 1000.0 * state.size;
-                        if vertical {
-                            matrices.translate(0.0, shift);
-                        } else {
-                            matrices.translate(shift * state.scale, 0.0);
-                        }
-                    }
+            if let Object::String(bytes) = item {
+                self.show(state, matrices, bytes)?;
+            } else if let Some(amount) = item.as_number() {
+                let shift = -amount / 1000.0 * state.size;
+                if vertical {
+                    matrices.translate(0.0, shift);
+                } else {
+                    matrices.translate(shift * state.scale, 0.0);
                 }
             }
         }
@@ -1364,9 +1362,10 @@ impl Interpreter<'_, '_> {
         let Some(entry) = xobjects.as_dict().and_then(|dict| dict.get(name)) else {
             return Ok(());
         };
-        let reference = match entry {
-            Object::Ref(reference) => Some(*reference),
-            _ => None,
+        let reference = if let Object::Ref(reference) = entry {
+            Some(*reference)
+        } else {
+            None
         };
         if let Some(reference) = reference
             && (self.skipped.contains(&reference) || self.active.contains(&reference))
@@ -1451,6 +1450,7 @@ mod tests {
     use super::*;
     use crate::document::inspect;
     use crate::inspection::{InspectOptions, Inspection};
+    use std::fmt::Write as _;
     use std::hint::black_box;
 
     const HELVETICA: &str =
@@ -1947,7 +1947,7 @@ mod tests {
     fn path_capture_is_bounded_by_the_item_limit() {
         let mut content = String::from("BT /F1 10 Tf 50 700 Td (x) Tj ET ");
         for index in 0..50 {
-            content.push_str(&format!("{} 10 m {} 10 l S ", index * 5, index * 5 + 20));
+            write!(content, "{} 10 m {} 10 l S ", index * 5, index * 5 + 20).unwrap();
         }
         let bytes = simple_pdf(&content);
         let limits = Limits {
@@ -2164,9 +2164,10 @@ mod tests {
 
     impl Value {
         fn get(&self, key: &str) -> Option<&Self> {
-            match self {
-                Self::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-                _ => None,
+            if let Self::Map(entries) = self {
+                entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+            } else {
+                None
             }
         }
 

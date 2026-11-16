@@ -87,10 +87,11 @@ mod tests {
         assert!(inspection.links.iter().all(|link| link.uri == LINK_ROTATED));
     }
 
-    #[expect(clippy::type_complexity)]
+    type Expectation = (&'static str, usize, Option<(f64, f64)>);
+
     #[test]
     fn corpus_page_counts_and_liteparse_dims() {
-        let expectations: [(&str, usize, Option<(f64, f64)>); 9] = [
+        let expectations: [Expectation; 9] = [
             ("links.pdf", 1, Some((612.0, 792.0))),
             ("helvetica-winansi.pdf", 1, Some((612.0, 792.0))),
             ("react-pdf-declaration.pdf", 1, Some((595.28, 841.89))),
@@ -148,11 +149,11 @@ mod tests {
         let Some(fonts_value) = page.resources.get(b"Font") else {
             return Vec::new();
         };
-        let Ok(Object::Dict(fonts_dict)) = document.resolve(fonts_value) else {
+        let Ok(Object::Dict(font_table)) = document.resolve(fonts_value) else {
             return Vec::new();
         };
         let mut fonts = Vec::new();
-        for (_, entry) in &fonts_dict.entries {
+        for (_, entry) in &font_table.entries {
             let Ok(resolved) = document.resolve(entry) else {
                 continue;
             };
@@ -171,13 +172,17 @@ mod tests {
         let document =
             Document::open(fixture("helvetica-winansi.pdf"), &Limits::default()).expect("open");
         let pages = document.pages().expect("pages");
-        let fonts = load_page_fonts(&document, &pages[0]);
+        let page = pages.first().expect("first page");
+        let fonts = load_page_fonts(&document, page);
         assert!(fonts.len() >= 2);
-        let content = document.content(&pages[0]).expect("content");
+        let content = document.content(page).expect("content");
         let sample = content
             .windows(3)
-            .find(|window| window[0] == b'(' && window[1] != b'\\')
-            .map_or(b'A', |window| window[1]);
+            .find_map(|window| match *window {
+                [b'(', byte, _] if byte != b'\\' => Some(byte),
+                _ => None,
+            })
+            .unwrap_or(b'A');
         let mut decoded_any = false;
         for font in &fonts {
             let mut glyphs = Vec::new();

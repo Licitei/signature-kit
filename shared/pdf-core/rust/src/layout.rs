@@ -1437,6 +1437,7 @@ mod structure_tests {
     use super::*;
     use crate::num::usize_to_f64;
     use crate::test_pdf::{PageSpec, bold, document, grid, page, rule, text};
+    use std::fmt::Write as _;
     use std::hint::black_box;
 
     const PLAIN: TextOptions = TextOptions {
@@ -1962,11 +1963,13 @@ mod structure_tests {
         for index in 0..3000 {
             let y = 10.0 + f64::from(index % 700);
             let x = 10.0 + f64::from(index % 500);
-            content.push_str(&format!(
+            write!(
+                content,
                 "{x} {y} m {} {y} l S {x} {y} m {x} {} l S ",
                 x + 40.0,
                 y + 30.0
-            ));
+            )
+            .unwrap();
         }
         content.push_str(&text(50.0, 700.0, 10.0, "texto"));
         let bytes = document(&[page(content)], &[]);
