@@ -11,6 +11,9 @@
       "path": "./shared/cms"
     },
     {
+      "path": "./shared/pdf-core"
+    },
+    {
       "path": "./core/signatures"
     },
     {

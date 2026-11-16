@@ -225,6 +225,13 @@
         "effect": "4.1.0",
       },
     },
+    "shared/pdf-core": {
+      "name": "@signature-kit/pdf-core",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "4.1.0",
+      },
+    },
     "signers/a1": {
       "name": "@signature-kit/a1",
       "version": "0.4.1",
@@ -1034,6 +1041,8 @@
     "@signature-kit/iti": ["@signature-kit/iti@workspace:validators/iti"],
 
     "@signature-kit/pdf": ["@signature-kit/pdf@workspace:formats/pdf"],
+    "@signature-kit/pdf-core": ["@signature-kit/pdf-core@workspace:shared/pdf-core"],
+
 
     "@signature-kit/react": ["@signature-kit/react@workspace:formats/react"],
 
