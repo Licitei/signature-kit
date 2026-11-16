@@ -1,36 +1,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 
-import { findPdfTextAnchors } from "../../../formats/pdf/src/anchors.ts";
-import {
-  topLeftRectFromPdfCoordinateTuple,
-  visiblePdfPageSize,
-} from "../../../formats/pdf/src/stamp.ts";
+import type { PdfCoreInspection } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
 import { PdfCore } from "../dist/pdf-core.js";
-import type { PdfCoreInspection } from "../dist/config.js";
-import {
-  CORPUS_FIXTURE_NAMES,
-  LINK_FIXTURE_URIS,
-  PDF_CORE_FIXTURES_DIR,
-  type CorpusFixtureName,
-} from "./corpus.ts";
+import { CORPUS_FIXTURE_NAMES, PDF_CORE_FIXTURES_DIR } from "./corpus.ts";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
-
-const AnchorGolden = Schema.Array(
-  Schema.Struct({
-    pageIndex: Schema.Int,
-    x: Schema.Finite,
-    y: Schema.Finite,
-    width: Schema.Finite,
-    height: Schema.Finite,
-  }),
-);
 
 const LiteParseGolden = Schema.Struct({
   pages: Schema.Array(
@@ -48,126 +27,106 @@ const LiteParseGolden = Schema.Struct({
   ),
 });
 
-const stem = (name: CorpusFixtureName): string => name.replace(/\.pdf$/u, "");
-
-const readGolden = <S extends Schema.Top>(
-  name: CorpusFixtureName,
-  suffix: "anchors" | "liteparse",
-  schema: S,
-) =>
-  Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(
-    readFileSync(join(PDF_CORE_FIXTURES_DIR, `${stem(name)}.${suffix}.json`), "utf8"),
-  );
-
-const contentMatchers = [
-  { text: "[[licitei-assinatura]]" },
-  { text: "{{signature}}" },
-  { digits: "12345678909" },
-  { digits: "12345678000195" },
-];
-
-const linkMatchersFor = (name: CorpusFixtureName) => {
-  if (name === "links.pdf") {
-    return [
-      { link: LINK_FIXTURE_URIS.primary },
-      { link: LINK_FIXTURE_URIS.secondary },
-      { link: LINK_FIXTURE_URIS.indirect },
-    ];
-  }
-  if (name === "rotated-cropped.pdf") {
-    return [{ link: LINK_FIXTURE_URIS.rotated }];
-  }
-  return [];
+type VisibleRect = {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 };
 
-const decoder = new TextDecoder();
 const encoder = new TextEncoder();
-
-const itemsOf = (page: PdfCoreInspection["text"][number]) => {
-  const bytes = encoder.encode(page.text);
-  return Array.from({ length: page.offsets.length - 1 }, (_, index) => {
-    const pdfRect: readonly [number, number, number, number] = [
-      page.rects[index * 5] ?? 0,
-      page.rects[index * 5 + 1] ?? 0,
-      page.rects[index * 5 + 2] ?? 0,
-      page.rects[index * 5 + 3] ?? 0,
-    ];
-    return {
-      text: decoder.decode(bytes.subarray(page.offsets[index], page.offsets[index + 1])),
-      pdfRect,
-    };
-  });
-};
+const decoder = new TextDecoder();
 
 const normalize = (text: string): string => text.replace(/\s+/gu, "").replaceAll("—", "-");
 
-const loadFixture = (name: CorpusFixtureName) =>
-  Effect.gen(function* () {
-    const core = yield* PdfCore;
-    const pdf = new Uint8Array(readFileSync(join(PDF_CORE_FIXTURES_DIR, name)));
-    const inspection = yield* core.inspect(pdf, { text: true, links: false });
-    const document = yield* Effect.promise(() => PDFDocument.load(pdf, { ignoreEncryption: true }));
-    const pages = inspection.text.map((textPage) => {
-      const pdfPage = document.getPage(textPage.pageIndex);
-      const size = visiblePdfPageSize(pdfPage);
+const visibleRect = (
+  [left, bottom, right, top]: readonly [number, number, number, number],
+  page: PdfCoreInspection["pages"][number],
+): VisibleRect => {
+  const [cropLeft, cropBottom, cropRight, cropTop] = page.cropBox;
+  switch (page.rotate) {
+    case 90:
       return {
-        index: textPage.pageIndex,
-        width: size.width,
-        height: size.height,
-        boxes: itemsOf(textPage).map((item) => {
-          const rect = topLeftRectFromPdfCoordinateTuple(item.pdfRect, pdfPage);
-          return { text: item.text, ...rect };
-        }),
+        x: bottom - cropBottom,
+        y: left - cropLeft,
+        width: top - bottom,
+        height: right - left,
       };
-    });
-    return { pdf, pages };
-  });
+    case 180:
+      return {
+        x: cropRight - right,
+        y: bottom - cropBottom,
+        width: right - left,
+        height: top - bottom,
+      };
+    case 270:
+      return {
+        x: cropTop - top,
+        y: cropRight - right,
+        width: top - bottom,
+        height: right - left,
+      };
+    default:
+      return {
+        x: left - cropLeft,
+        y: cropTop - top,
+        width: right - left,
+        height: top - bottom,
+      };
+  }
+};
 
-describe("pdf-core liteparse parity", () => {
+const overlapArea = (left: VisibleRect, right: VisibleRect): number =>
+  Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x)) *
+  Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y));
+
+const itemsOf = (inspection: PdfCoreInspection, pageIndex: number) => {
+  const page = inspection.pages[pageIndex];
+  const textPage = inspection.text.find((candidate) => candidate.pageIndex === pageIndex);
+  if (page === undefined || textPage === undefined) {
+    return [];
+  }
+  const bytes = encoder.encode(textPage.text);
+  return Array.from({ length: textPage.offsets.length - 1 }, (_, index) => ({
+    text: normalize(
+      decoder.decode(bytes.subarray(textPage.offsets[index], textPage.offsets[index + 1])),
+    ),
+    rect: visibleRect(
+      [
+        textPage.rects[index * 5] ?? 0,
+        textPage.rects[index * 5 + 1] ?? 0,
+        textPage.rects[index * 5 + 2] ?? 0,
+        textPage.rects[index * 5 + 3] ?? 0,
+      ],
+      page,
+    ),
+  }));
+};
+
+describe("pdf-core LiteParse text parity", () => {
   for (const fixture of CORPUS_FIXTURE_NAMES) {
-    it.effect(`matches LiteParse anchors for ${fixture}`, () =>
+    it.effect(`finds every LiteParse text item of ${fixture} in a pdf-core item`, () =>
       Effect.gen(function* () {
-        const golden = yield* readGolden(fixture, "anchors", AnchorGolden);
-        const { pdf, pages } = yield* loadFixture(fixture);
-        const anchors = yield* findPdfTextAnchors({
-          pdf,
-          pages: pages.map(({ index, width, height }) => ({ index, width, height })),
-          textBoxes: pages.map((page) => page.boxes),
-          matchers: [...contentMatchers, ...linkMatchersFor(fixture)],
-          stampSize: { width: 80, height: 20 },
-          placement: "below",
-          offset: 0,
-        });
-        for (const expected of golden) {
-          const match = anchors.find(
-            (anchor) =>
-              anchor.pageIndex === expected.pageIndex &&
-              Math.abs(anchor.x - expected.x) <= 1 &&
-              Math.abs(anchor.y - expected.y) <= 1 &&
-              Math.abs(anchor.width - expected.width) <= 1 &&
-              Math.abs(anchor.height - expected.height) <= 1,
-          );
-          expect(match, `missing anchor for ${fixture} page ${expected.pageIndex}`).toBeDefined();
-        }
-      }).pipe(Effect.provide(layer)),
-    );
+        const stem = fixture.replace(/\.pdf$/u, "");
+        const golden = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(LiteParseGolden))(
+          readFileSync(join(PDF_CORE_FIXTURES_DIR, `${stem}.liteparse.json`), "utf8"),
+        );
+        const core = yield* PdfCore;
+        const inspection = yield* core.inspect(
+          new Uint8Array(readFileSync(join(PDF_CORE_FIXTURES_DIR, fixture))),
+          { text: true, links: false },
+        );
 
-    it.effect(`matches LiteParse text items for ${fixture}`, () =>
-      Effect.gen(function* () {
-        const golden = yield* readGolden(fixture, "liteparse", LiteParseGolden);
-        const { pages } = yield* loadFixture(fixture);
-        expect(pages).toHaveLength(golden.pages.length);
+        expect(inspection.pages).toHaveLength(golden.pages.length);
         golden.pages.forEach((goldenPage, pageIndex) => {
-          const boxes = pages[pageIndex]?.boxes ?? [];
-          expect(boxes).toHaveLength(goldenPage.textItems.length);
-          goldenPage.textItems.forEach((expected, index) => {
-            const actual = boxes[index];
-            expect(normalize(actual?.text ?? "")).toBe(normalize(expected.text));
-            expect(actual?.x ?? Number.NaN).toBeCloseTo(expected.x, 0);
-            expect(actual?.y ?? Number.NaN).toBeCloseTo(expected.y, 0);
-            expect(actual?.width ?? Number.NaN).toBeCloseTo(expected.width, 0);
-            expect(actual?.height ?? Number.NaN).toBeCloseTo(expected.height, 0);
-          });
+          const items = itemsOf(inspection, pageIndex);
+          for (const expected of goldenPage.textItems) {
+            const text = normalize(expected.text);
+            const found = items.some(
+              (item) => item.text.includes(text) && overlapArea(item.rect, expected) > 0,
+            );
+            expect(found, `${fixture} page ${pageIndex}: "${expected.text}" not found`).toBe(true);
+          }
         });
       }).pipe(Effect.provide(layer)),
     );

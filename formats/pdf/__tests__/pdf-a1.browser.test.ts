@@ -8,11 +8,9 @@ import {
   pdfSignatureFieldFromPlacement,
 } from "@signature-kit/pdf/builder";
 import { signPdfSignatureField } from "@signature-kit/pdf/workflow";
-import {
-  LiteParseWorkerFactory,
-  liteParseWorkerBrowserLayer,
-  parsePdfTextBoxesBrowser,
-} from "../src/liteparse-browser";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
+import { findPdfTextAnchors } from "../src/anchors";
+import { LiteParseWorkerFactory, renderPdfPagesBrowser } from "../src/liteparse-browser";
 import type { LiteParseWorker } from "../src/liteparse-browser";
 import {
   MAX_LITEPARSE_PAGE_COUNT,
@@ -56,7 +54,7 @@ const blockingLiteParseWorkerLayer = (onStart: () => void, onTerminate: () => vo
           '  event.ports[0].postMessage("started");',
           "  const deadline = Date.now() + 10000;",
           "  while (Date.now() < deadline) {}",
-          '  self.postMessage({ kind: "success", result: { pages: [] } });',
+          '  self.postMessage({ kind: "success", result: { screenshots: [] } });',
           "});",
         ].join("\n");
         const url = URL.createObjectURL(new Blob([script], { type: "text/javascript" }));
@@ -99,9 +97,9 @@ const successfulLiteParseWorkerLayer = (onCreate: () => void, onTerminate: () =>
               onMessage?.({
                 kind: "success",
                 result: {
-                  pages: Array.from({ length: request.pageCount }, (_, pageIndex) => ({
+                  screenshots: Array.from({ length: request.pageCount }, (_, pageIndex) => ({
                     pageNum: pageIndex + 1,
-                    textItems: [],
+                    imageBytes: [1],
                   })),
                 },
               }),
@@ -179,14 +177,21 @@ if (typeof document === "undefined") {
         }),
       ));
 
-    it("parses text boxes in a browser worker", async () => {
+    it("finds text anchors with the in-house pdf core in Chromium", async () => {
       const pdf = await Effect.runPromise(createPdf);
-      const boxes = await Effect.runPromise(
-        parsePdfTextBoxesBrowser(pdf, 1).pipe(Effect.provide(liteParseWorkerBrowserLayer)),
+      const anchors = await Effect.runPromise(
+        findPdfTextAnchors({
+          pdf,
+          matchers: [{ text: "SignatureKit" }],
+          stampSize: { width: 80, height: 20 },
+          placement: "below",
+          offset: 0,
+        }).pipe(Effect.provide(pdfCoreBrowserLayer)),
       );
 
-      expect(boxes).toHaveLength(1);
-      expect(boxes[0]?.map((box) => box.text).join(" ")).toContain("SignatureKit");
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0]?.pageIndex).toBe(0);
+      expect(anchors[0]?.x).toBeCloseTo(32, 0);
     }, 20_000);
 
     it("rejects invalid LiteParse page counts in the worker protocol", async () => {
@@ -232,7 +237,7 @@ if (typeof document === "undefined") {
       ]) {
         const result = await Effect.runPromise(
           Effect.result(
-            parsePdfTextBoxesBrowser(new Uint8Array([1]), pageCount).pipe(Effect.provide(layer)),
+            renderPdfPagesBrowser(new Uint8Array([1]), pageCount).pipe(Effect.provide(layer)),
           ),
         );
         expect(Result.isFailure(result)).toBe(true);
@@ -243,12 +248,12 @@ if (typeof document === "undefined") {
       }
       expect(creations).toBe(0);
 
-      const boxes = await Effect.runPromise(
-        parsePdfTextBoxesBrowser(new Uint8Array([1]), MAX_LITEPARSE_PAGE_COUNT).pipe(
+      const rendered = await Effect.runPromise(
+        renderPdfPagesBrowser(new Uint8Array([1]), MAX_LITEPARSE_PAGE_COUNT).pipe(
           Effect.provide(layer),
         ),
       );
-      expect(boxes).toHaveLength(MAX_LITEPARSE_PAGE_COUNT);
+      expect(rendered).toHaveLength(MAX_LITEPARSE_PAGE_COUNT);
       expect(creations).toBe(1);
       expect(terminations).toBe(1);
     });
@@ -317,7 +322,7 @@ if (typeof document === "undefined") {
       const startedAt = performance.now();
       const result = await Effect.runPromise(
         Effect.result(
-          parsePdfTextBoxesBrowser(new Uint8Array([1]), 1).pipe(
+          renderPdfPagesBrowser(new Uint8Array([1]), 1).pipe(
             Effect.provide(
               blockingLiteParseWorkerLayer(
                 () => {

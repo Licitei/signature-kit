@@ -1,36 +1,16 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { PDFDocument } from "@cantoo/pdf-lib";
+import initPdfInspector, { detectPdf, extractText } from "@firecrawl/pdf-inspector-wasm";
+import initLiteParseWasm, { LiteParse } from "@llamaindex/liteparse-wasm";
 import { Effect } from "effect";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-import {
-  CORPUS_FIXTURE_NAMES,
-  listCommittedCorpusFixtures,
-  PDF_CORE_FIXTURES_DIR,
-  type CorpusFixtureName,
-} from "../__tests__/corpus.ts";
-import { makePdfCore } from "../dist/pdf-core.js";
-import { bunStorePackageRoot, workspaceModuleUrl } from "../scripts/workspace-modules.ts";
-
-const pdfInspectorModule = await import(
-  workspaceModuleUrl("node_modules/@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm.js"),
-);
-const initPdfInspector = pdfInspectorModule.default;
-const detectPdf = pdfInspectorModule.detectPdf;
-const extractText = pdfInspectorModule.extractText;
-
-const liteParseModule = await import(
-  workspaceModuleUrl("formats/pdf/node_modules/@llamaindex/liteparse-wasm/pkg/liteparse_wasm.js"),
-);
-const initLiteParseWasm = liteParseModule.default;
-const LiteParse = liteParseModule.LiteParse;
-
-const pdfJsModule = await import(
-  pathToFileURL(join(bunStorePackageRoot("pdfjs-dist"), "legacy/build/pdf.mjs")).href,
-);
-const getDocument = pdfJsModule.getDocument;
-const GlobalWorkerOptions = pdfJsModule.GlobalWorkerOptions;
+import { makePdfCore } from "../src/pdf-core.ts";
+import { listCommittedCorpusFixtures, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
 
 type BenchRow = {
   readonly fixture: string;
@@ -47,11 +27,12 @@ type TextExtractionSummary = {
   readonly items: number;
 };
 
-type PdfCoreBenchAdapter = (pdf: Uint8Array) => Promise<TextExtractionSummary>;
+type TextExtractionAdapter = (pdf: Uint8Array) => Promise<TextExtractionSummary>;
 
-const benchDir = dirname(fileURLToPath(import.meta.url));
-const resultsDir = join(benchDir, "results");
-const warmIterations = 5;
+const benchDirectory = dirname(fileURLToPath(import.meta.url));
+const resultsDirectory = join(benchDirectory, "results");
+const warmIterations = 10;
+const require = createRequire(import.meta.url);
 
 const percentile = (values: ReadonlyArray<number>, ratio: number): number => {
   if (values.length === 0) {
@@ -62,67 +43,58 @@ const percentile = (values: ReadonlyArray<number>, ratio: number): number => {
   return sorted[index] ?? 0;
 };
 
-const liteParseWasmBytes = (): Uint8Array => {
-  return new Uint8Array(
-    readFileSync(
-      fileURLToPath(
-        workspaceModuleUrl(
-          "formats/pdf/node_modules/@llamaindex/liteparse-wasm/pkg/liteparse_wasm_bg.wasm",
-        ),
-      ),
-    ),
-  );
+const wasmBytes = (specifier: string): Uint8Array =>
+  new Uint8Array(readFileSync(require.resolve(specifier)));
+
+const pdfJsRoot = dirname(require.resolve("pdfjs-dist/package.json"));
+const pdfCoreWasmPath = join(benchDirectory, "../dist/pdf-core.wasm");
+
+const initLiteParse = (): Promise<unknown> =>
+  initLiteParseWasm({
+    module_or_path: wasmBytes("@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm"),
+  });
+
+const initInspector = (): Promise<unknown> =>
+  initPdfInspector({
+    module_or_path: wasmBytes("@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm_bg.wasm"),
+  });
+
+const configurePdfJs = (): void => {
+  GlobalWorkerOptions.workerSrc = pathToFileURL(
+    join(pdfJsRoot, "legacy/build/pdf.worker.mjs"),
+  ).href;
 };
 
-const pdfInspectorWasmBytes = (): Uint8Array =>
-  new Uint8Array(
-    readFileSync(
-      fileURLToPath(
-        workspaceModuleUrl("node_modules/@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm_bg.wasm"),
-      ),
-    ),
+const compilePdfCore = async () =>
+  Effect.runPromise(
+    makePdfCore(await WebAssembly.compile(new Uint8Array(readFileSync(pdfCoreWasmPath)))),
   );
 
-const pageCountFromPdf = async (pdf: Uint8Array): Promise<number> => {
-  const { PDFDocument } = await import(
-    workspaceModuleUrl("formats/pdf/node_modules/@cantoo/pdf-lib/es/index.js"),
-  );
-  return (await PDFDocument.load(pdf, { ignoreEncryption: true })).getPageCount();
-};
-
-const createLiteParseAdapter = async (): Promise<(pdf: Uint8Array) => Promise<TextExtractionSummary>> => {
-  await initLiteParseWasm({ module_or_path: liteParseWasmBytes() });
-  return async (pdf: Uint8Array): Promise<TextExtractionSummary> => {
-    const pageCount = await pageCountFromPdf(pdf);
+const createLiteParseAdapter = async (): Promise<TextExtractionAdapter> => {
+  await initLiteParse();
+  return async (pdf) => {
+    const document = await PDFDocument.load(pdf, { ignoreEncryption: true });
     const parser = new LiteParse({
       ocrEnabled: false,
-      maxPages: pageCount,
+      maxPages: document.getPageCount(),
       outputFormat: "json",
       preserveVerySmallText: true,
       quiet: true,
     });
-    try {
-      const parsed = await parser.parse(pdf);
-      if (typeof parsed !== "object" || parsed === null || !("pages" in parsed)) {
-        return { pages: 0, items: 0 };
-      }
-      const pages = (parsed as { pages: ReadonlyArray<{ textItems?: ReadonlyArray<unknown> }> }).pages;
-      const items = pages.reduce((total, page) => total + (page.textItems?.length ?? 0), 0);
-      return { pages: pages.length, items };
-    } finally {
-      parser.free();
-    }
+    const parsed = await parser.parse(pdf).finally(() => parser.free());
+    const pages = Array.isArray(parsed?.pages) ? parsed.pages : [];
+    const items = pages.reduce(
+      (total, page) => total + (Array.isArray(page?.textItems) ? page.textItems.length : 0),
+      0,
+    );
+    return { pages: pages.length, items };
   };
 };
 
-const createPdfJsAdapter = async (): Promise<(pdf: Uint8Array) => Promise<TextExtractionSummary>> => {
-  GlobalWorkerOptions.workerSrc = pathToFileURL(
-    join(bunStorePackageRoot("pdfjs-dist"), "legacy/build/pdf.worker.mjs"),
-  ).href;
-  return async (pdf: Uint8Array): Promise<TextExtractionSummary> => {
-    const standardFontDataUrl = pathToFileURL(
-      join(bunStorePackageRoot("pdfjs-dist"), "standard_fonts/"),
-    ).href;
+const createPdfJsAdapter = async (): Promise<TextExtractionAdapter> => {
+  configurePdfJs();
+  const standardFontDataUrl = `${join(pdfJsRoot, "standard_fonts")}/`;
+  return async (pdf) => {
     const task = getDocument({
       data: new Uint8Array(pdf),
       disableFontFace: true,
@@ -130,56 +102,45 @@ const createPdfJsAdapter = async (): Promise<(pdf: Uint8Array) => Promise<TextEx
       standardFontDataUrl,
     });
     const document = await task.promise;
-    const pageCount = document.numPages;
     let items = 0;
-    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
-      const text = await page.getTextContent();
-      items += text.items.length;
+      items += (await page.getTextContent()).items.length;
       await page.getAnnotations();
       page.cleanup();
     }
-    if (typeof document.cleanup === "function") {
-      document.cleanup();
-    }
-    return { pages: pageCount, items };
+    const pages = document.numPages;
+    await task.destroy();
+    return { pages, items };
   };
 };
 
-const createPdfInspectorAdapter = async (): Promise<
-  (pdf: Uint8Array) => Promise<TextExtractionSummary>
-> => {
-  await initPdfInspector({ module_or_path: pdfInspectorWasmBytes() });
-  return async (pdf: Uint8Array): Promise<TextExtractionSummary> => {
+const createPdfInspectorAdapter = async (): Promise<TextExtractionAdapter> => {
+  await initInspector();
+  return async (pdf) => {
     const detected = detectPdf(pdf);
     const text = extractText(pdf);
-    const items = text.split(/\S+/u).filter((token) => token.length > 0).length;
-    return { pages: detected.pageCount, items };
+    return { pages: detected.pageCount, items: text.split(/\S+/u).filter(Boolean).length };
   };
 };
 
-const pdfCoreWasmPath = join(benchDir, "../dist/pdf-core.wasm");
-
-const compilePdfCore = async () => {
-  const wasm = await WebAssembly.compile(new Uint8Array(readFileSync(pdfCoreWasmPath)));
-  return Effect.runPromise(makePdfCore(wasm));
-};
-
-const createPdfCoreAdapter = async (): Promise<PdfCoreBenchAdapter> => {
+const createPdfCoreAdapter = async (): Promise<TextExtractionAdapter> => {
   const core = await compilePdfCore();
-  return async (pdf: Uint8Array): Promise<TextExtractionSummary> => {
+  return async (pdf) => {
     const inspection = await Effect.runPromise(core.inspect(pdf, { text: true, links: true }));
-    const items = inspection.text.reduce((total, page) => total + page.rects.length / 5, 0);
-    return { pages: inspection.pages.length, items };
+    return {
+      pages: inspection.pages.length,
+      items: inspection.text.reduce((total, page) => total + page.rects.length / 5, 0),
+    };
   };
 };
 
 const measure = async (
   fixture: string,
-  adapterName: string,
-  run: (pdf: Uint8Array) => Promise<TextExtractionSummary>,
+  adapter: string,
+  run: TextExtractionAdapter,
   pdf: Uint8Array,
-  cold: () => Promise<void>,
+  cold: () => Promise<unknown>,
 ): Promise<BenchRow> => {
   const coldStart = performance.now();
   await cold();
@@ -193,7 +154,7 @@ const measure = async (
   }
   return {
     fixture,
-    adapter: adapterName,
+    adapter,
     coldMs,
     warmP50Ms: percentile(warm, 0.5),
     warmP95Ms: percentile(warm, 0.95),
@@ -203,19 +164,19 @@ const measure = async (
 };
 
 const fixturesToRun = (): ReadonlyArray<{ readonly label: string; readonly path: string }> => {
-  const committed = listCommittedCorpusFixtures();
-  const corpusDir = process.env.SIGNATURE_KIT_PDF_CORPUS_DIR;
-  if (corpusDir === undefined || corpusDir.length === 0) {
-    return committed.map((name) => ({ label: name, path: join(PDF_CORE_FIXTURES_DIR, name) }));
+  const committed = listCommittedCorpusFixtures().map((name) => ({
+    label: name,
+    path: join(PDF_CORE_FIXTURES_DIR, name),
+  }));
+  const corpusDirectory = process.env.SIGNATURE_KIT_PDF_CORPUS_DIR;
+  if (corpusDirectory === undefined || corpusDirectory.length === 0) {
+    return committed;
   }
-  const extra = readdirSync(corpusDir)
-    .filter((entry) => entry.endsWith(".pdf"))
-    .filter((entry) => !CORPUS_FIXTURE_NAMES.includes(entry as CorpusFixtureName))
-    .map((entry) => ({ label: entry, path: join(corpusDir, entry) }));
-  return [
-    ...committed.map((name) => ({ label: name, path: join(PDF_CORE_FIXTURES_DIR, name) })),
-    ...extra,
-  ];
+  const known = new Set(committed.map((fixture) => fixture.label));
+  const extra = readdirSync(corpusDirectory)
+    .filter((entry) => entry.endsWith(".pdf") && !known.has(entry))
+    .map((entry) => ({ label: entry, path: join(corpusDirectory, entry) }));
+  return [...committed, ...extra];
 };
 
 const markdownTable = (rows: ReadonlyArray<BenchRow>): string => {
@@ -228,44 +189,28 @@ const markdownTable = (rows: ReadonlyArray<BenchRow>): string => {
   return [header, divider, ...body].join("\n");
 };
 
-const main = async (): Promise<void> => {
-  mkdirSync(resultsDir, { recursive: true });
-  const liteParseRun = await createLiteParseAdapter();
-  const pdfJsRun = await createPdfJsAdapter();
-  const pdfInspectorRun = await createPdfInspectorAdapter();
-  const pdfCoreRun = await createPdfCoreAdapter();
-  const rows: BenchRow[] = [];
-  for (const fixture of fixturesToRun()) {
-    const pdf = new Uint8Array(readFileSync(fixture.path));
-    rows.push(
-      await measure(fixture.label, "liteparse", liteParseRun, pdf, async () => {
-        await initLiteParseWasm({ module_or_path: liteParseWasmBytes() });
-      }),
-    );
-    rows.push(
-      await measure(fixture.label, "pdfjs", pdfJsRun, pdf, async () => {
-        GlobalWorkerOptions.workerSrc = pathToFileURL(
-          join(bunStorePackageRoot("pdfjs-dist"), "legacy/build/pdf.worker.mjs"),
-        ).href;
-      }),
-    );
-    rows.push(
-      await measure(fixture.label, "pdf-inspector", pdfInspectorRun, pdf, async () => {
-        await initPdfInspector({ module_or_path: pdfInspectorWasmBytes() });
-      }),
-    );
-    rows.push(
-      await measure(fixture.label, "pdf-core", pdfCoreRun, pdf, async () => {
-        await compilePdfCore();
-      }),
-    );
-  }
-  const table = markdownTable(rows);
-  console.log(table);
-  writeFileSync(
-    join(resultsDir, "latest.json"),
-    `${JSON.stringify({ generatedAt: new Date().toISOString(), rows }, null, 2)}\n`,
-  );
-};
+mkdirSync(resultsDirectory, { recursive: true });
+const adapters: ReadonlyArray<{
+  readonly name: string;
+  readonly run: TextExtractionAdapter;
+  readonly cold: () => Promise<unknown>;
+}> = [
+  { name: "liteparse", run: await createLiteParseAdapter(), cold: initLiteParse },
+  { name: "pdfjs", run: await createPdfJsAdapter(), cold: () => Promise.resolve(configurePdfJs()) },
+  { name: "pdf-inspector", run: await createPdfInspectorAdapter(), cold: initInspector },
+  { name: "pdf-core", run: await createPdfCoreAdapter(), cold: compilePdfCore },
+];
 
-await main();
+const rows: BenchRow[] = [];
+for (const fixture of fixturesToRun()) {
+  const pdf = new Uint8Array(readFileSync(fixture.path));
+  for (const adapter of adapters) {
+    rows.push(await measure(fixture.label, adapter.name, adapter.run, pdf, adapter.cold));
+  }
+}
+
+console.log(markdownTable(rows));
+writeFileSync(
+  join(resultsDirectory, "latest.json"),
+  `${JSON.stringify({ generatedAt: new Date().toISOString(), rows }, null, 2)}\n`,
+);

@@ -3,30 +3,24 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
-import { repoRoot } from "./workspace-modules.ts";
 
-const {
-  PDFDocument,
-  PDFHexString,
-  PDFString,
-  rgb,
-  StandardFonts,
-} = await import("@cantoo/pdf-lib/es/index.js");
-const { renderToBuffer, Document, Page, Text, View, Font, StyleSheet } = await import(
-  "@react-pdf/renderer/lib/react-pdf.js",
-);
+const { PDFDocument, PDFHexString, PDFString, rgb, StandardFonts } =
+  await import("@cantoo/pdf-lib/es/index.js");
+const { renderToBuffer, Document, Page, Text, View, Font, StyleSheet } =
+  await import("@react-pdf/renderer/lib/react-pdf.js");
 const React = await import("react");
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const FIXED_DATE = new Date("2024-01-15T10:30:00.000Z");
 const CORPUS_CREATOR = "signature-kit-pdf-core-corpus";
 const PAGE_SIZE: readonly [number, number] = [612, 792];
-const icpSource = join(
-  repoRoot,
-  "validators/iti/__tests__/fixtures/icp-brasil-ad-rb-signed.pdf",
-);
+const icpSource = join(repoRoot, "validators/iti/__tests__/fixtures/icp-brasil-ad-rb-signed.pdf");
 
 const MINIMAL_PNG = Uint8Array.from(
-  atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  ),
   (character) => character.charCodeAt(0),
 );
 

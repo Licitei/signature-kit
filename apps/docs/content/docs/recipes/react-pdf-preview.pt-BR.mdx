@@ -129,7 +129,7 @@ const sign = (rect: PdfSignatureRect): Promise<Uint8Array> =>
       Effect.provide(
         Layer.merge(
           a1SignaturesLayer({ pfx, password: Redacted.make(password) }),
-          liteParseWorkerBrowserLayer,
+          pdfCoreBrowserLayer,
         ),
       ),
     ),

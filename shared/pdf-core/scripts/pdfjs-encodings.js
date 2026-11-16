@@ -293,6 +293,7 @@ function getEncoding(encodingName) {
 export {
   ExpertEncoding,
   getEncoding,
+  MacExpertEncoding,
   MacRomanEncoding,
   StandardEncoding,
   SymbolSetEncoding,

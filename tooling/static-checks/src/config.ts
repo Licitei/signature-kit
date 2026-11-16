@@ -19,6 +19,9 @@ export const skippedSegments: Record<string, true> = {
 };
 export const skippedSuffixes: readonly string[] = [".d.ts", ".tsbuildinfo", "README.md"];
 
+export const packageToolingPathPattern =
+  /(?:^|\/)(?:core|signers|formats|validators|shared)\/[^/]+\/(?:scripts|bench)\//;
+
 export const roots = [
   "core",
   "signers",

@@ -1,4 +1,6 @@
 import * as Domain from "@alchemy.run/domain";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
 import { SigningModel, SigningSession } from "@signature-kit/signing-domain";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { Deferred, Effect, Exit, Fiber, Layer, Ref, Result } from "effect";
@@ -7,6 +9,10 @@ import { expect, it } from "vitest";
 import { createPdfFixture, readA1Fixture } from "../../../tooling/testing/fixtures";
 import { SigningWorkerRequests } from "./signing-config";
 import { makeSigningBatch, signingWorkerHandlersLayer } from "./signing-runtime";
+
+const handlersLayer = signingWorkerHandlersLayer.pipe(
+  Layer.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
+);
 
 const domainLayer = SigningModel.layer(Layer.empty).pipe(Layer.provide(Domain.InMemory));
 
@@ -38,7 +44,7 @@ it("signs a real PDF and rejects bad passwords and stale generations", async () 
           ),
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(signingWorkerHandlersLayer)),
+    ).pipe(Effect.provide(handlersLayer)),
   );
 });
 
@@ -79,7 +85,7 @@ it("cancels an active batch and rejects a late completion", async () => {
         expect(yield* Ref.get(signed)).toBe(false);
         expect((yield* sessions.state("test")).status).toBe("cancelled");
       }),
-    ).pipe(Effect.provide(Layer.merge(domainLayer, signingWorkerHandlersLayer))),
+    ).pipe(Effect.provide(Layer.merge(domainLayer, handlersLayer))),
   );
 });
 
@@ -145,7 +151,7 @@ it("records and cancels preparation before any signing request starts", async ()
         expect(Exit.isFailure(yield* Fiber.await(fiber))).toBe(true);
         expect((yield* sessions.state("preparation")).status).toBe("cancelled");
       }),
-    ).pipe(Effect.provide(Layer.merge(domainLayer, signingWorkerHandlersLayer))),
+    ).pipe(Effect.provide(Layer.merge(domainLayer, handlersLayer))),
   );
 });
 
@@ -186,6 +192,6 @@ it("transitions from preparation to signing in the domain before completing", as
           expect(signatures[0]?.cryptographicValid).toBe(true);
         }
       }),
-    ).pipe(Effect.provide(Layer.merge(domainLayer, signingWorkerHandlersLayer))),
+    ).pipe(Effect.provide(Layer.merge(domainLayer, handlersLayer))),
   );
 });

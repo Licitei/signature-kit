@@ -1,5 +1,4 @@
 import { loadA1SignerAdapter, parseA1CertificateProfile } from "@signature-kit/a1/signer";
-import { liteParseWorkerBrowserLayer } from "@signature-kit/pdf/liteparse-browser";
 import { prepareAndSignPdf, preparePdfVisualPreview } from "@signature-kit/pdf/workflow";
 import {
   Signatures,
@@ -37,15 +36,10 @@ export const signingWorkerHandlersLayer = SigningWorkerRequests.toLayer(
         );
         return { generation: loaded.generation, profile: loaded.value };
       }),
-      Preview: (input) =>
-        preparePdfVisualPreview(input).pipe(Effect.provide(liteParseWorkerBrowserLayer)),
+      Preview: (input) => preparePdfVisualPreview(input),
       Sign: ({ generation, input }) =>
         session.use(generation, (adapter) =>
-          prepareAndSignPdf(input).pipe(
-            Effect.provide(
-              Layer.merge(Layer.succeed(Signatures, adapter), liteParseWorkerBrowserLayer),
-            ),
-          ),
+          prepareAndSignPdf(input).pipe(Effect.provideService(Signatures, adapter)),
         ),
       Dispose: session.dispose,
     });

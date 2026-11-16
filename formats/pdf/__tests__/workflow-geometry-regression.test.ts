@@ -9,9 +9,9 @@ import {
   degrees,
 } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 import { PdfErrorCodeValue } from "../src/config";
 import type { PdfSignaturePage, PdfSignatureRect, PdfSignatureTemplate } from "../src/config";
-import { liteParseWorkerBrowserLayer } from "../src/liteparse-browser";
 import {
   loadPdfSignatureDocument,
   prepareAndSignPdf,
@@ -109,7 +109,7 @@ describe("PDF workflow geometry", () => {
         signing: { policy: "pades-icp-brasil", reason: "workflow geometry regression" },
       }).pipe(
         Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })),
-        Effect.provide(liteParseWorkerBrowserLayer),
+        Effect.provide(pdfCoreTestLayer),
       );
 
       const verification = yield* verifyPdf({ pdf: signed });
@@ -424,7 +424,7 @@ describe("PDF workflow geometry", () => {
         signing: { policy: "pades-icp-brasil", reason: "crop rotation workflow regression" },
       }).pipe(
         Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })),
-        Effect.provide(liteParseWorkerBrowserLayer),
+        Effect.provide(pdfCoreTestLayer),
       );
 
       const verification = yield* verifyPdf({ pdf: signed });
@@ -453,7 +453,7 @@ describe("PDF workflow geometry", () => {
         signing: { policy: "pades-icp-brasil", reason: "crop default workflow regression" },
       }).pipe(
         Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })),
-        Effect.provide(liteParseWorkerBrowserLayer),
+        Effect.provide(pdfCoreTestLayer),
       );
 
       const verification = yield* verifyPdf({ pdf: signed });
@@ -480,7 +480,7 @@ describe("PDF workflow geometry", () => {
           signing: { policy: "pades-icp-brasil", reason: "crop bounds workflow regression" },
         }).pipe(
           Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })),
-          Effect.provide(liteParseWorkerBrowserLayer),
+          Effect.provide(pdfCoreTestLayer),
         ),
       );
 

@@ -4,6 +4,7 @@ import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue, PdfSchemaNameValue } from "../src/config";
 import { mergePdfs } from "../src/merge";
 import { findPdfTextAnchors } from "../src/anchors";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const createPdf = (sizes: ReadonlyArray<readonly [number, number]>): Effect.Effect<Uint8Array> =>
   Effect.promise(async () => {
@@ -145,7 +146,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
             stampSize: { width: 80, height: 20 },
             placement: "below",
             offset: 0,
-          });
+          }).pipe(Effect.provide(pdfCoreTestLayer));
 
           expect(anchors).toStrictEqual([{ pageIndex: 0, x: 20, y: 180, width: 80, height: 20 }]);
         }

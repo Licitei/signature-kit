@@ -1,7 +1,7 @@
 "use client";
 
 import { findPdfTextAnchors } from "@signature-kit/pdf/anchors";
-import { liteParseWorkerBrowserLayer } from "@signature-kit/pdf/liteparse-browser";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import {
   DEFAULT_PDF_ANCHOR_STAMP_SIZE,
   type PdfSignaturePage,
@@ -113,7 +113,7 @@ export function SignaturePdfViewer({
         pages,
         matchers,
         stampSize,
-      }).pipe(Effect.provide(liteParseWorkerBrowserLayer), Effect.result),
+      }).pipe(Effect.provide(pdfCoreBrowserLayer), Effect.result),
       {
         onExit: (exit) => {
           if (anchorScanOwner.current !== owner || activeAnchorScan.current !== scan) return;

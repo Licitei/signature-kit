@@ -13,6 +13,7 @@ const packages = [
   "shared/asn1",
   "shared/crypto",
   "shared/cms",
+  "shared/pdf-core",
   "core/signatures",
   "core/i18n",
   "core/http",

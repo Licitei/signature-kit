@@ -3,10 +3,8 @@ import "./home.css";
 import { Effect, Result, Schema } from "effect";
 import { PDFDocument } from "@cantoo/pdf-lib";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
-import {
-  liteParseWorkerBrowserLayer,
-  parsePdfTextBoxesBrowser,
-} from "@signature-kit/pdf/liteparse-browser";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.browser";
 import { Runtime } from "foldkit";
 import * as Server from "foldkit/experimental/server";
@@ -15,6 +13,13 @@ import { commands, userEvent } from "vitest/browser";
 import { Flags, Model, init, update, view } from "./main";
 import posthog from "posthog-js";
 import { docsPostHogOptions } from "../lib/posthog/client";
+
+const pdfTextOf = (bytes: Uint8Array) =>
+  Effect.gen(function* () {
+    const core = yield* PdfCore;
+    const inspection = yield* core.inspect(bytes, { text: true, links: false });
+    return inspection.text.map((page) => page.text).join(" ");
+  }).pipe(Effect.provide(pdfCoreBrowserLayer));
 
 declare module "vitest/browser" {
   interface BrowserCommands {
@@ -462,10 +467,7 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
           expect(document.getPageCount()).toBe(1);
           expect(document.getForm().getFields()).toHaveLength(0);
           expect(link.download).toBe(`${names[index]}.pdf`);
-          const boxes = yield* parsePdfTextBoxesBrowser(bytes, 1).pipe(
-            Effect.provide(liteParseWorkerBrowserLayer),
-          );
-          const text = boxes.flatMap((page) => page.map((box) => box.text ?? "")).join(" ");
+          const text = yield* pdfTextOf(bytes);
           expect(text).toContain(names[index]);
           expect(text).toContain("ILLUSTRATIVE MARK");
           expect(text).toContain("NOT A DIGITAL SIGNATURE");
@@ -485,10 +487,7 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
           const bytes = yield* Effect.promise(
             async () => new Uint8Array(await (await fetch(link.href)).arrayBuffer()),
           );
-          const boxes = yield* parsePdfTextBoxesBrowser(bytes, 1).pipe(
-            Effect.provide(liteParseWorkerBrowserLayer),
-          );
-          const text = boxes.flatMap((page) => page.map((box) => box.text ?? "")).join(" ");
+          const text = yield* pdfTextOf(bytes);
           expect(text).toContain(names[index]);
           expect(text).not.toContain("ILLUSTRATIVE MARK");
           if (index > 0) {
@@ -604,12 +603,7 @@ it("releases example URLs and regenerates all documents for the next locale", as
           const bytes = yield* Effect.promise(
             async () => new Uint8Array(await (await fetch(link.href)).arrayBuffer()),
           );
-          const boxes = yield* parsePdfTextBoxesBrowser(bytes, 1).pipe(
-            Effect.provide(liteParseWorkerBrowserLayer),
-          );
-          expect(boxes.flatMap((page) => page.map((box) => box.text ?? "")).join(" ")).toContain(
-            name,
-          );
+          expect(yield* pdfTextOf(bytes)).toContain(name);
           yield* Effect.promise(() => userEvent.click(next));
         }
       }),

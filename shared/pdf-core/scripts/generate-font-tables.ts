@@ -1,6 +1,17 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Effect, Schema } from "effect";
+
+import {
+  MacExpertEncoding,
+  MacRomanEncoding,
+  StandardEncoding,
+  SymbolSetEncoding,
+  WinAnsiEncoding,
+  ZapfDingbatsEncoding,
+} from "./pdfjs-encodings.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(root, "../../..");
@@ -8,7 +19,12 @@ const metricsDir = join(
   repoRoot,
   "node_modules/.bun/@cantoo+pdf-lib@2.11.1+e12ec37677079d63/node_modules/@cantoo/pdf-lib/src/packages/standard-fonts/font_metrics",
 );
-const encodingsJs = readFileSync(join(root, "pdfjs-encodings.js"), "utf8");
+
+const FontMetricsSchema = Schema.fromJsonString(
+  Schema.Struct({
+    CharMetrics: Schema.Array(Schema.Struct({ N: Schema.String, WX: Schema.Finite })),
+  }),
+);
 
 const STANDARD14 = [
   "Courier",
@@ -27,21 +43,22 @@ const STANDARD14 = [
   "ZapfDingbats",
 ] as const;
 
-type EncodingArray = string[];
+const fontMetrics = await Effect.runPromise(
+  Effect.forEach(STANDARD14, (font) =>
+    Schema.decodeUnknownEffect(FontMetricsSchema)(
+      readFileSync(join(metricsDir, `${font}.json`), "utf8"),
+    ),
+  ),
+);
 
-const exportIndex = encodingsJs.indexOf("\nexport {");
-const encodingsBody =
-  exportIndex >= 0 ? encodingsJs.slice(0, exportIndex) : encodingsJs;
-const encodings = new Function(
-  `${encodingsBody}\nreturn { WinAnsiEncoding, StandardEncoding, MacRomanEncoding, MacExpertEncoding, SymbolSetEncoding, ZapfDingbatsEncoding };`,
-)() as Record<string, EncodingArray>;
+type EncodingArray = ReadonlyArray<string>;
 
-const winAnsi = encodings.WinAnsiEncoding;
-const standardEncoding = encodings.StandardEncoding;
-const macRoman = encodings.MacRomanEncoding;
-const macExpert = encodings.MacExpertEncoding;
-const symbolEnc = encodings.SymbolSetEncoding;
-const zapfEnc = encodings.ZapfDingbatsEncoding;
+const winAnsi: EncodingArray = WinAnsiEncoding;
+const standardEncoding: EncodingArray = StandardEncoding;
+const macRoman: EncodingArray = MacRomanEncoding;
+const macExpert: EncodingArray = MacExpertEncoding;
+const symbolEnc: EncodingArray = SymbolSetEncoding;
+const zapfEnc: EncodingArray = ZapfDingbatsEncoding;
 
 const pdfDocUnicode: number[] = Array.from({ length: 256 }, (_, i) => i);
 const pdfDocDiffs: Array<[number, number]> = [
@@ -94,12 +111,12 @@ for (const [byte, cp] of pdfDocDiffs) {
   pdfDocUnicode[byte] = cp;
 }
 
-const glyphList = readFileSync(join(root, "glyphlist.txt"), "utf8");
+const glyphList: string = readFileSync(join(root, "glyphlist.txt"), "utf8");
 const aglEntries: Array<{ name: string; codepoints: number[] }> = [];
 const unicodeToName = new Map<number, string>();
 for (const line of glyphList.split("\n")) {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("#")) {
+  const trimmed: string = line.trim();
+  if (trimmed.length === 0 || trimmed.startsWith("#")) {
     continue;
   }
   const semi = trimmed.indexOf(";");
@@ -110,7 +127,7 @@ for (const line of glyphList.split("\n")) {
   const codes = trimmed
     .slice(semi + 1)
     .split(/\s+/)
-    .filter(Boolean)
+    .filter((part) => part.length > 0)
     .map((part) => Number.parseInt(part, 16));
   aglEntries.push({ name, codepoints: codes });
   for (const cp of codes) {
@@ -125,7 +142,7 @@ const pdfDocEncoding: string[] = [];
 for (let i = 0; i < 256; i += 1) {
   const cp = pdfDocUnicode[i] ?? i;
   const mapped = unicodeToName.get(cp);
-  if (mapped) {
+  if (mapped !== undefined) {
     pdfDocEncoding.push(mapped);
   } else if (cp >= 0x20 && cp <= 0x7e) {
     pdfDocEncoding.push(String.fromCodePoint(cp));
@@ -149,7 +166,7 @@ const allEncodings: Record<string, EncodingArray> = {
 const nameSet = new Set<string>();
 for (const enc of Object.values(allEncodings)) {
   for (const name of enc) {
-    if (name) {
+    if (name.length > 0) {
       nameSet.add(name);
     }
   }
@@ -157,10 +174,7 @@ for (const enc of Object.values(allEncodings)) {
 for (const entry of aglEntries) {
   nameSet.add(entry.name);
 }
-for (const font of STANDARD14) {
-  const metrics = JSON.parse(
-    readFileSync(join(metricsDir, `${font}.json`), "utf8"),
-  ) as { CharMetrics: Array<{ N: string; WX: number }> };
+for (const metrics of fontMetrics) {
   for (const metric of metrics.CharMetrics) {
     nameSet.add(metric.N);
   }
@@ -177,15 +191,12 @@ for (const name of sortedNames) {
 }
 
 function encodingToIndices(enc: EncodingArray): number[] {
-  return enc.map((name) => (name ? (nameIndex.get(name) ?? 0xffff) : 0xffff));
+  return enc.map((name) => (name.length > 0 ? (nameIndex.get(name) ?? 0xffff) : 0xffff));
 }
 
 type WidthMap = Map<string, number>;
 const standard14Widths: number[][] = [];
-for (const font of STANDARD14) {
-  const metrics = JSON.parse(
-    readFileSync(join(metricsDir, `${font}.json`), "utf8"),
-  ) as { CharMetrics: Array<{ N: string; WX: number }> };
+for (const metrics of fontMetrics) {
   const byName: WidthMap = new Map();
   for (const metric of metrics.CharMetrics) {
     byName.set(metric.N, metric.WX);
@@ -203,7 +214,7 @@ function escapeRustString(value: string): string {
 }
 
 function emitByteSlice(data: string, constName: string): string[] {
-  const bytes = [...data].map((ch) => ch.charCodeAt(0) & 0xff);
+  const bytes = Array.from(data, (ch) => ch.charCodeAt(0) & 0xff);
   const chunks: string[] = [];
   for (let i = 0; i < bytes.length; i += 24) {
     const slice = bytes.slice(i, i + 24).map((b) => `0x${b.toString(16).padStart(2, "0")}`);
@@ -255,9 +266,7 @@ lines.push("");
 lines.push(...emitByteSlice(aglNamesBlob, "AGL_NAME_BLOB"));
 lines.push("");
 lines.push("pub const AGL_NAME_OFFSETS: &[u32] = &[");
-lines.push(
-  aglNameOffsets.map((offset) => `    ${offset},`).join("\n"),
-);
+lines.push(aglNameOffsets.map((offset) => `    ${offset},`).join("\n"));
 lines.push("];");
 lines.push("");
 lines.push("pub const AGL_CODEPOINT_STARTS: &[u32] = &[");
@@ -336,7 +345,7 @@ lines.push("        BuiltinEncoding::MacExpert => &ENCODING_TABLES[3],");
 lines.push("        BuiltinEncoding::Symbol => &ENCODING_TABLES[4],");
 lines.push("        BuiltinEncoding::ZapfDingbats => &ENCODING_TABLES[5],");
 lines.push("        BuiltinEncoding::PdfDoc => &ENCODING_TABLES[6],");
-lines.push("        BuiltinEncoding::Custom => return \"\",");
+lines.push('        BuiltinEncoding::Custom => return "",');
 lines.push("    };");
 lines.push("    let idx = table[code as usize];");
 lines.push("    if idx == 0xffff {");
@@ -378,4 +387,5 @@ lines.push("}");
 
 const outPath = join(root, "../rust/src/font_tables.rs");
 writeFileSync(outPath, `${lines.join("\n")}\n`);
+spawnSync("rustfmt", ["--edition", "2024", outPath], { stdio: "inherit" });
 console.log(`wrote ${outPath} (${lines.length} lines)`);

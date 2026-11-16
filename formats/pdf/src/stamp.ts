@@ -29,7 +29,6 @@ import {
 import type {
   PdfCoordinateTuple,
   PdfStampPreviewInput,
-  PdfLiteParseResult,
   PdfRubricInitialsTheme,
   PdfRubricPageStampInput,
   PdfRubricStamp,
@@ -1262,17 +1261,23 @@ type PdfVisiblePageCoordinateSystem = {
   readonly matrix: readonly [number, number, number, number, number, number];
 };
 
-const normalizedPageRotation = (page: PDFPage): 0 | 90 | 180 | 270 => {
-  const angle = ((page.getRotation().angle % 360) + 360) % 360;
+const normalizedPageRotation = (rotation: number): 0 | 90 | 180 | 270 => {
+  const angle = ((rotation % 360) + 360) % 360;
   if (angle === 90) return 90;
   if (angle === 180) return 180;
   if (angle === 270) return 270;
   return 0;
 };
 
-const visiblePageCoordinateSystem = (page: PDFPage): PdfVisiblePageCoordinateSystem => {
-  const cropBox = page.getCropBox();
-  const rotation = normalizedPageRotation(page);
+export type PdfPageGeometry = {
+  readonly cropBox: PdfCoordinateTuple;
+  readonly rotate: number;
+};
+
+const visibleCoordinateSystem = (
+  cropBox: PdfVisiblePageCoordinateSystem["cropBox"],
+  rotation: 0 | 90 | 180 | 270,
+): PdfVisiblePageCoordinateSystem => {
   if (rotation === 90) {
     return {
       cropBox,
@@ -1313,6 +1318,25 @@ export const visiblePdfPageSize = (
   page: PDFPage,
 ): { readonly width: number; readonly height: number } => {
   const { width, height } = visiblePageCoordinateSystem(page);
+  return { width, height };
+};
+
+const visiblePageCoordinateSystem = (page: PDFPage): PdfVisiblePageCoordinateSystem =>
+  visibleCoordinateSystem(page.getCropBox(), normalizedPageRotation(page.getRotation().angle));
+
+const geometryCoordinateSystem = ({
+  cropBox: [left, bottom, right, top],
+  rotate,
+}: PdfPageGeometry): PdfVisiblePageCoordinateSystem =>
+  visibleCoordinateSystem(
+    { x: left, y: bottom, width: right - left, height: top - bottom },
+    normalizedPageRotation(rotate),
+  );
+
+export const visiblePdfPageSizeFromGeometry = (
+  geometry: PdfPageGeometry,
+): { readonly width: number; readonly height: number } => {
+  const { width, height } = geometryCoordinateSystem(geometry);
   return { width, height };
 };
 
@@ -1379,11 +1403,10 @@ export const pdfCoordinateTupleFromTopLeftRect = (
   );
 };
 
-export const topLeftRectFromPdfCoordinateTuple = (
+const topLeftRectInCoordinateSystem = (
   [left, bottom, right, top]: PdfCoordinateTuple,
-  page: PDFPage,
+  coordinateSystem: PdfVisiblePageCoordinateSystem,
 ): PdfVisiblePageRect => {
-  const coordinateSystem = visiblePageCoordinateSystem(page);
   const cropBox = coordinateSystem.cropBox;
   switch (coordinateSystem.rotation) {
     case 90:
@@ -1416,6 +1439,16 @@ export const topLeftRectFromPdfCoordinateTuple = (
       };
   }
 };
+
+export const topLeftRectFromPdfCoordinateTuple = (
+  tuple: PdfCoordinateTuple,
+  page: PDFPage,
+): PdfVisiblePageRect => topLeftRectInCoordinateSystem(tuple, visiblePageCoordinateSystem(page));
+
+export const topLeftRectFromPdfPageGeometry = (
+  tuple: PdfCoordinateTuple,
+  geometry: PdfPageGeometry,
+): PdfVisiblePageRect => topLeftRectInCoordinateSystem(tuple, geometryCoordinateSystem(geometry));
 
 export const rubricRectForPage = (
   targetPage: PdfSignaturePage,
@@ -1472,27 +1505,6 @@ export const rubricPageIndexesExcludingSignature = (
   signaturePageIndex: number,
 ): ReadonlyArray<number> =>
   pageDimensions.flatMap((page) => (page.index === signaturePageIndex ? [] : [page.index]));
-
-export const textBoxesFromLiteParseResult = (
-  parsed: PdfLiteParseResult,
-): ReadonlyArray<ReadonlyArray<PdfTextBox>> =>
-  [...parsed.pages]
-    .sort((left, right) => left.pageNum - right.pageNum)
-    .map((page) =>
-      page.textItems.flatMap((item) =>
-        item.text.trim().length === 0
-          ? []
-          : [
-              {
-                x: item.x,
-                y: item.y,
-                width: item.width,
-                height: item.height,
-                text: item.text,
-              },
-            ],
-      ),
-    );
 
 type PdfVisibleSignatureTarget = {
   readonly pageIndex: number;

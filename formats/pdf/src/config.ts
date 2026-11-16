@@ -175,7 +175,6 @@ export const PdfSchemaNameSchema = Schema.Literals([
   "PdfTemplateInput",
   "PdfSigningInput",
   "PdfSignatureBuilderInput",
-  "PdfLiteParseResult",
   "PdfRubricPageStampInput",
   "PdfVisibleStampInput",
   "PdfSigningBatchPreparationInput",
@@ -200,7 +199,6 @@ export const PdfSchemaNameValue = {
   pdfTemplateInput: "PdfTemplateInput",
   pdfSigningInput: "PdfSigningInput",
   pdfSignatureBuilderInput: "PdfSignatureBuilderInput",
-  pdfLiteParseResult: "PdfLiteParseResult",
   pdfRubricPageStampInput: "PdfRubricPageStampInput",
   pdfVisibleStampInput: "PdfVisibleStampInput",
   pdfSigningBatchPreparationInput: "PdfSigningBatchPreparationInput",
@@ -278,158 +276,6 @@ export const PdfTextBoxSchema = Schema.Struct({
   text: Schema.optional(Schema.String),
 });
 export type PdfTextBox = (typeof PdfTextBoxSchema)["Type"];
-
-export const MAX_PDF_LITEPARSE_PAGE_COUNT = 10_000;
-export const MAX_PDF_LITEPARSE_TEXT_ITEMS_PER_PAGE = 10_000;
-export const MAX_PDF_LITEPARSE_TEXT_ITEMS = 100_000;
-export const MAX_PDF_LITEPARSE_TEXT_ITEM_CHARACTERS = 16 * 1024;
-export const MAX_PDF_LITEPARSE_TEXT_UTF8_BYTES = 4 * 1024 * 1024;
-
-const utf8ByteLengthAtMost = (value: string, maximum: number): number | undefined => {
-  let byteLength = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0x80) {
-      byteLength += 1;
-    } else if (code < 0x800) {
-      byteLength += 2;
-    } else if (
-      code >= 0xd800 &&
-      code <= 0xdbff &&
-      index + 1 < value.length &&
-      value.charCodeAt(index + 1) >= 0xdc00 &&
-      value.charCodeAt(index + 1) <= 0xdfff
-    ) {
-      byteLength += 4;
-      index += 1;
-    } else {
-      byteLength += 3;
-    }
-    if (byteLength > maximum) return undefined;
-  }
-  return byteLength;
-};
-
-export const PdfLiteParseTextItemSchema = Schema.Struct({
-  text: Schema.String.check(Schema.isMaxLength(MAX_PDF_LITEPARSE_TEXT_ITEM_CHARACTERS)),
-  x: finiteNumber,
-  y: finiteNumber,
-  width: positiveFiniteNumber,
-  height: positiveFiniteNumber,
-});
-export type PdfLiteParseTextItem = (typeof PdfLiteParseTextItemSchema)["Type"];
-
-export const PdfLiteParsePageSchema = Schema.Struct({
-  pageNum: Schema.Number.check(Schema.isFinite(), Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
-  textItems: Schema.Array(PdfLiteParseTextItemSchema).check(
-    Schema.isMaxLength(MAX_PDF_LITEPARSE_TEXT_ITEMS_PER_PAGE),
-  ),
-});
-export type PdfLiteParsePage = (typeof PdfLiteParsePageSchema)["Type"];
-
-export const PdfLiteParseResultSchema = Schema.Struct({
-  pages: Schema.Array(PdfLiteParsePageSchema).check(
-    Schema.isMaxLength(MAX_PDF_LITEPARSE_PAGE_COUNT),
-  ),
-});
-export type PdfLiteParseResult = (typeof PdfLiteParseResultSchema)["Type"];
-
-export const hasBoundedPdfLiteParseResult = (result: unknown, pageCount: number): boolean => {
-  if (
-    !Number.isInteger(pageCount) ||
-    pageCount < 0 ||
-    pageCount > MAX_PDF_LITEPARSE_PAGE_COUNT ||
-    typeof result !== "object" ||
-    result === null ||
-    Array.isArray(result) ||
-    !("pages" in result) ||
-    !Array.isArray(result.pages) ||
-    result.pages.length !== pageCount ||
-    result.pages.length > MAX_PDF_LITEPARSE_PAGE_COUNT
-  ) {
-    return false;
-  }
-  let remainingTextItems = MAX_PDF_LITEPARSE_TEXT_ITEMS;
-  let remainingTextUtf8Bytes = MAX_PDF_LITEPARSE_TEXT_UTF8_BYTES;
-  for (const page of result.pages) {
-    if (
-      typeof page !== "object" ||
-      page === null ||
-      Array.isArray(page) ||
-      !("textItems" in page) ||
-      !Array.isArray(page.textItems) ||
-      page.textItems.length > MAX_PDF_LITEPARSE_TEXT_ITEMS_PER_PAGE ||
-      page.textItems.length > remainingTextItems
-    ) {
-      return false;
-    }
-    remainingTextItems -= page.textItems.length;
-    for (const item of page.textItems) {
-      if (
-        typeof item !== "object" ||
-        item === null ||
-        Array.isArray(item) ||
-        !("text" in item) ||
-        typeof item.text !== "string" ||
-        item.text.length > MAX_PDF_LITEPARSE_TEXT_ITEM_CHARACTERS
-      ) {
-        return false;
-      }
-      const textUtf8Bytes = utf8ByteLengthAtMost(item.text, remainingTextUtf8Bytes);
-      if (textUtf8Bytes === undefined) return false;
-      remainingTextUtf8Bytes -= textUtf8Bytes;
-    }
-  }
-  return true;
-};
-
-export const PdfLiteParseResultSchemaForPageCount = (pageCount: number) =>
-  PdfLiteParseResultSchema.check(
-    Schema.makeFilter((result) => {
-      if (result.pages.length !== pageCount) {
-        return {
-          path: ["pages"],
-          issue: `LiteParse returned ${result.pages.length} pages for ${pageCount} requested pages.`,
-        };
-      }
-      const pageNumbers = new Set<number>();
-      let totalTextItems = 0;
-      let remainingTextUtf8Bytes = MAX_PDF_LITEPARSE_TEXT_UTF8_BYTES;
-      for (const page of result.pages) {
-        totalTextItems += page.textItems.length;
-        if (totalTextItems > MAX_PDF_LITEPARSE_TEXT_ITEMS) {
-          return {
-            path: ["pages"],
-            issue: `LiteParse returned more than ${MAX_PDF_LITEPARSE_TEXT_ITEMS} text items.`,
-          };
-        }
-        for (const item of page.textItems) {
-          const textUtf8Bytes = utf8ByteLengthAtMost(item.text, remainingTextUtf8Bytes);
-          if (textUtf8Bytes === undefined) {
-            return {
-              path: ["pages"],
-              issue: `LiteParse returned more than ${MAX_PDF_LITEPARSE_TEXT_UTF8_BYTES} UTF-8 text bytes.`,
-            };
-          }
-          remainingTextUtf8Bytes -= textUtf8Bytes;
-        }
-        if (page.pageNum > pageCount) {
-          return {
-            path: ["pages"],
-            issue: `LiteParse returned page ${page.pageNum} outside the requested range.`,
-          };
-        }
-        if (pageNumbers.has(page.pageNum)) {
-          return {
-            path: ["pages"],
-            issue: `LiteParse returned duplicate page ${page.pageNum}.`,
-          };
-        }
-        pageNumbers.add(page.pageNum);
-      }
-      return undefined;
-    }),
-  );
 
 export const PdfSignatureAnchorSchema = Schema.Literals([
   "bottom-left",

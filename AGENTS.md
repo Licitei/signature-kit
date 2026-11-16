@@ -381,7 +381,8 @@ npm-published; apps consume the shadcn registry copies they own.
   collision detection, visible stamping, vector initials rubrics, high-level
   prepare-and-sign workflows, rubric placement, Effect queues, batch preparation,
   and signing behavior live in `@signature-kit/pdf` (or the owning format
-  package). Browser-specific adapters such as LiteParse WASM still belong behind
+  package). Browser-specific adapters such as the `@signature-kit/pdf-core` WASM
+  layers and the LiteParse thumbnail worker still belong behind
   `@signature-kit/pdf` exports; docs imports those capabilities and shows the
   flow instead of reimplementing them.
 - Use external apps (e.g. `app-licitei-next`) only to discover product needs; never
@@ -393,6 +394,7 @@ npm-published; apps consume the shadcn registry copies they own.
 shared/asn1       @signature-kit/asn1       pure ASN.1 DER decode/encode (Effect boundary)
 shared/crypto     @signature-kit/crypto     PKCS#12, PEM, hashing, cipher primitives
 shared/cms        @signature-kit/cms        CMS/PKCS#7 and RFC 3161 timestamping
+shared/pdf-core   @signature-kit/pdf-core   in-house Rust/WASM PDF engine (page geometry, links, text)
 core/signatures  @signature-kit/signatures runtime schemas, typed errors, Signatures service
 core/i18n       @signature-kit/i18n       locale schemas and error-message lookup
 core/http        @signature-kit/http       HTTP client service and transport schemas

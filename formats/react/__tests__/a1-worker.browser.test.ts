@@ -1,5 +1,5 @@
 import { Deferred, Effect, Exit, Fiber, Layer, Result } from "effect";
-import { liteParseWorkerBrowserLayer } from "@signature-kit/pdf/liteparse-browser";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import * as RpcTest from "effect/rpc/RpcTest";
 import { expect, it } from "vitest";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
@@ -76,7 +76,7 @@ it("signs with the current generation and rejects disposed and replaced sessions
           );
         }
       }),
-    ).pipe(Effect.provide(a1WorkerHandlersLayer.pipe(Layer.provide(liteParseWorkerBrowserLayer)))),
+    ).pipe(Effect.provide(a1WorkerHandlersLayer.pipe(Layer.provide(pdfCoreBrowserLayer)))),
   );
 });
 
@@ -133,7 +133,7 @@ it("does not restore a session after disposal races initialization", async () =>
           );
         }
       }),
-    ).pipe(Effect.provide(a1WorkerHandlersLayer.pipe(Layer.provide(liteParseWorkerBrowserLayer)))),
+    ).pipe(Effect.provide(a1WorkerHandlersLayer.pipe(Layer.provide(pdfCoreBrowserLayer)))),
   );
 });
 
