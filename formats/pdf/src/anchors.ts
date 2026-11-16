@@ -7,7 +7,7 @@ import {
   PDFRef,
   PDFString,
 } from "@cantoo/pdf-lib";
-import type { PDFPage } from "@cantoo/pdf-lib";
+import type { PDFObject, PDFPage } from "@cantoo/pdf-lib";
 import { Effect, Schema } from "effect";
 import { hasPdfByteRange } from "./byte-range.js";
 import { parsePdfTextBoxesBrowser } from "./liteparse-browser.js";
@@ -40,56 +40,50 @@ const isContentAnchorMatcher = (
   matcher: PdfTextAnchorMatcher,
 ): matcher is PdfContentAnchorMatcher => !("link" in matcher);
 
-const PDF_LINK_SUBTYPE = PDFName.of("Link");
-const PDF_SUBTYPE_KEY = PDFName.of("Subtype");
-const PDF_ACTION_KEY = PDFName.of("A");
-const PDF_URI_KEY = PDFName.of("URI");
-const PDF_RECT_KEY = PDFName.of("Rect");
+const linkAnchorUris = (matchers: ReadonlyArray<PdfTextAnchorMatcher>): ReadonlySet<string> =>
+  new Set(matchers.filter(isLinkAnchorMatcher).map((matcher) => matcher.link));
 
-type PdfLinkAnnotation = {
+type PdfLinkAnchor = {
+  readonly page: PdfSignaturePage;
+  readonly pdfPage: PDFPage;
   readonly ref: PDFRef;
-  readonly actionRef: PDFRef | undefined;
-  readonly uri: string;
+  readonly action: PDFObject | undefined;
   readonly box: PdfTextBox;
 };
 
-const pdfLinkAnnotations = (page: PDFPage): ReadonlyArray<PdfLinkAnnotation> =>
-  (page.node.Annots()?.asArray() ?? []).flatMap((ref) => {
-    if (!(ref instanceof PDFRef)) return [];
-    const annotation = page.doc.context.lookup(ref);
-    if (!(annotation instanceof PDFDict)) return [];
-    if (annotation.get(PDF_SUBTYPE_KEY) !== PDF_LINK_SUBTYPE) return [];
-    const action = annotation.lookup(PDF_ACTION_KEY);
-    if (!(action instanceof PDFDict)) return [];
-    const uri = action.lookup(PDF_URI_KEY);
-    const rect = annotation.lookup(PDF_RECT_KEY);
-    if (!(uri instanceof PDFString || uri instanceof PDFHexString)) return [];
-    if (!(rect instanceof PDFArray)) return [];
-    const { x, y, width, height } = rect.asRectangle();
-    const actionRef = annotation.get(PDF_ACTION_KEY);
-    const text = uri.decodeText();
-    return [
-      {
-        ref,
-        actionRef: actionRef instanceof PDFRef ? actionRef : undefined,
-        uri: text,
-        box: {
-          ...topLeftRectFromPdfCoordinateTuple(
+const pdfLinkAnchors = (document: PDFDocument, uris: ReadonlySet<string>) =>
+  document.getPages().flatMap((pdfPage, index): ReadonlyArray<PdfLinkAnchor> => {
+    const size = visiblePdfPageSize(pdfPage);
+    return (pdfPage.node.Annots()?.asArray() ?? []).flatMap((ref) => {
+      const annotation = document.context.lookup(ref);
+      if (!(ref instanceof PDFRef) || !(annotation instanceof PDFDict)) return [];
+      const action = annotation.lookup(PDFName.of("A"));
+      const uri = action instanceof PDFDict ? action.lookup(PDFName.of("URI")) : undefined;
+      const rect = annotation.lookup(PDFName.of("Rect"));
+      if (!(uri instanceof PDFString || uri instanceof PDFHexString)) return [];
+      if (!uris.has(uri.decodeText()) || !(rect instanceof PDFArray)) return [];
+      const { x, y, width, height } = rect.asRectangle();
+      return [
+        {
+          page: { index, width: size.width, height: size.height },
+          pdfPage,
+          ref,
+          action: annotation.get(PDFName.of("A")),
+          box: topLeftRectFromPdfCoordinateTuple(
             [
               Math.min(x, x + width),
               Math.min(y, y + height),
               Math.max(x, x + width),
               Math.max(y, y + height),
             ],
-            page,
+            pdfPage,
           ),
-          text,
         },
-      },
-    ];
+      ];
+    });
   });
 
-const loadPdfForLinkAnchors = (pdf: Uint8Array): Effect.Effect<PDFDocument, PdfError> =>
+const loadLinkAnchorDocument = (pdf: Uint8Array): Effect.Effect<PDFDocument, PdfError> =>
   Effect.tryPromise({
     try: () => PDFDocument.load(pdf),
     catch: () =>
@@ -307,8 +301,8 @@ const contentAnchorRects = (
 const linkAnchorRects = (
   input: PdfTextAnchorSearchInput,
 ): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError> => {
-  const links = new Set(input.matchers.filter(isLinkAnchorMatcher).map((matcher) => matcher.link));
-  if (links.size === 0) return Effect.succeed([]);
+  const uris = linkAnchorUris(input.matchers);
+  if (uris.size === 0) return Effect.succeed([]);
   if (input.pdf === undefined) {
     return Effect.fail(
       new PdfError({
@@ -319,20 +313,9 @@ const linkAnchorRects = (
       }),
     );
   }
-  return loadPdfForLinkAnchors(input.pdf).pipe(
+  return loadLinkAnchorDocument(input.pdf).pipe(
     Effect.map((document) =>
-      document.getPages().flatMap((page, index) => {
-        const size = visiblePdfPageSize(page);
-        return pdfLinkAnnotations(page)
-          .filter((annotation) => links.has(annotation.uri))
-          .map((annotation) =>
-            rectForAnchorBox(
-              { index, width: size.width, height: size.height },
-              annotation.box,
-              input,
-            ),
-          );
-      }),
+      pdfLinkAnchors(document, uris).map(({ page, box }) => rectForAnchorBox(page, box, input)),
     ),
   );
 };
@@ -370,29 +353,27 @@ export const removePdfLinkAnchors = (
   pdf: Uint8Array,
   matchers: ReadonlyArray<PdfTextAnchorMatcher>,
 ): Effect.Effect<Uint8Array, PdfError> => {
-  const links = new Set(matchers.filter(isLinkAnchorMatcher).map((matcher) => matcher.link));
-  if (links.size === 0 || hasPdfByteRange(pdf)) return Effect.succeed(pdf);
-  return loadPdfForLinkAnchors(pdf).pipe(
+  const uris = linkAnchorUris(matchers);
+  if (uris.size === 0 || hasPdfByteRange(pdf)) return Effect.succeed(pdf);
+  return loadLinkAnchorDocument(pdf).pipe(
     Effect.flatMap((document) => {
-      const anchors = document.getPages().flatMap((page) =>
-        pdfLinkAnnotations(page)
-          .filter((annotation) => links.has(annotation.uri))
-          .map((annotation) => ({ page, annotation })),
-      );
+      const anchors = pdfLinkAnchors(document, uris);
       if (anchors.length === 0) return Effect.succeed(pdf);
-      anchors.forEach(({ page, annotation }) => {
-        page.node.removeAnnot(annotation.ref);
-        document.context.delete(annotation.ref);
-        if (annotation.actionRef !== undefined) document.context.delete(annotation.actionRef);
-      });
       return Effect.tryPromise({
-        try: () => document.save(),
+        try: () => {
+          anchors.forEach(({ pdfPage, ref, action }) => {
+            pdfPage.node.removeAnnot(ref);
+            document.context.delete(ref);
+            if (action instanceof PDFRef) document.context.delete(action);
+          });
+          return document.save();
+        },
         catch: () =>
           new PdfError({
             code: PdfErrorCodeValue.invalidPdf,
             retryable: false,
             operation: PdfOperationValue.findTextAnchors,
-            reason: "Failed to save PDF after removing link anchors.",
+            reason: "Failed to remove link anchors from the PDF.",
           }),
       });
     }),
