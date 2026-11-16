@@ -28,7 +28,7 @@ describe("text anchors against LiteParse goldens", () => {
   const fixtures = corpusFixtureNames();
 
   it("covers the whole corpus", () => {
-    expect(fixtures.length).toBeGreaterThanOrEqual(9);
+    expect(fixtures.length).toBeGreaterThanOrEqual(10);
   });
 
   for (const fixture of fixtures) {

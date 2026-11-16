@@ -25,6 +25,7 @@ const LITEPARSE_DIMS: Readonly<Record<CorpusFixtureName, readonly [number, numbe
   "links.pdf": [612, 792],
   "helvetica-winansi.pdf": [612, 792],
   "react-pdf-declaration.pdf": [595.28, 841.89],
+  "takumi-declaration.pdf": [595.276, 841.89],
   "rotated-cropped.pdf": [612, 792],
   "object-streams.pdf": [612, 792],
   "incremental-update.pdf": [612, 792],
@@ -77,7 +78,13 @@ describe("PdfCore", () => {
       for (const name of CORPUS_FIXTURE_NAMES) {
         const inspection = yield* core.inspect(readFixture(name), { text: false, links: false });
         const expectedCount =
-          name === "habilitacao-150.pdf" ? 150 : name === "rotated-cropped.pdf" ? 2 : 1;
+          name === "habilitacao-150.pdf"
+            ? 150
+            : name === "rotated-cropped.pdf"
+              ? 2
+              : name === "takumi-declaration.pdf"
+                ? 3
+                : 1;
         expect(inspection.pages).toHaveLength(expectedCount);
         const [width, height] = LITEPARSE_DIMS[name];
         const media = inspection.pages[0]?.mediaBox;

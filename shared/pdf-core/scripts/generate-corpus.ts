@@ -1,13 +1,15 @@
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
 
 const { PDFDocument, PDFHexString, PDFString, rgb, StandardFonts } =
-  await import("@cantoo/pdf-lib/es/index.js");
+  await import("@cantoo/pdf-lib");
 const { renderToBuffer, Document, Page, Text, View, Font, StyleSheet } =
-  await import("@react-pdf/renderer/lib/react-pdf.js");
+  await import("@react-pdf/renderer");
+const { render } = await import("takumi-pdf");
+const { PageNumber, TotalPages } = await import("takumi-pdf/primitives");
 const React = await import("react");
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -88,6 +90,87 @@ const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const liberationFontPath = (): string =>
   join(packageRoot, "node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf");
+
+const takumiBodyParagraph = (index: number): string => {
+  const topics = [
+    "qualificação técnica e regularidade fiscal",
+    "capacidade operacional e experiência comprovada",
+    "documentação complementar exigida no edital",
+    "execução contratual em conformidade com a Lei 14.133/2021",
+  ];
+  const topic = topics[index % topics.length] ?? topics[0];
+  return `Seção ${index + 1}: declaro atendimento às exigências de ${topic}, com ênfase em ação, coração, situação e à margem do instrumento convocatório. Referência CPF 123.456.789-09 e CNPJ 12.345.678/0001-95 para validação de âncoras numéricas.`;
+};
+
+const buildTakumiDeclaration = async (): Promise<Uint8Array> => {
+  const fontData = readFileSync(liberationFontPath());
+  const paragraphCount = 28;
+  const children: Array<ReturnType<typeof React.createElement>> = [
+    React.createElement(
+      "h1",
+      { tw: "text-base font-bold text-center mb-3 font-[Liberation]" },
+      "Declaração de Habilitação",
+    ),
+    React.createElement(
+      "p",
+      { tw: "text-[11px] leading-relaxed font-[Liberation]" },
+      "Declaro, sob as penas da lei, que atendo às condições de habilitação exigidas no edital, com ênfase em documentação, qualificação técnica e regularidade fiscal.",
+    ),
+    React.createElement(
+      "p",
+      { tw: "text-[11px] leading-relaxed font-[Liberation]" },
+      "Texto com fonte incorporada: ção, ênfase, à disposição do órgão licitante.",
+    ),
+  ];
+  for (let index = 0; index < paragraphCount; index += 1) {
+    children.push(
+      React.createElement(
+        "p",
+        { key: `body-${index}`, tw: "text-[11px] leading-relaxed font-[Liberation]" },
+        takumiBodyParagraph(index),
+      ),
+    );
+  }
+  children.push(
+    React.createElement(
+      "p",
+      { tw: "text-[11px] mt-4 font-[Liberation]" },
+      "Local e data: Curitiba, 15 de janeiro de 2024.",
+    ),
+    React.createElement(
+      "div",
+      { tw: "flex flex-col items-center gap-1 mt-6" },
+      React.createElement(
+        "p",
+        { tw: "text-[4px] text-white font-[Liberation]" },
+        "[[licitei-assinatura]]",
+      ),
+      React.createElement(
+        "a",
+        { href: LINK_FIXTURE_URIS.takumiSignature, tw: "text-[4px] text-white font-[Liberation]" },
+        "âncora de assinatura",
+      ),
+    ),
+  );
+  const body = React.createElement("main", { tw: "flex flex-col gap-2" }, ...children);
+  return render(body, {
+    size: "a4",
+    fonts: [{ name: "Liberation", data: fontData }],
+    footer: React.createElement(
+      "div",
+      { tw: "flex w-full justify-center text-[8px] text-gray-600 font-[Liberation]" },
+      "Página ",
+      React.createElement(PageNumber),
+      " de ",
+      React.createElement(TotalPages),
+    ),
+    metadata: {
+      title: "Declaração de Habilitação",
+      creator: CORPUS_CREATOR,
+      creationDate: "2024-01-15T10:30:00",
+    },
+  });
+};
 
 const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
   Font.register({
@@ -277,6 +360,7 @@ const main = async (): Promise<void> => {
   mkdirSync(PDF_CORE_FIXTURES_DIR, { recursive: true });
   writeFixture("helvetica-winansi.pdf", await buildHelveticaWinansi());
   writeFixture("react-pdf-declaration.pdf", await buildReactPdfDeclaration());
+  writeFixture("takumi-declaration.pdf", await buildTakumiDeclaration());
   writeFixture("rotated-cropped.pdf", await buildRotatedCropped());
   writeFixture("links.pdf", await buildLinks());
   writeFixture("habilitacao-150.pdf", await buildHabilitacao150());
