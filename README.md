@@ -1,0 +1,1 @@
+Prints de PR (gerado por pr-screenshot).
