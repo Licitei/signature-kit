@@ -54,6 +54,7 @@ const OP_TJ_ARRAY: u32 = op(b"TJ");
 const OP_QUOTE: u32 = op(b"'");
 const OP_DQUOTE: u32 = op(b"\"");
 const OP_DO: u32 = op(b"Do");
+const OP_GS: u32 = op(b"gs");
 
 #[derive(PartialEq, Eq)]
 enum Shows {
@@ -198,6 +199,7 @@ struct Scope {
     resources: Rc<Object>,
     fonts: Lazy,
     xobjects: Lazy,
+    ext_gstates: Lazy,
     forms: Option<bool>,
 }
 
@@ -208,6 +210,7 @@ impl Scope {
             resources,
             fonts: Lazy::Unset,
             xobjects: Lazy::Unset,
+            ext_gstates: Lazy::Unset,
             forms: None,
         }
     }
@@ -238,6 +241,8 @@ impl Scope {
     fn category(&mut self, document: &Document<'_>, key: &[u8]) -> Option<Rc<Object>> {
         let slot = if key == b"Font" {
             &mut self.fonts
+        } else if key == b"ExtGState" {
+            &mut self.ext_gstates
         } else {
             &mut self.xobjects
         };
@@ -457,6 +462,7 @@ impl Interpreter<'_, '_> {
                     }
                 }
                 OP_TF => self.set_font(&operands, scope, state),
+                OP_GS => self.apply_ext_gstate(&operands, scope, state),
                 OP_TD => {
                     self.repositioned = true;
                     if let Some([tx, ty]) = tail_numbers::<2>(&operands) {
@@ -538,6 +544,32 @@ impl Interpreter<'_, '_> {
         let Some(name) = name else { return };
         state.size = size;
         state.font = self.lookup_font(scope, name);
+    }
+
+    fn apply_ext_gstate(&mut self, operands: &[Object], scope: &mut Scope, state: &mut GState) {
+        let Some(Object::Name(key)) = operands.last() else {
+            return;
+        };
+        let Some(ext) = scope.category(self.document, b"ExtGState") else {
+            return;
+        };
+        let Some(dict) = ext.as_dict() else {
+            return;
+        };
+        let Some(entry) = dict.entries.iter().find(|(name, _)| name.as_slice() == key) else {
+            return;
+        };
+        let Ok(resolved) = self.document.follow(&entry.1) else {
+            return;
+        };
+        let Some(gs) = resolved.as_dict() else {
+            return;
+        };
+        if let Some(Object::Array(items)) = gs.get(b"Font") {
+            let mut temp = Vec::new();
+            temp.extend(items.iter().cloned());
+            self.set_font(&temp, scope, state);
+        }
     }
 
     fn lookup_font(&mut self, scope: &mut Scope, name: &[u8]) -> Option<Rc<FontEntry>> {

@@ -4,8 +4,8 @@ use std::sync::OnceLock;
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{
     BuiltinEncoding, STANDARD14_WIDTHS, Standard14Font, encoding_glyph_name, glyph_name_at,
-    lookup_agl,
 };
+use crate::fontprog::{FontProgram, agl_components, load_font_file_bytes, parse_font_program};
 use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
 
@@ -29,6 +29,8 @@ enum FontKind {
 struct SimpleFont {
     encoding: EncodingState,
     to_unicode: UnicodeMap,
+    program: Option<FontProgram>,
+    program_map: Vec<(u32, Vec<u32>)>,
     widths: WidthState,
     font_matrix: Option<[f64; 6]>,
     symbolic: bool,
@@ -40,6 +42,8 @@ struct SimpleFont {
 struct CompositeFont {
     code_reader: CodeReader,
     to_unicode: UnicodeMap,
+    cid_fallback: Vec<(u32, Vec<u32>)>,
+    program: Option<FontProgram>,
     horizontal: CidMetrics,
     vertical_metrics: CidMetrics,
     vertical_default_v: f64,
@@ -184,20 +188,29 @@ impl SimpleFont {
     }
 
     fn decode_code_slow(&self, code: u32, text: &mut String) {
-        if let Some(slice) = self.to_unicode.lookup(code) {
-            push_codepoints(text, slice);
-        } else {
-            let glyph_name = self.glyph_name(code);
-            if let Some(agl) = agl_lookup_extended(glyph_name.as_bytes()) {
-                push_codepoints(text, &agl);
-            } else if self.symbolic {
-                let mapped = symbolic_fallback(code);
-                if mapped != 0 {
-                    push_codepoint(text, mapped);
-                }
-            } else if glyph_name.is_empty() && code <= 0xff {
-                push_codepoint(text, code);
+        let from_program = self.program.as_ref().and_then(|program| {
+            program.unicode_for_encoded_code(code, self.symbolic, self.encoding.builtin)
+        });
+        let from_map = program_map_lookup(&self.program_map, code).map(|slice| slice.to_vec());
+        let from_tounicode = self
+            .to_unicode
+            .lookup(code)
+            .filter(|slice| unicode_slice_usable(slice))
+            .map(|slice| slice.to_vec());
+        if let Some(cps) = prefer_unicode_mapping(from_tounicode, from_map, from_program) {
+            push_codepoints(text, &cps);
+            return;
+        }
+        let glyph_name = self.glyph_name(code);
+        if let Some(agl) = agl_lookup_extended(glyph_name.as_bytes()) {
+            push_codepoints(text, &agl);
+        } else if self.symbolic {
+            let mapped = symbolic_fallback(code);
+            if mapped != 0 {
+                push_codepoint(text, mapped);
             }
+        } else if glyph_name.is_empty() && code <= 0xff {
+            push_codepoint(text, code);
         }
     }
 
@@ -275,8 +288,19 @@ impl CompositeFont {
             let cid = code;
             let advance = self.horizontal.width(cid) / 1000.0;
             let text_start = text.len() as u32;
-            if let Some(slice) = self.to_unicode.lookup(cid) {
-                push_codepoints(text, slice);
+            let gid = cid.min(u16::MAX as u32) as u16;
+            let from_program = self
+                .program
+                .as_ref()
+                .and_then(|program| program.unicode_for_gid(gid));
+            let from_map = program_map_lookup(&self.cid_fallback, cid).map(|slice| slice.to_vec());
+            let from_tounicode = self
+                .to_unicode
+                .lookup(cid)
+                .filter(|slice| unicode_slice_usable(slice))
+                .map(|slice| slice.to_vec());
+            if let Some(cps) = prefer_unicode_mapping(from_tounicode, from_map, from_program) {
+                push_codepoints(text, &cps);
             }
             let text_end = text.len() as u32;
             glyphs.push(Glyph {
@@ -391,6 +415,7 @@ impl UnicodeMap {
 fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<SimpleFont> {
     let encoding = load_encoding(font, resolver, limits)?;
     let to_unicode = load_to_unicode(font, resolver, limits)?;
+    let program = load_embedded_program(font, resolver, limits);
     let widths = load_widths(font, resolver)?;
     let font_matrix = read_font_matrix(font);
     let flags = font_descriptor_flags(font, resolver)?;
@@ -398,9 +423,15 @@ fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome
     let vertical = encoding_name_is_vertical(font.get(b"Encoding"));
     let vertical_default = read_number(font.get(b"DW")).unwrap_or(1000.0);
     let vertical_metrics = load_vertical_metrics(font);
+    let program_map = program
+        .as_ref()
+        .map(|value| value.build_byte_map(symbolic, encoding.builtin, limits))
+        .unwrap_or_default();
     Ok(SimpleFont {
         encoding,
         to_unicode,
+        program,
+        program_map,
         widths,
         font_matrix,
         symbolic,
@@ -424,15 +455,91 @@ fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<
         range_widths: Vec::new(),
     });
     let (vertical_pos_v, vertical_default_v) = read_dw2(&descendant);
+    let program = load_embedded_program(font, resolver, limits)
+        .or_else(|| load_embedded_program_descendant(&descendant, resolver, limits));
+    let cid_fallback = program
+        .as_ref()
+        .map(|value| build_cid_fallback(value, limits))
+        .unwrap_or_default();
     Ok(FontKind::Composite(CompositeFont {
         code_reader,
         to_unicode,
+        cid_fallback,
+        program,
         horizontal,
         vertical_metrics: vertical_widths,
         vertical_default_v,
         _vertical_pos_v: vertical_pos_v,
         is_vertical,
     }))
+}
+
+fn load_embedded_program(
+    font: &Dict,
+    resolver: &dyn Resolver,
+    limits: &Limits,
+) -> Option<FontProgram> {
+    let descriptor = font.get(b"FontDescriptor")?;
+    let resolved = resolver.resolve(descriptor).ok()?;
+    let dict = resolved.as_dict()?;
+    read_font_program(dict, resolver, limits)
+}
+
+fn load_embedded_program_descendant(
+    font: &Dict,
+    resolver: &dyn Resolver,
+    limits: &Limits,
+) -> Option<FontProgram> {
+    let descriptor = font.get(b"FontDescriptor")?;
+    let resolved = resolver.resolve(descriptor).ok()?;
+    let dict = resolved.as_dict()?;
+    read_font_program(dict, resolver, limits)
+}
+
+fn read_font_program(
+    descriptor: &Dict,
+    resolver: &dyn Resolver,
+    limits: &Limits,
+) -> Option<FontProgram> {
+    for key in [b"FontFile2".as_slice(), b"FontFile3", b"FontFile"] {
+        if let Ok(bytes) = load_font_file_bytes(key, descriptor, resolver, limits)
+            && let Some(program) = parse_font_program(&bytes, limits)
+        {
+            return Some(program);
+        }
+    }
+    None
+}
+
+fn build_cid_fallback(program: &FontProgram, limits: &Limits) -> Vec<(u32, Vec<u32>)> {
+    let mut out = Vec::new();
+    let cap = program.glyph_count().min(limits.max_items);
+    for gid in 0..cap {
+        if let Some(cps) = program.unicode_for_gid(gid as u16) {
+            out.push((gid as u32, cps));
+        }
+    }
+    out
+}
+
+fn prefer_unicode_mapping(
+    to_unicode: Option<Vec<u32>>,
+    program_map: Option<Vec<u32>>,
+    program_direct: Option<Vec<u32>>,
+) -> Option<Vec<u32>> {
+    if let Some(cps) = program_direct.filter(|cps| !cps.is_empty()) {
+        return Some(cps);
+    }
+    if let Some(cps) = program_map.filter(|cps| !cps.is_empty()) {
+        return Some(cps);
+    }
+    to_unicode.filter(|cps| !cps.is_empty())
+}
+
+fn program_map_lookup(map: &[(u32, Vec<u32>)], code: u32) -> Option<&[u32]> {
+    map.iter()
+        .find(|(source, _)| *source == code)
+        .map(|(_, dest)| dest.as_slice())
 }
 
 fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outcome<EncodingState> {
@@ -734,6 +841,45 @@ fn parse_cmap_to_unicode(data: &[u8], limits: &Limits) -> UnicodeMap {
                     let (src, dest) = read_bf_entry(&tokens, &mut idx);
                     if let (Some(source), Some(destination)) = (src, dest) {
                         map.char_map.push((source, destination));
+                    }
+                }
+            }
+            Some(CmapToken::Keyword(keyword)) if keyword == b"begincidchar" => {
+                idx += 1;
+                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
+                    idx += 1;
+                }
+                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
+                    let (src, dest) = read_bf_entry(&tokens, &mut idx);
+                    if let (Some(source), Some(destination)) = (src, dest) {
+                        map.char_map.push((source, destination));
+                    }
+                }
+            }
+            Some(CmapToken::Keyword(keyword)) if keyword == b"begincidrange" => {
+                idx += 1;
+                if matches!(tokens.get(idx), Some(CmapToken::Integer(_))) {
+                    idx += 1;
+                }
+                while matches!(tokens.get(idx), Some(CmapToken::Hex(_))) {
+                    let (start, end, dest, increment) = read_bf_range(&tokens, &mut idx);
+                    if let (Some(start), Some(end), Some(destination)) = (start, end, dest) {
+                        if increment && destination.len() == 1 {
+                            let base = destination.first().copied().unwrap_or(0);
+                            let mut code = start;
+                            while code <= end {
+                                map.char_map
+                                    .push((code, vec![base.saturating_add(code - start)]));
+                                code = code.saturating_add(1);
+                            }
+                        } else {
+                            map.range_map.push(BfRange {
+                                start,
+                                end,
+                                dest: destination,
+                                increment_last: increment,
+                            });
+                        }
                     }
                 }
             }
@@ -1227,6 +1373,16 @@ fn symbolic_fallback(code: u32) -> u32 {
     0
 }
 
+fn unicode_slice_usable(codepoints: &[u32]) -> bool {
+    !codepoints.is_empty()
+        && codepoints.iter().all(|cp| {
+            *cp != 0
+                && *cp != 0xFEFF
+                && char::from_u32(*cp)
+                    .is_some_and(|ch| !ch.is_control() || matches!(ch, '\t' | '\n' | '\r'))
+        })
+}
+
 fn push_codepoints(text: &mut String, codepoints: &[u32]) {
     for cp in codepoints {
         push_codepoint(text, *cp);
@@ -1234,42 +1390,19 @@ fn push_codepoints(text: &mut String, codepoints: &[u32]) {
 }
 
 fn push_codepoint(text: &mut String, codepoint: u32) {
+    if codepoint == 0 || codepoint == 0xFEFF {
+        return;
+    }
     if let Some(ch) = char::from_u32(codepoint) {
+        if ch.is_control() && !matches!(ch, '\t' | '\n' | '\r') {
+            return;
+        }
         text.push(ch);
     }
 }
 
 fn agl_lookup_extended(name: &[u8]) -> Option<Vec<u32>> {
-    if let Some(found) = lookup_agl(name) {
-        return Some(found.to_vec());
-    }
-    let text = core::str::from_utf8(name).ok()?;
-    if let Some(rest) = text.strip_prefix("uni") {
-        let mut out = Vec::new();
-        let chars: Vec<char> = rest.chars().collect();
-        let mut idx = 0usize;
-        while idx < chars.len() {
-            let end = (idx + 4).min(chars.len());
-            let segment = chars.get(idx..end).unwrap_or_default();
-            let digits: String = segment.iter().collect();
-            if let Ok(cp) = u32::from_str_radix(&digits, 16) {
-                out.push(cp);
-            }
-            idx += 4;
-        }
-        if !out.is_empty() {
-            return Some(out);
-        }
-    }
-    if let Some(rest) = text.strip_prefix('u')
-        && let Ok(cp) = u32::from_str_radix(rest, 16)
-    {
-        return Some(vec![cp]);
-    }
-    if let Some(base) = text.split('.').next() {
-        return lookup_agl(base.as_bytes()).map(|slice| slice.to_vec());
-    }
-    None
+    agl_components(name)
 }
 
 #[cfg(test)]
@@ -1355,6 +1488,8 @@ mod tests {
                     custom_names: Vec::new(),
                 },
                 to_unicode: UnicodeMap::default(),
+                program: None,
+                program_map: Vec::new(),
                 widths: WidthState {
                     first_char: 0,
                     widths: Vec::new(),
@@ -1394,6 +1529,8 @@ mod tests {
                 custom_names: Vec::new(),
             },
             to_unicode: UnicodeMap::default(),
+            program: None,
+            program_map: Vec::new(),
             widths: WidthState {
                 first_char: 0,
                 widths: Vec::new(),
@@ -1512,6 +1649,8 @@ mod tests {
                 custom_names: Vec::new(),
             },
             to_unicode: UnicodeMap::default(),
+            program: None,
+            program_map: Vec::new(),
             widths: WidthState {
                 first_char: 65,
                 widths: vec![1000.0],
