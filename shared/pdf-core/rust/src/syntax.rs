@@ -136,10 +136,6 @@ impl<'a> Parser<'a> {
         self.pos
     }
 
-    pub fn set_position(&mut self, pos: usize) {
-        self.pos = pos;
-    }
-
     #[inline(always)]
     fn peek(&self) -> Option<u8> {
         self.data.get(self.pos).copied()

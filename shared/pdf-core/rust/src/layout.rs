@@ -1051,6 +1051,7 @@ fn page_layout(
     layout
 }
 
+#[cfg(test)]
 pub fn page_text(runs: &[Run], rotate: i32) -> String {
     let mode = Mode {
         markdown: false,

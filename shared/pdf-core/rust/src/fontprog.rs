@@ -485,6 +485,7 @@ fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut Fo
 }
 
 impl FontProgram {
+    #[cfg(test)]
     pub fn glyph_count(&self) -> usize {
         self.glyph_count
     }

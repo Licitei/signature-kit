@@ -135,10 +135,6 @@ impl Font {
             FontKind::Composite(composite) => composite.vertical_metrics(code),
         }
     }
-
-    pub fn vertical_advance(&self, code: u32) -> f64 {
-        self.vertical_metrics(code).advance
-    }
 }
 
 impl SimpleFont {
@@ -1771,7 +1767,6 @@ mod tests {
         assert!((default.advance - 1.1).abs() < 1e-9);
         assert!((default.origin_x - 0.4).abs() < 1e-9);
         assert!((default.origin_y - 0.9).abs() < 1e-9);
-        assert!((font.vertical_advance(99) - 1.1).abs() < 1e-9);
     }
 
     #[test]

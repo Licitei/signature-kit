@@ -218,16 +218,9 @@ impl<'a> Document<'a> {
         Ok(document)
     }
 
-    pub fn limits(&self) -> &Limits {
-        &self.limits
-    }
-
+    #[cfg(test)]
     pub fn was_repaired(&self) -> bool {
         self.repaired.get()
-    }
-
-    pub fn trailer(&self) -> Dict {
-        self.trailer.borrow().clone()
     }
 
     fn check_encrypted(&self) -> Outcome<()> {
