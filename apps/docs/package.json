@@ -1,6 +1,6 @@
 {
   "name": "@signature-kit/docs",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -32,7 +32,7 @@
     "@signature-kit/i18n": "^0.1.0",
     "@signature-kit/pdf": "^0.5.0",
     "@signature-kit/react": "^0.1.0",
-    "@signature-kit/signatures": "^0.2.0",
+    "@signature-kit/signatures": "^0.3.0",
     "@signature-kit/signing-domain": "0.0.1",
     "@tanstack/react-form": "1.33.5",
     "@xmldom/xmldom": "^0.9.12",

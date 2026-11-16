@@ -1,50 +1,74 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@signature-kit/pdf\":\n    type: minor\n  \"@signature-kit/react\":\n    type: patch\n---\n\n## Link-annotation signature anchors\n\nText anchors accept a `{ link: \"<uri>\" }` matcher. It places the stamp from the rectangle of a PDF link annotation with that URI, read directly from the document instead of parsed text, so generated PDFs can mark the signature spot without loading LiteParse or hitting its per-document parse timeout. Crop boxes and page rotation are respected.\n\n`prepareAndSignPdf` removes the matched link annotation, and its URI action, before stamping, so the signed PDF keeps no clickable anchor. PDFs that already carry a signature are left untouched to preserve earlier byte ranges.\n"
-    filename: pdf-link-anchors.md
+  - content: "---\npackages:\n  \"@signature-kit/signatures\":\n    type: minor\n  \"@signature-kit/a1\":\n    type: patch\n  \"@signature-kit/cms\":\n    type: patch\n  \"@signature-kit/certificates\":\n    type: patch\n  \"@signature-kit/http\":\n    type: patch\n  \"@signature-kit/i18n\":\n    type: patch\n  \"@signature-kit/xml\":\n    type: patch\n  \"@signature-kit/asn1\":\n    type: patch\n  \"@signature-kit/crypto\":\n    type: patch\n  \"@signature-kit/assinafy\":\n    type: patch\n  \"@signature-kit/clicksign\":\n    type: patch\n  \"@signature-kit/documenso\":\n    type: patch\n  \"@signature-kit/docuseal\":\n    type: patch\n  \"@signature-kit/zapsign\":\n    type: patch\n---\n\n## Publish the worker signing runtime\n\nPublish `@signature-kit/signatures/session`, which `@signature-kit/react` 0.1.2 imports to sign A1 documents in a Domain RPC worker. Without it, bundlers fail to resolve the react worker entry.\n\nA1 signing makes the WebCrypto sign step uninterruptible. CMS builds the signing-certificate-v2 attribute directly with asn1js. All packages move to Effect 4.1.0 so applications load a single Effect runtime.\n"
+    filename: worker-signing-runtime.md
     v: 0.0.0
 core:packages:
   - id: npm:signature-kit
     updated: false
   - id: npm:@signature-kit/docs
     updated: true
-  - id: npm:@signature-kit/certificates
-    updated: false
   - id: npm:@signature-kit/signing-domain
     updated: false
-  - id: npm:@signature-kit/http
-    updated: false
-  - id: npm:@signature-kit/i18n
-    updated: false
-  - id: npm:@signature-kit/signatures
-    updated: false
   - changelogIds:
-      - pdf-link-anchors.md
-    id: npm:@signature-kit/pdf
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/certificates
     updated: true
   - changelogIds:
-      - pdf-link-anchors.md
-    id: npm:@signature-kit/react
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/http
     updated: true
-  - id: npm:@signature-kit/asn1
-    updated: false
-  - id: npm:@signature-kit/xml
-    updated: false
-  - id: npm:@signature-kit/cms
-    updated: false
-  - id: npm:@signature-kit/crypto
-    updated: false
-  - id: npm:@signature-kit/a1
-    updated: false
-  - id: npm:@signature-kit/assinafy
-    updated: false
-  - id: npm:@signature-kit/clicksign
-    updated: false
-  - id: npm:@signature-kit/documenso
-    updated: false
-  - id: npm:@signature-kit/docuseal
-    updated: false
-  - id: npm:@signature-kit/zapsign
-    updated: false
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/i18n
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/signatures
+    updated: true
+  - id: npm:@signature-kit/react
+    updated: true
+  - id: npm:@signature-kit/pdf
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/xml
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/asn1
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/cms
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/crypto
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/a1
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/assinafy
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/clicksign
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/documenso
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/docuseal
+    updated: true
+  - changelogIds:
+      - worker-signing-runtime.md
+    id: npm:@signature-kit/zapsign
+    updated: true
   - id: npm:@tooling/integration-tests
     updated: true
   - id: npm:@tooling/oxc
@@ -58,15 +82,15 @@ core:packages:
 npm:packages:
   - id: npm:signature-kit
   - id: npm:@signature-kit/docs
-  - id: npm:@signature-kit/certificates
   - id: npm:@signature-kit/signing-domain
+  - id: npm:@signature-kit/certificates
   - id: npm:@signature-kit/http
   - id: npm:@signature-kit/i18n
   - id: npm:@signature-kit/signatures
-  - id: npm:@signature-kit/pdf
   - id: npm:@signature-kit/react
-  - id: npm:@signature-kit/asn1
+  - id: npm:@signature-kit/pdf
   - id: npm:@signature-kit/xml
+  - id: npm:@signature-kit/asn1
   - id: npm:@signature-kit/cms
   - id: npm:@signature-kit/crypto
   - id: npm:@signature-kit/a1
