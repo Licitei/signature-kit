@@ -40,7 +40,7 @@ program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.lay
 `text` returns one reading-order plain-text string per page (pdftotext style). It clusters positioned runs into lines, splits lines into cells on wide gaps, groups cells into blocks, orders blocks with an XY-cut (columns are read column by column, table rows row by row), honours `/Rotate` and sideways text, and ignores content streams that cannot show text:
 
 ```ts
-const pages = yield* core.text(pdf, { pageIndexes: [0, 1] });
+const pages = yield * core.text(pdf, { pageIndexes: [0, 1] });
 ```
 
 `pageIndexes` is optional; omitted, every page is returned. Pages whose content cannot be decoded come back as empty strings instead of failing the document.
@@ -55,12 +55,12 @@ Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.
 
 The module exports `memory` and four functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
 
-| Export                                                                          | Contract                                                             |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `pdf_core_alloc(len) -> ptr`                                                    | 8-byte aligned block of `len` bytes, or `0` when out of memory.      |
+| Export                                                                          | Contract                                                                              |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `pdf_core_alloc(len) -> ptr`                                                    | 8-byte aligned block of `len` bytes, or `0` when out of memory.                       |
 | `pdf_core_free(ptr, len)`                                                       | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
-| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr` | Returns a result block, or `0` when out of memory.                   |
-| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`    | Returns a text result block, or `0` when out of memory.              |
+| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr` | Returns a result block, or `0` when out of memory.                                    |
+| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`    | Returns a text result block, or `0` when out of memory.                               |
 
 `flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page).
 
