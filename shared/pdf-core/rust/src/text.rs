@@ -54,6 +54,32 @@ const OP_QUOTE: u32 = op(b"'");
 const OP_DQUOTE: u32 = op(b"\"");
 const OP_DO: u32 = op(b"Do");
 
+#[derive(PartialEq, Eq)]
+enum Shows {
+    Text,
+    Forms,
+    Nothing,
+}
+
+fn scan_shows(data: &[u8]) -> Shows {
+    let mut forms = false;
+    let mut at = 0usize;
+    while let Some(offset) = data.get(at..).and_then(|rest| {
+        rest.iter()
+            .position(|byte| matches!(byte, b'T' | b'D' | b'\'' | b'"'))
+    }) {
+        let index = at + offset;
+        match data.get(index) {
+            Some(b'\'' | b'"') => return Shows::Text,
+            Some(b'T') if matches!(data.get(index + 1), Some(b'j' | b'J')) => return Shows::Text,
+            Some(b'D') if data.get(index + 1) == Some(&b'o') => forms = true,
+            _ => {}
+        }
+        at = index + 1;
+    }
+    if forms { Shows::Forms } else { Shows::Nothing }
+}
+
 fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
     let [a1, b1, c1, d1, e1, f1] = *first;
     let [a2, b2, c2, d2, e2, f2] = *second;
@@ -171,6 +197,7 @@ struct Scope {
     resources: Rc<Object>,
     fonts: Lazy,
     xobjects: Lazy,
+    forms: Option<bool>,
 }
 
 impl Scope {
@@ -180,7 +207,31 @@ impl Scope {
             resources,
             fonts: Lazy::Unset,
             xobjects: Lazy::Unset,
+            forms: None,
         }
+    }
+
+    fn has_forms(&mut self, document: &Document<'_>) -> bool {
+        if let Some(known) = self.forms {
+            return known;
+        }
+        let found = self.category(document, b"XObject").is_some_and(|xobjects| {
+            xobjects.as_dict().is_some_and(|dict| {
+                dict.entries.iter().any(|(_, entry)| {
+                    document.follow(entry).is_ok_and(|resolved| {
+                        resolved.as_stream().is_some_and(|stream| {
+                            stream
+                                .dict
+                                .get(b"Subtype")
+                                .and_then(Object::as_name)
+                                .is_some_and(|subtype| subtype == b"Form")
+                        })
+                    })
+                })
+            })
+        });
+        self.forms = Some(found);
+        found
     }
 
     fn category(&mut self, document: &Document<'_>, key: &[u8]) -> Option<Rc<Object>> {
@@ -225,7 +276,7 @@ struct Interpreter<'d, 'a> {
     scopes: u32,
     budget: usize,
     max_depth: usize,
-    items: Vec<TextItem>,
+    items: Vec<Run>,
     text_bytes: usize,
     glyphs: Vec<Glyph>,
     decoded: String,
@@ -235,6 +286,20 @@ struct Interpreter<'d, 'a> {
     open_size: f64,
     open_dir: (f64, f64),
     open_end: (f64, f64),
+    split_repositioned: bool,
+    repositioned: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Run {
+    pub item: TextItem,
+    pub direction: (f64, f64),
+}
+
+#[derive(Default)]
+pub struct Session {
+    fonts: HashMap<FontKey, Option<Rc<FontEntry>>>,
+    scopes: u32,
 }
 
 pub fn extract_page(
@@ -242,6 +307,21 @@ pub fn extract_page(
     page: &Page,
     limits: &Limits,
 ) -> Outcome<Vec<TextItem>> {
+    Ok(
+        extract_runs(document, page, limits, false, &mut Session::default())?
+            .into_iter()
+            .map(|run| run.item)
+            .collect(),
+    )
+}
+
+pub fn extract_runs(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    split_repositioned: bool,
+    session: &mut Session,
+) -> Outcome<Vec<Run>> {
     let content = document.content(page)?;
     if content.is_empty() {
         return Ok(Vec::new());
@@ -249,10 +329,10 @@ pub fn extract_page(
     let mut interpreter = Interpreter {
         document,
         limits,
-        fonts: HashMap::new(),
+        fonts: std::mem::take(&mut session.fonts),
         skipped: HashSet::new(),
         active: Vec::new(),
-        scopes: 0,
+        scopes: session.scopes,
         budget: limits.max_decoded_stream_bytes,
         max_depth: limits.max_nesting.min(MAX_FORM_DEPTH),
         items: Vec::new(),
@@ -265,6 +345,8 @@ pub fn extract_page(
         open_size: 0.0,
         open_dir: (1.0, 0.0),
         open_end: (0.0, 0.0),
+        split_repositioned,
+        repositioned: false,
     };
     let mut scope = Scope::new(
         interpreter.next_scope(),
@@ -275,8 +357,12 @@ pub fn extract_page(
         tm: IDENTITY,
         tlm: IDENTITY,
     };
-    interpreter.run(&content, &mut scope, &mut state, &mut matrices, 0)?;
-    interpreter.flush()?;
+    let outcome = interpreter
+        .run(&content, &mut scope, &mut state, &mut matrices, 0)
+        .and_then(|()| interpreter.flush());
+    session.fonts = std::mem::take(&mut interpreter.fonts);
+    session.scopes = interpreter.scopes;
+    outcome?;
     Ok(interpreter.items)
 }
 
@@ -298,6 +384,11 @@ impl Interpreter<'_, '_> {
             .budget
             .checked_sub(data.len())
             .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
+        match scan_shows(data) {
+            Shows::Text => {}
+            Shows::Forms if scope.has_forms(self.document) => {}
+            Shows::Forms | Shows::Nothing => return Ok(()),
+        }
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
         let mut operands: Vec<Object> = Vec::new();
@@ -332,6 +423,7 @@ impl Interpreter<'_, '_> {
                     }
                 }
                 OP_BT => {
+                    self.repositioned = true;
                     matrices.tm = IDENTITY;
                     matrices.tlm = IDENTITY;
                 }
@@ -362,35 +454,43 @@ impl Interpreter<'_, '_> {
                 }
                 OP_TF => self.set_font(&operands, scope, state),
                 OP_TD => {
+                    self.repositioned = true;
                     if let Some([tx, ty]) = tail_numbers::<2>(&operands) {
                         matrices.line_move(tx, ty);
                     }
                 }
                 OP_TD_LEADING => {
+                    self.repositioned = true;
                     if let Some([tx, ty]) = tail_numbers::<2>(&operands) {
                         state.leading = -ty;
                         matrices.line_move(tx, ty);
                     }
                 }
                 OP_TM => {
+                    self.repositioned = true;
                     if let Some(matrix) = tail_numbers::<6>(&operands) {
                         matrices.tm = matrix;
                         matrices.tlm = matrix;
                     }
                 }
-                OP_TSTAR => matrices.line_move(0.0, -state.leading),
+                OP_TSTAR => {
+                    self.repositioned = true;
+                    matrices.line_move(0.0, -state.leading);
+                }
                 OP_TJ => {
                     if let Some(Object::String(bytes)) = operands.last() {
                         self.show(state, matrices, bytes)?;
                     }
                 }
                 OP_QUOTE => {
+                    self.repositioned = true;
                     matrices.line_move(0.0, -state.leading);
                     if let Some(Object::String(bytes)) = operands.last() {
                         self.show(state, matrices, bytes)?;
                     }
                 }
                 OP_DQUOTE => {
+                    self.repositioned = true;
                     if let Some([word, character]) = operands
                         .len()
                         .checked_sub(3)
@@ -563,6 +663,7 @@ impl Interpreter<'_, '_> {
         glyphs: &[Glyph],
         decoded: &str,
     ) -> Outcome<()> {
+        let mut repositioned = std::mem::take(&mut self.repositioned);
         let mapping = multiply(&matrices.tm, &state.ctm);
         let [a, b, c, d, e, f] = mapping;
         let size = state.size;
@@ -617,7 +718,14 @@ impl Interpreter<'_, '_> {
                     (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
                     (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
                 );
-                let join = self.join(origin, direction, effective_size);
+                let mut join = self.join(origin, direction, effective_size);
+                if self.split_repositioned
+                    && repositioned
+                    && matches!(join, Join::Same | Join::Spaced)
+                {
+                    join = Join::Split;
+                }
+                repositioned = false;
                 if matches!(join, Join::Same | Join::Spaced) {
                     self.extend(glyph_text, visible, join == Join::Spaced);
                     if visible {
@@ -726,10 +834,13 @@ impl Interpreter<'_, '_> {
         }
         let text = trimmed.to_owned();
         self.open_text.clear();
-        self.items.push(TextItem {
-            rect: self.open_bounds,
-            font_size: self.open_size,
-            text,
+        self.items.push(Run {
+            item: TextItem {
+                rect: self.open_bounds,
+                font_size: self.open_size,
+                text,
+            },
+            direction: self.open_dir,
         });
         Ok(())
     }
@@ -1108,9 +1219,60 @@ mod tests {
 
     #[test]
     fn graphics_state_depth_limit_is_enforced() {
-        let content = "q ".repeat(1000);
+        let content = format!("{}BT /F1 10 Tf (a) Tj ET", "q ".repeat(1000));
         let result = extract_with(&simple_pdf(&content), &Limits::default());
         assert_eq!(result.unwrap_err().code, FailureCode::LimitExceeded);
+    }
+
+    #[test]
+    fn repositioned_pieces_stay_separate_when_requested() {
+        let bytes = simple_pdf(
+            "BT /F1 10 Tf 1 0 0 1 100 700 Tm (abc) Tj ET BT /F1 10 Tf 1 0 0 1 120 700 Tm (def) Tj ET",
+        );
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let page = pages.first().unwrap();
+        let merged =
+            extract_runs(&document, page, &limits, false, &mut Session::default()).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].item.text, "abc def");
+        let split = extract_runs(&document, page, &limits, true, &mut Session::default()).unwrap();
+        let split_texts: Vec<&str> = split.iter().map(|run| run.item.text.as_str()).collect();
+        assert_eq!(split_texts, ["abc", "def"]);
+        assert_eq!(split[0].direction, (1.0, 0.0));
+    }
+
+    #[test]
+    fn session_reuses_fonts_across_pages() {
+        let bytes = simple_pdf("BT /F1 10 Tf 20 100 Td (Again) Tj ET");
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let page = pages.first().unwrap();
+        let mut session = Session::default();
+        for _ in 0..3 {
+            let runs = extract_runs(&document, page, &limits, true, &mut session).unwrap();
+            assert_eq!(runs[0].item.text, "Again");
+        }
+        assert_eq!(session.fonts.len(), 1);
+    }
+
+    #[test]
+    fn streams_without_show_operators_are_skipped() {
+        assert!(scan_shows(b"q 1 0 0 1 0 0 cm 0 0 m 10 10 l S Q") == Shows::Nothing);
+        assert!(scan_shows(b"BT /F1 10 Tf 10 10 Td ET") == Shows::Nothing);
+        assert!(scan_shows(b"BT (a)Tj ET") == Shows::Text);
+        assert!(scan_shows(b"[(a) 1]TJ") == Shows::Text);
+        assert!(scan_shows(b"(a)'") == Shows::Text);
+        assert!(scan_shows(b"1 2 (a)\"") == Shows::Text);
+        assert!(scan_shows(b"/X Do") == Shows::Forms);
+        let content = "q ".repeat(1000);
+        assert!(
+            extract_with(&simple_pdf(&content), &Limits::default())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1182,6 +1344,70 @@ mod tests {
                 100.0 + 8.0,
             ],
         );
+    }
+
+    #[test]
+    fn type0_descendant_fonts_as_indirect_array() {
+        let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 2 beginbfchar <0001> <0041> <0002> <0042> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end";
+        let bytes = page_pdf(
+            "<< /Font << /F1 5 0 R >> >>",
+            "BT /F1 10 Tf 20 100 Td <00010002> Tj ET",
+            &[
+                (
+                    5,
+                    "<< /Type /Font /Subtype /Type0 /BaseFont /Sample /Encoding /Identity-H /DescendantFonts 9 0 R /ToUnicode 7 0 R >>".to_string(),
+                ),
+                (9, "[6 0 R]".to_string()),
+                (
+                    6,
+                    "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sample /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 500 >>".to_string(),
+                ),
+                (7, stream_object("", cmap)),
+            ],
+        );
+        assert_eq!(texts(&extract(&bytes)), ["AB"]);
+    }
+
+    #[test]
+    fn truetype_without_encoding_falls_back_to_win_ansi() {
+        let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfrange <41> <5A> <0041> endbfrange endcmap CMapName currentdict /CMap defineresource pop end end";
+        let bytes = page_pdf(
+            "<< /Font << /F1 5 0 R >> >>",
+            "BT /F1 10 Tf 20 100 Td (CONCORR\\312NCIA \\307\\303O) Tj ET",
+            &[
+                (
+                    5,
+                    "<< /Type /Font /Subtype /TrueType /BaseFont /AAAAMF+Custom /FirstChar 32 /LastChar 32 /Widths [250] /ToUnicode 7 0 R /FontDescriptor 8 0 R >>".to_string(),
+                ),
+                (7, stream_object("", cmap)),
+                (
+                    8,
+                    "<< /Type /FontDescriptor /FontName /AAAAMF+Custom /Flags 4 /Ascent 800 /Descent -200 /CapHeight 700 /ItalicAngle 0 /StemV 80 /FontBBox [0 -200 1000 800] >>".to_string(),
+                ),
+            ],
+        );
+        assert_eq!(texts(&extract(&bytes)), ["CONCORR\u{ca}NCIA \u{c7}\u{c3}O"]);
+    }
+
+    #[test]
+    fn indirect_encoding_dictionary_applies_differences() {
+        let bytes = page_pdf(
+            "<< /Font << /F1 5 0 R >> >>",
+            "BT /F1 10 Tf 20 100 Td (A\\001) Tj ET",
+            &[
+                (
+                    5,
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 9 0 R >>"
+                        .to_string(),
+                ),
+                (
+                    9,
+                    "<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [1 /eacute] >>"
+                        .to_string(),
+                ),
+            ],
+        );
+        assert_eq!(texts(&extract(&bytes)), ["A\u{e9}"]);
     }
 
     #[test]

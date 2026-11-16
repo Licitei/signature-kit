@@ -4,6 +4,7 @@ use std::ptr;
 use crate::document;
 use crate::failure::{Failure, Outcome};
 use crate::inspection::{InspectOptions, Inspection, Limits};
+use crate::layout;
 
 pub const MAGIC: u32 = 0x4346_4450;
 pub const VERSION: u32 = 1;
@@ -17,6 +18,9 @@ pub const FLAG_TEXT: u32 = 1;
 pub const FLAG_LINKS: u32 = 2;
 pub const FLAG_PAGE_INDEXES: u32 = 4;
 pub const STATUS_OK: u32 = 0;
+pub const TEXT_MAGIC: u32 = 0x5854_4450;
+pub const TEXT_VERSION: u32 = 1;
+pub const TEXT_HEADER_LEN: usize = 16;
 const ALIGNMENT: usize = 8;
 
 fn block_layout(len: usize) -> Option<Layout> {
@@ -156,6 +160,55 @@ pub fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
     Ok(out.buf)
 }
 
+pub fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
+    let page_count = len32(pages.len())?;
+    let mut text_len: usize = 0;
+    for page in pages {
+        text_len = text_len
+            .checked_add(page.len())
+            .ok_or_else(|| Failure::limit("text exceeds the size limit"))?;
+    }
+    let offsets_len = padded(
+        pages
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| Failure::limit("result size overflow"))?,
+    )?;
+    let capacity = TEXT_HEADER_LEN
+        .checked_add(offsets_len)
+        .and_then(|sum| sum.checked_add(text_len))
+        .and_then(|sum| sum.checked_add(ALIGNMENT))
+        .ok_or_else(|| Failure::limit("result size overflow"))?;
+    let mut out = Writer {
+        buf: Vec::with_capacity(capacity),
+    };
+    out.u32(TEXT_MAGIC);
+    out.u32(TEXT_VERSION);
+    out.u32(page_count);
+    out.u32(len32(text_len)?);
+    let mut cursor: u32 = 0;
+    out.u32(cursor);
+    for page in pages {
+        cursor = cursor
+            .checked_add(len32(page.len())?)
+            .ok_or_else(|| Failure::limit("text exceeds the size limit"))?;
+        out.u32(cursor);
+    }
+    out.align();
+    for page in pages {
+        out.buf.extend_from_slice(page.as_bytes());
+    }
+    out.align();
+    let total = out
+        .buf
+        .len()
+        .checked_add(RESULT_HEADER_LEN)
+        .ok_or_else(|| Failure::limit("result size overflow"))?;
+    len32(total)?;
+    Ok(out.buf)
+}
+
 fn publish(status: u32, payload: &[u8]) -> *mut u8 {
     let Some(total) = payload.len().checked_add(RESULT_HEADER_LEN) else {
         return ptr::null_mut();
@@ -247,6 +300,28 @@ pub unsafe extern "C" fn pdf_core_inspect(
             page_indexes,
         };
         run(bytes, &options)
+    })();
+    finish(outcome)
+}
+
+#[allow(clippy::missing_safety_doc)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pdf_core_text(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+) -> *mut u8 {
+    let outcome = (|| {
+        let bytes = unsafe { view(pdf_ptr, pdf_len) }?;
+        let page_indexes = if flags & FLAG_PAGE_INDEXES != 0 {
+            Some(unsafe { view(pages_ptr, pages_len) }?)
+        } else {
+            None
+        };
+        let pages = layout::document_text(bytes, page_indexes, &layout::text_limits())?;
+        encode_text(&pages)
     })();
     finish(outcome)
 }
@@ -519,6 +594,106 @@ mod tests {
 
     const LINKS_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/links.pdf");
     const ROTATED_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
+
+    fn call_text(bytes: &[u8], flags: u32, pages: &[u32]) -> Block {
+        let input = pdf_core_alloc(bytes.len());
+        assert!(!input.is_null());
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), input, bytes.len()) };
+        let indexes = pdf_core_alloc(pages.len() * 4).cast::<u32>();
+        assert!(!indexes.is_null());
+        unsafe { ptr::copy_nonoverlapping(pages.as_ptr(), indexes, pages.len()) };
+        let result = unsafe { pdf_core_text(input, bytes.len(), flags, indexes, pages.len()) };
+        unsafe {
+            pdf_core_free(input, bytes.len());
+            pdf_core_free(indexes.cast::<u8>(), pages.len() * 4);
+        }
+        assert!(!result.is_null());
+        assert_eq!(result as usize % 8, 0);
+        let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
+        let total = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let status = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        let payload =
+            unsafe { std::slice::from_raw_parts(result.add(RESULT_HEADER_LEN), total - 8) }
+                .to_vec();
+        Block {
+            ptr: result,
+            total,
+            status,
+            payload,
+        }
+    }
+
+    fn decode_text(payload: &[u8]) -> Vec<String> {
+        let word = |at: usize| {
+            u32::from_le_bytes([
+                payload[at],
+                payload[at + 1],
+                payload[at + 2],
+                payload[at + 3],
+            ]) as usize
+        };
+        assert_eq!(word(0) as u32, TEXT_MAGIC);
+        assert_eq!(word(4) as u32, TEXT_VERSION);
+        let count = word(8);
+        let text_len = word(12);
+        let offsets_at = TEXT_HEADER_LEN;
+        let blob_at = offsets_at + (((count + 1) * 4 + 7) & !7);
+        assert_eq!(blob_at % 8, 0);
+        assert_eq!(payload.len(), (blob_at + text_len + 7) & !7);
+        (0..count)
+            .map(|index| {
+                let start = word(offsets_at + index * 4);
+                let end = word(offsets_at + (index + 1) * 4);
+                String::from_utf8_lossy(&payload[blob_at + start..blob_at + end]).into_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_returns_reading_order_pages() {
+        let block = call_text(LINKS_PDF, 0, &[]);
+        assert_eq!(block.status, STATUS_OK);
+        let pages = decode_text(&block.payload);
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].trim().is_empty());
+        release(&block);
+    }
+
+    #[test]
+    fn text_honours_page_indexes() {
+        let all = call_text(LINKS_PDF, 0, &[]);
+        let picked = call_text(LINKS_PDF, FLAG_PAGE_INDEXES, &[0, 0]);
+        assert_eq!(picked.status, STATUS_OK);
+        assert_eq!(decode_text(&picked.payload), decode_text(&all.payload));
+        release(&all);
+        release(&picked);
+        let missing = call_text(LINKS_PDF, FLAG_PAGE_INDEXES, &[9]);
+        assert_eq!(missing.status, FailureCode::InvalidPdf as u32);
+        release(&missing);
+    }
+
+    #[test]
+    fn text_failures_carry_code_and_reason() {
+        let block = call_text(b"not a pdf", 0, &[]);
+        assert_eq!(block.status, FailureCode::InvalidPdf as u32);
+        assert!(std::str::from_utf8(&block.payload).is_ok());
+        release(&block);
+        let empty = call_text(b"", 0, &[]);
+        assert_eq!(empty.status, FailureCode::InvalidPdf as u32);
+        release(&empty);
+    }
+
+    #[test]
+    fn text_covers_rotated_pages() {
+        let block = call_text(ROTATED_PDF, 0, &[]);
+        assert_eq!(block.status, STATUS_OK);
+        assert!(
+            decode_text(&block.payload)
+                .iter()
+                .any(|page| !page.is_empty())
+        );
+        release(&block);
+    }
 
     #[test]
     fn inspect_returns_a_decodable_block() {

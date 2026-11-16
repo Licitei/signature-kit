@@ -68,19 +68,23 @@ const CODE_LENGTH_ORDER: [u8; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
+const FAST_BITS: u32 = 10;
+const FAST_SIZE: usize = 1 << FAST_BITS;
+
 struct Huffman {
     counts: [u16; MAX_BITS + 1],
     first_code: [u16; MAX_BITS + 1],
     offset: [u16; MAX_BITS + 1],
     symbols: Vec<u16>,
     max_bits: u8,
+    fast: Vec<u32>,
 }
 
 struct BitReader<'a> {
     data: &'a [u8],
     pos: usize,
-    bit_buf: u32,
-    bit_count: u8,
+    bit_buf: u64,
+    bit_count: u32,
 }
 
 impl<'a> BitReader<'a> {
@@ -93,34 +97,52 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    fn read_bit(&mut self) -> Option<u32> {
-        if self.bit_count == 0 {
-            let byte = self.data.get(self.pos)?;
-            self.pos = self.pos.saturating_add(1);
-            self.bit_buf = u32::from(*byte);
-            self.bit_count = 8;
+    #[inline]
+    fn refill(&mut self) {
+        if let Some(chunk) = self
+            .pos
+            .checked_add(8)
+            .and_then(|end| self.data.get(self.pos..end))
+            && let Ok(bytes) = <[u8; 8]>::try_from(chunk)
+        {
+            let word = u64::from_le_bytes(bytes);
+            self.bit_buf |= word << self.bit_count;
+            let consumed = (63 - self.bit_count) >> 3;
+            self.pos += consumed as usize;
+            self.bit_count += consumed << 3;
+            return;
         }
-        let bit = self.bit_buf & 1;
-        self.bit_buf >>= 1;
-        self.bit_count = self.bit_count.saturating_sub(1);
-        Some(bit)
+        while self.bit_count <= 56 {
+            let Some(byte) = self.data.get(self.pos) else {
+                break;
+            };
+            self.bit_buf |= u64::from(*byte) << self.bit_count;
+            self.bit_count += 8;
+            self.pos += 1;
+        }
     }
 
+    #[inline]
     fn take_bits(&mut self, count: u8) -> Option<u32> {
-        let mut value = 0u32;
-        let mut i = 0u8;
-        while i < count {
-            value |= (self.read_bit()? & 1) << i;
-            i = i.saturating_add(1);
+        let count = u32::from(count);
+        if count == 0 {
+            return Some(0);
         }
+        if self.bit_count < count {
+            self.refill();
+            if self.bit_count < count {
+                return None;
+            }
+        }
+        let value = (self.bit_buf & ((1u64 << count) - 1)) as u32;
+        self.bit_buf >>= count;
+        self.bit_count -= count;
         Some(value)
     }
 
     fn align_byte(&mut self) {
-        let discard = self.bit_count & 7;
-        if discard > 0 {
-            let _ = self.take_bits(discard);
-        }
+        let whole = (self.bit_count >> 3) as usize;
+        self.pos = self.pos.saturating_sub(whole);
         self.bit_buf = 0;
         self.bit_count = 0;
     }
@@ -213,20 +235,69 @@ fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
         symbols.push(sym);
     }
 
+    let mut fast = vec![0u32; FAST_SIZE];
+    let mut assigned = next_code;
+    for &(len, sym) in &lens_sorted {
+        let slot = usize::from(len);
+        let Some(code_slot) = assigned.get_mut(slot) else {
+            continue;
+        };
+        let code = u32::from(*code_slot);
+        *code_slot = code_slot.wrapping_add(1);
+        let len32 = u32::from(len);
+        if len32 > FAST_BITS || code >= (1u32 << len32) {
+            continue;
+        }
+        let reversed = code.reverse_bits() >> (32 - len32);
+        let entry = (len32 << 16) | u32::from(sym);
+        let mut index = reversed as usize;
+        while index < FAST_SIZE {
+            if let Some(cell) = fast.get_mut(index) {
+                *cell = entry;
+            }
+            index += 1usize << len32;
+        }
+    }
+
     Ok(Huffman {
         counts,
         first_code,
         offset,
         symbols,
         max_bits: max_len,
+        fast,
     })
 }
 
+#[inline]
 fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
+    if bits.bit_count < MAX_BITS as u32 {
+        bits.refill();
+    }
+    let window = (bits.bit_buf & (FAST_SIZE as u64 - 1)) as usize;
+    let entry = tree.fast.get(window).copied().unwrap_or(0);
+    if entry != 0 {
+        let len = entry >> 16;
+        if len > bits.bit_count {
+            return None;
+        }
+        bits.bit_buf >>= len;
+        bits.bit_count -= len;
+        return Some((entry & 0xffff) as u16);
+    }
+    decode_slow(bits, tree)
+}
+
+fn decode_slow(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
     let mut code = 0u32;
     let mut len = 1u8;
     while len <= tree.max_bits {
-        let bit = bits.read_bit()?;
+        if bits.bit_count == 0 {
+            return None;
+        }
+        let bit = (bits.bit_buf & 1) as u32;
+        bits.bit_buf >>= 1;
+        bits.bit_count -= 1;
         code = (code << 1) | bit;
         let slot = usize::from(len);
         let count = tree.counts.get(slot).copied().unwrap_or(0);
@@ -244,6 +315,7 @@ fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
     None
 }
 
+#[inline]
 fn copy_match(out: &mut Vec<u8>, distance: usize, length: usize, max: usize) -> Outcome<()> {
     if distance == 0 || distance > out.len() {
         return Err(Failure::invalid("bad back-reference distance"));
@@ -251,12 +323,18 @@ fn copy_match(out: &mut Vec<u8>, distance: usize, length: usize, max: usize) -> 
     if out.len().saturating_add(length) > max {
         return Err(Failure::limit("inflate output exceeds limit"));
     }
-    for _ in 0..length {
-        let idx = out.len().saturating_sub(distance);
-        let b = *out
-            .get(idx)
-            .ok_or_else(|| Failure::invalid("back-reference read"))?;
-        out.push(b);
+    let start = out.len() - distance;
+    if distance == 1 {
+        let byte = out.get(start).copied().unwrap_or(0);
+        out.resize(out.len() + length, byte);
+        return Ok(());
+    }
+    let mut remaining = length;
+    while remaining > 0 {
+        let available = out.len() - start;
+        let chunk = remaining.min(available);
+        out.extend_from_within(start..start + chunk);
+        remaining -= chunk;
     }
     Ok(())
 }
@@ -499,6 +577,7 @@ mod tests {
     use super::inflate;
 
     const ZLIB_MB: &[u8] = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
+    const ZLIB_SKEWED: &[u8] = include_bytes!("../tests/fixtures/skewed.zlib");
 
     const CRC32_TABLE: [u32; 256] = {
         let mut table = [0u32; 256];
@@ -590,6 +669,22 @@ mod tests {
         assert_eq!(&out[out.len().saturating_sub(4)..], b"ABCD");
         assert_eq!(crc32(&out), 0x73B9_1CF3);
         assert_eq!(adler32(&out), 0x59E3_3E59);
+    }
+
+    #[test]
+    fn skewed_alphabet_exercises_long_codes_and_overlapping_matches() {
+        let out = inflate(ZLIB_SKEWED, 1024 * 1024).expect("skewed");
+        assert_eq!(out.len(), 67_500);
+        assert_eq!(crc32(&out), 0x5C834526);
+        assert_eq!(adler32(&out), 0xD0BD5B93);
+    }
+
+    #[test]
+    fn truncated_stream_returns_the_decoded_prefix() {
+        let cut = ZLIB_SKEWED.get(..ZLIB_SKEWED.len() / 2).expect("prefix");
+        let out = inflate(cut, 1024 * 1024).expect("partial");
+        assert!(!out.is_empty());
+        assert!(out.len() < 67_500);
     }
 
     #[test]

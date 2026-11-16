@@ -436,34 +436,43 @@ fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<
 }
 
 fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outcome<EncodingState> {
-    let base = font.get(b"Encoding");
     let mut state = EncodingState {
         builtin: BuiltinEncoding::PdfDoc,
         differences: Vec::new(),
         custom_names: Vec::new(),
     };
-    match base {
+    let resolved = match font.get(b"Encoding") {
+        Some(reference @ Object::Ref(_)) => Some(resolver.resolve(reference)?),
+        Some(other) => Some(other.clone()),
+        None => None,
+    };
+    match resolved {
         None => {
-            state.builtin = BuiltinEncoding::Standard;
+            state.builtin = if name_bytes(font.get(b"Subtype")) == Some(b"TrueType") {
+                BuiltinEncoding::WinAnsi
+            } else {
+                BuiltinEncoding::Standard
+            };
         }
         Some(Object::Name(name)) => {
-            state.builtin = builtin_from_name(name);
+            state.builtin = builtin_from_name(&name);
         }
-        Some(Object::Ref(reference)) => {
-            let resolved = resolver.resolve(&Object::Ref(*reference))?;
-            if let Object::Stream(stream) = resolved {
-                let data = resolver.stream_data(&stream)?;
-                if data.len() > limits.max_decoded_stream_bytes {
-                    return Err(Failure::limit("encoding stream exceeds limit"));
-                }
+        Some(Object::Stream(stream)) => {
+            let data = resolver.stream_data(&stream)?;
+            if data.len() > limits.max_decoded_stream_bytes {
+                return Err(Failure::limit("encoding stream exceeds limit"));
             }
             state.builtin = BuiltinEncoding::Custom;
         }
         Some(Object::Dict(dict)) => {
             if let Some(Object::Name(name)) = dict.get(b"BaseEncoding") {
                 state.builtin = builtin_from_name(name);
+            } else if name_bytes(font.get(b"Subtype")) == Some(b"TrueType") {
+                state.builtin = BuiltinEncoding::WinAnsi;
+            } else {
+                state.builtin = BuiltinEncoding::Standard;
             }
-            load_differences(dict, &mut state)?;
+            load_differences(&dict, &mut state)?;
         }
         Some(_) => {
             state.builtin = BuiltinEncoding::PdfDoc;
@@ -1060,7 +1069,10 @@ fn read_number_token(data: &[u8], idx: &mut usize) -> String {
 }
 
 fn resolve_descendant(resolver: &dyn Resolver, font: &Dict) -> Outcome<Dict> {
-    let Some(Object::Array(children)) = font.get(b"DescendantFonts") else {
+    let listing = font
+        .get(b"DescendantFonts")
+        .ok_or_else(|| Failure::invalid("Type0 font missing DescendantFonts"))?;
+    let Object::Array(children) = resolver.resolve(listing)? else {
         return Err(Failure::invalid("Type0 font missing DescendantFonts"));
     };
     let first = children
