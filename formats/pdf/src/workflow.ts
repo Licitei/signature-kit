@@ -1,6 +1,5 @@
-import { PDFDocument, type PDFPage } from "@cantoo/pdf-lib";
 import type { CmsError } from "@signature-kit/cms/config";
-import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import type { SignatureKitError, Signatures } from "@signature-kit/signatures";
 import { signPdf as signPdfDocument } from "./sign.js";
 import { findPdfTextAnchors, removePdfLinkAnchors } from "./anchors.js";
@@ -48,12 +47,13 @@ import type {
 
 import {
   defaultPdfSignatureRect,
-  pdfCoordinateTupleFromTopLeftRect,
+  pdfCoordinateTupleFromPdfPageGeometry,
   rubricPageIndexesExcludingSignature,
   stampPdfRubricOnPages,
   stampPdfVisibleSignatures,
-  visiblePdfPageSize,
+  visiblePdfPageSizeFromGeometry,
 } from "./stamp.js";
+import type { PdfPageGeometry } from "./stamp.js";
 import { hasPdfByteRange } from "./byte-range.js";
 
 export type PdfPageLabeler = (pageNumber: number) => string;
@@ -64,7 +64,7 @@ type PdfDocumentLoadOptions = {
 
 type PdfLoadedSignatureDocument = {
   readonly document: PdfSignatureDocument;
-  readonly pdfPages: ReadonlyArray<PDFPage>;
+  readonly pdfPages: ReadonlyArray<PdfPageGeometry>;
 };
 
 const hasSignaturePage = (
@@ -95,7 +95,7 @@ export const readPdfBlobBytes = (file: Blob): Effect.Effect<Uint8Array, PdfError
 const loadPdfSignatureDocumentWithPages = (
   input: PdfDocumentInput,
   options?: PdfDocumentLoadOptions,
-): Effect.Effect<PdfLoadedSignatureDocument, PdfError> =>
+): Effect.Effect<PdfLoadedSignatureDocument, PdfError, PdfCore> =>
   Schema.decodeUnknownEffect(PdfDocumentInputSchema)(input).pipe(
     Effect.mapError(
       (issue) =>
@@ -109,12 +109,24 @@ const loadPdfSignatureDocumentWithPages = (
         }),
     ),
     Effect.flatMap((valid) =>
-      Effect.tryPromise({
-        try: async () => {
-          const pdf = await PDFDocument.load(valid.pdf);
-          const pdfPages = pdf.getPages();
+      PdfCore.pipe(
+        Effect.flatMap((core) => core.document(valid.pdf)),
+        Effect.mapError(
+          () =>
+            new PdfError({
+              code: PdfErrorCodeValue.pdfLoadFailed,
+              retryable: false,
+              reason: "PDF bytes could not be parsed for page dimensions.",
+              operation: PdfOperationValue.loadDocument,
+            }),
+        ),
+        Effect.map((description) => {
+          const pdfPages = description.pages.map((page): PdfPageGeometry => ({
+            cropBox: page.cropBox,
+            rotate: page.rotate,
+          }));
           const pages = pdfPages.map((page, index) => {
-            const size = visiblePdfPageSize(page);
+            const size = visiblePdfPageSizeFromGeometry(page);
             const label = options?.pageLabel?.(index + 1);
             return {
               index,
@@ -132,15 +144,8 @@ const loadPdfSignatureDocumentWithPages = (
             },
             pdfPages,
           };
-        },
-        catch: () =>
-          new PdfError({
-            code: PdfErrorCodeValue.pdfLoadFailed,
-            retryable: false,
-            reason: "PDF bytes could not be parsed for page dimensions.",
-            operation: PdfOperationValue.loadDocument,
-          }),
-      }),
+        }),
+      ),
     ),
     Effect.filterOrFail(
       (loaded) => loaded.document.pages.length !== 0,
@@ -157,7 +162,7 @@ const loadPdfSignatureDocumentWithPages = (
 export const loadPdfSignatureDocument = (
   input: PdfDocumentInput,
   options?: PdfDocumentLoadOptions,
-): Effect.Effect<PdfSignatureDocument, PdfError> =>
+): Effect.Effect<PdfSignatureDocument, PdfError, PdfCore> =>
   loadPdfSignatureDocumentWithPages(input, options).pipe(Effect.map((loaded) => loaded.document));
 
 type PdfSigningBatchGeometry = {
@@ -245,7 +250,7 @@ const validateSignatureRectsForLoadedPages = (
 
 const resolvePdfSigningBatchGeometry = (
   document: PdfSigningBatchDocument,
-): Effect.Effect<PdfSigningBatchGeometry, PdfError> =>
+): Effect.Effect<PdfSigningBatchGeometry, PdfError, PdfCore> =>
   loadPdfSignatureDocument({
     id: document.id,
     name: document.id,
@@ -343,7 +348,7 @@ const resolvePdfSigningBatchGeometry = (
 export const createPdfSignatureTemplateFromBytes = (
   input: PdfTemplateInput,
   options?: PdfDocumentLoadOptions,
-): Effect.Effect<PdfSignatureTemplate, PdfError> =>
+): Effect.Effect<PdfSignatureTemplate, PdfError, PdfCore> =>
   Schema.decodeUnknownEffect(PdfTemplateInputSchema)(input).pipe(
     Effect.mapError(
       (issue) =>
@@ -380,7 +385,7 @@ export const createPdfSignatureTemplateFromBytes = (
 export const createPdfSignatureBuilderStateFromBytes = (
   input: PdfSignatureBuilderInput,
   options?: PdfDocumentLoadOptions,
-): Effect.Effect<PdfSignatureBuilderState, PdfError> =>
+): Effect.Effect<PdfSignatureBuilderState, PdfError, PdfCore> =>
   Schema.decodeUnknownEffect(PdfSignatureBuilderInputSchema)(input).pipe(
     Effect.mapError(
       (issue) =>
@@ -505,7 +510,7 @@ const signatureFieldGeometryFromTemplate = (
   );
 
 const widgetRectFromPage = (
-  page: PDFPage | undefined,
+  page: PdfPageGeometry | undefined,
   signatureRect: PdfSignatureRect,
   operation: PdfOperation,
 ): Effect.Effect<PdfCoordinateTuple, PdfError> => {
@@ -519,7 +524,7 @@ const widgetRectFromPage = (
       }),
     );
   }
-  const size = visiblePdfPageSize(page);
+  const size = visiblePdfPageSizeFromGeometry(page);
   const fitsVisiblePage =
     Number.isFinite(signatureRect.x) &&
     Number.isFinite(signatureRect.y) &&
@@ -532,7 +537,7 @@ const widgetRectFromPage = (
     signatureRect.x + signatureRect.width <= size.width &&
     signatureRect.y + signatureRect.height <= size.height;
   return fitsVisiblePage
-    ? Effect.succeed(pdfCoordinateTupleFromTopLeftRect(signatureRect, page))
+    ? Effect.succeed(pdfCoordinateTupleFromPdfPageGeometry(signatureRect, page))
     : Effect.fail(
         new PdfError({
           code: PdfErrorCodeValue.fieldOutOfBounds,
@@ -550,20 +555,26 @@ const widgetRectFromPdf = (
   operation: PdfOperation,
 ): Effect.Effect<
   { readonly pageIndex: number; readonly widgetRect: PdfCoordinateTuple },
-  PdfError
+  PdfError,
+  PdfCore
 > =>
   pdfPagePositionForDeclaredIdentity(pageDimensions, signatureRect.pageIndex, operation).pipe(
     Effect.flatMap((pageIndex) =>
-      Effect.tryPromise({
-        try: async () => (await PDFDocument.load(pdf)).getPages()[pageIndex],
-        catch: () =>
-          new PdfError({
-            code: PdfErrorCodeValue.pdfLoadFailed,
-            retryable: false,
-            operation,
-            reason: "PDF bytes could not be parsed for signature widget placement.",
-          }),
-      }).pipe(
+      PdfCore.pipe(
+        Effect.flatMap((core) => core.document(pdf)),
+        Effect.map((description) => {
+          const page = description.pages[pageIndex];
+          return page === undefined ? undefined : { cropBox: page.cropBox, rotate: page.rotate };
+        }),
+        Effect.mapError(
+          () =>
+            new PdfError({
+              code: PdfErrorCodeValue.pdfLoadFailed,
+              retryable: false,
+              operation,
+              reason: "PDF bytes could not be parsed for signature widget placement.",
+            }),
+        ),
         Effect.flatMap((page) => widgetRectFromPage(page, signatureRect, operation)),
         Effect.map((widgetRect) => ({ pageIndex, widgetRect })),
       ),
@@ -687,7 +698,7 @@ const stampMainSignatureForPreparedDocument = (
   stamp: PdfSigningBatchVisibleStamp | undefined,
   pdf: Uint8Array,
   forIncrementalUpdate: boolean,
-): Effect.Effect<Uint8Array, PdfError> => {
+): Effect.Effect<Uint8Array, PdfError, PdfCore> => {
   const lines = stamp?.lines ?? [];
   if (
     stamp === undefined ||

@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { Effect, Redacted } from "effect";
@@ -8,23 +7,26 @@ import { stampPdfRubric } from "../src/stamp";
 import { verifyPdf } from "../src/verify";
 import type { PdfCoordinateTuple } from "../src/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
+import type { FixturePage } from "./pdf-fixtures";
 
 const PASSWORD = Redacted.make("changeit");
 const RUBRIC_RECT: PdfCoordinateTuple = [24, 24, 172, 68];
 
-const createMultiPagePdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  for (let index = 0; index < 8; index++) {
-    const page = pdf.addPage([612, 792]);
-    page.drawText(`SignatureKit performance page ${index + 1}`, { x: 72, y: 720, size: 14 });
-    page.drawText("Body text keeps the generated PDF close to a real document path.", {
-      x: 72,
-      y: 680,
-      size: 10,
-    });
-  }
-  return pdf.save({ useObjectStreams: false });
-});
+const createMultiPagePdf = createFixturePdf(
+  Array.from({ length: 8 }, (_, index): FixturePage => ({
+    size: [612, 792],
+    text: [
+      { x: 72, y: 720, size: 14, text: `SignatureKit performance page ${index + 1}` },
+      {
+        x: 72,
+        y: 680,
+        size: 10,
+        text: "Body text keeps the generated PDF close to a real document path.",
+      },
+    ],
+  })),
+);
 
 const millisecondsSince = (startedAt: number): number => performance.now() - startedAt;
 

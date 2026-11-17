@@ -1,4 +1,11 @@
-import { PDFDocument, StandardFonts, rgb } from "@cantoo/pdf-lib";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
+import { Effect, Layer } from "effect";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { pdfPages, textPdf } from "./text-pdf";
+import type { TextRun } from "./text-pdf";
+
+const pdfCoreNodeLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 
 export const A4: PageSize = { width: 595.28, height: 841.89 };
 export const LETTER: PageSize = { width: 612, height: 792 };
@@ -29,40 +36,42 @@ const sizeForPage = (size: DummyPdfOptions["size"], index: number): PageSize => 
 
 export async function makeDummyPdf(options: DummyPdfOptions = {}): Promise<Uint8Array> {
   const pageCount = Math.max(1, options.pages ?? 1);
-  const doc = await PDFDocument.create();
-  doc.setTitle(options.label ?? "Dummy PDF");
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-
-  for (let i = 0; i < pageCount; i++) {
-    const { width, height } = sizeForPage(options.size, i);
-    const page = doc.addPage([width, height]);
-    page.drawText(options.label ?? "Dummy contract", {
-      x: 48,
-      y: height - 64,
-      size: 18,
-      font: bold,
-      color: rgb(0.067, 0.067, 0.067),
-    });
-    page.drawText(`Page ${i + 1} of ${pageCount}`, {
-      x: 48,
-      y: height - 92,
-      size: 11,
-      font,
-      color: rgb(0.4, 0.4, 0.4),
-    });
-    for (let line = 0; line < 6; line++) {
-      page.drawText("Lorem ipsum dolor sit amet, consectetur adipiscing elit sed do.", {
-        x: 48,
-        y: height - 130 - line * 16,
-        size: 10,
-        font,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-    }
-  }
-
-  return doc.save({ useObjectStreams: false });
+  const label = options.label ?? "Dummy contract";
+  return Effect.runPromise(
+    textPdf(
+      Array.from({ length: pageCount }, (_, index) => {
+        const { width, height } = sizeForPage(options.size, index);
+        return {
+          width,
+          height,
+          runs: [
+            {
+              text: label,
+              x: 48,
+              y: height - 64,
+              size: 18,
+              bold: true,
+              color: [0.067, 0.067, 0.067],
+            },
+            {
+              text: `Page ${index + 1} of ${pageCount}`,
+              x: 48,
+              y: height - 92,
+              size: 11,
+              color: [0.4, 0.4, 0.4],
+            },
+            ...Array.from({ length: 6 }, (_line, line): TextRun => ({
+              text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit sed do.",
+              x: 48,
+              y: height - 130 - line * 16,
+              size: 10,
+              color: [0.2, 0.2, 0.2],
+            })),
+          ],
+        };
+      }),
+    ).pipe(Effect.provide(pdfCoreNodeLayer)),
+  );
 }
 
 export interface DummyDocSpec {
@@ -112,6 +121,8 @@ export function isPdf(bytes: Uint8Array): boolean {
 }
 
 export async function pdfPageCount(bytes: Uint8Array): Promise<number> {
-  const doc = await PDFDocument.load(bytes);
-  return doc.getPageCount();
+  return Effect.runPromise(pdfPages(bytes).pipe(Effect.provide(pdfCoreNodeLayer)));
 }
+
+export const withPdfCore = <A, E>(effect: Effect.Effect<A, E, PdfCore>) =>
+  effect.pipe(Effect.provide(pdfCoreNodeLayer));

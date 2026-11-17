@@ -1,6 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
 import { inflateSync } from "node:zlib";
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { findPdfTextAnchors } from "@signature-kit/pdf/anchors";
 import type { PdfSignaturePage, PdfSignatureRect, PdfTextBox } from "@signature-kit/pdf/config";
@@ -13,37 +12,30 @@ import { Effect, Layer, Redacted, Result } from "effect";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf, fixtureDocument, pageSizes, widgetRects } from "./pdf-fixtures";
 import { extractPdfSignature } from "../src/byte-range";
 import { addSignaturePlaceholder } from "../src/placeholder";
 
 const PASSWORD = Redacted.make("changeit");
 const latin1 = new TextDecoder("latin1");
 
-const createPdf = (sizes: ReadonlyArray<readonly [number, number]>): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    for (const [width, height] of sizes) {
-      const page = pdf.addPage([width, height]);
-      page.drawText(`assinatura: CPF 123.456.789-01 ${width}x${height}`, {
-        x: 24,
-        y: height - 48,
-        size: 12,
-      });
-    }
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
+const createPdf = (sizes: ReadonlyArray<readonly [number, number]>) =>
+  createFixturePdf(
+    sizes.map(([width, height]) => ({
+      size: [width, height],
+      text: [
+        {
+          x: 24,
+          y: height - 48,
+          size: 12,
+          text: `assinatura: CPF 123.456.789-01 ${width}x${height}`,
+        },
+      ],
+    })),
+  );
 
-const pageCount = (bytes: Uint8Array): Effect.Effect<number> =>
-  Effect.promise(async () => (await PDFDocument.load(bytes)).getPageCount());
-
-const pageSizes = (bytes: Uint8Array): Effect.Effect<ReadonlyArray<readonly [number, number]>> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.load(bytes);
-    return pdf.getPages().map((page) => {
-      const size = page.getSize();
-      return [size.width, size.height];
-    });
-  });
+const pageCount = (bytes: Uint8Array) =>
+  fixtureDocument(bytes).pipe(Effect.map((document) => document.pages.length));
 
 const contentHexLength = (bytes: Uint8Array): number => {
   const text = latin1.decode(bytes);
@@ -96,32 +88,7 @@ const countOccurrences = (text: string, needle: string): number => {
   return text.split(needle).length - 1 + text.split(hexNeedle).length - 1;
 };
 
-const signatureWidgetRects = (
-  bytes: Uint8Array,
-  pageIndex: number,
-): Effect.Effect<ReadonlyArray<readonly [number, number, number, number]>> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.load(bytes);
-    const page = pdf.getPages()[pageIndex];
-    if (page === undefined) return [];
-    const annotations = page.node.Annots();
-    if (annotations === undefined) return [];
-    const rects: Array<readonly [number, number, number, number]> = [];
-    for (let index = 0; index < annotations.size(); index += 1) {
-      const annotation = pdf.context.lookupMaybe(annotations.get(index), PDFDict);
-      const subtype = annotation?.lookupMaybe(PDFName.of("Subtype"), PDFName);
-      const rect = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-      if (subtype?.toString() === "/Widget" && rect !== undefined) {
-        rects.push([
-          rect.lookup(0, PDFNumber).asNumber(),
-          rect.lookup(1, PDFNumber).asNumber(),
-          rect.lookup(2, PDFNumber).asNumber(),
-          rect.lookup(3, PDFNumber).asNumber(),
-        ]);
-      }
-    }
-    return rects;
-  });
+const signatureWidgetRects = widgetRects;
 
 describe("PDF DX helpers", () => {
   it.effect("finds text and digit anchors and clamps stamp rectangles", () =>

@@ -4,6 +4,7 @@ import { Command } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { defineView } from "foldkit/submodel";
 import * as Mount from "foldkit/mount";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { createIllustrativePdf } from "@signature-kit/pdf/stamp";
 import { captureDocsEvent } from "../lib/posthog/client";
 import type { Locale } from "./content";
@@ -75,7 +76,7 @@ const DemoMount = Mount.define("DemoMount", {
                 marked,
                 markLabel: locale === "pt-BR" ? "MARCA ILUSTRATIVA" : "ILLUSTRATIVE MARK",
               }),
-            );
+            ).pipe(Effect.provide(pdfCoreBrowserLayer));
             Effect.runPromiseExitWith(context)(program, { signal }).then(
               (result) => {
                 if (closed || current !== generation) return;

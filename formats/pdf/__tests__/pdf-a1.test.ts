@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { verifyPdf } from "@signature-kit/pdf/verify";
@@ -11,15 +10,13 @@ import {
 import { Effect, Redacted } from "effect";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
 
 const PASSWORD = Redacted.make("changeit");
 
-const createPdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([320, 180]);
-  page.drawText("SignatureKit PDF Node signing", { x: 32, y: 118, size: 14 });
-  return pdf.save({ useObjectStreams: false });
-});
+const createPdf = createFixturePdf([
+  { text: [{ x: 32, y: 118, size: 14, text: "SignatureKit PDF Node signing" }] },
+]);
 
 describe("PDF signing", () => {
   it.effect("signs and verifies the package PDF flow", () =>

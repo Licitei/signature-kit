@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 import {
@@ -17,9 +16,7 @@ import type {
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { resolveSignatureWidgetPlacement } from "../src/placement";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
-
-const saveDocument = (document: PDFDocument): Effect.Effect<Uint8Array> =>
-  Effect.promise(() => document.save({ useObjectStreams: false, updateFieldAppearances: false }));
+import { createFixturePdf } from "./pdf-fixtures";
 
 const autoPlacement = {
   kind: "auto",
@@ -32,10 +29,7 @@ const autoPlacement = {
 describe("PDF signature appearance page selectors", () => {
   it.effect("rejects every ambiguous page selector at schema and public boundaries", () =>
     Effect.gen(function* () {
-      const pdfDoc = yield* Effect.promise(() => PDFDocument.create());
-      pdfDoc.addPage([320, 180]);
-      pdfDoc.addPage([320, 180]);
-      const pdf = yield* Effect.promise(() => pdfDoc.save({ useObjectStreams: false }));
+      const pdf = yield* createFixturePdf([{}, {}]);
       const ambiguousAppearances = [
         { pageIndex: 0, placement: { ...autoPlacement, page: "last" } },
         { pageIndex: 0, placement: { ...autoPlacement, pageIndex: 1 } },
@@ -58,7 +52,7 @@ describe("PDF signature appearance page selectors", () => {
         }
 
         const runtimeResult = yield* Effect.result(
-          resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), appearance),
+          resolveSignatureWidgetPlacement(pdf, appearance),
         );
         expect(Result.isFailure(runtimeResult)).toBe(true);
         if (Result.isFailure(runtimeResult)) {
@@ -70,9 +64,7 @@ describe("PDF signature appearance page selectors", () => {
   );
   it.effect("rejects a legacy widget rect combined with every placement mode", () =>
     Effect.gen(function* () {
-      const pdfDoc = yield* Effect.promise(() => PDFDocument.create());
-      pdfDoc.addPage([320, 180]);
-      const pdf = yield* Effect.promise(() => pdfDoc.save({ useObjectStreams: false }));
+      const pdf = yield* createFixturePdf();
       const widgetRect = [20, 20, 140, 60] satisfies PdfCoordinateTuple;
       const conflictingAppearances = [
         { widgetRect, placement: { kind: "invisible" } },
@@ -103,7 +95,7 @@ describe("PDF signature appearance page selectors", () => {
         }
 
         const runtimeResult = yield* Effect.result(
-          resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), appearance),
+          resolveSignatureWidgetPlacement(pdf, appearance),
         );
         expect(Result.isFailure(runtimeResult)).toBe(true);
         if (Result.isFailure(runtimeResult)) {
@@ -116,9 +108,7 @@ describe("PDF signature appearance page selectors", () => {
 
   it.effect("accepts exactly one selector and resolves its intended page", () =>
     Effect.gen(function* () {
-      const pdfDoc = yield* Effect.promise(() => PDFDocument.create());
-      pdfDoc.addPage([320, 180]);
-      pdfDoc.addPage([320, 180]);
+      const pdf = yield* createFixturePdf([{}, {}]);
       const appearances = [
         { appearance: { placement: { ...autoPlacement, page: "last" } }, expectedPageIndex: 1 },
         { appearance: { pageIndex: 0, placement: autoPlacement }, expectedPageIndex: 0 },
@@ -132,10 +122,7 @@ describe("PDF signature appearance page selectors", () => {
         const decoded = yield* Schema.decodeUnknownEffect(PdfSignatureAppearanceSchema)(
           placementCase.appearance,
         );
-        const resolved = yield* resolveSignatureWidgetPlacement(
-          yield* saveDocument(pdfDoc),
-          decoded,
-        );
+        const resolved = yield* resolveSignatureWidgetPlacement(pdf, decoded);
         expect(resolved.pageIndex).toBe(placementCase.expectedPageIndex);
       }
     }).pipe(Effect.provide(pdfCoreTestLayer)),

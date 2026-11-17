@@ -10,10 +10,10 @@ import {
   PdfSigningBatchPreparationResultSchema,
   PdfStampPreviewInputSchema,
 } from "./config.js";
-import type { createPdfStampPreview } from "./stamp.js";
 import type {
   PdfSigningBatchPreparationInput,
   PdfSigningBatchPreparationResult,
+  PdfStampPreviewInput,
 } from "./config.js";
 import type { PdfSigningBatchPreparationCallbacks } from "./workflow.js";
 
@@ -37,7 +37,7 @@ export class PdfWorker extends Context.Service<
       input: PdfSigningBatchPreparationInput,
       callbacks?: PdfSigningBatchPreparationCallbacks,
     ) => Effect.Effect<ReadonlyArray<PdfSigningBatchPreparationResult>, PdfError>;
-    readonly preview: typeof createPdfStampPreview;
+    readonly preview: (input: PdfStampPreviewInput) => Effect.Effect<Uint8Array, PdfError>;
   }
 >()("@signature-kit/pdf/PdfWorker") {}
 

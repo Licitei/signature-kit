@@ -13,7 +13,7 @@ import type {
   PdfSignatureTemplate,
   PdfSignerRole,
 } from "@signature-kit/pdf/config";
-import { makeDummyDocs } from "./helpers/dummy-pdf";
+import { makeDummyDocs, withPdfCore } from "./helpers/dummy-pdf";
 
 const DOC_COUNT = 25;
 
@@ -49,15 +49,17 @@ describe("best-guess auto-placement", () => {
     parsed = await Promise.all(
       built.map(async (doc) => {
         const state = await Effect.runPromise(
-          createPdfSignatureBuilderStateFromBytes({
-            id: "best-guess-test",
-            name: doc.name,
-            documentId: doc.id,
-            documentName: doc.name,
-            pdf: doc.bytes,
-            role: ROLE,
-            draft: SIGNATURE_DRAFT,
-          }),
+          withPdfCore(
+            createPdfSignatureBuilderStateFromBytes({
+              id: "best-guess-test",
+              name: doc.name,
+              documentId: doc.id,
+              documentName: doc.name,
+              pdf: doc.bytes,
+              role: ROLE,
+              draft: SIGNATURE_DRAFT,
+            }),
+          ),
         );
         const template = state.template;
         const [document] = template.documents;

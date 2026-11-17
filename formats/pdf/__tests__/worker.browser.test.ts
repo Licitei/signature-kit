@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { Effect, Exit, Layer, Redacted, Result } from "effect";
 import { expect, it } from "vitest";
@@ -8,15 +7,12 @@ import { pdfWorkerBrowserLayer } from "@signature-kit/pdf/worker-browser";
 import { signPdfSignatureBatch } from "@signature-kit/pdf/workflow";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.browser";
+import { createFixturePdf, pageSizes } from "./pdf-fixtures";
 
 it("prepares a real PDF in a worker, preserves caller bytes, and signs the result", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(async () => {
-        const document = await PDFDocument.create();
-        document.addPage([400, 300]);
-        return new Uint8Array(await document.save());
-      });
+      const pdf = yield* createFixturePdf([{ size: [400, 300] }]);
       const original = new Uint8Array(pdf);
       const rect = { pageIndex: 0, x: 20, y: 20, width: 320, height: 128 };
       const pages = [{ index: 0, width: 400, height: 300 }];
@@ -99,9 +95,11 @@ it("renders branded previews and releases each worker scope", async () => {
         });
       }).pipe(Effect.provide(pdfWorkerBrowserLayer())),
     );
-    const document = await PDFDocument.load(bytes);
-    expect(document.getPageCount()).toBe(1);
-    expect(document.getPage(0).getWidth()).toBe(324);
+    const sizes = await Effect.runPromise(
+      pageSizes(bytes).pipe(Effect.provide(pdfCoreBrowserLayer)),
+    );
+    expect(sizes).toHaveLength(1);
+    expect(sizes[0]?.[0]).toBe(324);
   }
 });
 

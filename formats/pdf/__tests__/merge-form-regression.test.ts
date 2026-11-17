@@ -1,4 +1,3 @@
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFString } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Redacted, Result } from "effect";
@@ -8,24 +7,18 @@ import { mergePdfs } from "../src/merge";
 import { signPdf } from "../src/sign";
 import { verifyPdf } from "../src/verify";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import {
+  createFixturePdf,
+  editFixturePdf,
+  fixtureDocument,
+  objectSource,
+  pdfSource,
+  ref,
+} from "./pdf-fixtures";
 
 const PASSWORD = Redacted.make("changeit");
 
-const rectangle = (pdf: PDFDocument): PDFArray => {
-  const rect = PDFArray.withContext(pdf.context);
-  rect.push(PDFNumber.of(20));
-  rect.push(PDFNumber.of(20));
-  rect.push(PDFNumber.of(120));
-  rect.push(PDFNumber.of(60));
-  return rect;
-};
-
-const createPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    pdf.addPage([320, 180]);
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
+const createPdf = () => createFixturePdf();
 
 const createForwardLengthPdf = (): Uint8Array => {
   const encoder = new TextEncoder();
@@ -52,93 +45,68 @@ const createForwardLengthPdf = (): Uint8Array => {
   return encoder.encode(pdf);
 };
 
-const createDocumentTimestampPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    pdf.addPage([320, 180]);
-    pdf.context.register(pdf.context.obj({ Type: "DocTimeStamp" }));
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
+const createDocumentTimestampPdf = () =>
+  createFixturePdf().pipe(
+    Effect.flatMap((pdf) =>
+      editFixturePdf(
+        pdf,
+        ({ next }) => [{ op: "setObject", ref: next(), value: "<< /Type /DocTimeStamp >>" }],
+        { incremental: true },
+      ),
+    ),
+  );
 
-const createUnsignedAcroFormPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    const page = pdf.addPage([320, 180]);
-    const link = pdf.context.obj({
-      Type: "Annot",
-      Subtype: "Link",
-      Rect: rectangle(pdf),
-      Border: [0, 0, 0],
-      A: { S: "URI", URI: PDFString.of("https://example.com") },
-      P: page.ref,
-    });
-    const linkRef = pdf.context.register(link);
-    const field = pdf.context.obj({
-      FT: "Sig",
-      T: PDFString.of("UnsignedSignature"),
-    });
-    const fieldRef = pdf.context.register(field);
-    const widget = pdf.context.obj({
-      Type: "Annot",
-      Subtype: "Widget",
-      Rect: rectangle(pdf),
-      Parent: fieldRef,
-      P: page.ref,
-    });
-    const widgetRef = pdf.context.register(widget);
-    const kids = pdf.context.obj([]);
-    kids.push(widgetRef);
-    field.set(PDFName.of("Kids"), kids);
-    const annotations = pdf.context.obj([]);
-    annotations.push(linkRef);
-    annotations.push(widgetRef);
-    page.node.set(PDFName.of("Annots"), annotations);
+const createUnsignedAcroFormPdf = () =>
+  createFixturePdf().pipe(
+    Effect.flatMap((pdf) =>
+      editFixturePdf(pdf, ({ next, page }) => {
+        const link = next();
+        const field = next();
+        const widget = next();
+        return [
+          {
+            op: "setObject",
+            ref: link,
+            value: `<< /Type /Annot /Subtype /Link /Rect [20 20 120 60] /Border [0 0 0] /A << /S /URI /URI (https://example.com) >> /P ${ref(page(0))} >>`,
+          },
+          {
+            op: "setObject",
+            ref: field,
+            value: `<< /FT /Sig /T (UnsignedSignature) /Kids [${ref(widget)}] >>`,
+          },
+          {
+            op: "setObject",
+            ref: widget,
+            value: `<< /Type /Annot /Subtype /Widget /Rect [20 20 120 60] /Parent ${ref(field)} /P ${ref(page(0))} >>`,
+          },
+          {
+            op: "set",
+            target: { base: { kind: "page", pageIndex: 0 } },
+            key: "Annots",
+            value: `[${ref(link)} ${ref(widget)}]`,
+          },
+          {
+            op: "set",
+            target: { base: { kind: "catalog" } },
+            key: "AcroForm",
+            value: `<< /Fields [${ref(field)}] >>`,
+          },
+        ];
+      }),
+    ),
+  );
 
-    const fields = pdf.context.obj([]);
-    fields.push(fieldRef);
-    const acroForm = pdf.context.obj({ Fields: fields });
-    pdf.catalog.set(PDFName.of("AcroForm"), pdf.context.register(acroForm));
-
-    return new Uint8Array(
-      await pdf.save({ updateFieldAppearances: false, useObjectStreams: false }),
-    );
-  });
-
-const mergedAnnotationState = (
-  pdf: Uint8Array,
-): Effect.Effect<{
-  readonly hasAcroForm: boolean;
-  readonly hasSignatureObject: boolean;
-  readonly annotationSubtypes: ReadonlyArray<string>;
-}> =>
-  Effect.promise(async () => {
-    const document = await PDFDocument.load(pdf);
-    const page = document.getPages()[0];
-    const annotations =
-      page === undefined ? undefined : page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
-    const annotationSubtypes =
-      annotations === undefined
-        ? []
-        : Array.from({ length: annotations.size() }, (_, index) =>
-            document.context
-              .lookupMaybe(annotations.get(index), PDFDict)
-              ?.lookupMaybe(PDFName.of("Subtype"), PDFName)
-              ?.toString(),
-          ).filter((subtype): subtype is string => subtype !== undefined);
-    const hasSignatureObject = document.context.enumerateIndirectObjects().some(([, object]) => {
-      if (!(object instanceof PDFDict)) return false;
-      return (
-        object.lookupMaybe(PDFName.of("Type"), PDFName)?.toString() === "/Sig" ||
-        object.lookupMaybe(PDFName.of("FT"), PDFName)?.toString() === "/Sig"
-      );
-    });
-
-    return {
-      hasAcroForm: document.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict) !== undefined,
-      hasSignatureObject,
-      annotationSubtypes,
-    };
-  });
+const mergedAnnotationState = (pdf: Uint8Array) =>
+  fixtureDocument(pdf, [0]).pipe(
+    Effect.map((document) => ({
+      hasAcroForm: document.acroForm,
+      hasSignatureObject: /\/FT\s*\/Sig\b|\/Type\s*\/Sig\b/u.test(pdfSource(pdf)),
+      annotations: document.annotations.map((annotation) => ({
+        widget: annotation.widget,
+        uri: annotation.uri,
+      })),
+    })),
+  );
 
 describe("PDF merge signed and AcroForm boundaries", () => {
   it.effect("rejects a cryptographically signed source before merge", () =>
@@ -176,13 +144,9 @@ describe("PDF merge signed and AcroForm boundaries", () => {
   it.effect("merges an unsigned PDF with a forward indirect stream length", () =>
     Effect.gen(function* () {
       const source = createForwardLengthPdf();
-      const sourcePageCount = yield* Effect.promise(async () =>
-        (await PDFDocument.load(source)).getPageCount(),
-      );
+      const sourcePageCount = (yield* fixtureDocument(source)).pages.length;
       const merged = yield* mergePdfs([source]);
-      const mergedPageCount = yield* Effect.promise(async () =>
-        (await PDFDocument.load(merged)).getPageCount(),
-      );
+      const mergedPageCount = (yield* fixtureDocument(merged)).pages.length;
 
       expect(sourcePageCount).toBe(1);
       expect(mergedPageCount).toBe(1);
@@ -195,7 +159,7 @@ describe("PDF merge signed and AcroForm boundaries", () => {
       const merged = yield* mergePdfs([source]);
       const state = yield* mergedAnnotationState(merged);
 
-      expect(state.annotationSubtypes).toStrictEqual(["/Link"]);
+      expect(state.annotations).toStrictEqual([{ widget: false, uri: "https://example.com" }]);
       expect(state.hasAcroForm).toBe(false);
       expect(state.hasSignatureObject).toBe(false);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
@@ -208,43 +172,23 @@ describe("PDF merge signed and AcroForm boundaries", () => {
         const source = yield* createUnsignedAcroFormPdf();
         const sourceBeforeMerge = source.slice();
         const merged = yield* mergePdfs([source]);
-        const document = yield* Effect.promise(() => PDFDocument.load(merged));
-        const page = document.getPages()[0];
+        const document = yield* fixtureDocument(merged, [0]);
+        const pageRef = document.pages[0]?.ref;
+        const annotation = document.annotations[0];
 
         expect(source).toStrictEqual(sourceBeforeMerge);
-        expect(page).toBeDefined();
-        if (page === undefined) return;
+        expect(pageRef).toBeDefined();
+        expect(annotation?.ref).toBeDefined();
+        if (pageRef === undefined || annotation?.ref === undefined) return;
 
-        const annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
-        const annotation =
-          annotations === undefined
-            ? undefined
-            : document.context.lookupMaybe(annotations.get(0), PDFDict);
-        const rect = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-        const action = annotation?.lookupMaybe(PDFName.of("A"), PDFDict);
-        const border = annotation?.lookupMaybe(PDFName.of("Border"), PDFArray);
-
-        expect(annotation?.lookupMaybe(PDFName.of("Type"), PDFName)?.toString()).toBe("/Annot");
-        expect(annotation?.lookupMaybe(PDFName.of("Subtype"), PDFName)?.toString()).toBe("/Link");
-        expect(annotation?.get(PDFName.of("P"))).toStrictEqual(page.ref);
-        expect(
-          rect === undefined
-            ? undefined
-            : Array.from({ length: rect.size() }, (_, index) =>
-                rect.lookup(index, PDFNumber).asNumber(),
-              ),
-        ).toStrictEqual([20, 20, 120, 60]);
-        expect(
-          border === undefined
-            ? undefined
-            : Array.from({ length: border.size() }, (_, index) =>
-                border.lookup(index, PDFNumber).asNumber(),
-              ),
-        ).toStrictEqual([0, 0, 0]);
-        expect(action?.lookupMaybe(PDFName.of("S"), PDFName)?.toString()).toBe("/URI");
-        expect(action?.lookupMaybe(PDFName.of("URI"), PDFString)?.decodeText()).toBe(
-          "https://example.com",
-        );
+        const body = objectSource(merged, annotation.ref.number) ?? "";
+        expect(body).toMatch(/\/Type\s*\/Annot\b/u);
+        expect(body).toMatch(/\/Subtype\s*\/Link\b/u);
+        expect(body).toContain(`/P ${ref(pageRef)}`);
+        expect(annotation.rect).toStrictEqual([20, 20, 120, 60]);
+        expect(body).toMatch(/\/Border\s*\[0 0 0\]/u);
+        expect(body).toMatch(/\/S\s*\/URI\b/u);
+        expect(annotation.uri).toBe("https://example.com");
       }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

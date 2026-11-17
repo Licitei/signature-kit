@@ -1,25 +1,15 @@
-import { degrees, PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue, PdfSchemaNameValue } from "../src/config";
 import { mergePdfs } from "../src/merge";
 import { findPdfTextAnchors } from "../src/anchors";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf, editFixturePdf, fixtureDocument, pageSizes } from "./pdf-fixtures";
 
-const createPdf = (sizes: ReadonlyArray<readonly [number, number]>): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    for (const [width, height] of sizes) pdf.addPage([width, height]);
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
-const createCroppedRotatedPdf = (rotationDegrees: number): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const document = await PDFDocument.create();
-    const page = document.addPage([400, 150]);
-    page.setCropBox(100, 25, 200, 100);
-    page.setRotation(degrees(rotationDegrees));
-    return new Uint8Array(await document.save({ useObjectStreams: false }));
-  });
+const createPdf = (sizes: ReadonlyArray<readonly [number, number]>) =>
+  createFixturePdf(sizes.map(([width, height]) => ({ size: [width, height] })));
+const createCroppedRotatedPdf = (rotationDegrees: number) =>
+  createFixturePdf([{ size: [400, 150], cropBox: [100, 25, 300, 125], rotate: rotationDegrees }]);
 
 describe("PDF merge and text-anchor input boundaries", () => {
   it.effect("rejects an empty document list instead of fabricating a page", () =>
@@ -37,14 +27,22 @@ describe("PDF merge and text-anchor input boundaries", () => {
   );
   it.effect("does not synthesize a page when valid documents contain no pages", () =>
     Effect.gen(function* () {
-      const source = yield* Effect.promise(async () => {
-        const pdf = await PDFDocument.create();
-        return new Uint8Array(await pdf.save({ addDefaultPage: false, useObjectStreams: false }));
-      });
+      const source = yield* editFixturePdf(yield* createFixturePdf(), () => [
+        {
+          op: "set",
+          target: { base: { kind: "catalog" }, path: ["Pages"] },
+          key: "Kids",
+          value: "[]",
+        },
+        {
+          op: "set",
+          target: { base: { kind: "catalog" }, path: ["Pages"] },
+          key: "Count",
+          value: "0",
+        },
+      ]);
       const merged = yield* mergePdfs([source]);
-      const pageCount = yield* Effect.promise(async () =>
-        (await PDFDocument.load(merged)).getPageCount(),
-      );
+      const pageCount = (yield* fixtureDocument(merged)).pages.length;
 
       expect(pageCount).toBe(0);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
@@ -160,12 +158,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
         [400, 200],
       ]);
       const merged = yield* mergePdfs([first, second]);
-      const sizes = yield* Effect.promise(async () =>
-        (await PDFDocument.load(merged)).getPages().map((page) => {
-          const size = page.getSize();
-          return [size.width, size.height];
-        }),
-      );
+      const sizes = yield* pageSizes(merged);
 
       expect(sizes).toStrictEqual([
         [200, 100],
