@@ -213,7 +213,9 @@ pub(crate) fn decode(png: &[u8]) -> Outcome<Image> {
             &joined
         }
     };
-    let mut data = inflate(compressed, expected_len)?;
+    let mut data = inflate(compressed, expected_len).map_err(|_inflate_failure| {
+        Failure::request("PNG image data is corrupt or exceeds its scanlines")
+    })?;
     if data.len() != expected_len {
         return Err(Failure::request("PNG image data is truncated"));
     }
@@ -365,7 +367,13 @@ fn chunks<'data>(png: &'data [u8], header: &Header) -> Outcome<Chunks<'data>> {
                     _ => Transparency::None,
                 };
             }
+            b"acTL" | b"fcTL" | b"fdAT" => {
+                return Err(Failure::request("animated PNG images are not supported"));
+            }
             b"IEND" => {
+                if length != 0 || end.saturating_add(4) != png.len() {
+                    return Err(Failure::request("PNG image has bytes after its end chunk"));
+                }
                 if header.color == 3 && found.palette.is_empty() {
                     return Err(Failure::request("PNG palette is missing"));
                 }
@@ -687,6 +695,23 @@ mod tests {
             chunk(&mut endless, *b"tEXt", &[]);
         }
         assert_eq!(reject(&endless), FailureCode::LimitExceeded);
+        let mut trailing = ok.clone();
+        trailing.push(0);
+        assert_eq!(reject(&trailing), FailureCode::InvalidRequest);
+        assert_eq!(
+            reject(&ok[..ok.len().saturating_sub(2)]),
+            FailureCode::InvalidRequest
+        );
+        for kind in [b"acTL", b"fcTL", b"fdAT"] {
+            assert_eq!(
+                reject(&png((1, 1), 0, 8, 0, &[(kind, vec![0; 8])], &[0, 7])),
+                FailureCode::InvalidRequest
+            );
+        }
+        assert_eq!(
+            reject(&png((1, 1), 6, 8, 0, &[], &vec![0; 1024 * 1024])),
+            FailureCode::InvalidRequest
+        );
         let mut interlace = ok;
         interlace[28] = 2;
         assert_eq!(reject(&interlace), FailureCode::InvalidRequest);

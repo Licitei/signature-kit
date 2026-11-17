@@ -42,6 +42,7 @@ import type {
   PdfCoreMergeSources,
   PdfCoreObjectRef,
   PdfCoreOperation,
+  PdfCorePngSize,
   PdfCoreSchemaName,
   PdfCoreSignatureAnalysis,
   PdfCoreSignatureReport,
@@ -88,6 +89,7 @@ export type PdfCoreService = {
   readonly fontMetrics: (
     baseFont: PdfCoreWinAnsiFont,
   ) => Effect.Effect<PdfCoreFontMetrics, PdfCoreError>;
+  readonly pngSize: (png: Uint8Array) => Effect.Effect<PdfCorePngSize, PdfCoreError>;
 };
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
@@ -1292,6 +1294,28 @@ export const makePdfCore = (
       return { baseFont, unicode, widths };
     });
 
+    const pngSize = Effect.fn(function* (png: Uint8Array) {
+      const operation = PdfCoreOperationValue.pngSize;
+      const payload = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const input = yield* copyIn(operation, png);
+          const block = yield* resultBlock(operation, () =>
+            core.pdf_core_png_size(input.pointer, png.byteLength),
+          );
+          return yield* payloadBytes(operation, block);
+        }),
+      );
+      if (payload.byteLength !== 8) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.wasmLoadFailed,
+          operation,
+          reason: "The PDF core returned a malformed PNG size.",
+        });
+      }
+      const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      return { width: view.getUint32(0, true), height: view.getUint32(4, true) };
+    });
+
     return {
       inspect,
       text,
@@ -1304,6 +1328,7 @@ export const makePdfCore = (
       deflate,
       create,
       fontMetrics,
+      pngSize,
     };
   });
 

@@ -499,8 +499,17 @@ impl Store<'_, '_> {
         let (root, inner) = self.locate(&target, true)?;
         let container = navigate_mut(self.object_mut(root)?, &inner)
             .ok_or_else(|| Failure::request("edit target does not exist"))?;
-        dict_of(container)?.insert(&name, value);
-        Ok(())
+        let resources = dict_of(container)?;
+        match resources.get(&name) {
+            Some(existing) if *existing != value => Err(Failure::request(
+                "page resource name is already bound to another object",
+            )),
+            Some(_) => Ok(()),
+            None => {
+                resources.insert(&name, value);
+                Ok(())
+            }
+        }
     }
 
     fn peek_value(&self, root: ObjRef, path: &[Step]) -> Outcome<Option<Object>> {
@@ -1561,6 +1570,46 @@ mod tests {
         assert!(text_pages[1].contains("Stamped"), "{text_pages:?}");
         assert!(text_pages[1].contains("World"));
         assert_eq!(text_pages[0], "Hello");
+    }
+
+    #[test]
+    fn page_resources_refuse_to_rebind_an_existing_name() {
+        let source = sample();
+        let next = document_info(&source, None, b"", &limits())
+            .unwrap()
+            .next_object_number;
+        let bind = |pdf: &[u8], reference: &str| {
+            let mut ops = Ops::default();
+            ops.op(OP_PAGE_RESOURCE)
+                .u32(1)
+                .bytes(b"XObject")
+                .bytes(b"Stamp")
+                .bytes(reference.as_bytes());
+            edit(pdf, &ops.finish(MODE_INCREMENTAL), &limits())
+        };
+        let first = format!("{next} 0 R");
+        let bound = bind(&source, &first).unwrap();
+        let same = bind(&bound, &first).unwrap();
+        let rebound = bind(&same, &format!("{} 0 R", next.saturating_add(1)));
+        let failure = rebound.unwrap_err();
+        assert_eq!(failure.code, FailureCode::InvalidRequest);
+        assert!(
+            failure.reason.contains("already bound"),
+            "{}",
+            failure.reason
+        );
+        let pages = reopen(&same).pages().unwrap();
+        assert_eq!(
+            pages[1]
+                .resources
+                .get(b"XObject")
+                .and_then(Object::as_dict)
+                .and_then(|dict| dict.get(b"Stamp")),
+            Some(&Object::Ref(ObjRef {
+                number: next,
+                generation: 0
+            }))
+        );
     }
 
     #[test]

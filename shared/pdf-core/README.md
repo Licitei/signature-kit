@@ -107,6 +107,8 @@ PNG input is bounded to 16 MiB, 16 Mi pixels, 64 MiB of decoded scanlines and 4,
 
 `fontMetrics(baseFont)` returns, for one of the twelve WinAnsi standard-14 fonts, the Unicode code point (`unicode`, `0` when undefined) and the advance width in 1/1000 em (`widths`) of each of the 256 WinAnsi codes, so callers can encode and measure text drawn with the `standardFont` operation.
 
+`pngSize(png)` decodes a PNG with the same bounded decoder as the `png` edit operation and returns its `width` and `height`; it fails with `pdfCore.INVALID_OPTIONS` or `pdfCore.LIMIT_EXCEEDED` for anything that operation would reject, including animated PNG chunks and bytes after `IEND`.
+
 `merge(sources, options)` copies pages into a new document: each source may select `pageIndexes`; inherited boxes, rotation, and resources are materialized, references to pages that are not copied become `null`, and `dropWidgets` removes widget annotations. `deflate(bytes)` returns a zlib stream.
 
 ## Errors
@@ -132,6 +134,7 @@ The module exports `memory` and thirteen functions. There is no global mutable s
 | `pdf_core_deflate(data_ptr, data_len) -> result_ptr`                                                     | The result payload is a zlib stream.                                                  |
 | `pdf_core_create(sizes_ptr, sizes_len) -> result_ptr`                                                    | `sizes_len` `f64` values, width and height per page; the payload is the new PDF.      |
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                               |
+| `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                   |
 
 `flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
 

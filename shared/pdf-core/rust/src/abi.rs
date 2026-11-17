@@ -17,6 +17,7 @@ use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::num::widen;
+use crate::png;
 use crate::revision::{Analysis, Report, analyze, revision_complete};
 use crate::table::Table;
 use crate::write::{Packing, create, merge};
@@ -798,6 +799,22 @@ pub(crate) unsafe extern "C" fn pdf_core_font_metrics(
             out.bytes(&unicode.to_le_bytes());
             out.bytes(&if unicode == 0 { 0 } else { *width }.to_le_bytes());
         }
+        out.done()
+    }))
+}
+
+/// # Safety
+///
+/// `png_ptr` must satisfy [`view`] for `png_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_png_size(png_ptr: *const u8, png_len: usize) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let png = unsafe { view(png_ptr, png_len) };
+    finish(png.and_then(|bytes| {
+        let image = png::decode(bytes)?;
+        let mut out = Writer::with_capacity(8);
+        out.u32(image.width);
+        out.u32(image.height);
         out.done()
     }))
 }
@@ -1601,6 +1618,34 @@ mod tests {
             assert_eq!(rejected.status, u32::from(FailureCode::InvalidRequest));
             release(&rejected);
         }
+    }
+
+    #[test]
+    fn png_size_decodes_the_whole_image() {
+        let mut png = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+            png.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+            png.extend_from_slice(kind);
+            png.extend_from_slice(data);
+            png.extend_from_slice(&[0, 0, 0, 0]);
+        };
+        chunk(b"IHDR", &[0, 0, 0, 2, 0, 0, 0, 1, 8, 0, 0, 0, 0]);
+        chunk(b"IDAT", &zlib_compress(&[0, 1, 2]));
+        chunk(b"IEND", &[]);
+        // SAFETY: `png` lives for the whole call.
+        let block = adopt(unsafe { pdf_core_png_size(png.as_ptr(), png.len()) });
+        assert_eq!(block.status, STATUS_OK);
+        let mut reader = Reader {
+            data: &block.payload,
+            at: 0,
+        };
+        assert_eq!((reader.u32(), reader.u32()), (2, 1));
+        release(&block);
+        png.push(0);
+        // SAFETY: `png` lives for the whole call.
+        let rejected = adopt(unsafe { pdf_core_png_size(png.as_ptr(), png.len()) });
+        assert_eq!(rejected.status, u32::from(FailureCode::InvalidRequest));
+        release(&rejected);
     }
 
     #[test]

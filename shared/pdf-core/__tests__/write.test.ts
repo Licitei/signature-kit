@@ -318,4 +318,32 @@ describe("PdfCore write path", () => {
       expect(bold.widths[0x41]).toBe(722);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("sizes PNGs with the bounded decoder and rejects what stamping would reject", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const png = Uint8Array.from(
+        atob(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        ),
+        (character) => character.charCodeAt(0),
+      );
+      const trailing = new Uint8Array(png.byteLength + 1);
+      trailing.set(png);
+      const apng = new Uint8Array(png.byteLength + 20);
+      apng.set(png.subarray(0, 33));
+      apng.set([0, 0, 0, 8, 0x61, 0x63, 0x54, 0x4c, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 33);
+      apng.set(png.subarray(33), 53);
+
+      expect(yield* core.pngSize(png)).toStrictEqual({ width: 1, height: 1 });
+      for (const rejected of [trailing, apng, png.subarray(0, 40), encoder.encode("png")]) {
+        const result = yield* Effect.result(core.pngSize(rejected));
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
+          expect(result.failure.operation).toBe("pdfCore.pngSize");
+        }
+      }
+    }).pipe(Effect.provide(layer)),
+  );
 });

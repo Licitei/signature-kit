@@ -59,6 +59,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.deflate",
   "pdfCore.create",
   "pdfCore.fontMetrics",
+  "pdfCore.pngSize",
 ]);
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
@@ -74,6 +75,7 @@ export const PdfCoreOperationValue = {
   deflate: "pdfCore.deflate",
   create: "pdfCore.create",
   fontMetrics: "pdfCore.fontMetrics",
+  pngSize: "pdfCore.pngSize",
 } satisfies Record<string, PdfCoreOperation>;
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
@@ -274,6 +276,7 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_deflate: Schema.declare(isBufferFunction, { identifier: "pdf_core_deflate" }),
   pdf_core_create: Schema.declare(isBufferFunction, { identifier: "pdf_core_create" }),
   pdf_core_font_metrics: Schema.declare(isBufferFunction, { identifier: "pdf_core_font_metrics" }),
+  pdf_core_png_size: Schema.declare(isBufferFunction, { identifier: "pdf_core_png_size" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 
@@ -620,3 +623,9 @@ export const PdfCoreFontMetricsSchema = Schema.Struct({
   widths: Schema.instanceOf(Uint16Array),
 });
 export type PdfCoreFontMetrics = (typeof PdfCoreFontMetricsSchema)["Type"];
+
+export const PdfCorePngSizeSchema = Schema.Struct({
+  width: Schema.Int,
+  height: Schema.Int,
+});
+export type PdfCorePngSize = (typeof PdfCorePngSizeSchema)["Type"];
