@@ -3,6 +3,8 @@ import type { Scope } from "effect";
 
 import {
   PdfCoreCreateOptionsSchema,
+  PDF_CORE_DEFAULT_RENDER_SCALE,
+  PdfCoreDisplayListsSchema,
   PdfCoreDocumentOptionsSchema,
   PdfCoreDocumentSchema,
   PdfCoreEditOperationsSchema,
@@ -16,6 +18,7 @@ import {
   PdfCoreMergeOptionsSchema,
   PdfCoreMergeSourcesSchema,
   PdfCoreOperationValue,
+  PdfCoreRenderOptionsSchema,
   PdfCoreSchemaNameValue,
   PdfCoreSignatureAnalysisSchema,
   PdfCoreSignatureFailureSchema,
@@ -29,6 +32,7 @@ import {
 } from "./config.js";
 import type {
   PdfCoreCreateOptions,
+  PdfCoreDisplayLists,
   PdfCoreDocument,
   PdfCoreDocumentOptions,
   PdfCoreEditOperation,
@@ -43,6 +47,7 @@ import type {
   PdfCoreObjectRef,
   PdfCoreOperation,
   PdfCorePngSize,
+  PdfCoreRenderOptions,
   PdfCoreSchemaName,
   PdfCoreSignatureAnalysis,
   PdfCoreSignatureReport,
@@ -90,6 +95,10 @@ export type PdfCoreService = {
     baseFont: PdfCoreWinAnsiFont,
   ) => Effect.Effect<PdfCoreFontMetrics, PdfCoreError>;
   readonly pngSize: (png: Uint8Array) => Effect.Effect<PdfCorePngSize, PdfCoreError>;
+  readonly renderPages: (
+    pdf: Uint8Array,
+    options?: PdfCoreRenderOptions,
+  ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
 };
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
@@ -112,6 +121,10 @@ const TABLES_VERSION = 1;
 const TABLES_HEADER_BYTES = 16;
 const TABLE_RECORD_BYTES = 48;
 const CELL_RECORD_BYTES = 56;
+const RENDER_MAGIC = 0x4c52_4450;
+const RENDER_VERSION = 1;
+const RENDER_HEADER_BYTES = 16;
+const RENDER_PAGE_HEADER_BYTES = 56;
 const RESULT_HEADER_BYTES = 8;
 const PAGE_RECORD_BYTES = 72;
 const LINK_RECORD_BYTES = 48;
@@ -1316,10 +1329,107 @@ export const makePdfCore = (
       return { width: view.getUint32(0, true), height: view.getUint32(4, true) };
     });
 
+    const decodeRenderBlock =
+      (scale: number) =>
+      (block: ResultBlock): Effect.Effect<PdfCoreDisplayLists, PdfCoreError> =>
+        Effect.gen(function* () {
+          const view = new DataView(block.memory, block.pointer, block.length);
+          if (view.getUint32(4, true) !== STATUS_OK) {
+            return yield* failStatus(PdfCoreOperationValue.render, block);
+          }
+          const base = RESULT_HEADER_BYTES;
+          if (
+            view.getUint32(base, true) !== RENDER_MAGIC ||
+            view.getUint32(base + 4, true) !== RENDER_VERSION
+          ) {
+            return yield* new PdfCoreError({
+              code: PdfCoreErrorCodeValue.wasmLoadFailed,
+              operation: PdfCoreOperationValue.render,
+              reason: "The PDF core render format is not supported by this package version.",
+            });
+          }
+          const pageCount = view.getUint32(base + 8, true);
+          const copy = (at: number, length: number): Uint8Array =>
+            new Uint8Array(block.memory, block.pointer + at, length).slice();
+          const pages = [];
+          let cursor = base + RENDER_HEADER_BYTES;
+          for (let index = 0; index < pageCount; index += 1) {
+            const opsLength = view.getUint32(cursor + 8, true);
+            const blobCount = view.getUint32(cursor + 12, true);
+            const opsAt = cursor + RENDER_PAGE_HEADER_BYTES;
+            const tableAt = align8(opsAt + opsLength);
+            const blobsAt = align8(tableAt + blobCount * 8);
+            const blobs = Array.from({ length: blobCount }, (_, blob) =>
+              copy(
+                blobsAt + view.getUint32(tableAt + blob * 8, true),
+                view.getUint32(tableAt + blob * 8 + 4, true),
+              ),
+            );
+            pages.push({
+              pageIndex: view.getUint32(cursor, true),
+              rotate: view.getInt32(cursor + 4, true),
+              view: [
+                view.getFloat64(cursor + 16, true),
+                view.getFloat64(cursor + 24, true),
+                view.getFloat64(cursor + 32, true),
+                view.getFloat64(cursor + 40, true),
+              ],
+              scale,
+              ops: copy(opsAt, opsLength),
+              blobs,
+            });
+            cursor += view.getUint32(cursor + 48, true);
+          }
+          return yield* Schema.decodeUnknownEffect(PdfCoreDisplayListsSchema)(pages).pipe(
+            Effect.mapError(
+              (issue) =>
+                new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                  operation: PdfCoreOperationValue.render,
+                  schemaName: PdfCoreSchemaNameValue.displayLists,
+                  reason: "The PDF core returned an invalid render result.",
+                  issueMessage: String(issue),
+                }),
+            ),
+          );
+        });
+
+    const renderPages = Effect.fn(function* (
+      pdf: Uint8Array,
+      rawOptions: PdfCoreRenderOptions = {},
+    ) {
+      const options = yield* Schema.decodeUnknownEffect(PdfCoreRenderOptionsSchema)(
+        rawOptions,
+      ).pipe(
+        Effect.mapError(
+          (issue) =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.invalidOptions,
+              operation: PdfCoreOperationValue.render,
+              schemaName: PdfCoreSchemaNameValue.renderOptions,
+              issueMessage: String(issue),
+            }),
+        ),
+      );
+      const scale = options.scale ?? PDF_CORE_DEFAULT_RENDER_SCALE;
+      const pageIndexes = options.pageIndexes ?? [];
+      const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
+      return yield* readBlock(
+        PdfCoreOperationValue.render,
+        (pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength) =>
+          core.pdf_core_render(pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength, scale),
+        pdf,
+        flags,
+        pageIndexes,
+        decodeRenderBlock(scale),
+      );
+    });
+
     return {
       inspect,
       text,
       tables,
+      renderPages,
       signatures,
       revisionComplete,
       document,
