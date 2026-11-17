@@ -514,7 +514,68 @@ fn last_char(text: &str) -> Option<char> {
 }
 
 fn ends_terminal(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    if trimmed.ends_with(['?', '&']) && url_word(left_word(trimmed)) {
+        return false;
+    }
     last_char(text).is_some_and(|ch| matches!(ch, '.' | '!' | '?' | ':' | ';'))
+}
+
+fn url_word(word: &str) -> bool {
+    let word = word.trim_start_matches(['(', '<', '[']);
+    word.starts_with("http://") || word.starts_with("https://") || word.starts_with("www.")
+}
+
+const fn url_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '/' | '.' | '-' | '_' | '~' | '?' | '&' | '=' | '#' | '%' | '+' | ':' | '@'
+        )
+}
+
+const LINK_TRAILERS: [char; 4] = ['.', ',', ';', ')'];
+
+fn url_continues(left: &str, right: &str) -> bool {
+    let word = left_word(left);
+    if !url_word(word) {
+        return false;
+    }
+    let next = right
+        .split(char::is_whitespace)
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(LINK_TRAILERS);
+    let mut chars = next.chars();
+    let (Some(first), Some(_)) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    if !next.chars().all(url_char) {
+        return false;
+    }
+    if matches!(first, '/' | '?' | '&' | '=' | '#' | '%') {
+        return true;
+    }
+    match word.chars().next_back() {
+        Some('?' | '&' | '=' | '_' | '#' | '%') => first.is_ascii_alphanumeric(),
+        Some('/') => next
+            .chars()
+            .any(|ch| matches!(ch, '/' | '.' | '=' | '&' | '?' | '_' | '-')),
+        _ => false,
+    }
+}
+
+fn trailer_cut(text: &str) -> usize {
+    let mut kept = text.trim_end_matches(LINK_TRAILERS);
+    if text.len() > kept.len()
+        && text
+            .get(kept.len()..)
+            .is_some_and(|tail| tail.starts_with(')'))
+        && kept.contains('(')
+    {
+        kept = text.get(..kept.len().saturating_add(1)).unwrap_or(kept);
+    }
+    kept.len()
 }
 
 fn starts_lower(text: &str) -> bool {
@@ -790,6 +851,7 @@ fn glue(left: &str, right: &str) -> Glue {
         || right.is_empty()
         || left.ends_with(char::is_whitespace)
         || right.starts_with(char::is_whitespace)
+        || url_continues(left, right)
     {
         return Glue::Direct;
     }
@@ -834,7 +896,20 @@ pub(crate) fn reflow_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Stri
     out
 }
 
-fn append_spans(spans: &mut Vec<Span>, plain: &mut String, next: Vec<Span>, next_plain: &str) {
+fn append_spans(spans: &mut Vec<Span>, plain: &mut String, mut next: Vec<Span>, next_plain: &str) {
+    if url_continues(plain, next_plain)
+        && let Some(link) = spans
+            .iter()
+            .rev()
+            .find(|span| !span.text.is_empty())
+            .and_then(|span| span.link)
+    {
+        let token = next_plain
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or_default();
+        widen_link(&mut next, link, trailer_cut(token));
+    }
     match glue(plain, next_plain) {
         Glue::Direct => {}
         Glue::Space => {
@@ -860,6 +935,57 @@ fn append_spans(spans: &mut Vec<Span>, plain: &mut String, next: Vec<Span>, next
             }
             _ => spans.push(span),
         }
+    }
+}
+
+fn widen_link(spans: &mut Vec<Span>, link: usize, len: usize) {
+    let Some(first) = spans.first_mut() else {
+        return;
+    };
+    if first.link.is_some() {
+        return;
+    }
+    let Some((head, tail)) = first.text.split_at_checked(len.min(first.text.len())) else {
+        return;
+    };
+    let rest = Span {
+        text: tail.to_owned(),
+        bold: first.bold,
+        italic: first.italic,
+        link: None,
+    };
+    first.text = head.to_owned();
+    first.link = Some(link);
+    if !rest.text.is_empty() {
+        spans.insert(1, rest);
+    }
+}
+
+fn detach_link_trailers(spans: &mut Vec<Span>) {
+    let mut index = 0_usize;
+    while let Some(span) = spans.get(index) {
+        index = index.saturating_add(1);
+        let Some(link) = span.link else {
+            continue;
+        };
+        if spans.get(index).is_some_and(|next| next.link == Some(link)) {
+            continue;
+        }
+        let Some(linked) = spans.get_mut(index.saturating_sub(1)) else {
+            continue;
+        };
+        let kept = trailer_cut(linked.text.trim_end());
+        if kept == 0 || kept >= linked.text.trim_end().len() {
+            continue;
+        }
+        let rest = Span {
+            text: linked.text.split_off(kept),
+            bold: linked.bold,
+            italic: linked.italic,
+            link: None,
+        };
+        spans.insert(index, rest);
+        index = index.saturating_add(1);
     }
 }
 
@@ -1359,7 +1485,8 @@ fn normalized(spans: &[Span]) -> Vec<Span> {
 }
 
 fn render_inline(spans: &[Span], links: &[LinkInfo], out: &mut String) {
-    let spans = normalized(spans);
+    let mut spans = normalized(spans);
+    detach_link_trailers(&mut spans);
     let mut index = 0_usize;
     while let Some(span) = spans.get(index) {
         let Some(link) = span.link.and_then(|at| links.get(at)) else {
@@ -1576,6 +1703,98 @@ mod tests {
             assert_eq!(plain, expected);
             assert_eq!(rendered, expected);
         }
+    }
+
+    #[test]
+    fn url_continuations_join_without_a_space() {
+        for (left, right, expected) in [
+            (
+                "acesse https://sei.utfpr.edu.br/sei/controlador_externo.php?",
+                "acao=documento_conferir&id=1, informando",
+                "acesse https://sei.utfpr.edu.br/sei/controlador_externo.php?acao=documento_conferir&id=1, informando",
+            ),
+            (
+                "https://www.gov.br/empresas-e-negocios/pt-br",
+                "/empreendedor; e",
+                "https://www.gov.br/empresas-e-negocios/pt-br/empreendedor; e",
+            ),
+            ("verify?code=", "8e1a-febd", "verify?code= 8e1a-febd"),
+            (
+                "https://x.br/app/verify?code=",
+                "8e1a-febd",
+                "https://x.br/app/verify?code=8e1a-febd",
+            ),
+            (
+                "https://loja.br/duto_",
+                "flexivel/item",
+                "https://loja.br/duto_flexivel/item",
+            ),
+            (
+                "www.portaldecompraspubli-",
+                "cas.com.br.",
+                "www.portaldecompraspublicas.com.br.",
+            ),
+            (
+                "https://sipac.ufrrj.br/documentos/",
+                "informando o",
+                "https://sipac.ufrrj.br/documentos/ informando o",
+            ),
+            (
+                "acesse www.site.gov.br",
+                "e informe",
+                "acesse www.site.gov.br e informe",
+            ),
+            (
+                "https://x.br/manual.pdf",
+                "% API=(A)xB",
+                "https://x.br/manual.pdf % API=(A)xB",
+            ),
+        ] {
+            let (plain, rendered) = joined(left, right);
+            assert_eq!(plain, expected);
+            assert_eq!(rendered, expected);
+        }
+        assert!(!ends_terminal("acesse https://x.br/controlador.php?"));
+        assert!(ends_terminal("Qual o valor?"));
+    }
+
+    #[test]
+    fn url_continuation_widens_the_link_and_drops_trailing_punctuation() {
+        let link = Span {
+            text: "https://www.gov.br/pt-br".to_owned(),
+            bold: false,
+            italic: false,
+            link: Some(0),
+        };
+        let mut spans = vec![link];
+        let mut plain = "https://www.gov.br/pt-br".to_owned();
+        let next = Span {
+            text: "/empreendedor; ver".to_owned(),
+            bold: false,
+            italic: false,
+            link: None,
+        };
+        append_spans(&mut spans, &mut plain, vec![next], "/empreendedor; ver");
+        let links = [LinkInfo {
+            page_index: 0,
+            rect: [0.0; 4],
+            uri: "https://www.gov.br/pt-br/empreendedor".to_owned(),
+        }];
+        let mut out = String::new();
+        render_inline(&spans, &links, &mut out);
+        assert_eq!(out, "https://www.gov.br/pt-br/empreendedor; ver");
+        let labelled = [Span {
+            text: "portal (oficial).".to_owned(),
+            bold: false,
+            italic: false,
+            link: Some(0),
+        }];
+        let mut rendered = String::new();
+        render_inline(&labelled, &links, &mut rendered);
+        assert_eq!(
+            rendered,
+            "[portal (oficial)](https://www.gov.br/pt-br/empreendedor)."
+        );
     }
 
     #[test]
