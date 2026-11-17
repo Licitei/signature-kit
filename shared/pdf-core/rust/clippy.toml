@@ -14,4 +14,5 @@ single-char-binding-names-threshold = 8
 disallowed-methods = [
     { path = "f64::mul_add", reason = "lowers to a libm software call on wasm32 and the x86-64 baseline; write a * b + c" },
     { path = "f64::hypot", reason = "lowers to a libm software call on wasm32 and the x86-64 baseline; write (x * x + y * y).sqrt()" },
+    { path = "f64::powi", reason = "lowers to a compiler-rt call on wasm32 and the x86-64 baseline; use a constant table" },
 ]

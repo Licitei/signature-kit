@@ -477,7 +477,7 @@ impl<'a> Parser<'a> {
                 }
                 self.pos = self.pos.saturating_add(1);
             }
-            let divisor = 10_f64.powi(i32::try_from(scale).unwrap_or(0));
+            let divisor = POW10.get(scale).copied().unwrap_or(1e18);
             let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
             return Object::Real(if negative { -magnitude } else { magnitude });
         }
@@ -703,6 +703,11 @@ impl Operand<'_> {
         }
     }
 }
+
+const POW10: [f64; 19] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18,
+];
 
 fn decode_hex(raw: &[u8], out: &mut Vec<u8>) {
     let mut high: Option<u8> = None;
