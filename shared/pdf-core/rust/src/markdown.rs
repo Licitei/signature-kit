@@ -113,7 +113,7 @@ pub(crate) struct MdLine {
 #[derive(Clone, Debug)]
 pub(crate) enum MdItem {
     Line(MdLine),
-    Table { text: String, band: Band },
+    Table { text: String, band: Band, top: f64 },
     Break,
 }
 
@@ -152,9 +152,14 @@ pub(crate) struct MdBlock {
     band: Band,
     lines: usize,
     size: f64,
+    top: f64,
 }
 
 impl MdBlock {
+    pub(crate) const fn top(&self) -> f64 {
+        self.top
+    }
+
     pub(crate) const fn band(&self) -> Band {
         self.band
     }
@@ -205,6 +210,7 @@ struct Para {
     size: f64,
     band: Band,
     lead: Option<Lead>,
+    top: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -999,6 +1005,7 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
             band: para.band,
             lines: para.lines,
             size: para.size,
+            top: para.top,
         });
         return;
     }
@@ -1027,6 +1034,7 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
             band: para.band,
             lines: para.lines,
             size: para.size,
+            top: para.top,
         });
         return;
     }
@@ -1038,6 +1046,7 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
         band: para.band,
         lines: para.lines,
         size: para.size,
+        top: para.top,
     });
 }
 
@@ -1051,6 +1060,7 @@ fn start(line: &Prepared<'_>) -> Para {
         size: line.line.size,
         band: line.line.band,
         lead: line.lead.clone(),
+        top: line.line.center,
     }
 }
 
@@ -1108,7 +1118,7 @@ pub(crate) fn page_blocks(items: &[MdItem], metrics: Metrics) -> Vec<MdBlock> {
     let mut current: Option<(Para, usize)> = None;
     for (index, (item, line)) in items.iter().zip(&prepared).enumerate() {
         let Some(line) = line else {
-            if let MdItem::Table { text, band } = item {
+            if let MdItem::Table { text, band, top } = item {
                 if let Some((para, _)) = current.take() {
                     finish(para, body, &mut list, &mut out);
                 }
@@ -1120,6 +1130,7 @@ pub(crate) fn page_blocks(items: &[MdItem], metrics: Metrics) -> Vec<MdBlock> {
                     band: *band,
                     lines: 0,
                     size: 0.0,
+                    top: *top,
                 });
             } else if matches!(item, MdItem::Break)
                 && let Some((para, _)) = current.take()

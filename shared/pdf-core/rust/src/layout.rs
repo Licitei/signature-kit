@@ -1,4 +1,4 @@
-use crate::num::widen;
+use crate::num::{f64_to_i64, widen};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
@@ -601,6 +601,7 @@ struct PageLayout {
     pieces: Vec<Piece>,
     tables: Vec<Table>,
     md: Vec<MdItem>,
+    height: f64,
 }
 
 type LinkRect = ([f64; 4], usize);
@@ -1069,6 +1070,7 @@ fn layout_pool(
                     out.md.push(MdItem::Table {
                         text: render_markdown(table),
                         band,
+                        top: table.bbox[3],
                     });
                 } else {
                     out.pieces.push(Piece {
@@ -1386,13 +1388,17 @@ fn single_page(
     };
     let scoped = page_links(links, page_index);
     match extract_content(document, page, limits, capture, session) {
-        Ok(content) => Ok(page_layout(
-            &content,
-            page.info.rotate,
-            Some(page.info.crop_box),
-            mode,
-            &scoped,
-        )),
+        Ok(content) => {
+            let mut layout = page_layout(
+                &content,
+                page.info.rotate,
+                Some(page.info.crop_box),
+                mode,
+                &scoped,
+            );
+            layout.height = page.info.crop_box[3] - page.info.crop_box[1];
+            Ok(layout)
+        }
         Err(failure) if failure.code == FailureCode::LimitExceeded => Err(failure),
         Err(_) => Ok(PageLayout::default()),
     }
@@ -1472,6 +1478,65 @@ pub(crate) fn document_text(
     Ok(texts)
 }
 
+const FURNITURE_BLOCKS: usize = 3;
+const FURNITURE_PITCH: f64 = 2.0;
+const FURNITURE_MIN_PAGES: usize = 3;
+const FURNITURE_SHARE: usize = 20;
+
+type FurnitureKey = (String, i64, i64);
+
+fn furniture_key(block: &MdBlock, height: f64) -> Option<FurnitureKey> {
+    let key = running_key(block.plain());
+    (!key.is_empty()).then(|| {
+        (
+            key,
+            f64_to_i64((block.top() / FURNITURE_PITCH).round()),
+            f64_to_i64(height.round()),
+        )
+    })
+}
+
+const fn at_page_edge(index: usize, len: usize) -> bool {
+    index < FURNITURE_BLOCKS || index.saturating_add(FURNITURE_BLOCKS) >= len
+}
+
+fn drop_furniture(pages: &mut [Vec<MdBlock>], heights: &[f64]) {
+    let mut recurring: HashMap<FurnitureKey, (usize, usize)> = HashMap::new();
+    for (position, blocks) in pages.iter().enumerate() {
+        let height = heights.get(position).copied().unwrap_or(0.0);
+        let mut seen: HashSet<FurnitureKey> = HashSet::new();
+        for (index, block) in blocks.iter().enumerate() {
+            if !at_page_edge(index, blocks.len()) {
+                continue;
+            }
+            if let Some(key) = furniture_key(block, height)
+                && seen.insert(key.clone())
+            {
+                let entry = recurring.entry(key).or_insert((position, 0));
+                entry.1 = entry.1.saturating_add(1);
+            }
+        }
+    }
+    let threshold = FURNITURE_MIN_PAGES.max(pages.len().checked_div(FURNITURE_SHARE).unwrap_or(0));
+    recurring.retain(|_, &mut (_, count)| count >= threshold);
+    if recurring.is_empty() {
+        return;
+    }
+    for (position, blocks) in pages.iter_mut().enumerate() {
+        let height = heights.get(position).copied().unwrap_or(0.0);
+        let len = blocks.len();
+        let mut index = 0_usize;
+        blocks.retain(|block| {
+            let edge = at_page_edge(index, len);
+            index = index.saturating_add(1);
+            !(edge
+                && furniture_key(block, height)
+                    .and_then(|key| recurring.get(&key))
+                    .is_some_and(|&(first, _)| first != position))
+        });
+    }
+}
+
 fn is_dropped(dropped: &RunningKeys, band: Band, text: &str, position: usize) -> bool {
     band != Band::Free
         && !dropped.is_empty()
@@ -1507,6 +1572,8 @@ fn markdown_pages(
         for (position, blocks) in pages.iter_mut().enumerate() {
             blocks.retain(|block| !is_dropped(&dropped, block.band(), block.plain(), position));
         }
+        let heights: Vec<f64> = layouts.iter().map(|layout| layout.height).collect();
+        drop_furniture(&mut pages, &heights);
     }
     join_pages(&mut pages, metrics);
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
@@ -2200,6 +2267,68 @@ mod structure_tests {
         ] {
             assert_no_markdown_loss(name, bytes);
         }
+    }
+
+    #[test]
+    fn markdown_drops_recurring_page_edge_blocks_outside_the_bands() {
+        let mut pages = Vec::new();
+        for index in 0..4 {
+            let shift = 30.0 * f64::from(index);
+            let mut content = String::new();
+            content.push_str(&text(50.0, 650.0, 10.0, "FUNDACAO OSWALDO CRUZ"));
+            content.push_str(&text(
+                50.0,
+                600.0 - shift,
+                10.0,
+                "Clausula repetida no corpo.",
+            ));
+            content.push_str(&text(
+                50.0,
+                400.0 - shift,
+                10.0,
+                &format!("Texto proprio da pagina {index}."),
+            ));
+            content.push_str(&text(
+                50.0,
+                150.0,
+                10.0,
+                &format!("Portaria 12/2026 pg. {}", index + 1),
+            ));
+            pages.push(page(content));
+        }
+        let bytes = document(&pages, &[]);
+        let options = TextOptions {
+            markdown: true,
+            drop_running: true,
+        };
+        let markdown = pages_of(&bytes, options);
+        assert!(
+            markdown[0].contains("FUNDACAO OSWALDO CRUZ"),
+            "{}",
+            markdown[0]
+        );
+        assert!(
+            markdown[0].contains("Portaria 12/2026 pg. 1"),
+            "{}",
+            markdown[0]
+        );
+        for page_markdown in &markdown[1..] {
+            assert!(!page_markdown.contains("FUNDACAO"), "{page_markdown}");
+            assert!(!page_markdown.contains("Portaria"), "{page_markdown}");
+            assert!(
+                page_markdown.contains("Clausula repetida no corpo."),
+                "{page_markdown}"
+            );
+            assert!(
+                page_markdown.contains("Texto proprio da pagina"),
+                "{page_markdown}"
+            );
+        }
+        let kept = pages_of(&bytes, MARKDOWN);
+        assert!(
+            kept.iter()
+                .all(|page_markdown| page_markdown.contains("Portaria"))
+        );
     }
 
     #[test]

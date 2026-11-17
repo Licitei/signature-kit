@@ -888,14 +888,17 @@ mod tests {
     fn table_pdf() -> Vec<u8> {
         use crate::test_pdf::{document, grid, page, text};
         let mut pages = Vec::new();
-        for index in 0..3 {
-            let mut content = grid(&[700.0, 680.0, 660.0], &[50.0, 200.0, 350.0]);
-            content.push_str(&text(55.0, 688.0, 10.0, "Item | x"));
-            content.push_str(&text(205.0, 688.0, 10.0, "Valor"));
-            content.push_str(&text(55.0, 668.0, 10.0, "Cimento"));
-            content.push_str(&text(205.0, 668.0, 10.0, "12,50"));
+        for (index, shift) in [0.0, 40.0, 80.0].into_iter().enumerate() {
+            let mut content = grid(
+                &[700.0 - shift, 680.0 - shift, 660.0 - shift],
+                &[50.0, 200.0, 350.0],
+            );
+            content.push_str(&text(55.0, 688.0 - shift, 10.0, "Item | x"));
+            content.push_str(&text(205.0, 688.0 - shift, 10.0, "Valor"));
+            content.push_str(&text(55.0, 668.0 - shift, 10.0, "Cimento"));
+            content.push_str(&text(205.0, 668.0 - shift, 10.0, "12,50"));
             content.push_str(&text(50.0, 770.0, 9.0, "Prefeitura de Marilac"));
-            content.push_str(&text(50.0, 500.0, 10.0, &format!("Corpo {index}")));
+            content.push_str(&text(50.0, 500.0 - shift, 10.0, &format!("Corpo {index}")));
             pages.push(page(content));
         }
         document(&pages, &[])
