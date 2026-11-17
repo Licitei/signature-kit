@@ -1,8 +1,8 @@
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::num::widen;
 
-fn partial_or_err(err: Failure, out: &[u8]) -> Outcome<Vec<u8>> {
-    if err.code == FailureCode::LimitExceeded {
+fn partial_or_err(err: Failure, out: &[u8], truncate: bool) -> Outcome<Vec<u8>> {
+    if err.code == FailureCode::LimitExceeded && !truncate {
         return Err(err);
     }
     if out.is_empty() {
@@ -163,7 +163,9 @@ impl<'a> BitReader<'a> {
             .data
             .get(start..end)
             .ok_or_else(|| Failure::invalid("stored block slice"))?;
-        if out.len().saturating_add(chunk.len()) > max {
+        let room = max.saturating_sub(out.len());
+        if chunk.len() > room {
+            out.extend_from_slice(chunk.get(..room).unwrap_or_default());
             return Err(Failure::limit("inflate output exceeds limit"));
         }
         out.extend_from_slice(chunk);
@@ -315,21 +317,22 @@ fn copy_match(out: &mut Vec<u8>, distance: usize, length: usize, max: usize) -> 
     if distance == 0 || distance > out.len() {
         return Err(Failure::invalid("bad back-reference distance"));
     }
-    if out.len().saturating_add(length) > max {
-        return Err(Failure::limit("inflate output exceeds limit"));
-    }
+    let fits = length.min(max.saturating_sub(out.len()));
     let start = out.len().saturating_sub(distance);
     if distance == 1 {
         let byte = out.get(start).copied().unwrap_or(0);
-        out.resize(out.len().saturating_add(length), byte);
-        return Ok(());
+        out.resize(out.len().saturating_add(fits), byte);
+    } else {
+        let mut remaining = fits;
+        while remaining > 0 {
+            let available = out.len().saturating_sub(start);
+            let chunk = remaining.min(available);
+            out.extend_from_within(start..start.saturating_add(chunk));
+            remaining = remaining.saturating_sub(chunk);
+        }
     }
-    let mut remaining = length;
-    while remaining > 0 {
-        let available = out.len().saturating_sub(start);
-        let chunk = remaining.min(available);
-        out.extend_from_within(start..start.saturating_add(chunk));
-        remaining = remaining.saturating_sub(chunk);
+    if fits < length {
+        return Err(Failure::limit("inflate output exceeds limit"));
     }
     Ok(())
 }
@@ -513,6 +516,14 @@ fn skip_zlib_header(data: &[u8]) -> usize {
 }
 
 pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
+    inflate_with(data, max_output, false)
+}
+
+pub(crate) fn inflate_prefix(data: &[u8], len: usize) -> Outcome<Vec<u8>> {
+    inflate_with(data, len, true)
+}
+
+fn inflate_with(data: &[u8], max_output: usize, truncate: bool) -> Outcome<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max_output));
     let skip = skip_zlib_header(data);
     let payload = data.get(skip..).map_or(data, |slice| slice);
@@ -538,11 +549,15 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
                     .take_bits(16)
                     .ok_or_else(|| Failure::invalid("stored nlen"))?;
                 if len_bits.wrapping_add(nlen_bits) != 0xffff {
-                    return partial_or_err(Failure::invalid("stored block len mismatch"), &out);
+                    return partial_or_err(
+                        Failure::invalid("stored block len mismatch"),
+                        &out,
+                        truncate,
+                    );
                 }
                 let len = widen(len_bits);
                 if let Err(err) = bits.copy_stored_bytes(&mut out, len, max_output) {
-                    return partial_or_err(err, &out);
+                    return partial_or_err(err, &out, truncate);
                 }
             }
             1 => {
@@ -550,12 +565,12 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
                     fixed = Some(fixed_trees()?);
                 }
                 let Some((lit, dist)) = &fixed else {
-                    return partial_or_err(Failure::invalid("fixed huffman trees"), &out);
+                    return partial_or_err(Failure::invalid("fixed huffman trees"), &out, truncate);
                 };
                 match inflate_block(&mut bits, &mut out, max_output, lit, dist) {
                     Ok(true) => {}
                     Ok(false) => return Ok(out),
-                    Err(err) => return partial_or_err(err, &out),
+                    Err(err) => return partial_or_err(err, &out, truncate),
                 }
             }
             2 => {
@@ -564,11 +579,15 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
                 match inflate_block(&mut bits, &mut out, max_output, lit, dist) {
                     Ok(true) => {}
                     Ok(false) => return Ok(out),
-                    Err(err) => return partial_or_err(err, &out),
+                    Err(err) => return partial_or_err(err, &out, truncate),
                 }
             }
             _ => {
-                return partial_or_err(Failure::invalid("invalid deflate block type"), &out);
+                return partial_or_err(
+                    Failure::invalid("invalid deflate block type"),
+                    &out,
+                    truncate,
+                );
             }
         }
     }
@@ -687,6 +706,44 @@ mod tests {
         let out = inflate(cut, 1024 * 1024).expect("partial");
         assert_ne!(out, []);
         assert!(out.len() < 67_500);
+    }
+
+    #[test]
+    fn prefix_matches_the_full_output_at_every_cut() {
+        use super::inflate_prefix;
+        for data in [ZLIB_SKEWED, ZLIB_MB] {
+            let full = inflate(data, 64 * 1024 * 1024).expect("full");
+            for len in [
+                0_usize,
+                1,
+                2,
+                257,
+                258,
+                259,
+                1000,
+                4095,
+                4096,
+                65_537,
+                full.len(),
+            ] {
+                let expected = full.get(..len.min(full.len())).expect("slice");
+                if len == 0 {
+                    inflate_prefix(data, len).expect_err("empty prefix");
+                } else {
+                    assert_eq!(inflate_prefix(data, len).expect("prefix"), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stored_prefix_stops_exactly_at_the_cut() {
+        use super::inflate_prefix;
+        let stored = [
+            0x78_u8, 0x01, 0x01, 0x05, 0x00, 0xfa, 0xff, b'h', b'e', b'l', b'l', b'o',
+        ];
+        assert_eq!(inflate_prefix(&stored, 3).expect("prefix"), b"hel");
+        inflate(&stored, 3).expect_err("limit");
     }
 
     #[test]

@@ -462,7 +462,23 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
     Some(())
 }
 
+pub(crate) const SFNT_DIRECTORY_LEN: usize = 12 + 16 * MAX_TABLES;
+
 pub(crate) fn sfnt_style_of(bytes: &[u8]) -> Option<FontStyle> {
+    let (head, os2) = style_tables(bytes)?;
+    (head.is_some() || os2.is_some()).then(|| sfnt_style(bytes, head, os2))
+}
+
+pub(crate) fn sfnt_style_extent(bytes: &[u8]) -> Option<usize> {
+    let (head, os2) = style_tables(bytes)?;
+    let head_end = head.and_then(|(offset, _)| offset.checked_add(46));
+    let os2_end = os2.and_then(|(offset, _)| offset.checked_add(64));
+    Some(head_end.unwrap_or(0).max(os2_end.unwrap_or(0)))
+}
+
+type TableRange = Option<(usize, usize)>;
+
+fn style_tables(bytes: &[u8]) -> Option<(TableRange, TableRange)> {
     let head = read_u32(bytes, 0)?;
     if !matches!(head, SFNT_TRUETYPE | SFNT_OPENTYPE | SFNT_TRUE) {
         return None;
@@ -481,7 +497,7 @@ pub(crate) fn sfnt_style_of(bytes: &[u8]) -> Option<FontStyle> {
             _ => {}
         }
     }
-    (found.0.is_some() || found.1.is_some()).then(|| sfnt_style(bytes, found.0, found.1))
+    Some(found)
 }
 
 fn sfnt_style(
@@ -1461,6 +1477,22 @@ pub(crate) fn load_font_file_bytes(
         return Err(Failure::limit("font program exceeds limit"));
     }
     Ok(bytes)
+}
+
+pub(crate) fn load_font_file_prefix(
+    key: &[u8],
+    descriptor: &crate::object::Dict,
+    resolver: &dyn crate::object::Resolver,
+    len: usize,
+) -> Result<Vec<u8>, Failure> {
+    let Some(stream_obj) = descriptor.get(key) else {
+        return Err(Failure::invalid("missing font program stream"));
+    };
+    let object = resolver.resolve(stream_obj)?;
+    let crate::object::Object::Stream(stream) = &*object else {
+        return Err(Failure::invalid("font program is not a stream"));
+    };
+    resolver.stream_prefix(stream, len)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {

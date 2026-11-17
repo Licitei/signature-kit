@@ -11,8 +11,22 @@ const IMAGE_FILTERS: [&[u8]; 4] = [
     b"JBIG2Decode",
 ];
 
-pub(crate) fn decode_stream(dict: &Dict, raw: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
+pub(crate) fn decode_stream(
+    dict: &Dict,
+    raw: &[u8],
+    max_output: usize,
+    prefix: Option<usize>,
+) -> Outcome<Vec<u8>> {
     let (filters, parms) = parse_filter_chain(dict)?;
+    if let Some(len) = prefix {
+        match (filters.as_slice(), parms.as_slice()) {
+            ([], _) => return Ok(raw.get(..len).unwrap_or(raw).to_vec()),
+            ([name], [None]) if name_matches(name, b"FlateDecode") => {
+                return inflate::inflate_prefix(raw, len.min(max_output));
+            }
+            _ => {}
+        }
+    }
     if filters.is_empty() {
         if raw.len() > max_output {
             return Err(Failure::limit("decoded stream exceeds limit"));
@@ -654,7 +668,7 @@ mod tests {
             0x00, 0x1a, 0x0b, 0x04, 0x5d,
         ];
         let dict = dict_filter(b"FlateDecode", None);
-        let out = decode_stream(&dict, &zlib, 1024).expect("flate");
+        let out = decode_stream(&dict, &zlib, 1024, None).expect("flate");
         assert_eq!(out, b"hello world");
     }
 
@@ -662,7 +676,7 @@ mod tests {
     fn ascii_hex_roundtrip() {
         let hex = b"41 42 43>";
         let dict = dict_filter(b"AHx", None);
-        let out = decode_stream(&dict, hex, 1024).expect("hex");
+        let out = decode_stream(&dict, hex, 1024, None).expect("hex");
         assert_eq!(out, b"ABC");
     }
 
@@ -670,7 +684,7 @@ mod tests {
     fn ascii85_roundtrip() {
         let data = b"E,9)oF*2M7/c";
         let dict = dict_filter(b"A85", None);
-        let out = decode_stream(&dict, data, 1024).expect("a85");
+        let out = decode_stream(&dict, data, 1024, None).expect("a85");
         assert_eq!(out, b"pleasure.");
     }
 
@@ -678,7 +692,7 @@ mod tests {
     fn run_length_roundtrip() {
         let raw = [3_u8, 97, 98, 99, 100, 254, 97, 128];
         let dict = dict_filter(b"RL", None);
-        let out = decode_stream(&dict, &raw, 1024).expect("rl");
+        let out = decode_stream(&dict, &raw, 1024, None).expect("rl");
         assert_eq!(out, b"abcdaaa");
     }
 
@@ -691,7 +705,7 @@ mod tests {
             vec![b"ASCII85Decode", b"FlateDecode"],
             vec![Object::Null, Object::Dict(parms)],
         );
-        let out = decode_stream(&dict, encoded, 1024).expect("chain");
+        let out = decode_stream(&dict, encoded, 1024, None).expect("chain");
         assert_eq!(out, b"hello world");
     }
 
@@ -708,7 +722,7 @@ mod tests {
         let stored = [
             0x78_u8, 0x01, 0x01, 0x03, 0x00, 0xfc, 0xff, 0x01, 0x01, 0x02, 0x00, 0x0a, 0x00, 0x05,
         ];
-        let out = decode_stream(&dict, &stored, 1024).expect("png sub");
+        let out = decode_stream(&dict, &stored, 1024, None).expect("png sub");
         assert_eq!(out, vec![1_u8, 3]);
     }
 
@@ -726,7 +740,7 @@ mod tests {
             0x78_u8, 0x01, 0x01, 0x04, 0x00, 0xfb, 0xff, 0x0a, 0x05, 0x0a, 0x0a, 0x00, 0x59, 0x00,
             0x24,
         ];
-        let out = decode_stream(&dict, &stored, 1024).expect("tiff");
+        let out = decode_stream(&dict, &stored, 1024, None).expect("tiff");
         assert_eq!(out, vec![10_u8, 15, 10, 20]);
     }
 
@@ -737,7 +751,7 @@ mod tests {
             0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01,
             0x00, 0x1a, 0x0b, 0x04, 0x5d,
         ];
-        let err = decode_stream(&dict, &big, 4).expect_err("limit");
+        let err = decode_stream(&dict, &big, 4, None).expect_err("limit");
         assert_eq!(err.code, FailureCode::LimitExceeded);
     }
 
@@ -747,7 +761,7 @@ mod tests {
         let partial = [
             0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49,
         ];
-        let out = decode_stream(&dict, &partial, 1024).expect("partial");
+        let out = decode_stream(&dict, &partial, 1024, None).expect("partial");
         assert_ne!(out, []);
     }
 
@@ -755,7 +769,7 @@ mod tests {
     fn image_last_passthrough() {
         let dict = dict_filter(b"DCTDecode", None);
         let raw = b"jpeg-bytes";
-        let out = decode_stream(&dict, raw, 1024).expect("jpeg pass");
+        let out = decode_stream(&dict, raw, 1024, None).expect("jpeg pass");
         assert_eq!(out, raw.to_vec());
     }
 
@@ -764,7 +778,7 @@ mod tests {
         let mut dict = Dict::default();
         dict.insert(b"Filter", Object::Name(b"LZWDecode".to_vec()));
         let data = [0x00_u8, 0x83, 0x08, 0x09, 0x08];
-        let out = decode_stream(&dict, &data, 1024).expect("lzw");
+        let out = decode_stream(&dict, &data, 1024, None).expect("lzw");
         assert_eq!(out, b"AB");
     }
 
@@ -777,7 +791,7 @@ mod tests {
         parms.insert(b"BitsPerComponent", Object::Integer(8));
         parms.insert(b"Columns", Object::Integer(2));
         dict.insert(b"DecodeParms", Object::Dict(parms));
-        decode_stream(&dict, stored, 1024).expect("png decode")
+        decode_stream(&dict, stored, 1024, None).expect("png decode")
     }
 
     #[test]
@@ -810,7 +824,7 @@ mod tests {
             let mut parms = Dict::default();
             parms.insert(b"EarlyChange", Object::Integer(early));
             dict.insert(b"DecodeParms", Object::Dict(parms));
-            decode_stream(&dict, data, 1024).expect("lzw")
+            decode_stream(&dict, data, 1024, None).expect("lzw")
         };
         let short = [0x00_u8, 0x83, 0x08, 0x09, 0x08];
         assert_eq!(decode(1, &short), b"AB");
@@ -830,7 +844,7 @@ mod tests {
                 state ^= state << 5;
                 *byte ^= u8::try_from(state & 0xFF).unwrap();
             }
-            drop(black_box(decode_stream(&dict, &input, 65536)));
+            drop(black_box(decode_stream(&dict, &input, 65536, None)));
         }
     }
 
@@ -839,7 +853,7 @@ mod tests {
         let payload = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
         let dict = dict_filter(b"FlateDecode", None);
         let start = std::time::Instant::now();
-        black_box(decode_stream(&dict, payload, 8 * 1024 * 1024).expect("bench"));
+        black_box(decode_stream(&dict, payload, 8 * 1024 * 1024, None).expect("bench"));
         let elapsed = start.elapsed();
         assert!(
             elapsed < std::time::Duration::from_secs(5),

@@ -134,4 +134,7 @@ impl Object {
 pub(crate) trait Resolver {
     fn resolve(&self, object: &Object) -> Outcome<Rc<Object>>;
     fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>>;
+    fn stream_prefix(&self, stream: &Stream, _len: usize) -> Outcome<Vec<u8>> {
+        self.stream_data(stream)
+    }
 }

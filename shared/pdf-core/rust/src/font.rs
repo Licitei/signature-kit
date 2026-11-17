@@ -9,7 +9,8 @@ use crate::cmap::{CMap, UnicodeMap, covering, disjoint};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{BuiltinEncoding, Standard14Font, encoding_glyph_name};
 use crate::fontprog::{
-    FontProgram, FontStyle, agl_components, load_font_file_bytes, parse_font_program, sfnt_style_of,
+    FontProgram, FontStyle, SFNT_DIRECTORY_LEN, agl_components, load_font_file_bytes,
+    load_font_file_prefix, parse_font_program, sfnt_style_extent, sfnt_style_of,
 };
 use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
@@ -818,7 +819,19 @@ pub(crate) fn embedded_style(
     resolver: &dyn Resolver,
     limits: &Limits,
 ) -> Option<FontStyle> {
-    let bytes = load_font_file_bytes(b"FontFile2", descriptor, resolver, limits).ok()?;
+    let prefix = SFNT_DIRECTORY_LEN.min(limits.max_decoded_stream_bytes);
+    let directory = load_font_file_prefix(b"FontFile2", descriptor, resolver, prefix).ok()?;
+    let extent = sfnt_style_extent(&directory)?;
+    if extent <= directory.len() {
+        return sfnt_style_of(&directory);
+    }
+    let bytes = load_font_file_prefix(
+        b"FontFile2",
+        descriptor,
+        resolver,
+        extent.min(limits.max_decoded_stream_bytes),
+    )
+    .ok()?;
     sfnt_style_of(&bytes)
 }
 

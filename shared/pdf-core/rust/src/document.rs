@@ -1174,13 +1174,23 @@ impl Resolver for Document<'_> {
     }
 
     fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>> {
+        self.decode_stream(stream, None)
+    }
+
+    fn stream_prefix(&self, stream: &Stream, len: usize) -> Outcome<Vec<u8>> {
+        self.decode_stream(stream, Some(len))
+    }
+}
+
+impl Document<'_> {
+    fn decode_stream(&self, stream: &Stream, prefix: Option<usize>) -> Outcome<Vec<u8>> {
         let raw = self
             .bytes
             .get(stream.data.clone())
             .ok_or_else(|| Failure::invalid("stream data out of range"))?;
         let max = self.limits.max_decoded_stream_bytes;
         let Some(filter) = stream.dict.get(b"Filter") else {
-            return filters::decode_stream(&stream.dict, raw, max);
+            return filters::decode_stream(&stream.dict, raw, max, prefix);
         };
         let mut resolved = Dict::default();
         for (key, value) in &stream.dict.entries {
@@ -1201,7 +1211,7 @@ impl Resolver for Document<'_> {
                 .entries
                 .push((b"DecodeParms".to_vec(), self.resolve_deep(parms, 0)?));
         }
-        filters::decode_stream(&resolved, raw, max)
+        filters::decode_stream(&resolved, raw, max, prefix)
     }
 }
 
