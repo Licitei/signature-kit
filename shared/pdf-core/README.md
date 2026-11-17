@@ -8,12 +8,16 @@ In-house PDF engine compiled to WebAssembly. It inspects page geometry, link ann
 bun add @signature-kit/pdf-core effect
 ```
 
+Apps that do not use Effect skip `effect` and use the Promise client (see [Without Effect](#without-effect)).
+
 ## Public surface
 
 - `@signature-kit/pdf-core/config` — `PdfCoreError`, `PdfCoreErrorCodeValue`, `pdfCoreErrorMessages`, and the option and inspection schemas.
 - `@signature-kit/pdf-core/pdf-core` — the `PdfCore` service, `makePdfCore(module)`, and `pdfCoreLayer(module)`.
-- `@signature-kit/pdf-core/browser` — `pdfCoreBrowserLayer`: fetches `pdf-core.wasm` next to the module, compiles it with `WebAssembly.compileStreaming`, and falls back to `WebAssembly.compile` when the response is not served as `application/wasm`.
+- `@signature-kit/pdf-core/browser` — `pdfCoreBrowserLayer` (and `pdfCoreBrowserModule`, the loader behind it): fetches `pdf-core.wasm` next to the module, compiles it with `WebAssembly.compileStreaming`, and falls back to `WebAssembly.compile` when the response is not served as `application/wasm`.
 - `@signature-kit/pdf-core/file` — `pdfCoreFileLayer`: reads `pdf-core.wasm` through the Effect `FileSystem` and `Path` services. The caller provides the Node or Bun platform layer.
+- `@signature-kit/pdf-core/promise` — `loadPdfCoreBrowser()` and `createPdfCoreClient(module)`: the same operations as `PdfCore`, returning Promises.
+- `@signature-kit/pdf-core/node` — `loadPdfCoreNode()`: reads `pdf-core.wasm` next to the module with `node:fs` and returns the Promise client.
 - `@signature-kit/pdf-core/canvas` — browser painter for render display lists: `paintDisplayList`, `prepareDisplayListImages`, `renderDisplayListImage`, `displayListViewport`, and `displayListImageBlobs`. It uses Canvas 2D (`OffscreenCanvas`, `Path2D`, `createImageBitmap`), so it runs in windows and workers.
 - `@signature-kit/pdf-core/pdf-core.wasm` — the compiled module for bundlers and custom loaders.
 
@@ -37,6 +41,19 @@ const program = Effect.gen(function* () {
 
 program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))));
 ```
+
+### Without Effect
+
+```ts
+import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
+import { loadPdfCoreNode } from "@signature-kit/pdf-core/node";
+
+const core = await loadPdfCoreNode();
+const { pages } = await core.document(pdf);
+const chunk = await core.merge([{ pdf, pageIndexes: [0, 1] }]);
+```
+
+In the browser use `loadPdfCoreBrowser()` from `@signature-kit/pdf-core/promise`. Load the client once and reuse it. Each method has the same arguments and result as the `PdfCore` method of the same name, and rejects with the `PdfCoreError` (`error.code` is a `PdfCoreErrorCodeValue`). `effect` is installed as a dependency of this package; the app does not import it.
 
 `text` returns one reading-order plain-text string per page (pdftotext style). It clusters positioned runs into lines, splits lines into cells on wide gaps, groups cells into blocks, orders blocks with an XY-cut (columns are read column by column, table rows row by row), honours `/Rotate` and sideways text, and ignores content streams that cannot show text:
 

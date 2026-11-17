@@ -1,6 +1,6 @@
 import * as ts from "typescript";
 import type { Check, CheckContext } from "../model";
-import { allowedEffectProvideSites } from "../config";
+import { allowedEffectProvideSites, nodeBoundaryModules, promiseBoundaryModules } from "../config";
 
 const librarySourcePathPattern =
   /^(?:core|shared|signers|formats|validators)\/[^/]+\/src\/(?!__tests__\/).+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
@@ -120,10 +120,15 @@ const getDirectNodeImportLines = (sourceFile: ts.SourceFile): ReadonlySet<number
 
 const hasDirectNodeOrPlatformImport = (context: CheckContext): boolean =>
   librarySourcePathPattern.test(context.path) &&
+  !nodeBoundaryModules.includes(context.path) &&
   getDirectNodeImportLines(context.sourceFile).has(context.lineNumber - 1);
 
 const hasLocalEffectRunBoundary = (context: CheckContext): boolean => {
-  if (!context.path.startsWith("formats/react/src/") && !context.path.startsWith("apps/docs/")) {
+  if (
+    !context.path.startsWith("formats/react/src/") &&
+    !context.path.startsWith("apps/docs/") &&
+    !promiseBoundaryModules.includes(context.path)
+  ) {
     return false;
   }
   const current = context.rawLine;

@@ -28,7 +28,9 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
 - Effect-boundary escape comments use `[allow-run: <reason>]`,
   `[allow-provide: <reason>]`, or `[allow-string-secret: <reason>]`; the reason
   is required, and these directive comments are allowed only under
-  `formats/react/src/` and `apps/docs/`.
+  `formats/react/src/` and `apps/docs/`. The one library exception is the
+  Promise entry point for apps without Effect (`promiseBoundaryModules` in
+  `tooling/static-checks/src/config.ts`).
 - Do not add explanatory comments to code. Keep only machine-required directive
   comments (`[allow-*]`, TypeScript references, generated-file pragmas).
 - Use static imports for modules known at author time. Dynamic import is only for
