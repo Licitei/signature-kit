@@ -4,7 +4,10 @@ import { Effect } from "effect";
 
 import { findPdfTextAnchors } from "../src/anchors";
 
-const wasmUrl = new URL("../../../node_modules/takumi-pdf/pkg/takumi_pdf_wasm_bg.wasm", import.meta.url);
+const wasmUrl = new URL(
+  "../../../node_modules/takumi-pdf/pkg/takumi_pdf_wasm_bg.wasm",
+  import.meta.url,
+);
 const initTakumiBrowser = async (): Promise<void> => {
   const response = await fetch(wasmUrl);
   const wasmBytes = new Uint8Array(await response.arrayBuffer());

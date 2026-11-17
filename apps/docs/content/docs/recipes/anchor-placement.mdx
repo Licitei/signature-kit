@@ -68,7 +68,7 @@ export async function generateAndSign(fontBytes: Uint8Array, signerLayer: Layer.
       <p>Declaro, sob as penas da lei, que atendo às condições de habilitação exigidas no edital.</p>
       <div className="mt-6 flex flex-col items-center gap-1">
         <PdfSignatureAnchor token="{{signature}}" />
-        <PdfSignatureLinkAnchor href="licitei:assinatura" />
+        <PdfSignatureLinkAnchor href="https://signature.invalid/anchor" />
       </div>
     </main>,
     { size: "a4", fonts: [{ name: "Liberation", data: fontBytes }] },
@@ -78,7 +78,7 @@ export async function generateAndSign(fontBytes: Uint8Array, signerLayer: Layer.
     Effect.gen(function* () {
       const stampRects = yield* findPdfTextAnchors({
         pdf,
-        matchers: [{ text: "{{signature}}" }, { link: "licitei:assinatura" }],
+        matchers: [{ text: "{{signature}}" }, { link: "https://signature.invalid/anchor" }],
         stampSize: { width: 180, height: 54 },
         placement: "below",
         offset: 6,
@@ -99,7 +99,7 @@ export async function generateAndSign(fontBytes: Uint8Array, signerLayer: Layer.
 }
 ```
 
-The corpus fixture `takumi-declaration.pdf` exercises the text token `[[licitei-assinatura]]` today; HTTPS URI links from takumi are readable by `pdf-core`, while custom schemes such as `licitei:assinatura` still need alignment between takumi output and link inspection (tracked alongside pdf-core writer work).
+takumi-pdf only emits `http(s)` link annotations and silently drops custom URI schemes, so link anchors must use an `https://` URI. The default `https://signature.invalid/anchor` uses the reserved `.invalid` TLD, so it never resolves if a reader clicks it.
 
 <Callout type="info">
   Text extraction runs in the in-house WASM core (`@signature-kit/pdf-core`): provide `pdfCoreBrowserLayer` in browsers or `pdfCoreFileLayer` on Node and Bun. To use your own extraction seam instead, pass `pages` and `textBoxes` and keep placement in `findPdfTextAnchors`; that call needs no service.

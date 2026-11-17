@@ -64,92 +64,96 @@ const fixtureSource = () => {
 };
 
 describe("Foldkit articles", () => {
-  it("renders fixture tags through the production server composition", { timeout: 15_000 }, async () => {
-    const source = fixtureSource();
-    const server = createServerComposition(source);
-    const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
-    const shared = "s%C3%A3o-paulo-%26-100%25";
-    const portuguese = "s%C3%B3-brasil";
-    const render = async (path: string) => {
-      const result = await server.renderPage(new Request(`https://example.test${path}`), "test");
-      if (result._tag !== "Rendered") return expect.fail(`Missing ${path}`);
-      return server.renderDocument(result.application, assets);
-    };
-    for (const locale of ["en-US", "pt-BR"]) {
-      const index = await render(`/${locale}/blog/tags`);
-      expect(index).toContain(`/${locale}/blog/tags/${shared}`);
-      expect(server.prerenderPaths).toContain(`/${locale}/blog/tags/${shared}`);
-      const head = await server.renderPage(
-        new Request(`https://example.test/${locale}/blog/tags/${shared}`, { method: "HEAD" }),
-        "test",
-      );
-      expect(head._tag).toBe("Rendered");
-      if (head._tag === "Rendered") {
-        expect(server.renderDocument(head.application, assets)).toContain(
+  it(
+    "renders fixture tags through the production server composition",
+    { timeout: 15_000 },
+    async () => {
+      const source = fixtureSource();
+      const server = createServerComposition(source);
+      const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
+      const shared = "s%C3%A3o-paulo-%26-100%25";
+      const portuguese = "s%C3%B3-brasil";
+      const render = async (path: string) => {
+        const result = await server.renderPage(new Request(`https://example.test${path}`), "test");
+        if (result._tag !== "Rendered") return expect.fail(`Missing ${path}`);
+        return server.renderDocument(result.application, assets);
+      };
+      for (const locale of ["en-US", "pt-BR"]) {
+        const index = await render(`/${locale}/blog/tags`);
+        expect(index).toContain(`/${locale}/blog/tags/${shared}`);
+        expect(server.prerenderPaths).toContain(`/${locale}/blog/tags/${shared}`);
+        const head = await server.renderPage(
+          new Request(`https://example.test/${locale}/blog/tags/${shared}`, { method: "HEAD" }),
+          "test",
+        );
+        expect(head._tag).toBe("Rendered");
+        if (head._tag === "Rendered") {
+          expect(server.renderDocument(head.application, assets)).toContain(
+            `rel="canonical" href="https://signaturekit.dev/${locale}/blog/tags/${shared}"`,
+          );
+        }
+        const detail = await render(`/${locale}/blog/tags/${shared}`);
+        expect(detail).toContain(locale === "pt-BR" ? "Artigo português" : "English article");
+        expect(detail).toContain(`/${locale}/blog/a%C3%A7%C3%A3o%20%26%20api`);
+        expect(detail).toContain(
           `rel="canonical" href="https://signaturekit.dev/${locale}/blog/tags/${shared}"`,
         );
+        expect(alternateLanguages(detail)).toEqual(["en-US", "pt-BR", "x-default"]);
+        expect(detail).not.toContain('name="robots"');
       }
-      const detail = await render(`/${locale}/blog/tags/${shared}`);
-      expect(detail).toContain(locale === "pt-BR" ? "Artigo português" : "English article");
-      expect(detail).toContain(`/${locale}/blog/a%C3%A7%C3%A3o%20%26%20api`);
-      expect(detail).toContain(
-        `rel="canonical" href="https://signaturekit.dev/${locale}/blog/tags/${shared}"`,
+      const ptOnly = await render(`/pt-BR/blog/tags/${portuguese}`);
+      expect(alternateLanguages(ptOnly)).toEqual(["pt-BR", "x-default"]);
+      expect(server.prerenderPaths).not.toContain(`/en-US/blog/tags/${portuguese}`);
+      const missing = await server.renderPage(
+        new Request(`https://example.test/en-US/blog/tags/${portuguese}`),
+        "test",
       );
-      expect(alternateLanguages(detail)).toEqual(["en-US", "pt-BR", "x-default"]);
-      expect(detail).not.toContain('name="robots"');
-    }
-    const ptOnly = await render(`/pt-BR/blog/tags/${portuguese}`);
-    expect(alternateLanguages(ptOnly)).toEqual(["pt-BR", "x-default"]);
-    expect(server.prerenderPaths).not.toContain(`/en-US/blog/tags/${portuguese}`);
-    const missing = await server.renderPage(
-      new Request(`https://example.test/en-US/blog/tags/${portuguese}`),
-      "test",
-    );
-    expect(missing._tag).toBe("Responded");
-    if (missing._tag === "Responded") expect(missing.response.status).toBe(404);
-    const fallback = await render("/pt-BR/blog/fallback");
-    expect(fallback).toContain(
-      'rel="canonical" href="https://signaturekit.dev/en-US/blog/fallback"',
-    );
-    expect(fallback).toContain('name="robots" content="noindex"');
-    expect(alternateLanguages(fallback)).toEqual(["en-US", "x-default"]);
-    expect(await render("/pt-BR/blog/tags")).not.toContain("English Only");
-    const sitemapHead = await server.renderPage(
-      new Request("https://example.test/sitemap.xml", { method: "HEAD" }),
-      "test",
-    );
-    expect(sitemapHead._tag).toBe("Responded");
-    if (sitemapHead._tag === "Responded") {
-      expect(sitemapHead.response.status).toBe(200);
-      expect(await sitemapHead.response.text()).toBe("");
-    }
-    const sitemap = await server.renderPage(
-      new Request("https://example.test/sitemap.xml"),
-      "test",
-    );
-    if (sitemap._tag !== "Responded") return expect.fail("Missing sitemap");
-    const xml = new DOMParser().parseFromString(await sitemap.response.text(), "application/xml");
-    const urls = Array.from(xml.getElementsByTagName("url"));
-    const tagUrls = urls.filter((item) =>
-      item.getElementsByTagName("loc")[0]?.textContent?.includes("/blog/tags/"),
-    );
-    expect(tagUrls.map((item) => item.getElementsByTagName("loc")[0]?.textContent)).toEqual([
-      "https://signaturekit.dev/en-US/blog/tags/english-only",
-      `https://signaturekit.dev/en-US/blog/tags/${shared}`,
-      `https://signaturekit.dev/pt-BR/blog/tags/${shared}`,
-      `https://signaturekit.dev/pt-BR/blog/tags/${portuguese}`,
-    ]);
-    expect(
-      Array.from(tagUrls[1]?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
-        link.getAttribute("hreflang"),
-      ),
-    ).toEqual(["en-US", "pt-BR"]);
-    expect(
-      Array.from(tagUrls[3]?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
-        link.getAttribute("hreflang"),
-      ),
-    ).toEqual(["pt-BR"]);
-  });
+      expect(missing._tag).toBe("Responded");
+      if (missing._tag === "Responded") expect(missing.response.status).toBe(404);
+      const fallback = await render("/pt-BR/blog/fallback");
+      expect(fallback).toContain(
+        'rel="canonical" href="https://signaturekit.dev/en-US/blog/fallback"',
+      );
+      expect(fallback).toContain('name="robots" content="noindex"');
+      expect(alternateLanguages(fallback)).toEqual(["en-US", "x-default"]);
+      expect(await render("/pt-BR/blog/tags")).not.toContain("English Only");
+      const sitemapHead = await server.renderPage(
+        new Request("https://example.test/sitemap.xml", { method: "HEAD" }),
+        "test",
+      );
+      expect(sitemapHead._tag).toBe("Responded");
+      if (sitemapHead._tag === "Responded") {
+        expect(sitemapHead.response.status).toBe(200);
+        expect(await sitemapHead.response.text()).toBe("");
+      }
+      const sitemap = await server.renderPage(
+        new Request("https://example.test/sitemap.xml"),
+        "test",
+      );
+      if (sitemap._tag !== "Responded") return expect.fail("Missing sitemap");
+      const xml = new DOMParser().parseFromString(await sitemap.response.text(), "application/xml");
+      const urls = Array.from(xml.getElementsByTagName("url"));
+      const tagUrls = urls.filter((item) =>
+        item.getElementsByTagName("loc")[0]?.textContent?.includes("/blog/tags/"),
+      );
+      expect(tagUrls.map((item) => item.getElementsByTagName("loc")[0]?.textContent)).toEqual([
+        "https://signaturekit.dev/en-US/blog/tags/english-only",
+        `https://signaturekit.dev/en-US/blog/tags/${shared}`,
+        `https://signaturekit.dev/pt-BR/blog/tags/${shared}`,
+        `https://signaturekit.dev/pt-BR/blog/tags/${portuguese}`,
+      ]);
+      expect(
+        Array.from(tagUrls[1]?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
+          link.getAttribute("hreflang"),
+        ),
+      ).toEqual(["en-US", "pt-BR"]);
+      expect(
+        Array.from(tagUrls[3]?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
+          link.getAttribute("hreflang"),
+        ),
+      ).toEqual(["pt-BR"]);
+    },
+  );
   it("routes the language menu to available tags while preserving other destinations", async () => {
     const source = fixtureSource();
     const server = createServerComposition(source);

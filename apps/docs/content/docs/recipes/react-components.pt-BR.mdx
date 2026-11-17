@@ -81,7 +81,7 @@ export async function buildContractPdf(fontBytes: Uint8Array) {
       <p>Signatário</p>
       <div className="mt-4 flex flex-col items-center gap-1">
         <PdfSignatureAnchor token="{{signature}}" />
-        <PdfSignatureLinkAnchor href="licitei:assinatura" />
+        <PdfSignatureLinkAnchor href="https://signature.invalid/anchor" />
       </div>
     </main>,
     { size: "a4", fonts: [{ name: "Liberation", data: fontBytes }] },

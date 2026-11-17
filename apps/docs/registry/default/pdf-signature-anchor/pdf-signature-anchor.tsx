@@ -25,8 +25,8 @@ export type PdfSignatureLinkAnchorProps = {
 const defaultLinkAnchorClass = "text-[4px] text-white";
 
 export function PdfSignatureLinkAnchor({
-  href = "licitei:assinatura",
-  children = "âncora de assinatura",
+  href = "https://signature.invalid/anchor",
+  children = "signature",
   className = defaultLinkAnchorClass,
 }: PdfSignatureLinkAnchorProps) {
   return (

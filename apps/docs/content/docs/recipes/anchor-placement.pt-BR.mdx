@@ -50,7 +50,7 @@ const signedPdf = await Effect.runPromise(
 
 Com [`takumi-pdf`](https://www.npmjs.com/package/takumi-pdf), instale o item de registry `pdf-signature-anchor` e coloque marcadores invisíveis no JSX. Carregue o takumi só no cliente para o SSG do FumaPress não executar wasm na prerender.
 
-Use `PdfSignatureAnchor` (texto, padrão `{{signature}}`) e `PdfSignatureLinkAnchor` (link, padrão `licitei:assinatura`). Depois de `render`, chame `findPdfTextAnchors` com `{ text: "{{signature}}" }` e `{ link: "licitei:assinatura" }`, então `prepareAndSignPdf`. O fluxo completo está documentado na versão em inglês desta página e em [`react-components`](/pt-BR/docs/recipes/react-components).
+Use `PdfSignatureAnchor` (texto, padrão `{{signature}}`) e `PdfSignatureLinkAnchor` (link, padrão `https://signature.invalid/anchor`). Depois de `render`, chame `findPdfTextAnchors` com `{ text: "{{signature}}" }` e `{ link: "https://signature.invalid/anchor" }`, então `prepareAndSignPdf`. O fluxo completo está documentado na versão em inglês desta página e em [`react-components`](/pt-BR/docs/recipes/react-components).
 
 <Callout type="info">
   A extração de texto roda no núcleo WASM próprio (`@signature-kit/pdf-core`): forneça `pdfCoreBrowserLayer` no navegador ou `pdfCoreFileLayer` em Node e Bun. Para usar sua própria extração, passe `pages` e `textBoxes` e mantenha o posicionamento em `findPdfTextAnchors`; essa chamada não exige nenhum serviço.
