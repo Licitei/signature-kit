@@ -1328,8 +1328,8 @@ impl Interpreter<'_, '_> {
         let scale = state.scale;
         let vertical = entry.font.is_vertical();
         let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
-        let dir_length = dir_x.hypot(dir_y);
-        let effective_size = (size * c.hypot(d)).abs();
+        let dir_length = (dir_x * dir_x + dir_y * dir_y).sqrt();
+        let effective_size = (size * (c * c + d * d).sqrt()).abs();
         let usable = dir_length > MIN_SCALE
             && effective_size > MIN_SCALE
             && dir_length.is_finite()

@@ -196,6 +196,7 @@ std_instead_of_alloc = "allow"
 std_instead_of_core = "allow"
 redundant_pub_crate = "allow"
 suboptimal_flops = "allow" # fused mul_add lowers to a libm software call on wasm32 and the x86-64 baseline
+imprecise_flops = "allow" # hypot lowers to a libm software call on wasm32 and the x86-64 baseline; (x * x + y * y).sqrt() is exact enough for PDF geometry
 decimal_literal_representation = "allow"
 non_ascii_literal = "allow"
 single_char_lifetime_names = "allow"

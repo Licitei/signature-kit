@@ -651,7 +651,7 @@ fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome
         subtype == Some(b"Type3"),
     );
     let font_scale = read_font_matrix(resolver, font)
-        .map(|matrix| matrix[0].hypot(matrix[1]))
+        .map(|matrix| (matrix[0] * matrix[0] + matrix[1] * matrix[1]).sqrt())
         .filter(|scale| *scale > 0.0);
     let needs_program = simple_needs_program(&encoding, &to_unicode, &widths, symbolic);
     let program = descriptor
