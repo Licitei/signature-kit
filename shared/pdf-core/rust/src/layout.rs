@@ -12,7 +12,7 @@ use crate::markdown::{
 use crate::table::{
     Cell, Rule, Table, column_of, merge_row, render_markdown, render_text, ruled_grids,
 };
-use crate::text::{Capture, PageContent, Ruling, Run, Session, extract_content};
+use crate::text::{Capture, PageContent, Session, extract_content};
 
 const CELL_GAP: f64 = 1.75;
 const INTRA_WORD_SCALE: f64 = 4.0;
@@ -1207,8 +1207,7 @@ fn turn_rect(quarter: usize, rect: [f64; 4]) -> [f64; 4] {
 }
 
 fn page_layout(
-    runs: &[Run],
-    rulings: &[Ruling],
+    content: &PageContent,
     rotate: i32,
     extent: Option<[f64; 4]>,
     mode: Mode,
@@ -1217,15 +1216,16 @@ fn page_layout(
     let page = page_quarter(rotate);
     let mut pools: [Vec<Frag<'_>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     let mut weights = [0_usize; 4];
-    for run in runs {
-        if run.item.text.is_empty() || !run.direction.0.is_finite() || !run.direction.1.is_finite()
-        {
+    let rulings = content.rulings.as_slice();
+    for run in &content.runs {
+        let text = content.text_of(run);
+        if text.is_empty() || !run.direction.0.is_finite() || !run.direction.1.is_finite() {
             continue;
         }
         let visible = turn(page, run.direction.0, run.direction.1);
         let quarter = quarter_of(visible);
         let turns = (page.saturating_add(quarter)) % 4;
-        let [x0, y0, x1, y1] = run.item.rect;
+        let [x0, y0, x1, y1] = run.rect;
         let (ax, ay) = turn(turns, x0, y0);
         let (bx, by) = turn(turns, x1, y1);
         let frag = Frag {
@@ -1233,10 +1233,10 @@ fn page_layout(
             y0: ay.min(by),
             x1: ax.max(bx),
             y1: ay.max(by),
-            size: run.item.font_size.abs().max(1e-3),
+            size: run.font_size.abs().max(1e-3),
             bold: run.bold,
             italic: run.italic,
-            text: &run.item.text,
+            text,
         };
         if !(frag.x0.is_finite()
             && frag.x1.is_finite()
@@ -1246,7 +1246,7 @@ fn page_layout(
             continue;
         }
         if let (Some(pool), Some(weight)) = (pools.get_mut(quarter), weights.get_mut(quarter)) {
-            *weight = (*weight).saturating_add(run.item.text.len());
+            *weight = (*weight).saturating_add(text.len());
             pool.push(frag);
         }
     }
@@ -1306,17 +1306,6 @@ fn page_layout(
     layout
 }
 
-#[cfg(test)]
-pub(crate) fn page_text(runs: &[Run], rotate: i32) -> String {
-    let mode = Mode {
-        markdown: false,
-        aligned: false,
-        text: true,
-    };
-    let layout = page_layout(runs, &[], rotate, None, mode, &[]);
-    assemble(&layout.pieces, &HashMap::new(), 0)
-}
-
 pub(crate) fn text_limits() -> Limits {
     Limits {
         max_items_per_page: 250_000,
@@ -1371,9 +1360,8 @@ fn single_page(
     };
     let scoped = page_links(links, page_index);
     match extract_content(document, page, limits, capture, session) {
-        Ok(PageContent { runs, rulings }) => Ok(page_layout(
-            &runs,
-            &rulings,
+        Ok(content) => Ok(page_layout(
+            &content,
             page.info.rotate,
             Some(page.info.crop_box),
             mode,
@@ -1556,8 +1544,38 @@ mod tests {
         drop_running: true,
     };
 
-    fn run(x: f64, baseline: f64, width: f64, text: &str) -> Run {
-        Run {
+    struct Piece {
+        item: TextItem,
+        direction: (f64, f64),
+        bold: bool,
+        italic: bool,
+    }
+
+    fn page_text(pieces: &[Piece], rotate: i32) -> String {
+        let mut content = PageContent::default();
+        for piece in pieces {
+            let start = u32::try_from(content.text.len()).unwrap();
+            content.text.push_str(&piece.item.text);
+            content.runs.push(crate::text::Run {
+                rect: piece.item.rect,
+                font_size: piece.item.font_size,
+                text: start..u32::try_from(content.text.len()).unwrap(),
+                direction: piece.direction,
+                bold: piece.bold,
+                italic: piece.italic,
+            });
+        }
+        let mode = Mode {
+            markdown: false,
+            aligned: false,
+            text: true,
+        };
+        let layout = page_layout(&content, rotate, None, mode, &[]);
+        assemble(&layout.pieces, &HashMap::new(), 0)
+    }
+
+    fn run(x: f64, baseline: f64, width: f64, text: &str) -> Piece {
+        Piece {
             item: TextItem {
                 rect: [x, baseline - 2.24, x + width, baseline + 9.45],
                 font_size: SIZE,
@@ -1569,8 +1587,8 @@ mod tests {
         }
     }
 
-    fn turned(rect: [f64; 4], direction: (f64, f64), text: &str) -> Run {
-        Run {
+    fn turned(rect: [f64; 4], direction: (f64, f64), text: &str) -> Piece {
+        Piece {
             item: TextItem {
                 rect,
                 font_size: SIZE,
@@ -1795,7 +1813,7 @@ mod tests {
             run(f64::NAN, 700.0, 10.0, "nan"),
             run(10.0, f64::INFINITY, 10.0, "inf"),
             run(10.0, 10.0, 10.0, ""),
-            Run {
+            Piece {
                 item: TextItem {
                     rect: [0.0; 4],
                     font_size: 0.0,

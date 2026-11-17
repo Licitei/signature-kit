@@ -1,6 +1,7 @@
 use crate::num::f64_to_i64;
 use crate::num::widen;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 
 use crate::document::{Document, Page};
@@ -500,7 +501,7 @@ struct Interpreter<'d, 'a> {
     budget: usize,
     max_depth: usize,
     items: Vec<Run>,
-    text_bytes: usize,
+    text: String,
     glyphs: Vec<Glyph>,
     decoded: String,
     pending: PendingRun,
@@ -516,7 +517,9 @@ struct Interpreter<'d, 'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Run {
-    pub item: TextItem,
+    pub rect: [f64; 4],
+    pub font_size: f64,
+    pub text: Range<u32>,
     pub direction: (f64, f64),
     pub bold: bool,
     pub italic: bool,
@@ -541,7 +544,27 @@ pub(crate) struct Capture {
 #[derive(Debug, Default)]
 pub(crate) struct PageContent {
     pub runs: Vec<Run>,
+    pub text: String,
     pub rulings: Vec<Ruling>,
+}
+
+impl PageContent {
+    pub(crate) fn text_of(&self, run: &Run) -> &str {
+        self.text
+            .get(widen(run.text.start)..widen(run.text.end))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn items(&self) -> Vec<TextItem> {
+        self.runs
+            .iter()
+            .map(|run| TextItem {
+                rect: run.rect,
+                font_size: run.font_size,
+                text: self.text_of(run).to_owned(),
+            })
+            .collect()
+    }
 }
 
 type FontCache = HashMap<FontKey, (Option<Rc<FontEntry>>, u32)>;
@@ -559,13 +582,13 @@ pub(crate) fn extract_runs(
     limits: &Limits,
     split_repositioned: bool,
     session: &mut Session,
-) -> Outcome<Vec<Run>> {
+) -> Outcome<PageContent> {
     let capture = Capture {
         split_repositioned,
         structure: false,
         split_style: false,
     };
-    Ok(extract_content(document, page, limits, capture, session)?.runs)
+    extract_content(document, page, limits, capture, session)
 }
 
 pub(crate) fn extract_content(
@@ -596,7 +619,7 @@ pub(crate) fn extract_content(
         budget: limits.max_decoded_stream_bytes,
         max_depth: limits.max_nesting.min(MAX_FORM_DEPTH),
         items: Vec::new(),
-        text_bytes: 0,
+        text: String::new(),
         glyphs: Vec::new(),
         decoded: String::new(),
         pending: PendingRun::default(),
@@ -627,6 +650,7 @@ pub(crate) fn extract_content(
     outcome?;
     Ok(PageContent {
         runs: interpreter.items,
+        text: interpreter.text,
         rulings: interpreter.rulings,
     })
 }
@@ -1459,18 +1483,20 @@ impl Interpreter<'_, '_> {
         if self.items.len() >= self.limits.max_items_per_page {
             return Err(Failure::limit("page text items exceed limit"));
         }
-        self.text_bytes = self.text_bytes.saturating_add(trimmed.len());
-        if self.text_bytes > self.limits.max_text_bytes {
+        let start = self.text.len();
+        let end = start.saturating_add(trimmed.len());
+        if end > self.limits.max_text_bytes {
             return Err(Failure::limit("page text bytes exceed limit"));
         }
-        let text = trimmed.to_owned();
+        let (Ok(from), Ok(to)) = (u32::try_from(start), u32::try_from(end)) else {
+            return Err(Failure::limit("page text exceeds 32-bit offsets"));
+        };
+        self.text.push_str(trimmed);
         self.pending.text.clear();
         self.items.push(Run {
-            item: TextItem {
-                rect: self.pending.bounds,
-                font_size: self.pending.size,
-                text,
-            },
+            rect: self.pending.bounds,
+            font_size: self.pending.size,
+            text: from..to,
             direction: self.pending.dir,
             bold: self.pending.bold,
             italic: self.pending.italic,
@@ -1668,7 +1694,7 @@ mod tests {
             false,
             &mut Session::default(),
         )
-        .map(|runs| runs.into_iter().map(|run| run.item).collect())
+        .map(|content| content.items())
     }
 
     fn extract(bytes: &[u8]) -> Vec<TextItem> {
@@ -1924,12 +1950,10 @@ mod tests {
         let page = pages.first().unwrap();
         let merged =
             extract_runs(&document, page, &limits, false, &mut Session::default()).unwrap();
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].item.text, "abc def");
+        assert_eq!(run_texts(&merged), ["abc def"]);
         let split = extract_runs(&document, page, &limits, true, &mut Session::default()).unwrap();
-        let split_texts: Vec<&str> = split.iter().map(|run| run.item.text.as_str()).collect();
-        assert_eq!(split_texts, ["abc", "def"]);
-        assert_eq!(split[0].direction, (1.0, 0.0));
+        assert_eq!(run_texts(&split), ["abc", "def"]);
+        assert_eq!(split.runs[0].direction, (1.0, 0.0));
     }
 
     const HELVETICA_BOLD: &str =
@@ -1958,7 +1982,7 @@ mod tests {
         content
             .runs
             .iter()
-            .map(|run| run.item.text.as_str())
+            .map(|run| content.text_of(run))
             .collect()
     }
 
@@ -2106,7 +2130,7 @@ mod tests {
         let flags: Vec<(&str, bool)> = content
             .runs
             .iter()
-            .map(|run| (run.item.text.as_str(), run.bold))
+            .map(|run| (content.text_of(run), run.bold))
             .collect();
         assert_eq!(
             flags,
@@ -2153,7 +2177,7 @@ mod tests {
         let mut session = Session::default();
         for _ in 0..3 {
             let runs = extract_runs(&document, page, &limits, true, &mut session).unwrap();
-            assert_eq!(runs[0].item.text, "Again");
+            assert_eq!(run_texts(&runs), ["Again"]);
         }
         assert_eq!(session.fonts.len(), 1);
     }
@@ -2199,9 +2223,8 @@ mod tests {
         let mut session = Session::default();
         let first = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
         let second = extract_runs(&document, &pages[1], &limits, true, &mut session).unwrap();
-        let first_texts: Vec<&str> = first.iter().map(|run| run.item.text.as_str()).collect();
-        assert_eq!(first_texts, ["Shared", "Form"]);
-        assert_eq!(second[0].item.text, "Shared");
+        assert_eq!(run_texts(&first), ["Shared", "Form"]);
+        assert_eq!(run_texts(&second), ["Shared"]);
         assert_eq!(session.fonts.len(), 1);
         assert!(matches!(
             session.fonts.keys().next(),
@@ -2225,7 +2248,7 @@ mod tests {
                 .insert(FontKey::Inline(u32::MAX, index), (None, 0));
         }
         let runs = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
-        assert_eq!(runs[0].item.text, "Hot");
+        assert_eq!(run_texts(&runs), ["Hot"]);
         assert_eq!(session.fonts.len(), 1);
         let (kept, _) = &session.fonts[&hot_key];
         assert!(Rc::ptr_eq(kept.as_ref().unwrap(), &hot));

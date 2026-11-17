@@ -6,9 +6,7 @@ use std::rc::Rc;
 
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::filters;
-use crate::inspection::{
-    InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText, TextItem,
-};
+use crate::inspection::{InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText};
 use crate::object::{Dict, ObjRef, Object, Resolver, Stream};
 use crate::syntax::{
     Parser, find_bytes, keyword_at, parse_indirect_object, parse_object_header, read_unsigned,
@@ -1239,11 +1237,8 @@ pub(crate) fn inspect(
             let Some(page) = pages.get(position) else {
                 continue;
             };
-            let items: Vec<TextItem> =
-                crate::text::extract_runs(&document, page, limits, false, &mut session)?
-                    .into_iter()
-                    .map(|run| run.item)
-                    .collect();
+            let items =
+                crate::text::extract_runs(&document, page, limits, false, &mut session)?.items();
             if items.len() > limits.max_items_per_page {
                 return Err(Failure::limit("page text items exceed limit"));
             }
