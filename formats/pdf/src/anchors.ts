@@ -316,6 +316,7 @@ const inspectPdfForAnchors = Effect.fn(function* (
         new PdfError({
           code: Match.value(error.code).pipe(
             Match.when(PdfCoreErrorCodeValue.wasmLoadFailed, () => PdfErrorCodeValue.pdfLoadFailed),
+            Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
             Match.orElse(() => PdfErrorCodeValue.invalidPdf),
           ),
           retryable: false,

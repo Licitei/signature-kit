@@ -8,7 +8,7 @@ use std::ptr;
 
 use crate::document;
 use crate::failure::{Failure, Outcome};
-use crate::inspection::{InspectOptions, Inspection, Limits};
+use crate::inspection::{InspectOptions, Inspection};
 use crate::layout::{self, TextOptions};
 use crate::table::Table;
 
@@ -420,7 +420,7 @@ pub(crate) unsafe extern "C" fn pdf_core_inspect(
             links: request.has(FLAG_LINKS),
             page_indexes: request.pages.map(<[u32]>::to_vec),
         };
-        let inspection = document::inspect(request.pdf, &options, &Limits::default())?;
+        let inspection = document::inspect(request.pdf, &options, &layout::text_limits())?;
         encode(&inspection)
     }))
 }
@@ -475,6 +475,7 @@ mod tests {
     use crate::inspection::{LinkInfo, PageInfo, PageText, TextItem};
     use crate::num::widen;
     use crate::test_pdf::assert_exact;
+    use std::fmt::Write as _;
 
     struct Reader<'a> {
         data: &'a [u8],
@@ -1049,6 +1050,30 @@ mod tests {
         let skipped = call(ROTATED_PDF, FLAG_TEXT | FLAG_PAGE_INDEXES, &[5]);
         assert_ne!(skipped.status, STATUS_OK);
         release(&skipped);
+    }
+
+    #[test]
+    fn inspect_uses_extraction_limits_for_large_documents() {
+        let mut content = String::from("BT /F1 10 Tf\n");
+        for column in 0..18_u32 {
+            for row in 0..700_u32 {
+                if column.saturating_mul(700).saturating_add(row) < 12_000 {
+                    let (x, y) = (column.saturating_mul(30), row.saturating_add(20));
+                    writeln!(content, "1 0 0 1 {x} {y} Tm (a) Tj").unwrap();
+                }
+            }
+        }
+        content.push_str("ET\n");
+        let pages: Vec<_> = (0..9)
+            .map(|_| crate::test_pdf::page(content.clone()))
+            .collect();
+        let pdf = crate::test_pdf::document(&pages, &[]);
+        let block = call(&pdf, FLAG_TEXT, &[]);
+        assert_eq!(block.status, STATUS_OK);
+        let decoded = decode(&block.payload);
+        assert_eq!(decoded.text.len(), 9);
+        assert!(decoded.text.iter().all(|page| page.items.len() == 12_000));
+        release(&block);
     }
 
     #[test]

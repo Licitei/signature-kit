@@ -46,6 +46,38 @@ const encryptedFixture = (): Uint8Array => {
   return encoder.encode(pdf);
 };
 
+const manyItemsFixture = (pageCount: number, itemsPerPage: number): Uint8Array => {
+  const lines = ["BT /F1 10 Tf"];
+  for (let index = 0; index < itemsPerPage; index += 1) {
+    lines.push(`1 0 0 1 ${Math.floor(index / 700) * 30} ${(index % 700) + 20} Tm (a) Tj`);
+  }
+  lines.push("ET");
+  const content = lines.join("\n");
+  const kids = Array.from({ length: pageCount }, (_, index) => `${index + 5} 0 R`).join(" ");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${kids}] /Count ${pageCount} >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ...Array.from(
+      { length: pageCount },
+      () =>
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << /Font << /F1 3 0 R >> >> >>",
+    ),
+  ];
+  let pdf = "%PDF-1.7\n";
+  const offsets: Array<number> = [];
+  objects.forEach((body, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+};
+
 describe("PdfCore", () => {
   it.effect("inspects page geometry, links and text of the corpus", () =>
     Effect.gen(function* () {
@@ -136,6 +168,41 @@ describe("PdfCore", () => {
         core.inspect(readFixture(name), { text: true, links: true }),
       );
       expect(first.text.map((page) => [...page.rects])).toEqual(snapshot);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("inspects text of every page of the largest corpus fixture", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const inspection = yield* core.inspect(readFixture("habilitacao-150.pdf"), {
+        text: true,
+        links: true,
+      });
+      expect(inspection.text).toHaveLength(inspection.pages.length);
+      expect(inspection.text.every((page) => page.offsets.length > 1)).toBe(true);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("inspects documents beyond the default item limits like text extraction", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const inspection = yield* core.inspect(manyItemsFixture(9, 12_000), {
+        text: true,
+        links: false,
+      });
+      expect(inspection.text).toHaveLength(9);
+      expect(inspection.text.every((page) => page.offsets.length === 12_001)).toBe(true);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reports limit violations of a single page as limitExceeded", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const error = yield* Effect.flip(
+        core.inspect(manyItemsFixture(1, 250_001), { text: true, links: false }),
+      );
+      expect(error.code).toBe(PdfCoreErrorCodeValue.limitExceeded);
+      expect(error.status).toBe(3);
     }).pipe(Effect.provide(layer)),
   );
 
