@@ -152,6 +152,7 @@ const pageIndexSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum:
 export const PdfCoreInspectOptionsSchema = Schema.Struct({
   text: Schema.Boolean,
   links: Schema.Boolean,
+  runs: Schema.optional(Schema.Boolean),
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
 });
 export type PdfCoreInspectOptions = (typeof PdfCoreInspectOptionsSchema)["Type"];
@@ -259,6 +260,7 @@ export const PdfCoreTextPageSchema = Schema.Struct({
   rects: Schema.instanceOf(Float64Array),
   text: Schema.String,
   offsets: Schema.instanceOf(Uint32Array),
+  styles: Schema.instanceOf(Uint8Array),
 });
 export type PdfCoreTextPage = (typeof PdfCoreTextPageSchema)["Type"];
 

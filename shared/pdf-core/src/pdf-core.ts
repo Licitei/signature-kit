@@ -110,9 +110,10 @@ const FLAG_LINKS = 2;
 const FLAG_PAGE_INDEXES = 4;
 const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
+const FLAG_RUNS = 32;
 const STATUS_OK = 0;
 const MAGIC = 0x4346_4450;
-const VERSION = 2;
+const VERSION = 3;
 const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
@@ -648,7 +649,8 @@ export const makePdfCore = (
           const textLength = view.getUint32(cursor + 8, true);
           const rectsAt = cursor + TEXT_PAGE_HEADER_BYTES;
           const offsetsAt = rectsAt + itemCount * TEXT_ITEM_FLOATS * Float64Array.BYTES_PER_ELEMENT;
-          const blobAt = align8(offsetsAt + (itemCount + 1) * Uint32Array.BYTES_PER_ELEMENT);
+          const stylesAt = align8(offsetsAt + (itemCount + 1) * Uint32Array.BYTES_PER_ELEMENT);
+          const blobAt = align8(stylesAt + itemCount);
           text.push({
             pageIndex: view.getUint32(cursor, true),
             rects: new Float64Array(
@@ -661,6 +663,7 @@ export const makePdfCore = (
               block.pointer + offsetsAt,
               itemCount + 1,
             ).slice(),
+            styles: bytes(stylesAt, itemCount).slice(),
             text: utf8.decode(bytes(blobAt, textLength)),
           });
           cursor = align8(blobAt + textLength);
@@ -702,6 +705,7 @@ export const makePdfCore = (
       const flags =
         (options.text ? FLAG_TEXT : 0) |
         (options.links ? FLAG_LINKS : 0) |
+        (options.runs === true ? FLAG_RUNS : 0) |
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES);
       return yield* readBlock(
         PdfCoreOperationValue.inspect,

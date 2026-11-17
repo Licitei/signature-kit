@@ -79,6 +79,52 @@ const manyItemsFixture = (pageCount: number, itemsPerPage: number): Uint8Array =
   return new TextEncoder().encode(pdf);
 };
 
+const styledFixture = (): Uint8Array => {
+  const pages = [
+    [
+      "BT /F2 9 Tf 1 0 0 1 28 700 Tm (17/06/2026 15:39:26) Tj ET",
+      "BT /F2 9 Tf 1 0 0 1 111.9 700 Tm (    ) Tj ET",
+      "BT /F2 9 Tf 1 0 0 1 122 700 Tm (MENSAGEM) Tj ET",
+      "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Marca: ) Tj /F2 9 Tf (ACME) Tj ET",
+      "BT /F3 9 Tf 1 0 0 1 28 660 Tm (Nota) Tj ET",
+    ].join("\n"),
+    [
+      "BT /F2 12 Tf 1 0 0 1 272 700 Tm (LOTE ) Tj ET",
+      "BT /F2 12 Tf 1 0 0 1 307.6 700 Tm (50) Tj ET",
+      "BT /F1 9 Tf 1 0 0 1 28 680 Tm (AB) Tj ET",
+      "BT /F1 9 Tf 1 0 0 1 40.006 680 Tm (CD) Tj ET",
+    ].join("\n"),
+  ];
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>",
+    ...pages.flatMap((content, index) => [
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents ${index * 2 + 7} 0 R /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> >>`,
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ]),
+  ];
+  let pdf = "%PDF-1.7\n";
+  const offsets: Array<number> = [];
+  objects.forEach((body, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+};
+
+const textItems = (page: { text: string; offsets: Uint32Array; styles: Uint8Array }) =>
+  Array.from({ length: page.offsets.length - 1 }, (_, index) => ({
+    text: page.text.slice(page.offsets[index], page.offsets[index + 1]),
+    style: page.styles[index],
+  }));
+
 describe("PdfCore", () => {
   it.effect("inspects page geometry, links and text of the corpus", () =>
     Effect.gen(function* () {
@@ -199,6 +245,41 @@ describe("PdfCore", () => {
       });
       expect(inspection.text).toHaveLength(9);
       expect(inspection.text.every((page) => page.offsets.length === 12_001)).toBe(true);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("splits runs by position and style and reports bold and italic per item", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const pdf = styledFixture();
+      const runs = yield* core.inspect(pdf, { text: true, links: false, runs: true });
+      expect(runs.text.map(textItems)).toEqual([
+        [
+          { text: "17/06/2026 15:39:26", style: 1 },
+          { text: "MENSAGEM", style: 1 },
+          { text: "Marca:", style: 0 },
+          { text: "ACME", style: 1 },
+          { text: "Nota", style: 2 },
+        ],
+        [
+          { text: "LOTE", style: 1 },
+          { text: "50", style: 1 },
+          { text: "ABCD", style: 0 },
+        ],
+      ]);
+      expect(Array.from(runs.text[0]?.rects.slice(5, 6) ?? [])).toEqual([122]);
+
+      const merged = yield* core.inspect(pdf, { text: true, links: false });
+      const lines = merged.text.map(textItems);
+      expect(lines[0]?.map((item) => item.text)).toEqual([
+        "17/06/2026 15:39:26    MENSAGEM",
+        "Marca: ACME",
+        "Nota",
+      ]);
+      expect(lines[0]?.map((item) => item.style)).toEqual([1, 0, 2]);
+      expect(merged.text.every((page) => page.styles.length === page.offsets.length - 1)).toBe(
+        true,
+      );
     }).pipe(Effect.provide(layer)),
   );
 
