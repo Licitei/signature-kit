@@ -16,6 +16,7 @@ use crate::object::{Dict, Object, Resolver};
 const MAX_METRIC_ENTRIES: usize = 262_144;
 const MAX_METRIC_ITEMS: usize = 1_048_576;
 const MAX_WIDTH_RANGE: u32 = 65_536;
+const MAX_DENSE_WIDTHS: usize = 65_536;
 const MAX_CMAP_DEPTH: usize = 4;
 const MAX_PROGRAM_CHECKS: usize = 4096;
 const LIGATURES: [&str; 14] = [
@@ -93,6 +94,7 @@ struct WidthState {
 struct CidWidths {
     default_width: f64,
     entries: Vec<(u32, u32, f64)>,
+    dense: Vec<f64>,
 }
 
 struct VerticalCidMetrics {
@@ -523,8 +525,39 @@ fn resolve_entries<T: Copy>(entries: &[(u32, u32, T)]) -> Vec<(u32, u32, T)> {
 }
 
 impl CidWidths {
+    fn new(default_width: f64, entries: Vec<(u32, u32, f64)>) -> Self {
+        let span = entries
+            .last()
+            .map_or(0, |entry| widen(entry.1).saturating_add(1));
+        let covered = entries.iter().fold(0_usize, |sum, entry| {
+            sum.saturating_add(widen(entry.1.saturating_sub(entry.0)).saturating_add(1))
+        });
+        let mut dense = Vec::new();
+        if span <= MAX_DENSE_WIDTHS && span <= covered.saturating_mul(4).saturating_add(4096) {
+            dense.resize(span, default_width);
+            for &(start, end, width) in &entries {
+                if let Some(slots) = dense.get_mut(widen(start)..=widen(end)) {
+                    slots.fill(width);
+                }
+            }
+        }
+        Self {
+            default_width,
+            entries,
+            dense,
+        }
+    }
+
     fn width(&self, cid: Option<u32>) -> f64 {
-        cid.and_then(|cid| find_entry(&self.entries, cid))
+        let Some(cid) = cid else {
+            return self.default_width;
+        };
+        if self.dense.is_empty() {
+            return find_entry(&self.entries, cid).unwrap_or(self.default_width);
+        }
+        self.dense
+            .get(widen(cid))
+            .copied()
             .unwrap_or(self.default_width)
     }
 }
@@ -918,10 +951,7 @@ fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
             }
         }
     }
-    CidWidths {
-        default_width,
-        entries: resolve_entries(&entries),
-    }
+    CidWidths::new(default_width, resolve_entries(&entries))
 }
 
 fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> VerticalCidMetrics {
@@ -2059,6 +2089,23 @@ mod tests {
                 .windows(2)
                 .all(|pair| matches!(pair, [left, right] if left.1 < right.0))
         );
+    }
+
+    #[test]
+    fn dense_and_sparse_width_tables_agree() {
+        let dense = CidWidths::new(700.0, vec![(1, 1, 100.0), (2, 5, 300.0), (10, 10, 50.0)]);
+        let sparse = CidWidths::new(700.0, vec![(1, 1, 100.0), (60_000, 60_000, 50.0)]);
+        let huge = CidWidths::new(700.0, vec![(70_000, 70_010, 20.0)]);
+        assert_eq!(dense.dense.len(), 11);
+        assert_eq!(sparse.dense.len(), 0);
+        assert_eq!(huge.dense.len(), 0);
+        for table in [&dense, &sparse, &huge] {
+            for cid in [0, 1, 2, 5, 6, 10, 11, 60_000, 70_005, 70_011, u32::MAX] {
+                let expected = find_entry(&table.entries, cid).unwrap_or(700.0);
+                assert_exact(&[table.width(Some(cid))], &[expected]);
+            }
+            assert_exact(&[table.width(None)], &[700.0]);
+        }
     }
 
     #[test]
