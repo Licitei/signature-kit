@@ -276,6 +276,109 @@ fn similar_size(first: f64, second: f64) -> bool {
     (first - second).abs() <= SIZE_TOLERANCE * first.max(second)
 }
 
+struct Sweep {
+    order: Vec<usize>,
+    starts: Vec<f64>,
+    reach: Vec<f64>,
+}
+
+impl Sweep {
+    fn new(spans: impl Iterator<Item = (usize, f64, f64)>) -> Self {
+        let mut items: Vec<(usize, f64, f64)> = spans.collect();
+        items.sort_by(|left, right| left.1.total_cmp(&right.1));
+        let mut reach = Vec::with_capacity(items.len());
+        let mut furthest = f64::NEG_INFINITY;
+        for item in &items {
+            furthest = furthest.max(item.2);
+            reach.push(furthest);
+        }
+        Self {
+            order: items.iter().map(|item| item.0).collect(),
+            starts: items.iter().map(|item| item.1).collect(),
+            reach,
+        }
+    }
+
+    fn unique(&self, x0: f64, x1: f64, mut accept: impl FnMut(usize) -> bool) -> Option<usize> {
+        let upper = self.starts.partition_point(|&start| start < x1);
+        let mut found = None;
+        for position in (0..upper).rev() {
+            if self.reach.get(position).is_none_or(|&reach| reach <= x0) {
+                break;
+            }
+            let Some(&id) = self.order.get(position) else {
+                break;
+            };
+            if accept(id) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(id);
+            }
+        }
+        found
+    }
+}
+
+fn fits(block: &Block, segment: &Segment) -> bool {
+    overlaps(block.last_x0, block.last_x1, segment.x0, segment.x1)
+        && similar_size(block.last_size, segment.size)
+}
+
+fn naive_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Option<usize>> {
+    line.iter()
+        .map(|segment| {
+            let mut matches = active
+                .iter()
+                .copied()
+                .filter(|&id| blocks.get(id).is_some_and(|block| fits(block, segment)));
+            let (Some(target), None) = (matches.next(), matches.next()) else {
+                return None;
+            };
+            let exclusive = blocks
+                .get(target)
+                .is_some_and(|block| line.iter().filter(|other| fits(block, other)).count() == 1);
+            exclusive.then_some(target)
+        })
+        .collect()
+}
+
+fn line_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Option<usize>> {
+    let finite = active.iter().all(|&id| {
+        blocks
+            .get(id)
+            .is_some_and(|block| block.last_x0.is_finite() && block.last_x1.is_finite())
+    }) && line
+        .iter()
+        .all(|segment| segment.x0.is_finite() && segment.x1.is_finite());
+    if !finite {
+        return naive_targets(blocks, active, line);
+    }
+    let open = Sweep::new(active.iter().filter_map(|&id| {
+        blocks
+            .get(id)
+            .map(|block| (id, block.last_x0, block.last_x1))
+    }));
+    let current = Sweep::new(
+        line.iter()
+            .enumerate()
+            .map(|(index, segment)| (index, segment.x0, segment.x1)),
+    );
+    line.iter()
+        .map(|segment| {
+            let target = open.unique(segment.x0, segment.x1, |id| {
+                blocks.get(id).is_some_and(|block| fits(block, segment))
+            })?;
+            let block = blocks.get(target)?;
+            current
+                .unique(block.last_x0, block.last_x1, |index| {
+                    line.get(index).is_some_and(|other| fits(block, other))
+                })
+                .map(|_| target)
+        })
+        .collect()
+}
+
 fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut active: Vec<usize> = Vec::new();
@@ -296,29 +399,11 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
                 .iter()
                 .any(|segment| (segment.x1 - segment.x0) < CELL_EM * segment.size)
             && !line.iter().all(|segment| segment.continuation);
-        let fits = |block: &Block, segment: &Segment| {
-            overlaps(block.last_x0, block.last_x1, segment.x0, segment.x1)
-                && similar_size(block.last_size, segment.size)
+        let targets = if row_break {
+            Vec::new()
+        } else {
+            line_targets(&blocks, &active, line)
         };
-        let targets: Vec<Option<usize>> = line
-            .iter()
-            .map(|segment| {
-                if row_break {
-                    return None;
-                }
-                let mut matches = active
-                    .iter()
-                    .copied()
-                    .filter(|&id| blocks.get(id).is_some_and(|block| fits(block, segment)));
-                let (Some(target), None) = (matches.next(), matches.next()) else {
-                    return None;
-                };
-                let exclusive = blocks.get(target).is_some_and(|block| {
-                    line.iter().filter(|other| fits(block, other)).count() == 1
-                });
-                exclusive.then_some(target)
-            })
-            .collect();
         for (offset, segment) in line.iter().enumerate() {
             let segment_index = start.saturating_add(offset);
             let claimed = targets.get(offset).copied().flatten();
@@ -1495,6 +1580,100 @@ mod tests {
             bold: false,
             italic: false,
         }
+    }
+
+    fn segment(x0: f64, x1: f64, center: f64, size: f64) -> Segment {
+        Segment {
+            members: Vec::new(),
+            x0,
+            x1,
+            y0: center - size / 2.0,
+            y1: center + size / 2.0,
+            size,
+            center,
+            continuation: false,
+            bold: false,
+            italic: false,
+        }
+    }
+
+    fn open_block(x0: f64, x1: f64, size: f64) -> Block {
+        Block {
+            table: None,
+            segments: Vec::new(),
+            x0,
+            x1,
+            top: 0.0,
+            bottom: 0.0,
+            last: 0,
+            last_x0: x0,
+            last_x1: x1,
+            last_center: 0.0,
+            last_size: size,
+        }
+    }
+
+    #[test]
+    fn swept_line_targets_match_the_exhaustive_search() {
+        let mut state = 0x853C_49E6_748F_EA9B_u64;
+        let mut draw = move |bound: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            u32::try_from(state % bound).unwrap()
+        };
+        for _ in 0..2000 {
+            let blocks: Vec<Block> = (0..usize::try_from(draw(12)).unwrap())
+                .map(|_| {
+                    let x0 = f64::from(draw(100));
+                    open_block(x0, x0 + f64::from(draw(40)), 9.0 + f64::from(draw(3)))
+                })
+                .collect();
+            let active: Vec<usize> = (0..blocks.len())
+                .filter(|_| f64::from(draw(4)) > 0.0)
+                .collect();
+            let line: Vec<Segment> = (0..=usize::try_from(draw(10)).unwrap())
+                .map(|_| {
+                    let x0 = f64::from(draw(100));
+                    segment(x0, x0 + f64::from(draw(30)), 0.0, 9.0 + f64::from(draw(3)))
+                })
+                .collect();
+            assert_eq!(
+                line_targets(&blocks, &active, &line),
+                naive_targets(&blocks, &active, &line)
+            );
+        }
+        let blocks = vec![open_block(0.0, f64::NAN, SIZE), open_block(0.0, 10.0, SIZE)];
+        let line = [segment(2.0, 4.0, 0.0, SIZE)];
+        assert_eq!(
+            line_targets(&blocks, &[0, 1], &line),
+            naive_targets(&blocks, &[0, 1], &line)
+        );
+    }
+
+    #[test]
+    fn very_long_lines_build_blocks_in_near_linear_time() {
+        let words = 8000_u32;
+        let lines = 20_u32;
+        let mut segments = Vec::new();
+        let mut ranges = Vec::new();
+        for line in 0..lines {
+            let start = segments.len();
+            for word in 0..words {
+                let x = f64::from(word) * 300.0;
+                segments.push(segment(x, x + 250.0, 1000.0 - f64::from(line) * 12.0, SIZE));
+            }
+            ranges.push((start, segments.len()));
+        }
+        let started = std::time::Instant::now();
+        let blocks = build_blocks(&segments, &ranges);
+        assert!(started.elapsed().as_secs() < 5);
+        assert_eq!(blocks.len(), usize::try_from(words).unwrap());
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block.segments.len() == usize::try_from(lines).unwrap())
+        );
     }
 
     #[test]
