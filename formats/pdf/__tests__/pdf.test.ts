@@ -268,6 +268,59 @@ describe("PDF byte helpers", () => {
 });
 
 describe("PDF signatures", () => {
+  it.effect("repairs a missing catalog type in the same edit and keeps the signature valid", () =>
+    Effect.gen(function* () {
+      const pageContent = "BT /F1 12 Tf 10 20 Td (SignatureKit) Tj ET\n";
+      const objects = [
+        "<< /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 320 180] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        `<< /Length ${pageContent.length} >>\nstream\n${pageContent}endstream`,
+      ];
+      let source = "%PDF-1.7\n";
+      const entries = objects.map((body, index) => {
+        const offset = source.length;
+        source += `${index + 1} 0 obj\n${body}\nendobj\n`;
+        return `${String(offset).padStart(10, "0")} 00000 n \n`;
+      });
+      const xrefOffset = source.length;
+      source += `xref\n0 6\n0000000000 65535 f \n${entries.join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+      const pdf = encodeAscii(source);
+      const catalogEdit = yield* editFixturePdf(
+        pdf,
+        () => [{ op: "set", target: { base: { kind: "catalog" } }, key: "Lang", value: "(en-US)" }],
+        { incremental: true },
+      );
+      const pageEdit = yield* editFixturePdf(
+        pdf,
+        () => [
+          {
+            op: "set",
+            target: { base: { kind: "page", pageIndex: 0 } },
+            key: "Rotate",
+            value: "90",
+          },
+        ],
+        { incremental: true },
+      );
+      const pfx = yield* readA1Fixture("ecnpj");
+      const signed = yield* signPdf({ pdf }).pipe(
+        Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })),
+      );
+
+      expect(latin1.decode(catalogEdit.subarray(pdf.length))).toMatch(
+        /1 0 obj\s*<<[^>]*\/Type \/Catalog/u,
+      );
+      expect(latin1.decode(pageEdit.subarray(pdf.length))).not.toContain("/Type /Catalog");
+      expect(latin1.decode(signed.subarray(0, pdf.length))).toBe(source);
+      const signedRevision = latin1.decode(signed.subarray(pdf.length));
+      expect(signedRevision).toMatch(/1 0 obj\s*<<[^>]*\/Type \/Catalog/u);
+      expect(signedRevision.match(/startxref/gu)).toHaveLength(1);
+      expect(yield* verifyPdf({ pdf: signed })).toMatchObject({ valid: true, signatureCount: 1 });
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
   it.effect("signs and verifies a PDF with detached CMS bytes", () =>
     Effect.gen(function* () {
       const pfx = yield* readA1Fixture("ecnpj");

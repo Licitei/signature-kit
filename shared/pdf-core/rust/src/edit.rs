@@ -678,6 +678,13 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     if reader.pos != payload.len() {
         return Err(Failure::request("edit payload has trailing bytes"));
     }
+    if let Ok(root) = store.root_ref()
+        && let Some(body) = store.changed.get_mut(root.number)
+        && let Object::Dict(catalog) = &mut body.object
+        && catalog.get(b"Type").is_none()
+    {
+        catalog.insert(b"Type", Object::Name(b"Catalog".to_vec()));
+    }
     let layout = if flags & FLAG_OBJECT_STREAMS == 0 {
         Packing::Classic
     } else {
