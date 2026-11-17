@@ -66,6 +66,7 @@ const createRawSignaturePdf = (
     `[${String(first).padStart(10, "0")} ${String(second).padStart(10, "0")} ${String(third).padStart(10, "0")} ${String(fourth).padStart(10, "0")}]`,
   fieldBody = "<< /FT /Sig /V 8 0 R >>",
   unindexedObjects: ReadonlyArray<readonly [number, string]> = [],
+  contentsHex = "00",
 ): RawSignaturePdf => {
   const marker = formatByteRange([0, 0, 0, 0]);
   const streamContents = "binary\nendstream fake\nstream payload";
@@ -79,7 +80,7 @@ const createRawSignaturePdf = (
       [4, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 7 0 R >>"],
       [6, fieldBody],
       [7, `<< /Length 5 0 R >>\nstream\n${streamContents}\nendstream`],
-      [8, `<< /Type /${type} /ByteRange ${byteRangeText} /Contents <00> >>`],
+      [8, `<< /Type /${type} /ByteRange ${byteRangeText} /Contents <${contentsHex}> >>`],
       [5, String(encodeAscii(streamContents).byteLength)],
     ];
     let source = "%PDF-1.7\n";
@@ -107,7 +108,7 @@ const createRawSignaturePdf = (
   const template = render(marker);
   const contentsStart =
     indexOfBytes(encodeAscii(template.source), encodeAscii("/Contents <")) + "/Contents ".length;
-  const contentsEnd = contentsStart + 4;
+  const contentsEnd = contentsStart + contentsHex.length + 2;
   const byteRangeText = formatByteRange([
     0,
     contentsStart,
@@ -536,6 +537,19 @@ describe("PDF signature dictionary parsing", () => {
         expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(true);
         expect(signatures).toHaveLength(1);
       }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
+  it.effect("keeps the end-of-contents octets of an indefinite-length BER signature", () =>
+    Effect.gen(function* () {
+      const ber = "308006092a864886f70d010702a08002010500000000";
+      const padded = createRawSignaturePdf(undefined, undefined, undefined, [], `${ber}000000`);
+      const [signature] = yield* extractPdfSignatures(padded.pdf);
+      expect(Buffer.from(signature?.signature ?? []).toString("hex")).toBe(ber);
+
+      const tampered = createRawSignaturePdf(undefined, undefined, undefined, [], `${ber}0001`);
+      const result = yield* Effect.result(extractPdfSignatures(tampered.pdf));
+      expect(result._tag).toBe("Failure");
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("binds reachable signature objects through xref-stream entries", () =>

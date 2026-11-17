@@ -329,21 +329,46 @@ export const preparePdfByteRange = (
     };
   });
 
-const derSequenceTotalLength = (bytes: Uint8Array): number | undefined => {
-  if (bytes.byteLength < 2 || bytes[0] !== 0x30) return undefined;
-  const firstLengthByte = bytes[1] ?? 0;
-  if (firstLengthByte < 0x80) return 2 + firstLengthByte;
-  const lengthByteCount = firstLengthByte & 0x7f;
-  if (lengthByteCount === 0 || lengthByteCount > 4 || bytes.byteLength < 2 + lengthByteCount) {
+const MAX_BER_DEPTH = 64;
+
+const berElementEnd = (bytes: Uint8Array, offset: number, depth: number): number | undefined => {
+  if (depth > MAX_BER_DEPTH) return undefined;
+  const tag = bytes[offset];
+  if (tag === undefined) return undefined;
+  let cursor = offset + 1;
+  if ((tag & 0x1f) === 0x1f) {
+    while (((bytes[cursor] ?? 0) & 0x80) !== 0) cursor += 1;
+    cursor += 1;
+  }
+  const lengthByte = bytes[cursor];
+  if (lengthByte === undefined) return undefined;
+  cursor += 1;
+  if (lengthByte < 0x80) {
+    const end = cursor + lengthByte;
+    return end <= bytes.byteLength ? end : undefined;
+  }
+  if (lengthByte === 0x80) {
+    if ((tag & 0x20) === 0) return undefined;
+    while (cursor < bytes.byteLength) {
+      if (bytes[cursor] === 0 && bytes[cursor + 1] === 0) return cursor + 2;
+      const next = berElementEnd(bytes, cursor, depth + 1);
+      if (next === undefined || next <= cursor) return undefined;
+      cursor = next;
+    }
     return undefined;
   }
+  const lengthByteCount = lengthByte & 0x7f;
+  if (lengthByteCount > 4 || cursor + lengthByteCount > bytes.byteLength) return undefined;
   let contentLength = 0;
   for (let index = 0; index < lengthByteCount; index += 1) {
-    contentLength = contentLength * 256 + (bytes[2 + index] ?? 0);
+    contentLength = contentLength * 256 + (bytes[cursor + index] ?? 0);
   }
-  const total = 2 + lengthByteCount + contentLength;
-  return total <= bytes.byteLength ? total : undefined;
+  const end = cursor + lengthByteCount + contentLength;
+  return end <= bytes.byteLength ? end : undefined;
 };
+
+const cmsTotalLength = (bytes: Uint8Array): number | undefined =>
+  bytes[0] === 0x30 ? berElementEnd(bytes, 0, 0) : undefined;
 
 const hexNibble = (code: number): number | undefined => {
   if (code >= 0x30 && code <= 0x39) return code - 0x30;
@@ -483,12 +508,12 @@ const extractPdfSignatureFromDictionary = (
       });
     }
     const paddedSignature = yield* decodeSignatureHex(pdf, contentsStart + 1, contentsEnd);
-    const derLength = derSequenceTotalLength(paddedSignature);
+    const derLength = cmsTotalLength(paddedSignature);
     if (derLength !== undefined && !hasOnlyZeroBytesFrom(paddedSignature, derLength)) {
       return yield* new PdfError({
         code: PdfErrorCodeValue.placeholderNotFound,
         retryable: false,
-        reason: "Non-zero bytes after DER signature contents.",
+        reason: "Non-zero bytes after BER signature contents.",
         operation: PdfOperationValue.verify,
       });
     }
