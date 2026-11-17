@@ -7,8 +7,8 @@ use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
 use crate::markdown::{
-    ParagraphFinish, finish_paragraph, median_body_size, merge_page_continuation, reflow_spans,
-    spans_from_runs, take_continuation_tail,
+    ParagraphFinish, finish_paragraph, median_body_size, merge_page_continuation, piece_lead,
+    reflow_spans, spans_from_runs, take_continuation_tail,
 };
 use crate::table::{
     Cell, Rule, Table, column_of, merge_row, render_markdown, render_text, ruled_grids,
@@ -939,7 +939,9 @@ fn layout_pool(
                 if let Some(mut piece) =
                     markdown_block_piece(free, &segments, block, margin, body, extent, links)
                 {
-                    piece.lead = leading;
+                    piece.lead = out.pieces.last().map_or(leading, |before| {
+                        piece_lead(&before.text, &piece.text, leading)
+                    });
                     out.pieces.push(piece);
                 }
             } else {
@@ -1653,6 +1655,15 @@ mod structure_tests {
 
     fn pages_of(bytes: &[u8], options: TextOptions) -> Vec<String> {
         document_text(bytes, None, &text_limits(), options).unwrap()
+    }
+
+    #[test]
+    fn markdown_basics_fixture_matches_golden() {
+        let bytes = include_bytes!("../../__tests__/fixtures/markdown-basics.pdf").as_slice();
+        let golden = include_str!("../../__tests__/fixtures/markdown-basics.md");
+        let markdown = pages_of(bytes, MARKDOWN);
+        assert_eq!(markdown.len(), 1);
+        assert_eq!(markdown[0], golden.trim_end());
     }
 
     fn cell(table: &Table, row: u32, col: u32) -> &Cell {

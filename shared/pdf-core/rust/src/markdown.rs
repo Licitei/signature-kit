@@ -123,7 +123,10 @@ fn continues_with_particle(text: &str) -> bool {
 pub(crate) fn soft_hyphen_join(left: &str, right: &str) -> String {
     let left_trim = left.trim_end();
     let right_trim = right.trim_start();
-    let Some(stem) = left_trim.strip_suffix('-') else {
+    let (head, tail) = left_trim
+        .rsplit_once(' ')
+        .map_or(("", left_trim), |(prefix, word)| (prefix, word));
+    let Some(stem) = tail.strip_suffix('-') else {
         return format!("{left_trim} {right_trim}");
     };
     if !right_trim
@@ -133,10 +136,15 @@ pub(crate) fn soft_hyphen_join(left: &str, right: &str) -> String {
     {
         return format!("{left_trim} {right_trim}");
     }
-    if stem.contains('-') || continues_with_particle(right_trim) {
+    let joined_tail = if stem.contains('-') || continues_with_particle(right_trim) {
         format!("{stem}-{right_trim}")
     } else {
         format!("{stem}{right_trim}")
+    };
+    if head.is_empty() {
+        joined_tail
+    } else {
+        format!("{head} {joined_tail}")
     }
 }
 
@@ -269,6 +277,9 @@ fn list_marker(text: &str) -> Option<(u32, char)> {
     if trimmed.is_empty() || legal_clause_prefix(trimmed) {
         return None;
     }
+    if trimmed.starts_with("I - ") || trimmed.starts_with("I – ") {
+        return Some((marker_depth_from_indent(text, trimmed), 'I'));
+    }
     if let Some(ch) = trimmed.chars().next()
         && BULLETS.contains(&ch)
     {
@@ -311,7 +322,7 @@ pub(crate) fn list_line(markdown: &str, indent_em: f64) -> Option<(u32, String)>
             .collect::<String>()
             .trim_start()
             .to_owned()
-    } else if kind == 'a' {
+    } else if kind == 'a' || kind == 'I' {
         trimmed
             .chars()
             .skip(3)
@@ -328,14 +339,18 @@ pub(crate) fn list_line(markdown: &str, indent_em: f64) -> Option<(u32, String)>
 
 pub(crate) fn link_overlays(plain: &str, bbox: [f64; 4], links: &[LinkInfo]) -> String {
     let mut hit: Option<&LinkInfo> = None;
+    let [bx0, by0, bx1, by1] = bbox;
+    let center_x = f64::midpoint(bx0, bx1);
+    let center_y = f64::midpoint(by0, by1);
     for link in links {
         if link.uri.is_empty() {
             continue;
         }
         let [lx0, ly0, lx1, ly1] = link.rect;
-        let overlap_x = bbox[0].max(lx0) < bbox[2].min(lx1);
-        let overlap_y = bbox[1].max(ly0) < bbox[3].min(ly1);
-        if overlap_x && overlap_y {
+        let overlap_x = bx0.max(lx0) < bx1.min(lx1);
+        let overlap_y = by0.max(ly0) < by1.min(ly1);
+        let center_hit = lx0 <= center_x && center_x <= lx1 && ly0 <= center_y && center_y <= ly1;
+        if (overlap_x && overlap_y) || center_hit {
             hit = Some(link);
             break;
         }
@@ -356,13 +371,28 @@ pub(crate) fn finish_paragraph(merged: &[StyleSpan], ctx: &ParagraphFinish<'_>) 
     let markdown_body = spans_to_markdown(merged);
     if let Some(level) = heading_level(&plain, ctx.size, ctx.body_size) {
         let hashes = "#".repeat(usize::from(level));
-        return format!("{hashes} {markdown_body}");
+        let mut escaped = String::new();
+        escape_markdown(plain.trim(), &mut escaped);
+        return format!("{hashes} {escaped}");
     }
     if let Some((depth, content)) = list_line(&plain, ctx.indent_em) {
         let indent = "  ".repeat(usize::try_from(depth.saturating_sub(1)).unwrap_or(0));
         return format!("{indent}- {content}");
     }
     link_overlays(&markdown_body, ctx.bbox, ctx.links)
+}
+
+fn tight_list_line(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with("- ")
+}
+
+pub(crate) fn piece_lead(previous: &str, current: &str, default: &'static str) -> &'static str {
+    if tight_list_line(previous) && tight_list_line(current) {
+        "\n"
+    } else {
+        default
+    }
 }
 
 pub(crate) fn merge_page_continuation(tail: &str, head: &str) -> Option<String> {
@@ -396,6 +426,10 @@ mod tests {
     fn soft_hyphen_joins_syllables_and_compounds() {
         assert_eq!(soft_hyphen_join("administra-", "tivo"), "administrativo");
         assert_eq!(soft_hyphen_join("mão-", "de-obra"), "mão-de-obra");
+        assert_eq!(
+            soft_hyphen_join("carga administra-", "tivo"),
+            "carga administrativo"
+        );
     }
 
     #[test]

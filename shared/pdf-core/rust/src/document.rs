@@ -48,6 +48,42 @@ fn pdf_doc_char(byte: u8) -> char {
     }
 }
 
+pub(crate) fn decode_pdf_name(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    let mut index = 0_usize;
+    while let Some(byte) = bytes.get(index).copied() {
+        index = index.saturating_add(1);
+        if byte == b'#' {
+            let h0 = bytes.get(index).copied();
+            let h1 = bytes.get(index.saturating_add(1)).copied();
+            if let (Some(h0), Some(h1)) = (h0, h1)
+                && h0.is_ascii_hexdigit()
+                && h1.is_ascii_hexdigit()
+            {
+                let hex = [h0, h1];
+                if let Ok(text) = std::str::from_utf8(&hex)
+                    && let Ok(value) = u8::from_str_radix(text, 16)
+                {
+                    out.push(char::from(value));
+                    index = index.saturating_add(2);
+                    continue;
+                }
+            }
+            out.push('#');
+        } else {
+            out.push(char::from(byte));
+        }
+    }
+    out
+}
+
+fn uri_from_action(value: &Object) -> Option<String> {
+    if let Some(bytes) = value.as_string() {
+        return Some(decode_text_string(bytes));
+    }
+    value.as_name().map(decode_pdf_name)
+}
+
 pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xfe, 0xff]) {
         let units = rest.chunks(2).map(|pair| match pair {
@@ -1074,7 +1110,9 @@ impl<'a> Document<'a> {
                 let Some(uri) = lenient(self.follow(uri))? else {
                     continue;
                 };
-                let Some(uri) = uri.as_string() else { continue };
+                let Some(uri) = uri_from_action(&uri) else {
+                    continue;
+                };
                 let Some(rect) = dict.get(b"Rect") else {
                     continue;
                 };
@@ -1084,7 +1122,7 @@ impl<'a> Document<'a> {
                 links.push(LinkInfo {
                     page_index,
                     rect,
-                    uri: decode_text_string(uri),
+                    uri,
                 });
             }
         }
@@ -2053,6 +2091,14 @@ mod tests {
             panic!("not a stream");
         };
         assert_eq!(document.stream_data(stream).unwrap(), b"ab");
+    }
+
+    #[test]
+    fn decodes_pdf_name_uri_escapes() {
+        assert_eq!(
+            decode_pdf_name(b"https:#2F#2Fsignature-kit.dev#2Fcorpus"),
+            "https://signature-kit.dev/corpus"
+        );
     }
 
     #[test]

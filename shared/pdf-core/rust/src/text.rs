@@ -160,6 +160,7 @@ const AXIS_TOLERANCE: f64 = 1.0;
 const MIN_RULING: f64 = 2.0;
 const THIN_FILL: f64 = 2.0;
 const FRAME_FRACTION: f64 = 0.9;
+const CELL_MAX_FRAC: f64 = 0.55;
 const FORCE_BOLD: i64 = 1 << 18;
 
 fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
@@ -238,6 +239,27 @@ impl PathBuilder {
         self.rects.clear();
         self.start = None;
         self.current = None;
+    }
+
+    fn bounds(&self) -> Option<[f64; 4]> {
+        if self.segments.is_empty() {
+            return None;
+        }
+        let mut x0 = f64::INFINITY;
+        let mut y0 = f64::INFINITY;
+        let mut x1 = f64::NEG_INFINITY;
+        let mut y1 = f64::NEG_INFINITY;
+        for [ax, ay, bx, by] in &self.segments {
+            for (x, y) in [(*ax, *ay), (*bx, *by)] {
+                if x.is_finite() && y.is_finite() {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        (x0.is_finite() && y0.is_finite() && x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
     }
 }
 
@@ -879,10 +901,39 @@ impl Interpreter<'_, '_> {
         true
     }
 
+    fn push_filled_cell_rulings(
+        &mut self,
+        rect: [f64; 4],
+        page_width: f64,
+        page_height: f64,
+        width: f64,
+    ) {
+        let [x0, y0, x1, y1] = rect;
+        let frame =
+            x1 - x0 >= FRAME_FRACTION * page_width && y1 - y0 >= FRAME_FRACTION * page_height;
+        if frame {
+            return;
+        }
+        let (w, h) = (x1 - x0, y1 - y0);
+        let cell_like = w >= MIN_RULING
+            && h >= MIN_RULING
+            && w <= page_width * CELL_MAX_FRAC
+            && h <= page_height * CELL_MAX_FRAC;
+        if cell_like {
+            self.push_ruling([x0, y0, x1, y0], width);
+            self.push_ruling([x0, y1, x1, y1], width);
+            self.push_ruling([x0, y0, x0, y1], width);
+            self.push_ruling([x1, y0, x1, y1], width);
+        }
+    }
+
     fn paint(&mut self, path: &mut PathBuilder, state: &GState, stroke: bool) {
         let [a, b, c, d, _, _] = state.ctm;
         let width = state.line_width.abs() * (a * d - b * c).abs().sqrt();
         let (page_width, page_height) = self.page_extent;
+        if !stroke && let Some(bounds) = path.bounds() {
+            self.push_filled_cell_rulings(bounds, page_width, page_height, width);
+        }
         for rect in &path.rects {
             let [x0, y0, x1, y1] = *rect;
             let frame =
@@ -896,6 +947,7 @@ impl Interpreter<'_, '_> {
                 self.push_ruling([x0, y0, x0, y1], width);
                 self.push_ruling([x1, y0, x1, y1], width);
             } else {
+                self.push_filled_cell_rulings(*rect, page_width, page_height, width);
                 let (w, h) = (x1 - x0, y1 - y0);
                 let thin = w.min(h) <= THIN_FILL && w.max(h) >= MIN_RULING;
                 if thin && w >= h {
@@ -1924,7 +1976,7 @@ mod tests {
         assert!(lines.contains(&(20.0, 20.0, 20.0, 60.0)));
         assert!(lines.contains(&(120.0, 20.0, 120.0, 60.0)));
         assert!(lines.contains(&(100.0, 100.25, 180.0, 100.25)));
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 9);
     }
 
     #[test]
