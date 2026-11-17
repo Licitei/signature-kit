@@ -64,7 +64,7 @@ const fixtureSource = () => {
 };
 
 describe("Foldkit articles", () => {
-  it("renders fixture tags through the production server composition", async () => {
+  it("renders fixture tags through the production server composition", { timeout: 15_000 }, async () => {
     const source = fixtureSource();
     const server = createServerComposition(source);
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };

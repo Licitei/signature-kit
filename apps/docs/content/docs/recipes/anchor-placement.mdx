@@ -46,6 +46,61 @@ const signedPdf = await Effect.runPromise(
 
 `digits` normalizes both the matcher and the PDF text to numeric-only strings, so `123.456.789-01` and `12345678901` match. Returned rectangles are clamped to the page bounds.
 
+## Generate with takumi-pdf, then sign
+
+When you build PDFs with [`takumi-pdf`](https://www.npmjs.com/package/takumi-pdf) instead of `@react-pdf/renderer`, install `pdf-signature-anchor` from the registry and place invisible markers in your JSX. Load takumi only on the client so FumaPress/SSG never executes wasm during prerender.
+
+```tsx title="takumi-declaration.tsx"
+import { render } from "takumi-pdf"
+import {
+  PdfSignatureAnchor,
+  PdfSignatureLinkAnchor,
+} from "@/components/signature-kit/pdf-signature-anchor"
+import { findPdfTextAnchors } from "@signature-kit/pdf/anchors"
+import { prepareAndSignPdf } from "@signature-kit/pdf/workflow"
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser"
+import { Effect, Layer } from "effect"
+
+export async function generateAndSign(fontBytes: Uint8Array, signerLayer: Layer.Layer<unknown>) {
+  const pdf = await render(
+    <main className="flex flex-col gap-2 p-12 text-[11px]">
+      <h1 className="text-base font-bold">Declaração de Habilitação</h1>
+      <p>Declaro, sob as penas da lei, que atendo às condições de habilitação exigidas no edital.</p>
+      <div className="mt-6 flex flex-col items-center gap-1">
+        <PdfSignatureAnchor token="{{signature}}" />
+        <PdfSignatureLinkAnchor href="licitei:assinatura" />
+      </div>
+    </main>,
+    { size: "a4", fonts: [{ name: "Liberation", data: fontBytes }] },
+  )
+
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const stampRects = yield* findPdfTextAnchors({
+        pdf,
+        matchers: [{ text: "{{signature}}" }, { link: "licitei:assinatura" }],
+        stampSize: { width: 180, height: 54 },
+        placement: "below",
+        offset: 6,
+      })
+      return yield* prepareAndSignPdf({
+        pdf,
+        stampRects,
+        badge: {
+          header: { text: "ASSINADO DIGITALMENTE" },
+          rows: [[{ label: "Signatário", value: "Maria Souza" }]],
+          footer: [{ text: "ICP-Brasil" }],
+        },
+        rubric: { initials: "MS" },
+        signing: { policy: "pades-icp-brasil", name: "Maria Souza" },
+      })
+    }).pipe(Effect.provide(Layer.merge(signerLayer, pdfCoreBrowserLayer))),
+  )
+}
+```
+
+The corpus fixture `takumi-declaration.pdf` exercises the text token `[[licitei-assinatura]]` today; HTTPS URI links from takumi are readable by `pdf-core`, while custom schemes such as `licitei:assinatura` still need alignment between takumi output and link inspection (tracked alongside pdf-core writer work).
+
 <Callout type="info">
   Text extraction runs in the in-house WASM core (`@signature-kit/pdf-core`): provide `pdfCoreBrowserLayer` in browsers or `pdfCoreFileLayer` on Node and Bun. To use your own extraction seam instead, pass `pages` and `textBoxes` and keep placement in `findPdfTextAnchors`; that call needs no service.
 </Callout>
