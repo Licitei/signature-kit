@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Build (optional) and report raw / gzip -9 / brotli -q 11 sizes for pdf-core.wasm.
- * Usage: bun shared/pdf-core/bench/measure-size.ts [--build] [--label NAME] [--wasm PATH]
+ * Usage: bun shared/pdf-core/__tests__/bench/measure-size.ts [--build] [--label NAME] [--wasm PATH]
  */
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -10,18 +10,14 @@ import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, "..");
+const pkg = resolve(here, "../..");
 const repo = resolve(pkg, "../..");
 const defaultWasm = join(pkg, "dist/pdf-core.wasm");
-const cargoTarget =
-  process.env.CARGO_TARGET_DIR ?? join(pkg, "rust/target");
-const builtWasm = join(
-  cargoTarget,
-  "wasm32-unknown-unknown/release/signature_kit_pdf_core.wasm",
-);
+const cargoTarget = process.env.CARGO_TARGET_DIR ?? join(pkg, "rust/target");
+const builtWasm = join(cargoTarget, "wasm32-unknown-unknown/release/signature_kit_pdf_core.wasm");
 
-const args = process.argv.slice(2);
-const doBuild = args.includes("--build");
+const args: string[] = process.argv.slice(2);
+const doBuild: boolean = args.includes("--build");
 const labelIdx = args.indexOf("--label");
 const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "step") : "step";
 const wasmIdx = args.indexOf("--wasm");

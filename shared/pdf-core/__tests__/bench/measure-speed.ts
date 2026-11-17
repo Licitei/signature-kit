@@ -6,7 +6,7 @@
  *   - wasm renderPages ms/page on 5 editais
  *   - signatures() + document() on habilitacao-150 and a ~30 MB edital
  *
- * Usage: bun shared/pdf-core/bench/measure-speed.ts [--label NAME] [--quick]
+ * Usage: bun shared/pdf-core/__tests__/bench/measure-speed.ts [--label NAME] [--quick]
  */
 import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -14,12 +14,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, "..");
+const pkg = resolve(here, "../..");
 const repo = resolve(pkg, "../..");
-const args = process.argv.slice(2);
+const args: string[] = process.argv.slice(2);
 const labelIdx = args.indexOf("--label");
 const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "step") : "step";
-const quick = args.includes("--quick");
+const quick: boolean = args.includes("--quick");
 
 const pdfDir = join(repo, ".cache/bench/pdfs");
 const fixtureDir = join(pkg, "__tests__/fixtures");
@@ -46,14 +46,14 @@ async function loadCore() {
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[mid - 1]! + sorted[mid]!) / 2
-    : sorted[mid]!;
+  const left = sorted[mid - 1] ?? 0;
+  const right = sorted[mid] ?? 0;
+  return sorted.length % 2 === 0 ? (left + right) / 2 : right;
 }
 
 function pagesInName(name: string): number {
   const match = /^(\d+)p_/.exec(name);
-  return match ? Number(match[1]) : 1;
+  return match === null ? 1 : Number(match[1]);
 }
 
 function listEditais(): string[] {
@@ -137,9 +137,11 @@ const renderFiles = editais
   .sort((a, b) => statSync(a).size - statSync(b).size)
   .slice(0, 5);
 const habilitacao = join(fixtureDir, "habilitacao-150.pdf");
+const largestEdital = editais.slice().sort((a, b) => statSync(b).size - statSync(a).size)[0];
 const largeEdital =
-  editais.find((f) => basename(f).startsWith("0559p_")) ??
-  editais.slice().sort((a, b) => statSync(b).size - statSync(a).size)[0]!;
+  editais.find((f) => basename(f).startsWith("0559p_")) ?? largestEdital ?? habilitacao;
+const warmText = textFiles[0] ?? habilitacao;
+const warmRender = renderFiles[0] ?? warmText;
 
 const runs = quick ? 5 : 3;
 const textRuns: number[] = [];
@@ -149,9 +151,9 @@ const largeRuns: Awaited<ReturnType<typeof timeSignatures>>[] = [];
 
 // warmup: touch text + render paths twice so the first timed run is warm
 for (let warm = 0; warm < 2; warm += 1) {
-  await Effect.runPromise(core.text(new Uint8Array(readFileSync(textFiles[0]!))));
+  await Effect.runPromise(core.text(new Uint8Array(readFileSync(warmText))));
   await Effect.runPromise(
-    core.renderPages(new Uint8Array(readFileSync(renderFiles[0]!)), {
+    core.renderPages(new Uint8Array(readFileSync(warmRender)), {
       pageIndexes: [0],
       scale: 1,
     }),
@@ -187,7 +189,7 @@ const result = {
     signScanMs: median(habRuns.map((r) => r.signScanMs)),
     documentMs: median(habRuns.map((r) => r.documentMs)),
     textMs: median(habRuns.map((r) => r.textMs)),
-    bytes: habRuns[0]!.bytes,
+    bytes: habRuns[0]?.bytes ?? 0,
   },
   largeEdital: quick
     ? null
@@ -196,7 +198,7 @@ const result = {
         signScanMs: median(largeRuns.map((r) => r.signScanMs)),
         documentMs: median(largeRuns.map((r) => r.documentMs)),
         textMs: median(largeRuns.map((r) => r.textMs)),
-        bytes: largeRuns[0]!.bytes,
+        bytes: largeRuns[0]?.bytes ?? 0,
       },
 };
 

@@ -2,22 +2,29 @@
 /**
  * Parse a wasm module's code + optional name section and list function sizes.
  * Prefer an unstripped build (`strip = false`) so the name section is present.
- * Usage: bun shared/pdf-core/bench/wasm-symbols.ts [wasm-path] [--top N]
+ * Usage: bun shared/pdf-core/__tests__/bench/wasm-symbols.ts [wasm-path] [--top N]
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, "..");
+const pkg = resolve(here, "../..");
 const repo = resolve(pkg, "../..");
-const args = process.argv.slice(2);
+const args: string[] = process.argv.slice(2);
 const topIdx = args.indexOf("--top");
 const topN = topIdx >= 0 ? Number(args[topIdx + 1] ?? 60) : 60;
-const wasmPath = resolve(
-  args.find((a, i) => !a.startsWith("--") && (i === 0 || !args[i - 1]?.startsWith("--"))) ??
-    join(pkg, "dist/pdf-core.wasm"),
-);
+const pathArg = args.find((argument, index) => {
+  if (argument.startsWith("--")) {
+    return false;
+  }
+  if (index === 0) {
+    return true;
+  }
+  const previous = args[index - 1];
+  return previous === undefined || previous.startsWith("--") === false;
+});
+const wasmPath = resolve(pathArg ?? join(pkg, "dist/pdf-core.wasm"));
 
 const data = new Uint8Array(readFileSync(wasmPath));
 
@@ -26,7 +33,7 @@ function readLeb(offset: number): { value: number; next: number } {
   let shift = 0;
   let pos = offset;
   while (pos < data.length) {
-    const byte = data[pos]!;
+    const byte = data[pos];
     pos += 1;
     result |= (byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) break;
@@ -45,7 +52,7 @@ type Section = { id: number; size: number; start: number };
 const sections: Section[] = [];
 let off = 8;
 while (off < data.length) {
-  const id = data[off]!;
+  const id = data[off];
   off += 1;
   const { value: size, next } = readLeb(off);
   sections.push({ id, size, start: next });
@@ -64,7 +71,7 @@ for (const section of sections) {
       let pos = next;
       const end = section.start + section.size;
       while (pos < end) {
-        const id = data[pos]!;
+        const id = data[pos];
         pos += 1;
         const size = readLeb(pos);
         pos = size.next;
@@ -92,7 +99,7 @@ for (const section of sections) {
       pos = mod.next;
       const field = readName(pos);
       pos = field.next;
-      const kind = data[pos]!;
+      const kind = data[pos];
       pos += 1;
       if (kind === 0) {
         importFuncCount += 1;
@@ -105,7 +112,7 @@ for (const section of sections) {
         pos = readLeb(pos).next;
       } else if (kind === 2) {
         pos += 1;
-        const hasMax = data[pos]!;
+        const hasMax = data[pos];
         pos += 1;
         pos = readLeb(pos).next;
         if (hasMax === 1) pos = readLeb(pos).next;
@@ -144,33 +151,79 @@ function classify(name: string): string {
   const n = trimmed.toLowerCase();
   if (
     /(?:^|[^a-z])(?:font|glyph|cff|cmap|sfnt|type1|truetype|fontprog|font_tables)/.test(n) ||
-    n.includes("ntb") && n.includes("font")
+    (n.includes("ntb") && n.includes("font"))
   )
     return "font";
-  if (n.includes("4font") || n.includes("8fontprog") || n.includes("3cff") || n.includes("4cmap") || n.includes("5glyph"))
+  if (
+    n.includes("4font") ||
+    n.includes("8fontprog") ||
+    n.includes("3cff") ||
+    n.includes("4cmap") ||
+    n.includes("5glyph")
+  )
     return "font";
-  if (n.includes("6render") || n.includes("7display") || n.includes("7shading") || n.includes("5color"))
+  if (
+    n.includes("6render") ||
+    n.includes("7display") ||
+    n.includes("7shading") ||
+    n.includes("5color")
+  )
     return "render";
-  if (n.includes("3png") || n.includes("5image") || n.includes("5ccitt"))
-    return "image";
-  if (n.includes("7deflate") || n.includes("7inflate") || n.includes("zlib") || n.includes("huffman"))
+  if (n.includes("3png") || n.includes("5image") || n.includes("5ccitt")) return "image";
+  if (
+    n.includes("7deflate") ||
+    n.includes("7inflate") ||
+    n.includes("zlib") ||
+    n.includes("huffman")
+  )
     return "deflate";
   if (n.includes("8revision") || n.includes("byte_range") || n.includes("pdf_core_signatures"))
     return "revision";
-  if (n.includes("5write") || n.includes("4edit") || n.includes("pdf_core_merge") || n.includes("pdf_core_create") || n.includes("pdf_core_edit"))
+  if (
+    n.includes("5write") ||
+    n.includes("4edit") ||
+    n.includes("pdf_core_merge") ||
+    n.includes("pdf_core_create") ||
+    n.includes("pdf_core_edit")
+  )
     return "write";
-  if (n.includes("8markdown") || n.includes("6layout") || n.includes("5table") || n.includes("4text") || n.includes("pdf_core_text") || n.includes("pdf_core_tables"))
+  if (
+    n.includes("8markdown") ||
+    n.includes("6layout") ||
+    n.includes("5table") ||
+    n.includes("4text") ||
+    n.includes("pdf_core_text") ||
+    n.includes("pdf_core_tables")
+  )
     return "text/layout";
-  if (n.includes("6syntax") || n.includes("8document") || n.includes("6object") || n.includes("7filters") || n.includes("pdf_core_document") || n.includes("pdf_core_inspect"))
+  if (
+    n.includes("6syntax") ||
+    n.includes("8document") ||
+    n.includes("6object") ||
+    n.includes("7filters") ||
+    n.includes("pdf_core_document") ||
+    n.includes("pdf_core_inspect")
+  )
     return "parse";
-  if (n.includes("3fmt") || n.includes("5panic") || n.includes("rtformat") || n.includes("formatter") || n.includes("9panicking"))
+  if (
+    n.includes("3fmt") ||
+    n.includes("5panic") ||
+    n.includes("rtformat") ||
+    n.includes("formatter") ||
+    n.includes("9panicking")
+  )
     return "fmt/panic";
-  if (n.includes("dlmalloc") || n.includes("8dlmalloc") || n.includes("6malloc") || n.includes("5alloc") || n.includes("pdf_core_alloc") || n.includes("pdf_core_free"))
+  if (
+    n.includes("dlmalloc") ||
+    n.includes("8dlmalloc") ||
+    n.includes("6malloc") ||
+    n.includes("5alloc") ||
+    n.includes("pdf_core_alloc") ||
+    n.includes("pdf_core_free")
+  )
     return "alloc";
-  if (n.includes("3abi") || n.includes("pdf_core_"))
-    return "abi";
-  if (n.includes("5slice4sort") || n.includes("4sort"))
-    return "sorts";
+  if (n.includes("3abi") || n.includes("pdf_core_")) return "abi";
+  if (n.includes("5slice4sort") || n.includes("4sort")) return "sorts";
   return "other";
 }
 
@@ -193,10 +246,16 @@ const report = {
 };
 
 console.log(`wasm: ${wasmPath}`);
-console.log(`functions: ${report.functions} (named ${report.named}) code=${report.codeBytes} data=${report.dataBytes}`);
+console.log(
+  `functions: ${report.functions} (named ${report.named}) code=${report.codeBytes} data=${report.dataBytes}`,
+);
 console.log("\nBy group:");
 for (const [g, size] of report.groups) {
-  console.log(`  ${g.padEnd(14)} ${String(size).padStart(8)}  ${(100 * size) / codeTotal}%`.replace(/%/, "").trimEnd() + `%`);
+  console.log(
+    `  ${g.padEnd(14)} ${String(size).padStart(8)}  ${(100 * size) / codeTotal}%`
+      .replace(/%/, "")
+      .trimEnd() + `%`,
+  );
 }
 console.log(`\nTop ${topN}:`);
 for (const row of report.top) {
