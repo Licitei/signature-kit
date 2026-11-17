@@ -31,6 +31,7 @@ const LITEPARSE_DIMS: Readonly<Record<CorpusFixtureName, readonly [number, numbe
   "broken-xref.pdf": [612, 792],
   "icp-signed.pdf": [300, 200],
   "habilitacao-150.pdf": [612, 792],
+  "markdown-basics.pdf": [612, 792],
 };
 
 const encryptedFixture = (): Uint8Array => {
