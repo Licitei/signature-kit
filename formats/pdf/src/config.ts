@@ -142,6 +142,7 @@ export const PdfOperationSchema = Schema.Literals([
   "pdf.blob.read",
   "pdf.document.load",
   "pdf.document.merge",
+  "pdf.document.extract-pages",
   "pdf.text-anchor.find",
   "pdf.workflow.prepare-and-sign",
   "pdf.builder.create-template-from-bytes",
@@ -169,6 +170,7 @@ export const PdfOperationValue = {
   readBlobBytes: "pdf.blob.read",
   loadDocument: "pdf.document.load",
   mergeDocuments: "pdf.document.merge",
+  extractPages: "pdf.document.extract-pages",
   findTextAnchors: "pdf.text-anchor.find",
   prepareAndSign: "pdf.workflow.prepare-and-sign",
   createTemplateFromBytes: "pdf.builder.create-template-from-bytes",
@@ -198,6 +200,8 @@ export const PdfSchemaNameSchema = Schema.Literals([
   "PdfSignatureBestGuessPlacementInput",
   "PdfVerificationRequest",
   "PdfMergeDocuments",
+  "PdfMergeOptions",
+  "PdfExtractPagesInput",
   "PdfIllustrativeDocumentInput",
   "PdfPageRenderOptions",
   "PdfPageRendererWorkerOptions",
@@ -224,6 +228,8 @@ export const PdfSchemaNameValue = {
   pdfSignatureBestGuessPlacementInput: "PdfSignatureBestGuessPlacementInput",
   pdfVerificationRequest: "PdfVerificationRequest",
   pdfMergeDocuments: "PdfMergeDocuments",
+  pdfMergeOptions: "PdfMergeOptions",
+  pdfExtractPagesInput: "PdfExtractPagesInput",
   pdfIllustrativeDocumentInput: "PdfIllustrativeDocumentInput",
   pdfPageRenderOptions: "PdfPageRenderOptions",
   pdfPageRendererWorkerOptions: "PdfPageRendererWorkerOptions",
@@ -569,6 +575,19 @@ export type PdfTextAnchorSearchInput = (typeof PdfTextAnchorSearchInputSchema)["
 
 export const PdfMergeDocumentsSchema = Schema.NonEmptyArray(Schema.Uint8Array);
 export type PdfMergeDocuments = (typeof PdfMergeDocumentsSchema)["Type"];
+
+export const PdfMergeOptionsSchema = Schema.Struct({
+  signedSources: Schema.optional(Schema.Literals(["flatten"])),
+});
+export type PdfMergeOptions = (typeof PdfMergeOptionsSchema)["Type"];
+
+export const PdfExtractPagesInputSchema = Schema.Struct({
+  pdf: Schema.Uint8Array,
+  pageIndexes: Schema.NonEmptyArray(
+    nonNegativeInteger.check(Schema.isLessThanOrEqualTo(0xffff_ffff)),
+  ),
+});
+export type PdfExtractPagesInput = (typeof PdfExtractPagesInputSchema)["Type"];
 
 export const PdfVisibleStampQrSchema = Schema.Struct({
   text: nonEmptyString,

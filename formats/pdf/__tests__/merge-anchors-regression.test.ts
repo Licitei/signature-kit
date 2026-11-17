@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue, PdfSchemaNameValue } from "../src/config";
-import { mergePdfs } from "../src/merge";
+import { extractPdfPages, mergePdfs } from "../src/merge";
 import { findPdfTextAnchors } from "../src/anchors";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
 import { createFixturePdf, editFixturePdf, fixtureDocument, pageSizes } from "./pdf-fixtures";
@@ -167,6 +167,43 @@ describe("PDF merge and text-anchor input boundaries", () => {
       ]);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
+  it.effect("extracts non-consecutive pages in selection order and ignores repeats", () =>
+    Effect.gen(function* () {
+      const source = yield* createPdf([
+        [200, 100],
+        [300, 150],
+        [400, 200],
+      ]);
+      const extracted = yield* extractPdfPages(source, [2, 0, 2]);
+      const sizes = yield* pageSizes(extracted);
+
+      expect(sizes).toStrictEqual([
+        [400, 200],
+        [200, 100],
+      ]);
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
+  it.effect("rejects invalid page selections at the schema and document boundaries", () =>
+    Effect.gen(function* () {
+      const source = yield* createPdf([[200, 100]]);
+      for (const pageIndexes of [[], [-1], [0.5], [Number.NaN], [0x1_0000_0000]]) {
+        const error = yield* Effect.flip(extractPdfPages(source, pageIndexes));
+        expect(error).toMatchObject({
+          code: PdfErrorCodeValue.invalidBuilderInput,
+          operation: PdfOperationValue.extractPages,
+          schemaName: PdfSchemaNameValue.pdfExtractPagesInput,
+        });
+      }
+
+      const outOfRange = yield* Effect.flip(extractPdfPages(source, [1]));
+      expect(outOfRange).toMatchObject({
+        code: PdfErrorCodeValue.invalidPdf,
+        operation: PdfOperationValue.extractPages,
+      });
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
   it.effect("finds a valid text anchor with a usable stamp rectangle", () =>
     Effect.gen(function* () {
       const anchors = yield* findPdfTextAnchors({
