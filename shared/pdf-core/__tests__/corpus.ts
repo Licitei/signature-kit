@@ -14,7 +14,6 @@ export const CorpusFixtureNameSchema = Schema.Literals([
   "incremental-update.pdf",
   "icp-signed.pdf",
   "broken-xref.pdf",
-  "markdown-basics.pdf",
 ]);
 
 export const CORPUS_FIXTURE_NAMES = CorpusFixtureNameSchema.literals;

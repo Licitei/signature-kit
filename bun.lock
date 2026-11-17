@@ -238,6 +238,7 @@
         "@cantoo/pdf-lib": "2.11.1",
         "@llamaindex/liteparse-wasm": "^2.16.0",
         "@react-pdf/renderer": "4.9.0",
+        "pdfjs-dist": "6.3.289",
         "react": "19.3.1",
       },
     },
