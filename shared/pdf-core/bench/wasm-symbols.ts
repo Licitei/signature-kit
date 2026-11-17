@@ -2,14 +2,14 @@
 /**
  * Parse a wasm module's code + optional name section and list function sizes.
  * Prefer an unstripped build (`strip = false`) so the name section is present.
- * Usage: bun shared/pdf-core/__tests__/bench/wasm-symbols.ts [wasm-path] [--top N]
+ * Usage: bun shared/pdf-core/bench/wasm-symbols.ts [wasm-path] [--top N]
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, "../..");
+const pkg = resolve(here, "..");
 const repo = resolve(pkg, "../..");
 const args: string[] = process.argv.slice(2);
 const topIdx = args.indexOf("--top");

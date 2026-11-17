@@ -6,7 +6,7 @@
  *   - wasm renderPages ms/page on 5 editais
  *   - signatures() + document() on habilitacao-150 and a ~30 MB edital
  *
- * Usage: bun shared/pdf-core/__tests__/bench/measure-speed.ts [--label NAME] [--quick]
+ * Usage: bun shared/pdf-core/bench/measure-speed.ts [--label NAME] [--quick]
  */
 import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, "../..");
+const pkg = resolve(here, "..");
 const repo = resolve(pkg, "../..");
 const args: string[] = process.argv.slice(2);
 const labelIdx = args.indexOf("--label");

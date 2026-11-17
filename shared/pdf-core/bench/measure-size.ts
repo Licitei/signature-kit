@@ -1,20 +1,18 @@
 #!/usr/bin/env bun
 /**
  * Build (optional) and report raw / gzip -9 / brotli -q 11 sizes for pdf-core.wasm.
- * Usage: bun shared/pdf-core/__tests__/bench/measure-size.ts [--build] [--label NAME] [--wasm PATH]
+ * Usage: bun shared/pdf-core/bench/measure-size.ts [--build] [--label NAME] [--wasm PATH]
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = resolve(here, "../..");
+const pkg = resolve(here, "..");
 const repo = resolve(pkg, "../..");
 const defaultWasm = join(pkg, "dist/pdf-core.wasm");
-const cargoTarget = process.env.CARGO_TARGET_DIR ?? join(pkg, "rust/target");
-const builtWasm = join(cargoTarget, "wasm32-unknown-unknown/release/signature_kit_pdf_core.wasm");
 
 const args: string[] = process.argv.slice(2);
 const doBuild: boolean = args.includes("--build");
@@ -25,21 +23,12 @@ const wasmPath = resolve(wasmIdx >= 0 ? (args[wasmIdx + 1] ?? defaultWasm) : def
 
 if (doBuild) {
   const env = { ...process.env, TMPDIR: process.env.TMPDIR ?? join(repo, ".cache/t") };
-  const result = spawnSync(
-    "cargo",
-    [
-      "build",
-      "--release",
-      "--target",
-      "wasm32-unknown-unknown",
-      "--manifest-path",
-      join(pkg, "rust/Cargo.toml"),
-    ],
-    { cwd: pkg, env, stdio: "inherit" },
-  );
+  const result = spawnSync("bash", [join(pkg, "scripts/build-wasm.sh")], {
+    cwd: pkg,
+    env,
+    stdio: "inherit",
+  });
   if (result.status !== 0) process.exit(result.status ?? 1);
-  mkdirSync(dirname(defaultWasm), { recursive: true });
-  copyFileSync(builtWasm, defaultWasm);
 }
 
 const bytes = readFileSync(wasmPath);

@@ -63,7 +63,7 @@
           "{projectRoot}/rust/build.rs",
           "{projectRoot}/rust/data/**/*",
           "{projectRoot}/rust/src/**/*",
-          "{projectRoot}/bench/build-wasm.sh",
+          "{projectRoot}/scripts/build-wasm.sh",
           "{projectRoot}/node_modules/binaryen/package.json",
           {
             "runtime": "rustc --version"
@@ -73,7 +73,7 @@
           "{projectRoot}/dist/pdf-core.wasm"
         ],
         "options": {
-          "command": "bash bench/build-wasm.sh",
+          "command": "bash scripts/build-wasm.sh",
           "cwd": "{projectRoot}"
         }
       },
