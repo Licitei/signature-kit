@@ -363,7 +363,7 @@ npm-published; apps consume the shadcn registry copies they own.
 - **Server by default; isolate heavy client libs.** Sections are server components
   unless they need interactivity; async server work (shiki highlight) runs on the
   server and is handed to clients as pre-rendered nodes. Load heavy client-only
-  libs (pdf-lib, pdf.js) via `dynamic(() => import(...), { ssr: false })` so they
+  libs (pdf.js, react-pdf) via `dynamic(() => import(...), { ssr: false })` so they
   never run during SSG prerender.
 - **i18n is request-scoped and canonical.** Call `setServerLocale(lang)` at the top
   of EVERY server segment that renders translated chrome (layout and each page

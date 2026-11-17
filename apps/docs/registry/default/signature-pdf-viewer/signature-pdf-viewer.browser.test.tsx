@@ -1,11 +1,13 @@
 import type { PdfSignaturePage, PdfSignatureRect } from "@signature-kit/pdf/config";
 import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { PDFDocument } from "@cantoo/pdf-lib";
 import wasmUrl from "@signature-kit/pdf-core/pdf-core.wasm?url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SignaturePdfViewer } from "./signature-pdf-viewer";
+import { pdfCoreLayer } from "@signature-kit/pdf-core/pdf-core";
+import { Effect } from "effect";
+import { textPdf } from "../../../__tests__/helpers/text-pdf";
 
 vi.mock("react-pdf", () => ({
   Document: ({ children }: { readonly children: React.ReactNode }) => children,
@@ -64,11 +66,15 @@ const captureUnhandledRejections = (): RejectionCapture => {
   };
 };
 
+let fixtureModule: WebAssembly.Module | null = null;
+
 const pdfWithAnchor = async (x: number): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  const page = document.addPage([200, 100]);
-  page.drawText("SIGN_HERE", { x, y: 60, size: 10 });
-  return document.save({ useObjectStreams: false });
+  fixtureModule ??= await WebAssembly.compile(await (await originalFetch(wasmUrl)).arrayBuffer());
+  return Effect.runPromise(
+    textPdf([{ width: 200, height: 100, runs: [{ text: "SIGN_HERE", x, y: 60, size: 10 }] }]).pipe(
+      Effect.provide(pdfCoreLayer(fixtureModule)),
+    ),
+  );
 };
 
 const gatedFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -177,7 +183,7 @@ if (typeof document === "undefined") {
       expect(rect?.x).toBeCloseTo(12, 0);
       expect(rect?.width).toBe(80);
       expect(rect?.height).toBe(20);
-      expect(viewer.getButton()?.disabled).toBe(false);
+      await waitFor(() => viewer.getButton()?.disabled === false, "the finished scan re-enables");
       expect(viewer.getError()).toBeNull();
     });
 

@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "@effect/vitest";
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { signPdf } from "../src/sign";
@@ -24,6 +23,7 @@ import {
   PdfVerificationResultSchema,
 } from "../src/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
 
 const fakeByteRange = "/ByteRange [0 0 0 0]";
 const fakeStreamContents = `/Type /Sig ${fakeByteRange} /Contents <00>`;
@@ -449,11 +449,7 @@ const createHybridXrefSignaturePdf = (malformed = false): Uint8Array => {
 
 const PASSWORD = Redacted.make("changeit");
 
-const createPdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  pdf.addPage([320, 180]);
-  return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-});
+const createPdf = createFixturePdf();
 
 describe("PDF signature dictionary parsing", () => {
   it.effect("ignores ByteRange-like syntax in comments, strings, and streams", () =>

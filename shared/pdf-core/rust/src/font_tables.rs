@@ -2,6 +2,8 @@ use core::cmp::Ordering;
 
 include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
 
+const UNDEFINED_WIN_ANSI: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinEncoding {
     Custom,
@@ -63,6 +65,24 @@ pub(crate) enum Standard14Font {
 }
 
 impl Standard14Font {
+    pub(crate) const fn named(name: &[u8]) -> Option<Self> {
+        match name {
+            b"Courier" => Some(Self::Courier),
+            b"Courier-Bold" => Some(Self::CourierBold),
+            b"Courier-BoldOblique" => Some(Self::CourierBoldOblique),
+            b"Courier-Oblique" => Some(Self::CourierOblique),
+            b"Helvetica" => Some(Self::Helvetica),
+            b"Helvetica-Bold" => Some(Self::HelveticaBold),
+            b"Helvetica-BoldOblique" => Some(Self::HelveticaBoldOblique),
+            b"Helvetica-Oblique" => Some(Self::HelveticaOblique),
+            b"Times-Bold" => Some(Self::TimesBold),
+            b"Times-BoldItalic" => Some(Self::TimesBoldItalic),
+            b"Times-Italic" => Some(Self::TimesItalic),
+            b"Times-Roman" => Some(Self::TimesRoman),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn widths(self) -> &'static [u16; 256] {
         match self {
             Self::Courier => &STANDARD14_COURIER,
@@ -112,6 +132,19 @@ pub(crate) fn encoding_glyph_name(encoding: BuiltinEncoding, code: u8) -> &'stat
         .and_then(|table| table.get(usize::from(code)))
         .and_then(|index| name_at(usize::from(*index)))
         .unwrap_or_default()
+}
+
+pub(crate) fn win_ansi_unicode(code: u8) -> u16 {
+    if matches!(code, 0x20..=0x7E | 0xA0..=0xFF) {
+        return u16::from(code);
+    }
+    if !matches!(code, 0x80..=0x9F) || UNDEFINED_WIN_ANSI.contains(&code) {
+        return 0;
+    }
+    lookup_agl(encoding_glyph_name(BuiltinEncoding::WinAnsi, code).as_bytes())
+        .and_then(|codepoints| codepoints.first())
+        .and_then(|codepoint| u16::try_from(*codepoint).ok())
+        .unwrap_or(0)
 }
 
 pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u32]> {

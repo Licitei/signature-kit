@@ -68,7 +68,7 @@ Isso é possível porque o navegador já traz a primitiva certa. A Web Crypto AP
   </Step>
 
   <Step title="Montar o template e posicionar a assinatura">
-    `createPdfSignatureBuilderStateFromBytes` carrega as páginas do PDF com o pdf-lib e produz um template validado, com o
+    `createPdfSignatureBuilderStateFromBytes` lê as páginas do PDF com o motor próprio `PdfCore` e produz um template validado, com o
     campo de assinatura posicionado — de forma explícita ou automática. O `template` dele é o que o assinador consome.
 
     ```ts title="build.ts"

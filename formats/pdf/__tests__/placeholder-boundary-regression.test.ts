@@ -1,17 +1,12 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import type { PdfSigningRequest } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
 
-const createPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    pdf.addPage([320, 180]);
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
+const createPdf = () => createFixturePdf();
 
 describe("PDF placeholder public boundary", () => {
   it.effect("returns typed PDF errors for malformed runtime placeholder values", () =>

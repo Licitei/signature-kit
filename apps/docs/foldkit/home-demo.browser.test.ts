@@ -112,15 +112,18 @@ it("hydrates the server-rendered demo and runs its controls", async () => {
         const loaded = new Promise<void>((resolve) =>
           frame.addEventListener("load", () => resolve(), { once: true }),
         );
-        frame.srcdoc = `<!doctype html><html><body>${rendered.html}<script type="module">
+        frame.src = mainUrl;
+        yield* Effect.promise(() => loaded);
+        const doc = frame.contentDocument;
+        if (doc === null) return expect.fail("Hydration document missing");
+        doc.open();
+        doc.write(`<!doctype html><html><body>${rendered.html}<script type="module">
       import { Runtime } from "/@id/foldkit";
       import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
       const container = document.querySelector("[data-foldkit-app]");
       Runtime.hydrate(Runtime.makeApplication({ Flags, Model, init, update, view, container }), { buildId: "home-demo-hydration" });
-    </script></body></html>`;
-        yield* Effect.promise(() => loaded);
-        const doc = frame.contentDocument;
-        if (doc === null) return expect.fail("Hydration document missing");
+    </script></body></html>`);
+        doc.close();
         yield* Effect.promise(() =>
           expect
             .poll(() => doc.querySelector<HTMLAnchorElement>("[data-demo-download]")?.href, {

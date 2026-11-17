@@ -1,13 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import {
-  PDFArray,
-  PDFDict,
-  PDFDocument,
-  PDFHexString,
-  PDFName,
-  PDFNumber,
-  PDFString,
-} from "@cantoo/pdf-lib";
 import { Effect, Redacted, Result, Schema } from "effect";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
@@ -18,7 +9,20 @@ import { encodeAscii, indexOfByte, indexOfBytes, replaceRange } from "../src/byt
 import { stampPdfRubric } from "../src/stamp";
 import { PdfSigningRequestSchema } from "../src/config";
 import type { PdfCoordinateTuple, PdfSignatureAnchor } from "../src/config";
+import type { PdfCoreEditOperation } from "@signature-kit/pdf-core/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import {
+  acroFormField,
+  box,
+  createFixturePdf,
+  editFixturePdf,
+  entryRef,
+  fixtureDocument,
+  hasKey,
+  objectSource,
+  pdfStringEntry,
+  ref,
+} from "./pdf-fixtures";
 
 const PASSWORD = Redacted.make("changeit");
 const SIGNATURE_POLICY_OID_DER = Uint8Array.of(
@@ -143,18 +147,6 @@ const DECLARATION_SIGNATURE_SLOTS: ReadonlyArray<{
   { label: "Responsavel", rect: [180, 20, 300, 60] },
 ];
 
-const rectFromArray = (array: PDFArray): PdfCoordinateTuple | undefined => {
-  if (array.size() !== 4) return undefined;
-  const left = array.lookupMaybe(0, PDFNumber)?.asNumber();
-  const bottom = array.lookupMaybe(1, PDFNumber)?.asNumber();
-  const right = array.lookupMaybe(2, PDFNumber)?.asNumber();
-  const top = array.lookupMaybe(3, PDFNumber)?.asNumber();
-  if (left === undefined || bottom === undefined || right === undefined || top === undefined) {
-    return undefined;
-  }
-  return [left, bottom, right, top];
-};
-
 const sameRect = (left: PdfCoordinateTuple, right: PdfCoordinateTuple): boolean => {
   for (let index = 0; index < left.length; index++) {
     if (left[index] !== right[index]) return false;
@@ -168,124 +160,93 @@ const rectanglesOverlap = (left: PdfCoordinateTuple, right: PdfCoordinateTuple):
   return !separated;
 };
 
-const createPdfWithOccupiedSignatureArea: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  const firstPage = pdf.addPage([320, 180]);
-  firstPage.drawText("First page payload", { x: 40, y: 120, size: 16 });
-  const lastPage = pdf.addPage([320, 180]);
-  lastPage.drawText("Last page payload", { x: 40, y: 120, size: 16 });
-
-  const rect = PDFArray.withContext(pdf.context);
-  rect.push(PDFNumber.of(OCCUPIED_SIGNATURE_RECT[0]));
-  rect.push(PDFNumber.of(OCCUPIED_SIGNATURE_RECT[1]));
-  rect.push(PDFNumber.of(OCCUPIED_SIGNATURE_RECT[2]));
-  rect.push(PDFNumber.of(OCCUPIED_SIGNATURE_RECT[3]));
-  const widget = pdf.context.obj({
-    Type: "Annot",
-    Subtype: "Widget",
-    Rect: rect,
-    T: PDFString.of("ExistingBottomRightWidget"),
-  });
-  const widgetRef = pdf.context.register(widget);
-  const annotations = pdf.context.obj([]);
-  annotations.push(widgetRef);
-  lastPage.node.set(PDFName.of("Annots"), annotations);
-
-  return pdf.save({ useObjectStreams: false });
-});
-
-const createDeclarationPdfWithSignatureSlots: Effect.Effect<Uint8Array> = Effect.promise(
-  async () => {
-    const pdf = await PDFDocument.create();
-    const page = pdf.addPage([320, 180]);
-    page.drawText("DECLARAÇÃO DE CAPACIDADE TÉCNICA", { x: 34, y: 158, size: 13 });
-    page.drawText("Declaramos para fins de habilitação que a empresa cumpriu o objeto.", {
-      x: 28,
-      y: 138,
-      size: 8,
-    });
-    page.drawText("Declarante", { x: 48, y: 160, size: 7 });
-    page.drawText("Testemunha", { x: 134, y: 110, size: 7 });
-    page.drawText("Responsável legal", { x: 206, y: 62, size: 7 });
-
-    const annotations = pdf.context.obj([]);
-    const fields = pdf.context.obj([]);
-    for (const slot of DECLARATION_SIGNATURE_SLOTS) {
-      const rect = PDFArray.withContext(pdf.context);
-      rect.push(PDFNumber.of(slot.rect[0]));
-      rect.push(PDFNumber.of(slot.rect[1]));
-      rect.push(PDFNumber.of(slot.rect[2]));
-      rect.push(PDFNumber.of(slot.rect[3]));
-      const widget = pdf.context.obj({
-        Type: "Annot",
-        Subtype: "Widget",
-        FT: "Sig",
-        Rect: rect,
-        T: PDFString.of(slot.label),
-        F: 4,
-        P: page.ref,
-      });
-      const widgetRef = pdf.context.register(widget);
-      annotations.push(widgetRef);
-      fields.push(widgetRef);
-    }
-    page.node.set(PDFName.of("Annots"), annotations);
-    const acroForm = pdf.context.obj({ Fields: fields });
-    const acroFormRef = pdf.context.register(acroForm);
-    pdf.catalog.set(PDFName.of("AcroForm"), acroFormRef);
-
-    return pdf.save({ useObjectStreams: false, updateFieldAppearances: false });
-  },
+const createPdfWithOccupiedSignatureArea = createFixturePdf([
+  { text: [{ x: 40, y: 120, size: 16, text: "First page payload" }] },
+  { text: [{ x: 40, y: 120, size: 16, text: "Last page payload" }] },
+]).pipe(
+  Effect.flatMap((pdf) =>
+    editFixturePdf(pdf, ({ next }) => {
+      const widget = next();
+      return [
+        {
+          op: "setObject",
+          ref: widget,
+          value: `<< /Type /Annot /Subtype /Widget /Rect ${box(OCCUPIED_SIGNATURE_RECT)} /T (ExistingBottomRightWidget) >>`,
+        },
+        {
+          op: "set",
+          target: { base: { kind: "page", pageIndex: 1 } },
+          key: "Annots",
+          value: `[${ref(widget)}]`,
+        },
+      ];
+    }),
+  ),
 );
 
-const readPageAnnotationRects = (
-  pdf: Uint8Array,
-  pageIndex: number,
-): Effect.Effect<ReadonlyArray<PdfCoordinateTuple>> =>
-  Effect.promise(async () => {
-    const pdfDoc = await PDFDocument.load(pdf);
-    const page = pdfDoc.getPages()[pageIndex];
-    if (page === undefined) return [];
-    const annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
-    if (annotations === undefined) return [];
+const createDeclarationPdfWithSignatureSlots = createFixturePdf([
+  {
+    text: [
+      { x: 34, y: 158, size: 13, text: "DECLARAÇÃO DE CAPACIDADE TÉCNICA" },
+      {
+        x: 28,
+        y: 138,
+        size: 8,
+        text: "Declaramos para fins de habilitação que a empresa cumpriu o objeto.",
+      },
+      { x: 48, y: 160, size: 7, text: "Declarante" },
+      { x: 134, y: 110, size: 7, text: "Testemunha" },
+      { x: 206, y: 62, size: 7, text: "Responsável legal" },
+    ],
+  },
+]).pipe(
+  Effect.flatMap((pdf) =>
+    editFixturePdf(pdf, ({ next, page }) => {
+      const widgets = DECLARATION_SIGNATURE_SLOTS.map((slot) => ({ slot, widget: next() }));
+      const list = `[${widgets.map(({ widget }) => ref(widget)).join(" ")}]`;
+      return [
+        ...widgets.map(({ slot, widget }): PdfCoreEditOperation => ({
+          op: "setObject",
+          ref: widget,
+          value: `<< /Type /Annot /Subtype /Widget /FT /Sig /Rect ${box(slot.rect)} /T (${slot.label}) /F 4 /P ${ref(page(0))} >>`,
+        })),
+        { op: "set", target: { base: { kind: "page", pageIndex: 0 } }, key: "Annots", value: list },
+        {
+          op: "set",
+          target: { base: { kind: "catalog" } },
+          key: "AcroForm",
+          value: `<< /Fields ${list} >>`,
+        },
+      ];
+    }),
+  ),
+);
 
-    const rects: Array<PdfCoordinateTuple> = [];
-    for (let index = 0; index < annotations.size(); index++) {
-      const annotation = pdfDoc.context.lookupMaybe(annotations.get(index), PDFDict);
-      const rectArray = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-      const rect = rectArray === undefined ? undefined : rectFromArray(rectArray);
-      if (rect !== undefined) rects.push(rect);
-    }
-    return rects;
-  });
+const readPageAnnotationRects = (pdf: Uint8Array, pageIndex: number) =>
+  fixtureDocument(pdf, [pageIndex]).pipe(
+    Effect.map((document) =>
+      document.annotations.flatMap((annotation) =>
+        annotation.rect === undefined ? [] : [annotation.rect],
+      ),
+    ),
+  );
 
-const readSignedWidgetRects = (
-  pdf: Uint8Array,
-  pageIndex: number,
-): Effect.Effect<ReadonlyArray<PdfCoordinateTuple>> =>
-  Effect.promise(async () => {
-    const pdfDoc = await PDFDocument.load(pdf);
-    const page = pdfDoc.getPages()[pageIndex];
-    if (page === undefined) return [];
-    const annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
-    if (annotations === undefined) return [];
+const readSignedWidgetRects = (pdf: Uint8Array, pageIndex: number) =>
+  fixtureDocument(pdf, [pageIndex]).pipe(
+    Effect.map((document) =>
+      document.annotations.flatMap((annotation) =>
+        annotation.rect !== undefined &&
+        annotation.ref !== undefined &&
+        hasKey(objectSource(pdf, annotation.ref.number) ?? "", "V")
+          ? [annotation.rect]
+          : [],
+      ),
+    ),
+  );
 
-    const rects: Array<PdfCoordinateTuple> = [];
-    for (let index = 0; index < annotations.size(); index++) {
-      const annotation = pdfDoc.context.lookupMaybe(annotations.get(index), PDFDict);
-      const rectArray = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-      const rect = rectArray === undefined ? undefined : rectFromArray(rectArray);
-      if (annotation?.get(PDFName.of("V")) !== undefined && rect !== undefined) rects.push(rect);
-    }
-    return rects;
-  });
-
-const createPdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([320, 180]);
-  page.drawText("SignatureKit PDF payload", { x: 40, y: 120, size: 16 });
-  return pdf.save({ useObjectStreams: false });
-});
+const createPdf = createFixturePdf([
+  { text: [{ x: 40, y: 120, size: 16, text: "SignatureKit PDF payload" }] },
+]);
 
 describe("PDF byte helpers", () => {
   it("replaces byte ranges without mutating the source", () => {
@@ -412,12 +373,10 @@ describe("PDF signatures", () => {
   it.effect("stamps a rubric on every page, then signs once over the whole document", () =>
     Effect.gen(function* () {
       const pfx = yield* readA1Fixture("ecnpj");
-      const base = yield* Effect.promise(async () => {
-        const doc = await PDFDocument.create();
-        doc.addPage([320, 180]).drawText("Page 1", { x: 32, y: 150, size: 12 });
-        doc.addPage([320, 180]).drawText("Page 2", { x: 32, y: 150, size: 12 });
-        return new Uint8Array(await doc.save({ useObjectStreams: false }));
-      });
+      const base = yield* createFixturePdf([
+        { text: [{ x: 32, y: 150, size: 12, text: "Page 1" }] },
+        { text: [{ x: 32, y: 150, size: 12, text: "Page 2" }] },
+      ]);
 
       const stamped = yield* stampPdfRubric(base, {
         rect: [20, 20, 150, 64],
@@ -708,22 +667,15 @@ ${"x".repeat(1000)}
         appearance: { pageIndex: 0, widgetRect: [10, 20, 110, 60] },
       }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })));
       const verification = yield* verifyPdf({ pdf: signed });
-      const metadata = yield* Effect.promise(async () => {
-        const pdfDoc = await PDFDocument.load(signed);
-        const acroForm = pdfDoc.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict);
-        const fields = acroForm?.lookupMaybe(PDFName.of("Fields"), PDFArray);
-        const field =
-          fields === undefined ? undefined : pdfDoc.context.lookupMaybe(fields.get(0), PDFDict);
-        const signature = field?.lookupMaybe(PDFName.of("V"), PDFDict);
-        return {
-          reason: signature?.lookupMaybe(PDFName.of("Reason"), PDFHexString)?.decodeText(),
-          name: signature?.lookupMaybe(PDFName.of("Name"), PDFHexString)?.decodeText(),
-          location: signature?.lookupMaybe(PDFName.of("Location"), PDFHexString)?.decodeText(),
-          contactInfo: signature
-            ?.lookupMaybe(PDFName.of("ContactInfo"), PDFHexString)
-            ?.decodeText(),
-        };
-      });
+      const signatureNumber = entryRef(acroFormField(signed, 0), "V");
+      const signature =
+        signatureNumber === undefined ? "" : (objectSource(signed, signatureNumber) ?? "");
+      const metadata = {
+        reason: pdfStringEntry(signature, "Reason"),
+        name: pdfStringEntry(signature, "Name"),
+        location: pdfStringEntry(signature, "Location"),
+        contactInfo: pdfStringEntry(signature, "ContactInfo"),
+      };
       const text = latin1.decode(signed);
 
       expect(verification.valid).toBe(true);

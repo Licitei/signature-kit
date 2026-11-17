@@ -1,72 +1,60 @@
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFString } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import {
+  acroFormField,
+  acroFormFieldNumbers,
+  acroFormFixture,
+  objectSource,
+  pdfStringEntry,
+  ref,
+} from "./pdf-fixtures";
 
-const createPdfWithNestedSignatureKitName: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdfDoc = await PDFDocument.create();
-  pdfDoc.addPage([320, 180]);
-  const child = pdfDoc.context.obj({ T: PDFString.of("SignatureKitSignature1") });
-  const childRef = pdfDoc.context.register(child);
-  const kids = PDFArray.withContext(pdfDoc.context);
-  kids.push(childRef);
-  const root = pdfDoc.context.obj({ Kids: kids });
-  const rootRef = pdfDoc.context.register(root);
-  const fields = PDFArray.withContext(pdfDoc.context);
-  fields.push(rootRef);
-  const acroForm = pdfDoc.context.obj({ Fields: fields });
-  pdfDoc.catalog.set(PDFName.of("AcroForm"), pdfDoc.context.register(acroForm));
-  return pdfDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+const createPdfWithNestedSignatureKitName = acroFormFixture((next) => {
+  const child = next();
+  const root = next();
+  return {
+    objects: [
+      [child, "<< /T (SignatureKitSignature1) >>"],
+      [root, `<< /Kids [${ref(child)}] >>`],
+    ],
+    fields: [root],
+  };
 });
 
-const createPdfWithAcroForm = (
-  populateFields: (pdfDoc: PDFDocument, fields: PDFArray) => void,
-): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdfDoc = await PDFDocument.create();
-    pdfDoc.addPage([320, 180]);
-    const fields = PDFArray.withContext(pdfDoc.context);
-    populateFields(pdfDoc, fields);
-    const acroForm = pdfDoc.context.obj({ Fields: fields });
-    pdfDoc.catalog.set(PDFName.of("AcroForm"), pdfDoc.context.register(acroForm));
-    return pdfDoc.save({ useObjectStreams: false, updateFieldAppearances: false });
+const createPdfWithDeepFieldHierarchy = () =>
+  acroFormFixture((next) => {
+    const refs = Array.from({ length: 66 }, () => next());
+    return {
+      objects: refs.map((current, depth) => {
+        const kid = refs[depth + 1];
+        const name = depth === 0 ? "root" : `field-${depth}`;
+        return [current, `<< /T (${name})${kid === undefined ? "" : ` /Kids [${ref(kid)}]`} >>`];
+      }),
+      fields: refs.slice(0, 1),
+    };
   });
 
-const createPdfWithDeepFieldHierarchy = (): Effect.Effect<Uint8Array> =>
-  createPdfWithAcroForm((pdfDoc, fields) => {
-    const root = pdfDoc.context.obj({ T: PDFString.of("root") });
-    let parent = root;
-    for (let depth = 1; depth <= 65; depth += 1) {
-      const child = pdfDoc.context.obj({ T: PDFString.of(`field-${depth}`) });
-      const kids = PDFArray.withContext(pdfDoc.context);
-      kids.push(pdfDoc.context.register(child));
-      parent.set(PDFName.of("Kids"), kids);
-      parent = child;
-    }
-    fields.push(pdfDoc.context.register(root));
+const createPdfWithCyclicFieldHierarchy = () =>
+  acroFormFixture((next) => {
+    const root = next();
+    return { objects: [[root, `<< /T (root) /Kids [${ref(root)}] >>`]], fields: [root] };
   });
 
-const createPdfWithCyclicFieldHierarchy = (): Effect.Effect<Uint8Array> =>
-  createPdfWithAcroForm((pdfDoc, fields) => {
-    const root = pdfDoc.context.obj({ T: PDFString.of("root") });
-    const rootRef = pdfDoc.context.register(root);
-    const kids = PDFArray.withContext(pdfDoc.context);
-    kids.push(rootRef);
-    root.set(PDFName.of("Kids"), kids);
-    fields.push(rootRef);
+const createPdfWithNamedFields = (names: ReadonlyArray<string>) =>
+  acroFormFixture((next) => {
+    const refs = names.map(() => next());
+    return {
+      objects: refs.map((current, index) => [current, `<< /T (${names[index] ?? ""}) >>`]),
+      fields: refs,
+    };
   });
 
-const createPdfWithWideFieldHierarchy = (fieldCount: number): Effect.Effect<Uint8Array> =>
-  createPdfWithAcroForm((pdfDoc, fields) => {
-    for (let index = 0; index < fieldCount; index += 1) {
-      fields.push(
-        pdfDoc.context.register(pdfDoc.context.obj({ T: PDFString.of(`field-${index}`) })),
-      );
-    }
-  });
+const createPdfWithWideFieldHierarchy = (fieldCount: number) =>
+  createPdfWithNamedFields(Array.from({ length: fieldCount }, (_, index) => `field-${index}`));
 
 const expectInvalidPdfPlaceholder = (
   pdf: Uint8Array,
@@ -91,45 +79,27 @@ describe("PDF placeholder field names", () => {
       const source = yield* createPdfWithNestedSignatureKitName;
       const first = yield* addSignaturePlaceholder({ pdf: source, signatureLength: 128 });
       const second = yield* addSignaturePlaceholder({ pdf: first, signatureLength: 128 });
-      const pdfDoc = yield* Effect.promise(() => PDFDocument.load(second));
-      const acroForm = pdfDoc.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict);
-      const fields = acroForm?.lookupMaybe(PDFName.of("Fields"), PDFArray);
-      const root =
-        fields === undefined ? undefined : pdfDoc.context.lookupMaybe(fields.get(0), PDFDict);
-      const rootKids = root?.lookupMaybe(PDFName.of("Kids"), PDFArray);
+      const root = acroFormField(second, 0);
+      const nestedNumber = /\/Kids\s*\[\s*(\d+)\s+\d+\s+R/u.exec(root)?.[1];
       const nested =
-        rootKids === undefined ? undefined : pdfDoc.context.lookupMaybe(rootKids.get(0), PDFDict);
-      const firstSignature =
-        fields === undefined ? undefined : pdfDoc.context.lookupMaybe(fields.get(1), PDFDict);
-      const secondSignature =
-        fields === undefined ? undefined : pdfDoc.context.lookupMaybe(fields.get(2), PDFDict);
+        nestedNumber === undefined ? "" : (objectSource(second, Number(nestedNumber)) ?? "");
+      const firstSignature = acroFormField(second, 1);
+      const secondSignature = acroFormField(second, 2);
 
-      expect(nested?.lookupMaybe(PDFName.of("T"), PDFString)?.decodeText()).toBe(
-        "SignatureKitSignature1",
-      );
-      expect(firstSignature?.lookupMaybe(PDFName.of("T"), PDFString)?.decodeText()).toBe(
-        "SignatureKitSignature2",
-      );
-      expect(secondSignature?.lookupMaybe(PDFName.of("T"), PDFString)?.decodeText()).toBe(
-        "SignatureKitSignature3",
-      );
-      expect(firstSignature?.get(PDFName.of("V"))).not.toBeUndefined();
-      expect(secondSignature?.get(PDFName.of("V"))).not.toBeUndefined();
+      expect(acroFormFieldNumbers(second)).toHaveLength(3);
+      expect(pdfStringEntry(nested, "T")).toBe("SignatureKitSignature1");
+      expect(pdfStringEntry(firstSignature, "T")).toBe("SignatureKitSignature2");
+      expect(pdfStringEntry(secondSignature, "T")).toBe("SignatureKitSignature3");
+      expect(firstSignature).toMatch(/\/V\s+\d+\s+\d+\s+R/u);
+      expect(secondSignature).toMatch(/\/V\s+\d+\s+\d+\s+R/u);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("accepts a hierarchy at the supported node budget", () =>
     Effect.gen(function* () {
       const source = yield* createPdfWithWideFieldHierarchy(10_000);
       const prepared = yield* addSignaturePlaceholder({ pdf: source, signatureLength: 128 });
-      const pdfDoc = yield* Effect.promise(() => PDFDocument.load(prepared));
-      const acroForm = pdfDoc.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict);
-      const fields = acroForm?.lookupMaybe(PDFName.of("Fields"), PDFArray);
-      const signatureField =
-        fields === undefined ? undefined : pdfDoc.context.lookupMaybe(fields.get(10_000), PDFDict);
-
-      expect(signatureField?.lookupMaybe(PDFName.of("T"), PDFString)?.decodeText()).toBe(
-        "SignatureKitSignature1",
-      );
+      expect(acroFormFieldNumbers(prepared)).toHaveLength(10_001);
+      expect(pdfStringEntry(acroFormField(prepared, 10_000), "T")).toBe("SignatureKitSignature1");
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
@@ -165,11 +135,7 @@ describe("PDF placeholder field names", () => {
 
   it.effect("fails closed when processing an oversized field name", () =>
     Effect.gen(function* () {
-      const source = yield* createPdfWithAcroForm((pdfDoc, fields) => {
-        fields.push(
-          pdfDoc.context.register(pdfDoc.context.obj({ T: PDFString.of("name".repeat(1_025)) })),
-        );
-      });
+      const source = yield* createPdfWithNamedFields(["name".repeat(1_025)]);
 
       yield* expectInvalidPdfPlaceholder(
         source,
@@ -179,12 +145,9 @@ describe("PDF placeholder field names", () => {
   );
   it.effect("fails closed when aggregate field-name processing exceeds its budget", () =>
     Effect.gen(function* () {
-      const source = yield* createPdfWithAcroForm((pdfDoc, fields) => {
-        for (let index = 0; index < 123; index += 1) {
-          const name = `${index}`.padEnd(4_096, "name");
-          fields.push(pdfDoc.context.register(pdfDoc.context.obj({ T: PDFString.of(name) })));
-        }
-      });
+      const source = yield* createPdfWithNamedFields(
+        Array.from({ length: 123 }, (_, index) => `${index}`.padEnd(4_096, "name")),
+      );
 
       yield* expectInvalidPdfPlaceholder(
         source,

@@ -1,4 +1,3 @@
-import { PDFDict, PDFDocument, PDFName, PDFRef, StandardFonts } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { readFile } from "node:fs/promises";
 import { a1SignaturesLayer, loadA1SignerAdapter } from "@signature-kit/a1/signer";
@@ -13,7 +12,9 @@ import * as asn1js from "asn1js";
 import { Effect, Redacted, Result } from "effect";
 import * as pkijs from "pkijs";
 import { validatePdfConformance } from "../src/conformance";
+import type { PdfCoreEditTarget } from "@signature-kit/pdf-core/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { appendIncrementalObjects, createTextPdf } from "./pdf-fixture";
 
 const PFX_PASSWORD = Redacted.make("changeit");
 const FIXED_DATE = new Date("2026-01-02T03:04:05Z");
@@ -36,23 +37,16 @@ const toBufferSource = (bytes: Uint8Array): Uint8Array<ArrayBuffer> => {
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => toBufferSource(bytes).buffer;
 
-const createPdf = Effect.promise(async () => {
-  const document = await PDFDocument.create();
-  const page = document.addPage([300, 200]);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  page.drawText("SignatureKit ITI hardening fixture", { x: 24, y: 140, size: 12, font });
-  document.setCreationDate(FIXED_DATE);
-  document.setModificationDate(FIXED_DATE);
-  return new Uint8Array(await document.save({ useObjectStreams: false }));
-});
+const createPdf = (objectStreams: boolean) =>
+  createTextPdf("SignatureKit ITI hardening fixture", { objectStreams });
 
-const createSignedPades = () =>
+const createSignedPades = (objectStreams: boolean) =>
   Effect.gen(function* () {
     const pfx = yield* readA1Fixture("ecnpj");
     const adapter = yield* loadA1SignerAdapter({ pfx, password: PFX_PASSWORD });
     const signingKey = yield* adapter.importSigningKey("rsa-sha256");
     const pdf = yield* signPdf({
-      pdf: yield* createPdf,
+      pdf: yield* createPdf(objectStreams),
       policy: "pades-icp-brasil",
       signatureLength: 32768,
       signingTime: FIXED_DATE,
@@ -299,21 +293,23 @@ const setFirstByteRangeEnd = (pdf: Uint8Array, rangeEnd: number): Uint8Array => 
 };
 
 const appendFakeRevisionMarkerInsideStream = (pdf: Uint8Array) =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     const filler = "x".repeat(1024);
-    const document = await PDFDocument.load(pdf, {
-      forIncrementalUpdate: true,
-      updateMetadata: false,
-    });
-    document.context.register(document.context.stream(filler));
-    const revised = new Uint8Array(
-      await document.save({ useObjectStreams: false, updateFieldAppearances: false }),
-    );
+    const revised = yield* appendIncrementalObjects(pdf, (next) => [
+      {
+        op: "setStream",
+        ref: { number: next, generation: 0 },
+        dict: "<< >>",
+        data: new TextEncoder().encode(filler),
+      },
+    ]);
     const text = Buffer.from(revised).toString("latin1");
     const xrefOffset = text.lastIndexOf(filler);
-    if (xrefOffset === -1) throw new Error("Failed to locate appended raw PDF stream.");
+    if (xrefOffset === -1) return yield* Effect.die("Failed to locate appended raw PDF stream.");
     const marker = `xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 >>\nstartxref\n${xrefOffset}\n%%EOF`;
-    if (marker.length > filler.length) throw new Error("Fake revision marker exceeds raw stream.");
+    if (marker.length > filler.length) {
+      return yield* Effect.die("Fake revision marker exceeds raw stream.");
+    }
     return {
       pdf: new Uint8Array(
         Buffer.from(
@@ -345,736 +341,745 @@ const removeFirstSignatureFieldValue = (pdf: Uint8Array): Uint8Array => {
 };
 
 const restoreSignatureFieldValue = (pdf: Uint8Array) =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     const text = Buffer.from(pdf).toString("latin1");
     const value = /\/X\s+(\d+)\s+(\d+)\s+R/.exec(text);
     const objectNumber = value?.[1];
     const generationNumber = value?.[2];
-    if (objectNumber === undefined || generationNumber === undefined) {
-      throw new Error("Failed to locate an orphaned signature field reference.");
-    }
-    const reference = PDFRef.of(Number(objectNumber), Number(generationNumber));
-    const document = await PDFDocument.load(pdf, {
-      forIncrementalUpdate: true,
-      updateMetadata: false,
-    });
-    let field: PDFDict | undefined;
-    for (const [objectRef, object] of document.context.enumerateIndirectObjects()) {
-      if (!(object instanceof PDFDict)) continue;
-      const candidateField = document.context.lookup(objectRef, PDFDict);
-      const candidate = candidateField.get(PDFName.of("X"));
-      if (!(candidate instanceof PDFRef) || candidate.tag !== reference.tag) continue;
-      field = candidateField;
-      break;
-    }
-    if (field === undefined) throw new Error("Failed to locate the orphaned signature field.");
-    field.set(PDFName.of("V"), reference);
-    field.delete(PDFName.of("X"));
-    return new Uint8Array(
-      await document.save({ useObjectStreams: false, updateFieldAppearances: false }),
+    const objectKeyword = text.lastIndexOf(" obj", value?.index ?? 0);
+    const field = /(\d{1,10}) (\d{1,5})$/.exec(
+      text.slice(Math.max(0, objectKeyword - 20), objectKeyword),
     );
+    if (
+      value === null ||
+      objectNumber === undefined ||
+      generationNumber === undefined ||
+      field?.[1] === undefined ||
+      field[2] === undefined
+    ) {
+      return yield* Effect.die("Failed to locate the orphaned signature field.");
+    }
+    const target = {
+      base: {
+        kind: "object",
+        ref: { number: Number(field[1]), generation: Number(field[2]) },
+      },
+    } satisfies PdfCoreEditTarget;
+    return yield* appendIncrementalObjects(pdf, () => [
+      { op: "set", target, key: "V", value: `${objectNumber} ${generationNumber} R` },
+      { op: "remove", target, key: "X" },
+    ]);
   });
 
-describe("ITI local conformance hardening", () => {
-  it.effect("approves the committed AD-RB fixture with the pinned policy encoding", () =>
-    Effect.gen(function* () {
-      const pdf = yield* fixturePdf;
-      const report = yield* validatePdfConformance({ pdf });
-      const extracted = yield* extractPdfSignature(pdf);
-      const parsed = parseCms(extracted.signature);
-      const signerInfo = parsed.signedData.signerInfos[0];
-      if (signerInfo === undefined) return yield* Effect.die("Fixture has no SignerInfo.");
-      const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
-      if (!(policy instanceof asn1js.Sequence)) {
-        return yield* Effect.die("Fixture policy is not a SignaturePolicyId sequence.");
-      }
-      const hash = policy.valueBlock.value[1];
-      if (!(hash instanceof asn1js.Sequence)) {
-        return yield* Effect.die("Fixture policy hash is not an OtherHashAlgAndValue sequence.");
-      }
-      const algorithm = hash.valueBlock.value[0];
-      const digest = hash.valueBlock.value[1];
-      if (!(algorithm instanceof asn1js.Sequence) || !(digest instanceof asn1js.OctetString)) {
-        return yield* Effect.die("Fixture policy hash is malformed.");
-      }
-      const algorithmOid = algorithm.valueBlock.value[0];
-      if (!(algorithmOid instanceof asn1js.ObjectIdentifier)) {
-        return yield* Effect.die("Fixture policy hash has no algorithm OID.");
-      }
+for (const objectStreams of [false, true]) {
+  describe(`ITI local conformance hardening (object streams: ${objectStreams})`, () => {
+    it.effect("approves the committed AD-RB fixture with the pinned policy encoding", () =>
+      Effect.gen(function* () {
+        const pdf = yield* fixturePdf;
+        const report = yield* validatePdfConformance({ pdf });
+        const extracted = yield* extractPdfSignature(pdf);
+        const parsed = parseCms(extracted.signature);
+        const signerInfo = parsed.signedData.signerInfos[0];
+        if (signerInfo === undefined) return yield* Effect.die("Fixture has no SignerInfo.");
+        const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
+        if (!(policy instanceof asn1js.Sequence)) {
+          return yield* Effect.die("Fixture policy is not a SignaturePolicyId sequence.");
+        }
+        const hash = policy.valueBlock.value[1];
+        if (!(hash instanceof asn1js.Sequence)) {
+          return yield* Effect.die("Fixture policy hash is not an OtherHashAlgAndValue sequence.");
+        }
+        const algorithm = hash.valueBlock.value[0];
+        const digest = hash.valueBlock.value[1];
+        if (!(algorithm instanceof asn1js.Sequence) || !(digest instanceof asn1js.OctetString)) {
+          return yield* Effect.die("Fixture policy hash is malformed.");
+        }
+        const algorithmOid = algorithm.valueBlock.value[0];
+        if (!(algorithmOid instanceof asn1js.ObjectIdentifier)) {
+          return yield* Effect.die("Fixture policy hash has no algorithm OID.");
+        }
 
-      expect(report.approved).toBe(true);
-      expect(report.outcome).toBe("approved");
-      expect(
-        report.signatures[0]?.attributes.map((attribute) => [attribute.name, attribute.status]),
-      ).toEqual([
-        ["IdMessageDigest", "Valid"],
-        ["IdContentType", "Valid"],
-        ["IdAaEtsSigPolicyId", "Valid"],
-        ["IdAaSigningCertificateV2", "Valid"],
-        ["SignatureDictionary", "Valid"],
-        ["signingTime", "Valid"],
-      ]);
-      expect(algorithmOid.valueBlock.toString()).toBe(SHA256_OID);
-      expect(Buffer.from(digest.valueBlock.valueHexView)).toEqual(
-        Buffer.from(IcpBrasilPadesPolicy.adRbV11.policyHash),
-      );
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(report.approved).toBe(true);
+        expect(report.outcome).toBe("approved");
+        expect(
+          report.signatures[0]?.attributes.map((attribute) => [attribute.name, attribute.status]),
+        ).toEqual([
+          ["IdMessageDigest", "Valid"],
+          ["IdContentType", "Valid"],
+          ["IdAaEtsSigPolicyId", "Valid"],
+          ["IdAaSigningCertificateV2", "Valid"],
+          ["SignatureDictionary", "Valid"],
+          ["signingTime", "Valid"],
+        ]);
+        expect(algorithmOid.valueBlock.toString()).toBe(SHA256_OID);
+        expect(Buffer.from(digest.valueBlock.valueHexView)).toEqual(
+          Buffer.from(IcpBrasilPadesPolicy.adRbV11.policyHash),
+        );
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a non-PDF envelope even when its detached CMS is valid", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const envelope = yield* createNonPdfEnvelope(extracted.signature, signed.signingKey);
-      const cmsVerification = yield* verifyDetachedSignedData({
-        cms: envelope.cms,
-        content: envelope.content,
-      });
-      const result = yield* Effect.result(validatePdfConformance({ pdf: envelope.pdf }));
+    it.effect("rejects a non-PDF envelope even when its detached CMS is valid", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const envelope = yield* createNonPdfEnvelope(extracted.signature, signed.signingKey);
+        const cmsVerification = yield* verifyDetachedSignedData({
+          cms: envelope.cms,
+          content: envelope.content,
+        });
+        const result = yield* Effect.result(validatePdfConformance({ pdf: envelope.pdf }));
 
-      expect(cmsVerification.valid).toBe(true);
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
-        expect(result.failure.operation).toBe("iti.conformance");
-      }
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(cmsVerification.valid).toBe(true);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
+          expect(result.failure.operation).toBe("iti.conformance");
+        }
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("keeps a structurally valid unsigned PDF distinct from a malformed signed PDF", () =>
-    Effect.gen(function* () {
-      const unsigned = yield* createPdf;
-      const unsignedReport = yield* validatePdfConformance({ pdf: unsigned });
-      const signed = yield* createSignedPades();
-      const malformedResult = yield* Effect.result(
-        validatePdfConformance({ pdf: outOfBoundsFirstByteRange(signed.pdf) }),
-      );
+    it.effect("keeps a structurally valid unsigned PDF distinct from a malformed signed PDF", () =>
+      Effect.gen(function* () {
+        const unsigned = yield* createPdf(objectStreams);
+        const unsignedReport = yield* validatePdfConformance({ pdf: unsigned });
+        const signed = yield* createSignedPades(objectStreams);
+        const malformedResult = yield* Effect.result(
+          validatePdfConformance({ pdf: outOfBoundsFirstByteRange(signed.pdf) }),
+        );
 
-      expect(unsignedReport.approved).toBe(false);
-      expect(unsignedReport.signatureCount).toBe(0);
-      expect(unsignedReport.signatures).toEqual([]);
-      expect(Result.isFailure(malformedResult)).toBe(true);
-      if (Result.isFailure(malformedResult)) {
-        expect(malformedResult.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
-        expect(malformedResult.failure.operation).toBe("iti.conformance");
-      }
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(unsignedReport.approved).toBe(false);
+        expect(unsignedReport.signatureCount).toBe(0);
+        expect(unsignedReport.signatures).toEqual([]);
+        expect(Result.isFailure(malformedResult)).toBe(true);
+        if (Result.isFailure(malformedResult)) {
+          expect(malformedResult.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
+          expect(malformedResult.failure.operation).toBe("iti.conformance");
+        }
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a parsed signature dictionary missing its ByteRange", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const result = yield* Effect.result(
-        validatePdfConformance({ pdf: removeFirstByteRangeKey(signed.pdf) }),
-      );
+    it.effect("rejects a parsed signature dictionary missing its ByteRange", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const result = yield* Effect.result(
+          validatePdfConformance({ pdf: removeFirstByteRangeKey(signed.pdf) }),
+        );
 
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
-        expect(result.failure.operation).toBe("iti.conformance");
-      }
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
+          expect(result.failure.operation).toBe("iti.conformance");
+        }
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a prior signature whose ByteRange ends before its complete revision", () =>
-    Effect.gen(function* () {
-      const first = yield* createSignedPades();
-      const shortened = shortenFirstByteRange(first.pdf, 8);
-      const result = yield* Effect.result(validatePdfConformance({ pdf: shortened }));
+    it.effect("rejects a prior signature whose ByteRange ends before its complete revision", () =>
+      Effect.gen(function* () {
+        const first = yield* createSignedPades(objectStreams);
+        const shortened = shortenFirstByteRange(first.pdf, 8);
+        const result = yield* Effect.result(validatePdfConformance({ pdf: shortened }));
 
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
-        expect(result.failure.operation).toBe("iti.conformance");
-      }
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
+          expect(result.failure.operation).toBe("iti.conformance");
+        }
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a ByteRange ending at fake revision markers inside a stream", () =>
-    Effect.gen(function* () {
-      const first = yield* createSignedPades();
-      const fakeRevision = yield* appendFakeRevisionMarkerInsideStream(first.pdf);
-      const adjusted = setFirstByteRangeEnd(fakeRevision.pdf, fakeRevision.rangeEnd);
-      const result = yield* Effect.result(validatePdfConformance({ pdf: adjusted }));
+    it.effect("rejects a ByteRange ending at fake revision markers inside a stream", () =>
+      Effect.gen(function* () {
+        const first = yield* createSignedPades(objectStreams);
+        const fakeRevision = yield* appendFakeRevisionMarkerInsideStream(first.pdf);
+        const adjusted = setFirstByteRangeEnd(fakeRevision.pdf, fakeRevision.rangeEnd);
+        const result = yield* Effect.result(validatePdfConformance({ pdf: adjusted }));
 
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
-        expect(result.failure.operation).toBe("iti.conformance");
-      }
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
+          expect(result.failure.operation).toBe("iti.conformance");
+        }
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects an orphan signature dictionary with a valid detached CMS", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const orphaned = removeFirstSignatureFieldValue(signed.pdf);
-      const content = signedDataForByteRange(orphaned, extracted.byteRange);
-      const repairedCms = yield* resignCms(
-        extracted.signature,
-        content,
-        signed.signingKey,
-        () => undefined,
-      );
-      const forgedPdf = replaceCmsContents(orphaned, extracted.signature, repairedCms);
-      const cmsVerification = yield* verifyDetachedSignedData({
-        cms: repairedCms,
-        content,
-      });
-      const result = yield* Effect.result(validatePdfConformance({ pdf: forgedPdf }));
+    it.effect("rejects an orphan signature dictionary with a valid detached CMS", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const orphaned = removeFirstSignatureFieldValue(signed.pdf);
+        const content = signedDataForByteRange(orphaned, extracted.byteRange);
+        const repairedCms = yield* resignCms(
+          extracted.signature,
+          content,
+          signed.signingKey,
+          () => undefined,
+        );
+        const forgedPdf = replaceCmsContents(orphaned, extracted.signature, repairedCms);
+        const cmsVerification = yield* verifyDetachedSignedData({
+          cms: repairedCms,
+          content,
+        });
+        const result = yield* Effect.result(validatePdfConformance({ pdf: forgedPdf }));
 
-      expect(cmsVerification.valid).toBe(true);
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
-        expect(result.failure.operation).toBe("iti.conformance");
-      }
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(cmsVerification.valid).toBe(true);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
+          expect(result.failure.operation).toBe("iti.conformance");
+        }
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("excludes a signature attached only in a later revision", () =>
-    Effect.gen(function* () {
-      const first = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(first.pdf);
-      const orphaned = removeFirstSignatureFieldValue(first.pdf);
-      const content = signedDataForByteRange(orphaned, extracted.byteRange);
-      const repairedCms = yield* resignCms(
-        extracted.signature,
-        content,
-        first.signingKey,
-        () => undefined,
-      );
-      const orphanedFirst = replaceCmsContents(orphaned, extracted.signature, repairedCms);
-      const lateAttachment = yield* restoreSignatureFieldValue(orphanedFirst);
-      const second = yield* signPdf({
-        pdf: lateAttachment,
-        policy: "pades-icp-brasil",
-        signatureLength: 32768,
-        signingTime: FIXED_DATE,
-        reason: "Revision-aware reachability fixture",
-        name: "SignatureKit ITI",
-        location: "BR",
-      }).pipe(Effect.provide(a1SignaturesLayer({ pfx: first.pfx, password: PFX_PASSWORD })));
-      const firstVerification = yield* verifyDetachedSignedData({
-        cms: repairedCms,
-        content,
-      });
-      const report = yield* validatePdfConformance({ pdf: second });
+    it.effect("excludes a signature attached only in a later revision", () =>
+      Effect.gen(function* () {
+        const first = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(first.pdf);
+        const orphaned = removeFirstSignatureFieldValue(first.pdf);
+        const content = signedDataForByteRange(orphaned, extracted.byteRange);
+        const repairedCms = yield* resignCms(
+          extracted.signature,
+          content,
+          first.signingKey,
+          () => undefined,
+        );
+        const orphanedFirst = replaceCmsContents(orphaned, extracted.signature, repairedCms);
+        const lateAttachment = yield* restoreSignatureFieldValue(orphanedFirst);
+        const second = yield* signPdf({
+          pdf: lateAttachment,
+          policy: "pades-icp-brasil",
+          signatureLength: 32768,
+          signingTime: FIXED_DATE,
+          reason: "Revision-aware reachability fixture",
+          name: "SignatureKit ITI",
+          location: "BR",
+        }).pipe(Effect.provide(a1SignaturesLayer({ pfx: first.pfx, password: PFX_PASSWORD })));
+        const firstVerification = yield* verifyDetachedSignedData({
+          cms: repairedCms,
+          content,
+        });
+        const report = yield* validatePdfConformance({ pdf: second });
 
-      expect(firstVerification.valid).toBe(true);
-      expect(report.approved).toBe(true);
-      expect(report.signatureCount).toBe(1);
-      expect(report.signatures).toHaveLength(1);
-      expect(report.signatures[0]?.structure.status).toBe("Valid");
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(firstVerification.valid).toBe(true);
+        expect(report.approved).toBe(true);
+        expect(report.signatureCount).toBe(1);
+        expect(report.signatures).toHaveLength(1);
+        expect(report.signatures[0]?.structure.status).toBe("Valid");
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a CMS signature dictionary containing more than one SignerInfo", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (signedData, signerInfo) => {
-          const forgedSigner = new pkijs.SignerInfo({ schema: signerInfo.toSchema() });
-          forgedSigner.signature.valueBlock.valueHexView = new Uint8Array(
-            forgedSigner.signature.valueBlock.valueHexView.byteLength,
-          );
-          signedData.signerInfos.push(forgedSigner);
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+    it.effect("rejects a CMS signature dictionary containing more than one SignerInfo", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (signedData, signerInfo) => {
+            const forgedSigner = new pkijs.SignerInfo({ schema: signerInfo.toSchema() });
+            forgedSigner.signature.valueBlock.valueHexView = new Uint8Array(
+              forgedSigner.signature.valueBlock.valueHexView.byteLength,
+            );
+            signedData.signerInfos.push(forgedSigner);
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
 
-      expect(report.approved).toBe(false);
-      expect(report.signatureCount).toBe(1);
-      expect(report.signatures[0]?.structure).toEqual({
-        status: "Invalid",
-        message: "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF.",
-      });
-      expect(report.signatures[0]?.cipher.status).toBe("Invalid");
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(report.approved).toBe(false);
+        expect(report.signatureCount).toBe(1);
+        expect(report.signatures[0]?.structure).toEqual({
+          status: "Invalid",
+          message: "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF.",
+        });
+        expect(report.signatures[0]?.cipher.status).toBe("Invalid");
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a re-signed content-type attribute with extra or wrong values", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const contentType = signedAttribute(signerInfo, CmsOid.contentType);
-          contentType.values = [
-            new asn1js.ObjectIdentifier({ value: "1.2.3" }),
-            new asn1js.ObjectIdentifier({ value: CmsOid.data }),
-          ];
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+    it.effect("rejects a re-signed content-type attribute with extra or wrong values", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const contentType = signedAttribute(signerInfo, CmsOid.contentType);
+            contentType.values = [
+              new asn1js.ObjectIdentifier({ value: "1.2.3" }),
+              new asn1js.ObjectIdentifier({ value: CmsOid.data }),
+            ];
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
 
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.cipher.status).toBe("Valid");
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdContentType",
-        status: "Invalid",
-        message: "A assinatura não contém IdContentType apontando para id-data.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.cipher.status).toBe("Valid");
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdContentType",
+          status: "Invalid",
+          message: "A assinatura não contém IdContentType apontando para id-data.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a re-signed duplicate messageDigest attribute", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const attributes = signerInfo.signedAttrs?.attributes;
-          if (attributes === undefined) throw new Error("Missing CMS signed attributes.");
-          attributes.push(
-            new pkijs.Attribute({
-              type: CmsOid.messageDigest,
-              values: [new asn1js.OctetString({ valueHex: toArrayBuffer(new Uint8Array(32)) })],
-            }),
-          );
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+    it.effect("rejects a re-signed duplicate messageDigest attribute", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const attributes = signerInfo.signedAttrs?.attributes;
+            if (attributes === undefined) throw new Error("Missing CMS signed attributes.");
+            attributes.push(
+              new pkijs.Attribute({
+                type: CmsOid.messageDigest,
+                values: [new asn1js.OctetString({ valueHex: toArrayBuffer(new Uint8Array(32)) })],
+              }),
+            );
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
 
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.cipher.status).toBe("Valid");
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdMessageDigest",
-        status: "Invalid",
-        message:
-          "A assinatura não contém exatamente um atributo IdMessageDigest codificado como OCTET STRING.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.cipher.status).toBe("Valid");
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdMessageDigest",
+          status: "Invalid",
+          message:
+            "A assinatura não contém exatamente um atributo IdMessageDigest codificado como OCTET STRING.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a re-signed AD-RB policy with an unpinned digest", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
-          if (!(policy instanceof asn1js.Sequence)) {
-            expect.fail("Policy attribute is not a sequence.");
-          }
-          const policyHash = policy.valueBlock.value[1];
-          if (!(policyHash instanceof asn1js.Sequence)) {
-            expect.fail("Policy hash is not a sequence.");
-          }
-          policyHash.valueBlock.value[1] = new asn1js.OctetString({
-            valueHex: toArrayBuffer(new Uint8Array(32)),
-          });
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
-
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.policyOid).toBeNull();
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaEtsSigPolicyId",
-        status: "Invalid",
-        message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("rejects a re-signed AD-RB policy with malformed qualifier encoding", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
-          if (!(policy instanceof asn1js.Sequence)) {
-            expect.fail("Policy attribute is not a sequence.");
-          }
-          const qualifiers = policy.valueBlock.value[2];
-          if (!(qualifiers instanceof asn1js.Sequence)) {
-            expect.fail("Policy qualifiers are not a sequence.");
-          }
-          const qualifier = qualifiers.valueBlock.value[0];
-          if (!(qualifier instanceof asn1js.Sequence)) {
-            expect.fail("Policy qualifier is not a sequence.");
-          }
-          qualifier.valueBlock.value[1] = new asn1js.Utf8String({
-            value: IcpBrasilPadesPolicy.adRbV11.policyUri,
-          });
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
-
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaEtsSigPolicyId",
-        status: "Invalid",
-        message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("approves a re-signed AD-RB policy without optional qualifiers", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const resignedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const policyAttribute = signedAttribute(signerInfo, CmsOid.signaturePolicy);
-          const policy = policyAttribute.values[0];
-          if (!(policy instanceof asn1js.Sequence)) {
-            expect.fail("Policy attribute is not a sequence.");
-          }
-          const policyAttributeLength = policyAttribute.toSchema().toBER(false).byteLength;
-          policy.valueBlock.value.pop();
-          policy.lenBlock.longFormUsed = false;
-          const removedLength =
-            policyAttributeLength - policyAttribute.toSchema().toBER(false).byteLength;
-          let paddingAttribute: pkijs.Attribute | undefined;
-          for (let length = 0; length <= removedLength; length += 1) {
-            const candidate = new pkijs.Attribute({
-              type: "1.3.6.1.4.1.99999.1",
-              values: [
-                new asn1js.OctetString({
-                  valueHex: toArrayBuffer(new Uint8Array(length)),
-                }),
-              ],
-            });
-            if (candidate.toSchema().toBER(false).byteLength === removedLength) {
-              paddingAttribute = candidate;
-              break;
+    it.effect("rejects a re-signed AD-RB policy with an unpinned digest", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
+            if (!(policy instanceof asn1js.Sequence)) {
+              expect.fail("Policy attribute is not a sequence.");
             }
-          }
-          if (paddingAttribute === undefined || signerInfo.signedAttrs === undefined) {
-            throw new Error("Failed to preserve the re-signed CMS length.");
-          }
-          signerInfo.signedAttrs.attributes.push(paddingAttribute);
-        },
-      );
-      const resignedPdf = replaceCmsContents(signed.pdf, extracted.signature, resignedCms);
-      yield* assertCmsValid(resignedPdf);
-      const report = yield* validatePdfConformance({ pdf: resignedPdf });
+            const policyHash = policy.valueBlock.value[1];
+            if (!(policyHash instanceof asn1js.Sequence)) {
+              expect.fail("Policy hash is not a sequence.");
+            }
+            policyHash.valueBlock.value[1] = new asn1js.OctetString({
+              valueHex: toArrayBuffer(new Uint8Array(32)),
+            });
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
 
-      expect(report.approved).toBe(true);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaEtsSigPolicyId",
-        status: "Valid",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.policyOid).toBeNull();
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaEtsSigPolicyId",
+          status: "Invalid",
+          message:
+            "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a re-signed AD-RB policy with duplicate qualifiers", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
-          if (!(policy instanceof asn1js.Sequence)) {
-            expect.fail("Policy attribute is not a sequence.");
-          }
-          const qualifiers = policy.valueBlock.value[2];
-          if (!(qualifiers instanceof asn1js.Sequence)) {
-            expect.fail("Policy qualifiers are not a sequence.");
-          }
-          const qualifier = qualifiers.valueBlock.value[0];
-          if (!(qualifier instanceof asn1js.Sequence)) {
-            expect.fail("Policy qualifier is not a sequence.");
-          }
-          const copied = asn1js.fromBER(
-            toArrayBuffer(new Uint8Array(qualifier.toBER(false))),
-          ).result;
-          if (!(copied instanceof asn1js.Sequence)) {
-            expect.fail("Failed to copy policy qualifier.");
-          }
-          qualifiers.valueBlock.value.push(copied);
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+    it.effect("rejects a re-signed AD-RB policy with malformed qualifier encoding", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
+            if (!(policy instanceof asn1js.Sequence)) {
+              expect.fail("Policy attribute is not a sequence.");
+            }
+            const qualifiers = policy.valueBlock.value[2];
+            if (!(qualifiers instanceof asn1js.Sequence)) {
+              expect.fail("Policy qualifiers are not a sequence.");
+            }
+            const qualifier = qualifiers.valueBlock.value[0];
+            if (!(qualifier instanceof asn1js.Sequence)) {
+              expect.fail("Policy qualifier is not a sequence.");
+            }
+            qualifier.valueBlock.value[1] = new asn1js.Utf8String({
+              value: IcpBrasilPadesPolicy.adRbV11.policyUri,
+            });
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
 
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaEtsSigPolicyId",
-        status: "Invalid",
-        message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaEtsSigPolicyId",
+          status: "Invalid",
+          message:
+            "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-  it.effect("rejects a re-signed SigningCertificateV2 hash that does not bind the signer", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const signingCertificate = signedAttribute(signerInfo, CmsOid.signingCertificateV2)
-            .values[0];
-          if (!(signingCertificate instanceof asn1js.Sequence)) {
-            expect.fail("SigningCertificateV2 attribute is not a sequence.");
-          }
-          const certificates = signingCertificate.valueBlock.value[0];
-          if (!(certificates instanceof asn1js.Sequence)) {
-            expect.fail("SigningCertificateV2 certificate list is not a sequence.");
-          }
-          const essCertId = certificates.valueBlock.value[0];
-          if (!(essCertId instanceof asn1js.Sequence)) {
-            expect.fail("SigningCertificateV2 certificate entry is not a sequence.");
-          }
-          const hashIndex = essCertId.valueBlock.value[0] instanceof asn1js.OctetString ? 0 : 1;
-          essCertId.valueBlock.value[hashIndex] = new asn1js.OctetString({
-            valueHex: toArrayBuffer(new Uint8Array(32)),
+    it.effect("approves a re-signed AD-RB policy without optional qualifiers", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const resignedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const policyAttribute = signedAttribute(signerInfo, CmsOid.signaturePolicy);
+            const policy = policyAttribute.values[0];
+            if (!(policy instanceof asn1js.Sequence)) {
+              expect.fail("Policy attribute is not a sequence.");
+            }
+            const policyAttributeLength = policyAttribute.toSchema().toBER(false).byteLength;
+            policy.valueBlock.value.pop();
+            policy.lenBlock.longFormUsed = false;
+            const removedLength =
+              policyAttributeLength - policyAttribute.toSchema().toBER(false).byteLength;
+            let paddingAttribute: pkijs.Attribute | undefined;
+            for (let length = 0; length <= removedLength; length += 1) {
+              const candidate = new pkijs.Attribute({
+                type: "1.3.6.1.4.1.99999.1",
+                values: [
+                  new asn1js.OctetString({
+                    valueHex: toArrayBuffer(new Uint8Array(length)),
+                  }),
+                ],
+              });
+              if (candidate.toSchema().toBER(false).byteLength === removedLength) {
+                paddingAttribute = candidate;
+                break;
+              }
+            }
+            if (paddingAttribute === undefined || signerInfo.signedAttrs === undefined) {
+              throw new Error("Failed to preserve the re-signed CMS length.");
+            }
+            signerInfo.signedAttrs.attributes.push(paddingAttribute);
+          },
+        );
+        const resignedPdf = replaceCmsContents(signed.pdf, extracted.signature, resignedCms);
+        yield* assertCmsValid(resignedPdf);
+        const report = yield* validatePdfConformance({ pdf: resignedPdf });
+
+        expect(report.approved).toBe(true);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaEtsSigPolicyId",
+          status: "Valid",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect("rejects a re-signed AD-RB policy with duplicate qualifiers", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const policy = signedAttribute(signerInfo, CmsOid.signaturePolicy).values[0];
+            if (!(policy instanceof asn1js.Sequence)) {
+              expect.fail("Policy attribute is not a sequence.");
+            }
+            const qualifiers = policy.valueBlock.value[2];
+            if (!(qualifiers instanceof asn1js.Sequence)) {
+              expect.fail("Policy qualifiers are not a sequence.");
+            }
+            const qualifier = qualifiers.valueBlock.value[0];
+            if (!(qualifier instanceof asn1js.Sequence)) {
+              expect.fail("Policy qualifier is not a sequence.");
+            }
+            const copied = asn1js.fromBER(
+              toArrayBuffer(new Uint8Array(qualifier.toBER(false))),
+            ).result;
+            if (!(copied instanceof asn1js.Sequence)) {
+              expect.fail("Failed to copy policy qualifier.");
+            }
+            qualifiers.valueBlock.value.push(copied);
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
+
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaEtsSigPolicyId",
+          status: "Invalid",
+          message:
+            "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect("rejects a re-signed SigningCertificateV2 hash that does not bind the signer", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const signingCertificate = signedAttribute(signerInfo, CmsOid.signingCertificateV2)
+              .values[0];
+            if (!(signingCertificate instanceof asn1js.Sequence)) {
+              expect.fail("SigningCertificateV2 attribute is not a sequence.");
+            }
+            const certificates = signingCertificate.valueBlock.value[0];
+            if (!(certificates instanceof asn1js.Sequence)) {
+              expect.fail("SigningCertificateV2 certificate list is not a sequence.");
+            }
+            const essCertId = certificates.valueBlock.value[0];
+            if (!(essCertId instanceof asn1js.Sequence)) {
+              expect.fail("SigningCertificateV2 certificate entry is not a sequence.");
+            }
+            const hashIndex = essCertId.valueBlock.value[0] instanceof asn1js.OctetString ? 0 : 1;
+            essCertId.valueBlock.value[hashIndex] = new asn1js.OctetString({
+              valueHex: toArrayBuffer(new Uint8Array(32)),
+            });
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
+
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaSigningCertificateV2",
+          status: "Invalid",
+          message:
+            "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect("rejects a correct first ESSCertIDv2 followed by an extra entry", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const first = firstEssCertIdV2(signerInfo);
+            const copied = asn1js.fromBER(toArrayBuffer(new Uint8Array(first.toBER(false)))).result;
+            if (!(copied instanceof asn1js.Sequence)) {
+              expect.fail("Failed to copy SigningCertificateV2 certificate entry.");
+            }
+            signingCertificateV2Certificates(signerInfo).valueBlock.value.push(copied);
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
+
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaSigningCertificateV2",
+          status: "Invalid",
+          message:
+            "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect("approves a re-signed SigningCertificateV2 with omitted issuerSerial", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const resignedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          () => undefined,
+        );
+        const resignedPdf = replaceCmsContents(signed.pdf, extracted.signature, resignedCms);
+        yield* assertCmsValid(resignedPdf);
+        const report = yield* validatePdfConformance({ pdf: resignedPdf });
+
+        expect(
+          report.signatures[0]?.attributes.map((attribute) => [attribute.name, attribute.status]),
+        ).toEqual([
+          ["IdMessageDigest", "Valid"],
+          ["IdContentType", "Valid"],
+          ["IdAaEtsSigPolicyId", "Valid"],
+          ["IdAaSigningCertificateV2", "Valid"],
+          ["SignatureDictionary", "Valid"],
+          ["signingTime", "Valid"],
+        ]);
+        expect(report.approved).toBe(true);
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect("approves a re-signed SigningCertificateV2 with matching issuerSerial", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const resignedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerialForSigner(signerInfo));
+          },
+        );
+        const resignedPdf = replaceCmsContents(signed.pdf, extracted.signature, resignedCms);
+        yield* assertCmsValid(resignedPdf);
+        const report = yield* validatePdfConformance({ pdf: resignedPdf });
+
+        expect(report.approved).toBe(true);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaSigningCertificateV2",
+          status: "Valid",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect(
+      "rejects a re-signed SigningCertificateV2 with a mismatched issuerSerial serial",
+      () =>
+        Effect.gen(function* () {
+          const signed = yield* createSignedPades(objectStreams);
+          const extracted = yield* extractPdfSignature(signed.pdf);
+          const forgedCms = yield* resignCms(
+            extracted.signature,
+            extracted.signedData,
+            signed.signingKey,
+            (_signedData, signerInfo) => {
+              const issuerSerial = issuerSerialForSigner(signerInfo);
+              const serial = issuerSerial.valueBlock.value[1];
+              if (!(serial instanceof asn1js.Integer)) {
+                expect.fail("IssuerSerial serial number is not an INTEGER.");
+              }
+              const serialBytes = new Uint8Array(serial.valueBlock.valueHexView);
+              const lastByte = serialBytes.length - 1;
+              const byte = serialBytes[lastByte];
+              if (byte === undefined) expect.fail("IssuerSerial serial number is empty.");
+              serialBytes[lastByte] = byte ^ 1;
+              issuerSerial.valueBlock.value[1] = new asn1js.Integer({
+                valueHex: toArrayBuffer(serialBytes),
+              });
+              firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerial);
+            },
+          );
+          const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+          yield* assertCmsValid(forgedPdf);
+          const report = yield* validatePdfConformance({ pdf: forgedPdf });
+
+          expect(report.approved).toBe(false);
+          expect(report.signatures[0]?.attributes).toContainEqual({
+            name: "IdAaSigningCertificateV2",
+            status: "Invalid",
+            message:
+              "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
           });
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+        }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaSigningCertificateV2",
-        status: "Invalid",
-        message:
-          "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("rejects a correct first ESSCertIDv2 followed by an extra entry", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const first = firstEssCertIdV2(signerInfo);
-          const copied = asn1js.fromBER(toArrayBuffer(new Uint8Array(first.toBER(false)))).result;
-          if (!(copied instanceof asn1js.Sequence)) {
-            expect.fail("Failed to copy SigningCertificateV2 certificate entry.");
-          }
-          signingCertificateV2Certificates(signerInfo).valueBlock.value.push(copied);
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
-
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaSigningCertificateV2",
-        status: "Invalid",
-        message:
-          "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("approves a re-signed SigningCertificateV2 with omitted issuerSerial", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const resignedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        () => undefined,
-      );
-      const resignedPdf = replaceCmsContents(signed.pdf, extracted.signature, resignedCms);
-      yield* assertCmsValid(resignedPdf);
-      const report = yield* validatePdfConformance({ pdf: resignedPdf });
-
-      expect(
-        report.signatures[0]?.attributes.map((attribute) => [attribute.name, attribute.status]),
-      ).toEqual([
-        ["IdMessageDigest", "Valid"],
-        ["IdContentType", "Valid"],
-        ["IdAaEtsSigPolicyId", "Valid"],
-        ["IdAaSigningCertificateV2", "Valid"],
-        ["SignatureDictionary", "Valid"],
-        ["signingTime", "Valid"],
-      ]);
-      expect(report.approved).toBe(true);
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("approves a re-signed SigningCertificateV2 with matching issuerSerial", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const resignedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerialForSigner(signerInfo));
-        },
-      );
-      const resignedPdf = replaceCmsContents(signed.pdf, extracted.signature, resignedCms);
-      yield* assertCmsValid(resignedPdf);
-      const report = yield* validatePdfConformance({ pdf: resignedPdf });
-
-      expect(report.approved).toBe(true);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaSigningCertificateV2",
-        status: "Valid",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("rejects a re-signed SigningCertificateV2 with a mismatched issuerSerial serial", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const issuerSerial = issuerSerialForSigner(signerInfo);
-          const serial = issuerSerial.valueBlock.value[1];
-          if (!(serial instanceof asn1js.Integer)) {
-            expect.fail("IssuerSerial serial number is not an INTEGER.");
-          }
-          const serialBytes = new Uint8Array(serial.valueBlock.valueHexView);
-          const lastByte = serialBytes.length - 1;
-          const byte = serialBytes[lastByte];
-          if (byte === undefined) expect.fail("IssuerSerial serial number is empty.");
-          serialBytes[lastByte] = byte ^ 1;
-          issuerSerial.valueBlock.value[1] = new asn1js.Integer({
-            valueHex: toArrayBuffer(serialBytes),
-          });
-          firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerial);
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
-
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaSigningCertificateV2",
-        status: "Invalid",
-        message:
-          "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("rejects a re-signed SigningCertificateV2 with a mismatched issuerSerial issuer", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const issuerSerial = issuerSerialForSigner(signerInfo);
-          const issuers = issuerSerial.valueBlock.value[0];
-          if (!(issuers instanceof asn1js.Sequence)) {
-            expect.fail("IssuerSerial issuer names are not a sequence.");
-          }
-          const issuer = issuers.valueBlock.value[0];
-          if (!(issuer instanceof asn1js.Constructed)) {
-            expect.fail("IssuerSerial issuer is not a GeneralName.");
-          }
-          issuer.valueBlock.value = [
-            new asn1js.Sequence({
-              value: [
-                new asn1js.Set({
+    it.effect(
+      "rejects a re-signed SigningCertificateV2 with a mismatched issuerSerial issuer",
+      () =>
+        Effect.gen(function* () {
+          const signed = yield* createSignedPades(objectStreams);
+          const extracted = yield* extractPdfSignature(signed.pdf);
+          const forgedCms = yield* resignCms(
+            extracted.signature,
+            extracted.signedData,
+            signed.signingKey,
+            (_signedData, signerInfo) => {
+              const issuerSerial = issuerSerialForSigner(signerInfo);
+              const issuers = issuerSerial.valueBlock.value[0];
+              if (!(issuers instanceof asn1js.Sequence)) {
+                expect.fail("IssuerSerial issuer names are not a sequence.");
+              }
+              const issuer = issuers.valueBlock.value[0];
+              if (!(issuer instanceof asn1js.Constructed)) {
+                expect.fail("IssuerSerial issuer is not a GeneralName.");
+              }
+              issuer.valueBlock.value = [
+                new asn1js.Sequence({
                   value: [
-                    new asn1js.Sequence({
+                    new asn1js.Set({
                       value: [
-                        new asn1js.ObjectIdentifier({ value: "2.5.4.3" }),
-                        new asn1js.Utf8String({ value: "Unrelated issuer" }),
+                        new asn1js.Sequence({
+                          value: [
+                            new asn1js.ObjectIdentifier({ value: "2.5.4.3" }),
+                            new asn1js.Utf8String({ value: "Unrelated issuer" }),
+                          ],
+                        }),
                       ],
                     }),
                   ],
                 }),
-              ],
-            }),
-          ];
-          firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerial);
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+              ];
+              firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerial);
+            },
+          );
+          const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+          yield* assertCmsValid(forgedPdf);
+          const report = yield* validatePdfConformance({ pdf: forgedPdf });
 
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaSigningCertificateV2",
-        status: "Invalid",
-        message:
-          "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-
-  it.effect("rejects a re-signed SigningCertificateV2 with malformed issuerSerial", () =>
-    Effect.gen(function* () {
-      const signed = yield* createSignedPades();
-      const extracted = yield* extractPdfSignature(signed.pdf);
-      const forgedCms = yield* resignCms(
-        extracted.signature,
-        extracted.signedData,
-        signed.signingKey,
-        (_signedData, signerInfo) => {
-          const issuerSerial = issuerSerialForSigner(signerInfo);
-          issuerSerial.valueBlock.value[1] = new asn1js.OctetString({
-            valueHex: toArrayBuffer(new Uint8Array([1])),
+          expect(report.approved).toBe(false);
+          expect(report.signatures[0]?.attributes).toContainEqual({
+            name: "IdAaSigningCertificateV2",
+            status: "Invalid",
+            message:
+              "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
           });
-          firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerial);
-        },
-      );
-      const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
-      yield* assertCmsValid(forgedPdf);
-      const report = yield* validatePdfConformance({ pdf: forgedPdf });
+        }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
 
-      expect(report.approved).toBe(false);
-      expect(report.signatures[0]?.attributes).toContainEqual({
-        name: "IdAaSigningCertificateV2",
-        status: "Invalid",
-        message:
-          "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
-      });
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
-});
+    it.effect("rejects a re-signed SigningCertificateV2 with malformed issuerSerial", () =>
+      Effect.gen(function* () {
+        const signed = yield* createSignedPades(objectStreams);
+        const extracted = yield* extractPdfSignature(signed.pdf);
+        const forgedCms = yield* resignCms(
+          extracted.signature,
+          extracted.signedData,
+          signed.signingKey,
+          (_signedData, signerInfo) => {
+            const issuerSerial = issuerSerialForSigner(signerInfo);
+            issuerSerial.valueBlock.value[1] = new asn1js.OctetString({
+              valueHex: toArrayBuffer(new Uint8Array([1])),
+            });
+            firstEssCertIdV2(signerInfo).valueBlock.value.push(issuerSerial);
+          },
+        );
+        const forgedPdf = replaceCmsContents(signed.pdf, extracted.signature, forgedCms);
+        yield* assertCmsValid(forgedPdf);
+        const report = yield* validatePdfConformance({ pdf: forgedPdf });
+
+        expect(report.approved).toBe(false);
+        expect(report.signatures[0]?.attributes).toContainEqual({
+          name: "IdAaSigningCertificateV2",
+          status: "Invalid",
+          message:
+            "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
+        });
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+  });
+}

@@ -1,8 +1,9 @@
-import { PDFDocument, PDFHexString, PDFString } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { findPdfTextAnchors, removePdfLinkAnchors } from "../src/anchors";
+import type { PdfCoreEditOperation } from "@signature-kit/pdf-core/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { box, createFixturePdf, editFixturePdf, ref } from "./pdf-fixtures";
 
 const ANCHOR_URI = "https://example.com/#signature-anchor";
 const OTHER_URI = "https://example.com/other";
@@ -15,46 +16,59 @@ type LinkSpec = {
   readonly indirectAction?: boolean;
 };
 
-const pdfWithLinks = async (
+const utf16Hex = (text: string): string =>
+  `<FEFF${Array.from({ length: text.length }, (_, index) =>
+    text.charCodeAt(index).toString(16).padStart(4, "0"),
+  ).join("")}>`;
+
+const pdfWithLinks = (
   pages: ReadonlyArray<{
     readonly size: readonly [number, number];
     readonly cropBox?: readonly [number, number, number, number];
     readonly links: ReadonlyArray<LinkSpec>;
   }>,
-): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  pages.forEach(({ size, cropBox, links }) => {
-    const page = document.addPage([size[0], size[1]]);
-    if (cropBox !== undefined) page.setCropBox(...cropBox);
-    links.forEach(({ uri, rect, hex, indirectAction }) => {
-      const action = document.context.obj({
-        S: "URI",
-        URI: hex === true ? PDFHexString.fromText(uri) : PDFString.of(uri),
-      });
-      const annotation = document.context.register(
-        document.context.obj({
-          Type: "Annot",
-          Subtype: "Link",
-          Rect: [...rect],
-          Border: [0, 0, 0],
-          A: indirectAction === true ? document.context.register(action) : action,
-        }),
-      );
-      page.node.addAnnot(annotation);
-    });
-  });
-  return document.save();
-};
+) =>
+  createFixturePdf(
+    pages.map(({ size, cropBox }) => ({ size, ...(cropBox === undefined ? {} : { cropBox }) })),
+  ).pipe(
+    Effect.flatMap((base) =>
+      editFixturePdf(base, ({ next }) =>
+        pages.flatMap(({ links }, pageIndex) =>
+          links.flatMap(({ uri, rect, hex, indirectAction }): Array<PdfCoreEditOperation> => {
+            const action = `<< /S /URI /URI ${hex === true ? utf16Hex(uri) : `(${uri})`} >>`;
+            const actionRef = indirectAction === true ? next() : undefined;
+            const annotation = next();
+            const operations: Array<PdfCoreEditOperation> =
+              actionRef === undefined ? [] : [{ op: "setObject", ref: actionRef, value: action }];
+            return [
+              ...operations,
+              {
+                op: "setObject",
+                ref: annotation,
+                value: `<< /Type /Annot /Subtype /Link /Rect ${box(rect)} /Border [0 0 0] /A ${
+                  actionRef === undefined ? action : ref(actionRef)
+                } >>`,
+              },
+              {
+                op: "append",
+                target: { base: { kind: "page", pageIndex } },
+                key: "Annots",
+                value: ref(annotation),
+              },
+            ];
+          }),
+        ),
+      ),
+    ),
+  );
 
 describe("PDF link anchors", () => {
   it.effect("places the stamp from a link annotation without parsing text", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(() =>
-        pdfWithLinks([
-          { size: [300, 200], links: [{ uri: OTHER_URI, rect: [10, 150, 60, 160] }] },
-          { size: [300, 200], links: [{ uri: ANCHOR_URI, rect: [40, 100, 140, 110] }] },
-        ]),
-      );
+      const pdf = yield* pdfWithLinks([
+        { size: [300, 200], links: [{ uri: OTHER_URI, rect: [10, 150, 60, 160] }] },
+        { size: [300, 200], links: [{ uri: ANCHOR_URI, rect: [40, 100, 140, 110] }] },
+      ]);
 
       const anchors = yield* findPdfTextAnchors({
         pdf,
@@ -70,16 +84,12 @@ describe("PDF link anchors", () => {
 
   it.effect("matches hex-encoded URIs and indirect actions", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(() =>
-        pdfWithLinks([
-          {
-            size: [300, 200],
-            links: [
-              { uri: ANCHOR_URI, rect: [40, 100, 140, 110], hex: true, indirectAction: true },
-            ],
-          },
-        ]),
-      );
+      const pdf = yield* pdfWithLinks([
+        {
+          size: [300, 200],
+          links: [{ uri: ANCHOR_URI, rect: [40, 100, 140, 110], hex: true, indirectAction: true }],
+        },
+      ]);
 
       const anchors = yield* findPdfTextAnchors({
         pdf,
@@ -95,15 +105,13 @@ describe("PDF link anchors", () => {
 
   it.effect("maps link rectangles through the visible crop box", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(() =>
-        pdfWithLinks([
-          {
-            size: [300, 200],
-            cropBox: [20, 10, 260, 180],
-            links: [{ uri: ANCHOR_URI, rect: [60, 110, 160, 120] }],
-          },
-        ]),
-      );
+      const pdf = yield* pdfWithLinks([
+        {
+          size: [300, 200],
+          cropBox: [20, 10, 280, 190],
+          links: [{ uri: ANCHOR_URI, rect: [60, 110, 160, 120] }],
+        },
+      ]);
 
       const anchors = yield* findPdfTextAnchors({
         pdf,
@@ -134,17 +142,15 @@ describe("PDF link anchors", () => {
 
   it.effect("removes only the matched link annotation", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(() =>
-        pdfWithLinks([
-          {
-            size: [300, 200],
-            links: [
-              { uri: OTHER_URI, rect: [10, 150, 60, 160] },
-              { uri: ANCHOR_URI, rect: [40, 100, 140, 110], indirectAction: true },
-            ],
-          },
-        ]),
-      );
+      const pdf = yield* pdfWithLinks([
+        {
+          size: [300, 200],
+          links: [
+            { uri: OTHER_URI, rect: [10, 150, 60, 160] },
+            { uri: ANCHOR_URI, rect: [40, 100, 140, 110], indirectAction: true },
+          ],
+        },
+      ]);
 
       const cleaned = yield* removePdfLinkAnchors(pdf, [{ link: ANCHOR_URI }]);
       const anchors = yield* findPdfTextAnchors({
@@ -161,11 +167,9 @@ describe("PDF link anchors", () => {
 
   it.effect("keeps the PDF untouched without link matchers", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(() =>
-        pdfWithLinks([
-          { size: [300, 200], links: [{ uri: ANCHOR_URI, rect: [40, 100, 140, 110] }] },
-        ]),
-      );
+      const pdf = yield* pdfWithLinks([
+        { size: [300, 200], links: [{ uri: ANCHOR_URI, rect: [40, 100, 140, 110] }] },
+      ]);
 
       const cleaned = yield* removePdfLinkAnchors(pdf, [{ text: "signature" }]);
 

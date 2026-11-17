@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { PDFDocument } from "@cantoo/pdf-lib";
 import initLiteParseWasm, { LiteParse } from "@llamaindex/liteparse-wasm";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Schema } from "effect";
 
 import type { PdfSignaturePage, PdfTextBox } from "../src/config.ts";
@@ -37,9 +37,8 @@ export const makeLiteParseText = Effect.gen(function* () {
   yield* Effect.tryPromise(() => initLiteParseWasm({ module_or_path: liteParseWasmBytes() }));
   return (pdf: Uint8Array) =>
     Effect.gen(function* () {
-      const document = yield* Effect.tryPromise(() =>
-        PDFDocument.load(pdf, { ignoreEncryption: true }),
-      );
+      const core = yield* PdfCore;
+      const document = yield* core.document(pdf);
       const parsed = yield* Effect.scoped(
         Effect.gen(function* () {
           const parser = yield* Effect.acquireRelease(
@@ -47,7 +46,7 @@ export const makeLiteParseText = Effect.gen(function* () {
               () =>
                 new LiteParse({
                   ocrEnabled: false,
-                  maxPages: document.getPageCount(),
+                  maxPages: document.pages.length,
                   outputFormat: "json",
                   preserveVerySmallText: true,
                   quiet: true,

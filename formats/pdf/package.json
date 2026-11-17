@@ -75,7 +75,6 @@
     "test": "vitest run --root ../.. formats/pdf/__tests__ --exclude '**/*.browser.test.*' --exclude '**/*.performance.test.*'"
   },
   "dependencies": {
-    "@cantoo/pdf-lib": "2.11.1",
     "@effect/platform-browser": "4.1.0",
     "@llamaindex/liteparse-wasm": "^2.16.0",
     "@signature-kit/cms": "^0.2.1",

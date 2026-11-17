@@ -245,4 +245,105 @@ describe("PdfCore write path", () => {
       }
     }).pipe(Effect.provide(layer)),
   );
+  it.effect("creates blank documents that edit and stamp PNG images", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const created = yield* core.create({
+        pages: [
+          { width: 595, height: 842 },
+          { width: 300, height: 200 },
+        ],
+      });
+      const description = yield* core.document(created);
+      expect(description.pages.map((page) => page.mediaBox)).toStrictEqual([
+        [0, 0, 595, 842],
+        [0, 0, 300, 200],
+      ]);
+      const png = Uint8Array.from(
+        atob(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        ),
+        (character) => character.charCodeAt(0),
+      );
+      const next = description.nextObjectNumber;
+      const stamped = yield* core.edit(created, [
+        { op: "standardFont", ref: { number: next, generation: 0 }, baseFont: "Helvetica" },
+        { op: "addResource", pageIndex: 1, category: "Font", name: "F1", value: `${next} 0 R` },
+        {
+          op: "png",
+          ref: { number: next + 1, generation: 0 },
+          softMaskRef: { number: next + 2, generation: 0 },
+          png,
+        },
+        {
+          op: "addResource",
+          pageIndex: 1,
+          category: "XObject",
+          name: "I1",
+          value: `${next + 1} 0 R`,
+        },
+        {
+          op: "appendContent",
+          pageIndex: 1,
+          ref: { number: next + 3, generation: 0 },
+          data: encoder.encode("q 10 0 0 10 5 5 cm /I1 Do Q BT /F1 12 Tf 20 100 Td (Fresh) Tj ET"),
+        },
+      ]);
+      expect(yield* core.text(stamped)).toStrictEqual(["", "Fresh"]);
+      const invalidPng = yield* Effect.result(
+        core.edit(created, [
+          { op: "png", ref: { number: next, generation: 0 }, png: encoder.encode("png") },
+        ]),
+      );
+      const invalidSize = yield* Effect.result(core.create({ pages: [{ width: 0, height: 10 }] }));
+      for (const result of [invalidPng, invalidSize]) {
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
+        }
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reports WinAnsi unicode and widths of standard fonts", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const metrics = yield* core.fontMetrics("Helvetica");
+      expect(metrics.baseFont).toBe("Helvetica");
+      expect([metrics.unicode[0x41], metrics.widths[0x41]]).toStrictEqual([0x41, 667]);
+      expect([metrics.unicode[0xe7], metrics.widths[0xe7]]).toStrictEqual([0xe7, 500]);
+      expect([metrics.unicode[0x80], metrics.widths[0x80]]).toStrictEqual([0x20ac, 556]);
+      expect([metrics.unicode[0x81], metrics.widths[0x81]]).toStrictEqual([0, 0]);
+      const bold = yield* core.fontMetrics("Helvetica-Bold");
+      expect(bold.widths[0x41]).toBe(722);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("sizes PNGs with the bounded decoder and rejects what stamping would reject", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const png = Uint8Array.from(
+        atob(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        ),
+        (character) => character.charCodeAt(0),
+      );
+      const trailing = new Uint8Array(png.byteLength + 1);
+      trailing.set(png);
+      const apng = new Uint8Array(png.byteLength + 20);
+      apng.set(png.subarray(0, 33));
+      apng.set([0, 0, 0, 8, 0x61, 0x63, 0x54, 0x4c, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 33);
+      apng.set(png.subarray(33), 53);
+
+      expect(yield* core.pngSize(png)).toStrictEqual({ width: 1, height: 1 });
+      for (const rejected of [trailing, apng, png.subarray(0, 40), encoder.encode("png")]) {
+        const result = yield* Effect.result(core.pngSize(rejected));
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
+          expect(result.failure.operation).toBe("pdfCore.pngSize");
+        }
+      }
+    }).pipe(Effect.provide(layer)),
+  );
 });

@@ -22,7 +22,7 @@ and call the same `Signatures` service.
 |---|---|
 | CMS/PKCS#7 | `pkijs@3.4.0`, `asn1js@3.0.10`, `@peculiar/asn1-schema@2.8.0`, `@peculiar/asn1-cms@2.8.0`, `@peculiar/asn1-x509@2.8.0`, `@peculiar/asn1-ess@2.8.0` |
 | XML-DSig | `xmldsigjs@2.8.7`, `xml-core@^1.2.5`, `@xmldom/xmldom@^0.9`, `reflect-metadata@^0.2.2`; `xml-crypto@6.1.2` remains a dev oracle |
-| PDF / PAdES-style detached CMS | `@cantoo/pdf-lib@2.7.1` for browser-safe PDF mutation + `@signature-kit/cms` for CMS bytes |
+| PDF / PAdES-style detached CMS | `@signature-kit/pdf-core` (in-house Rust/WASM reader and writer) for PDF mutation + `@signature-kit/cms` for CMS bytes |
 
 ## Current package APIs
 

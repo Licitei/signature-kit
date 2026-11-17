@@ -79,7 +79,7 @@ describe("text anchor performance", () => {
                 placement: "below",
                 offset: 0,
               });
-            });
+            }).pipe(Effect.provideContext(pdfCore));
 
             rows.push({
               fixture,

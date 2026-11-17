@@ -1,15 +1,7 @@
-import {
-  decodePDFRawStream,
-  PDFArray,
-  PDFDict,
-  PDFDocument,
-  PDFName,
-  PDFNumber,
-  PDFRawStream,
-  degrees,
-} from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf, widgetRects } from "./pdf-fixtures";
+import { pageContent } from "./pdf-streams";
 import { PdfErrorCodeValue } from "../src/config";
 import type { PdfSignaturePage, PdfSignatureRect, PdfSignatureTemplate } from "../src/config";
 import {
@@ -26,73 +18,20 @@ import { readA1Fixture } from "../../../tooling/testing/fixtures";
 
 const PASSWORD = Redacted.make("changeit");
 
-const createPdf = (sizes: ReadonlyArray<readonly [number, number]>): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    for (const [width, height] of sizes) {
-      const page = pdf.addPage([width, height]);
-      page.drawText(`workflow geometry ${width}x${height}`, { x: 16, y: height - 24, size: 10 });
-    }
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
+const createPdf = (sizes: ReadonlyArray<readonly [number, number]>) =>
+  createFixturePdf(
+    sizes.map(([width, height]) => ({
+      size: [width, height],
+      text: [{ x: 16, y: height - 24, size: 10, text: `workflow geometry ${width}x${height}` }],
+    })),
+  );
 
-const createCroppedRotatedPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const document = await PDFDocument.create();
-    const page = document.addPage([400, 150]);
-    page.setCropBox(100, 25, 200, 100);
-    page.setRotation(degrees(450));
-    return new Uint8Array(await document.save({ useObjectStreams: false }));
-  });
+const createCroppedRotatedPdf = () =>
+  createFixturePdf([{ size: [400, 150], cropBox: [100, 25, 300, 125], rotate: 450 }]);
 
-const signatureWidgetRects = (
-  bytes: Uint8Array,
-  pageIndex: number,
-): Effect.Effect<ReadonlyArray<readonly [number, number, number, number]>> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.load(bytes);
-    const page = pdf.getPages()[pageIndex];
-    if (page === undefined) return [];
-    const annotations = page.node.Annots();
-    if (annotations === undefined) return [];
-    const rects: Array<readonly [number, number, number, number]> = [];
-    for (let index = 0; index < annotations.size(); index += 1) {
-      const annotation = pdf.context.lookupMaybe(annotations.get(index), PDFDict);
-      const subtype = annotation?.lookupMaybe(PDFName.of("Subtype"), PDFName);
-      const rect = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-      if (subtype?.toString() === "/Widget" && rect !== undefined) {
-        rects.push([
-          rect.lookup(0, PDFNumber).asNumber(),
-          rect.lookup(1, PDFNumber).asNumber(),
-          rect.lookup(2, PDFNumber).asNumber(),
-          rect.lookup(3, PDFNumber).asNumber(),
-        ]);
-      }
-    }
-    return rects;
-  });
+const signatureWidgetRects = widgetRects;
 
-const decodedPageContent = (bytes: Uint8Array, pageIndex: number): Effect.Effect<string> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.load(bytes);
-    const page = pdf.getPages()[pageIndex];
-    if (page === undefined) return "";
-    const contents = page.node.Contents();
-    if (contents === undefined) return "";
-    const decoder = new TextDecoder();
-    if (contents instanceof PDFRawStream) {
-      return decoder.decode(decodePDFRawStream(contents).decode());
-    }
-    if (!(contents instanceof PDFArray)) return "";
-    const chunks: string[] = [];
-    for (let index = 0; index < contents.size(); index += 1) {
-      const stream = contents.lookupMaybe(index, PDFRawStream);
-      if (stream !== undefined) {
-        chunks.push(decoder.decode(decodePDFRawStream(stream).decode()));
-      }
-    }
-    return chunks.join("\n");
-  });
+const decodedPageContent = pageContent;
 
 describe("PDF workflow geometry", () => {
   it.effect("uses loaded PDF height for the visible stamp and signature widget", () =>
@@ -119,8 +58,7 @@ describe("PDF workflow geometry", () => {
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
       expect(widgetRects).toContainEqual([20, 120, 120, 160]);
-      expect(content).toMatch(/1\s+0\s+0\s+1\s+20\s+160\s+cm/);
-      expect(content).toMatch(/100\s+40\s+l/);
+      expect(content).toMatch(/\b20\s+120\s+100\s+40\s+re\s+S\b/);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
@@ -191,8 +129,7 @@ describe("PDF workflow geometry", () => {
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
       expect(widgetRects).toContainEqual([20, 120, 120, 160]);
-      expect(content).toMatch(/1\s+0\s+0\s+1\s+20\s+160\s+cm/);
-      expect(content).toMatch(/100\s+40\s+l/);
+      expect(content).toMatch(/\b20\s+120\s+100\s+40\s+re\s+S\b/);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 

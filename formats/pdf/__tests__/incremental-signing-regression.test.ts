@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Redacted } from "effect";
@@ -7,17 +6,14 @@ import { extractPdfSignatures, isCompletePdfRevision } from "../src/byte-range";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { signPdf } from "../src/sign";
 import { verifyPdf, verifyPdfSignatures } from "../src/verify";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
 
 const PASSWORD = Redacted.make("changeit");
 
-const createPdf = (useObjectStreams: boolean): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    pdf.addPage([320, 180]);
-    pdf.addPage([320, 180]);
-    return new Uint8Array(await pdf.save({ useObjectStreams }));
-  });
+const createPdf = (useObjectStreams: boolean) =>
+  createFixturePdf([{}, {}], { objectStreams: useObjectStreams });
 
 const startsWith = (data: Uint8Array, prefix: Uint8Array): boolean =>
   prefix.every((byte, index) => data[index] === byte);
@@ -58,9 +54,10 @@ describe("PDF incremental signing", () => {
           );
           expect(verification.valid).toBe(true);
           expect(verification.signatureCount).toBe(2);
-          const reopened = yield* Effect.promise(() => PDFDocument.load(second));
-          expect(reopened.getPageCount()).toBe(2);
-        }),
+          const core = yield* PdfCore;
+          const reopened = yield* core.document(second);
+          expect(reopened.pages).toHaveLength(2);
+        }).pipe(Effect.provide(pdfCoreTestLayer)),
     );
   }
 

@@ -1,23 +1,11 @@
-import {
-  PDFArray,
-  PDFDict,
-  PDFDocument,
-  PDFHexString,
-  PDFName,
-  PDFRef,
-  PDFString,
-} from "@cantoo/pdf-lib";
-import type { PDFObject, PDFPage } from "@cantoo/pdf-lib";
 import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
-import type { PdfCoreInspection } from "@signature-kit/pdf-core/config";
+import type { PdfCoreEditOperation, PdfCoreInspection } from "@signature-kit/pdf-core/config";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Match, Schema } from "effect";
 import { hasPdfByteRange } from "./byte-range.js";
 import {
   clampCoordinate,
-  topLeftRectFromPdfCoordinateTuple,
   topLeftRectFromPdfPageGeometry,
-  visiblePdfPageSize,
   visiblePdfPageSizeFromGeometry,
 } from "./stamp.js";
 import {
@@ -49,58 +37,6 @@ const isContentAnchorMatcher = (
 
 const linkAnchorUris = (matchers: ReadonlyArray<PdfTextAnchorMatcher>): ReadonlySet<string> =>
   new Set(matchers.filter(isLinkAnchorMatcher).map((matcher) => matcher.link));
-
-type PdfLinkAnchor = {
-  readonly page: PdfSignaturePage;
-  readonly pdfPage: PDFPage;
-  readonly ref: PDFRef;
-  readonly action: PDFObject | undefined;
-  readonly box: PdfTextBox;
-};
-
-const pdfLinkAnchors = (document: PDFDocument, uris: ReadonlySet<string>) =>
-  document.getPages().flatMap((pdfPage, index): ReadonlyArray<PdfLinkAnchor> => {
-    const size = visiblePdfPageSize(pdfPage);
-    return (pdfPage.node.Annots()?.asArray() ?? []).flatMap((ref) => {
-      const annotation = document.context.lookup(ref);
-      if (!(ref instanceof PDFRef) || !(annotation instanceof PDFDict)) return [];
-      const action = annotation.lookup(PDFName.of("A"));
-      const uri = action instanceof PDFDict ? action.lookup(PDFName.of("URI")) : undefined;
-      const rect = annotation.lookup(PDFName.of("Rect"));
-      if (!(uri instanceof PDFString || uri instanceof PDFHexString)) return [];
-      if (!uris.has(uri.decodeText()) || !(rect instanceof PDFArray)) return [];
-      const { x, y, width, height } = rect.asRectangle();
-      return [
-        {
-          page: { index, width: size.width, height: size.height },
-          pdfPage,
-          ref,
-          action: annotation.get(PDFName.of("A")),
-          box: topLeftRectFromPdfCoordinateTuple(
-            [
-              Math.min(x, x + width),
-              Math.min(y, y + height),
-              Math.max(x, x + width),
-              Math.max(y, y + height),
-            ],
-            pdfPage,
-          ),
-        },
-      ];
-    });
-  });
-
-const loadLinkAnchorDocument = (pdf: Uint8Array): Effect.Effect<PDFDocument, PdfError> =>
-  Effect.tryPromise({
-    try: () => PDFDocument.load(pdf),
-    catch: () =>
-      new PdfError({
-        code: PdfErrorCodeValue.invalidPdf,
-        retryable: false,
-        operation: PdfOperationValue.findTextAnchors,
-        reason: "Failed to load PDF link annotations for anchor placement.",
-      }),
-  });
 
 const CPF_CNPJ_DIGIT_SEPARATORS = /[./-]/gu;
 const MAXIMAL_DIGIT_RUN_PATTERN = /\d+/gu;
@@ -389,28 +325,81 @@ export const removePdfLinkAnchors = (
   const uris = linkAnchorUris(matchers);
   if (uris.size === 0) return Effect.succeed(pdf);
   return hasPdfByteRange(pdf).pipe(
-    Effect.flatMap((signed) => (signed ? Effect.succeed(undefined) : loadLinkAnchorDocument(pdf))),
-    Effect.flatMap((document) => {
-      if (document === undefined) return Effect.succeed(pdf);
-      const anchors = pdfLinkAnchors(document, uris);
-      if (anchors.length === 0) return Effect.succeed(pdf);
-      return Effect.tryPromise({
-        try: () => {
-          anchors.forEach(({ pdfPage, ref, action }) => {
-            pdfPage.node.removeAnnot(ref);
-            document.context.delete(ref);
-            if (action instanceof PDFRef) document.context.delete(action);
-          });
-          return document.save();
-        },
-        catch: () =>
-          new PdfError({
-            code: PdfErrorCodeValue.invalidPdf,
-            retryable: false,
-            operation: PdfOperationValue.findTextAnchors,
-            reason: "Failed to remove link anchors from the PDF.",
+    Effect.flatMap((signed) =>
+      signed
+        ? Effect.succeed(pdf)
+        : Effect.gen(function* () {
+            const core = yield* PdfCore;
+            const inspection = yield* core.inspect(pdf, { text: false, links: true }).pipe(
+              Effect.mapError(
+                () =>
+                  new PdfError({
+                    code: PdfErrorCodeValue.invalidPdf,
+                    retryable: false,
+                    operation: PdfOperationValue.findTextAnchors,
+                    reason: "Failed to load PDF link annotations for anchor placement.",
+                  }),
+              ),
+            );
+            const annotationPages = [
+              ...new Set(
+                inspection.links.filter((link) => uris.has(link.uri)).map((link) => link.pageIndex),
+              ),
+            ];
+            if (annotationPages.length === 0) return pdf;
+            const document = yield* core.document(pdf, { annotationPages }).pipe(
+              Effect.mapError(
+                (error) =>
+                  new PdfError({
+                    code: Match.value(error.code).pipe(
+                      Match.when(
+                        PdfCoreErrorCodeValue.limitExceeded,
+                        () => PdfErrorCodeValue.limitExceeded,
+                      ),
+                      Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+                    ),
+                    retryable: false,
+                    operation: PdfOperationValue.findTextAnchors,
+                    reason: error.reason ?? "Failed to remove link anchors from the PDF.",
+                  }),
+              ),
+            );
+            const operations: Array<PdfCoreEditOperation> = [];
+            for (const annotation of document.annotations) {
+              if (
+                annotation.ref === undefined ||
+                annotation.rect === undefined ||
+                annotation.uri === undefined ||
+                !uris.has(annotation.uri)
+              ) {
+                continue;
+              }
+              operations.push({
+                op: "removeItem",
+                target: { base: { kind: "page", pageIndex: annotation.pageIndex } },
+                key: "Annots",
+                value: `${annotation.ref.number} ${annotation.ref.generation} R`,
+              });
+            }
+            if (operations.length === 0) return pdf;
+            return yield* core.edit(pdf, operations).pipe(
+              Effect.mapError(
+                (error) =>
+                  new PdfError({
+                    code: Match.value(error.code).pipe(
+                      Match.when(
+                        PdfCoreErrorCodeValue.limitExceeded,
+                        () => PdfErrorCodeValue.limitExceeded,
+                      ),
+                      Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+                    ),
+                    retryable: false,
+                    operation: PdfOperationValue.findTextAnchors,
+                    reason: error.reason ?? "Failed to remove link anchors from the PDF.",
+                  }),
+              ),
+            );
           }),
-      });
-    }),
+    ),
   );
 };

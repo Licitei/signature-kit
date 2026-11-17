@@ -1,6 +1,5 @@
 import "./site.css";
 import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.browser";
-import { degrees, PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, rgb } from "@cantoo/pdf-lib";
 import { pdfErrorMessages, PdfErrorCodeValue } from "@signature-kit/pdf/config";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
@@ -16,6 +15,7 @@ import { Runtime } from "foldkit";
 import * as Server from "foldkit/experimental/server";
 import { expect, it } from "vitest";
 import { Flags, Model, init, update, view } from "./main";
+import { lastAnnotationRect, pdfPages, textPdf, titledPdf } from "../__tests__/helpers/text-pdf";
 
 const application = Effect.gen(function* () {
   const host = yield* Effect.acquireRelease(
@@ -47,11 +47,13 @@ it("signs a selected PDF after a wrong password and revokes its download on unmo
       Effect.gen(function* () {
         const app = yield* application;
         const pfx = yield* readA1FixtureFromBrowser("ecpf");
-        const pdf = yield* Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          document.addPage([600, 400]).drawText("SignatureKit browser signing", { x: 30, y: 100 });
-          return document.save();
-        });
+        const pdf = yield* textPdf([
+          {
+            width: 600,
+            height: 400,
+            runs: [{ text: "SignatureKit browser signing", x: 30, y: 100 }],
+          },
+        ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
           expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
         );
@@ -179,18 +181,14 @@ it("signs a selected PDF after a wrong password and revokes its download on unmo
         const signed = yield* Effect.promise(
           async () => new Uint8Array(await (await fetch(urlAtClick)).arrayBuffer()),
         );
-        const signedDocument = yield* Effect.promise(() => PDFDocument.load(signed));
-        const annotations = signedDocument.getPages()[0]?.node.Annots();
-        const widget =
-          annotations === undefined
-            ? undefined
-            : signedDocument.context.lookupMaybe(annotations.get(annotations.size() - 1), PDFDict);
-        const rectangle = widget?.lookupMaybe(PDFName.of("Rect"), PDFArray);
+        const rectangle = yield* lastAnnotationRect(signed, 0).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(rectangle).toBeDefined();
-        expect(rectangle?.lookup(0, PDFNumber).asNumber()).toBeCloseTo(expectedX, 2);
-        expect(rectangle?.lookup(1, PDFNumber).asNumber()).toBeCloseTo(272 - expectedY, 2);
-        expect(rectangle?.lookup(2, PDFNumber).asNumber()).toBeCloseTo(expectedX + 320, 2);
-        expect(rectangle?.lookup(3, PDFNumber).asNumber()).toBeCloseTo(400 - expectedY, 2);
+        expect(rectangle?.[0]).toBeCloseTo(expectedX, 2);
+        expect(rectangle?.[1]).toBeCloseTo(272 - expectedY, 2);
+        expect(rectangle?.[2]).toBeCloseTo(expectedX + 320, 2);
+        expect(rectangle?.[3]).toBeCloseTo(400 - expectedY, 2);
         const signatures = yield* verifyPdfSignatures({ pdf: signed }).pipe(
           Effect.provide(pdfCoreBrowserLayer),
         );
@@ -221,16 +219,13 @@ it("cancels and retries a real signing flow and disposes during another active f
       Effect.gen(function* () {
         const app = yield* application;
         const pfx = yield* readA1FixtureFromBrowser("ecpf");
-        const pdfs = yield* Effect.promise(async () => {
-          const first = await PDFDocument.create();
-          first.setTitle("Cancelled document");
-          first.addPage([320, 180]);
-          const second = await PDFDocument.create();
-          second.setTitle("Retry document");
-          second.addPage([400, 200]);
-          second.addPage([400, 200]);
-          return { first: await first.save(), second: await second.save() };
-        });
+        const pdfs = {
+          first: titledPdf("Cancelled document", [[320, 180]]),
+          second: titledPdf("Retry document", [
+            [400, 200],
+            [400, 200],
+          ]),
+        };
         yield* Effect.promise(() =>
           expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
         );
@@ -410,9 +405,8 @@ it("cancels and retries a real signing flow and disposes during another active f
         );
         expect(signatures.at(-1)?.cryptographicValid).toBe(true);
         expect(signatures.at(-1)?.coverageValid).toBe(true);
-        const result = yield* Effect.promise(() => PDFDocument.load(signed));
-        expect(result.getTitle()).toBe("Retry document");
-        expect(result.getPageCount()).toBe(2);
+        expect(new TextDecoder("latin1").decode(signed)).toMatch(/\/Title\s*\(Retry document\)/u);
+        expect(yield* pdfPages(signed).pipe(Effect.provide(pdfCoreBrowserLayer))).toBe(2);
         const signedPages = yield* renderPdfPagesBrowser(signed, 2).pipe(
           Effect.provide(liteParseWorkerBrowserLayer),
         );
@@ -521,11 +515,9 @@ it("isolates simultaneous signers and releases removed preview URLs", async () =
       Effect.gen(function* () {
         const first = yield* application;
         const second = yield* application;
-        const pdf = yield* Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          document.addPage([600, 400]);
-          return document.save();
-        });
+        const pdf = yield* textPdf([{ width: 600, height: 400 }]).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         yield* Effect.promise(() =>
           expect.poll(() => first.host.querySelector("[name=pdf]")).not.toBeNull(),
         );
@@ -601,11 +593,9 @@ it("requires a placement for every loaded document and automatically places both
       Effect.gen(function* () {
         const app = yield* application;
         const pfx = yield* readA1FixtureFromBrowser("ecpf");
-        const pdf = yield* Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          document.addPage([600, 400]);
-          return document.save();
-        });
+        const pdf = yield* textPdf([{ width: 600, height: 400 }]).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         yield* Effect.promise(() =>
           expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
         );
@@ -684,15 +674,16 @@ it("maps a click on a cropped and rotated page to the signed PDF widget", async 
       Effect.gen(function* () {
         const app = yield* application;
         const pfx = yield* readA1FixtureFromBrowser("ecpf");
-        const pdf = yield* Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          const page = document.addPage([600, 650]);
-          page.setCropBox(50, 100, 400, 300);
-          page.setRotation(degrees(90));
-          page.drawRectangle({ x: 60, y: 110, width: 30, height: 30, color: rgb(1, 0, 0) });
-          page.drawText("Cropped and rotated", { x: 100, y: 200 });
-          return document.save();
-        });
+        const pdf = yield* textPdf([
+          {
+            width: 600,
+            height: 650,
+            cropBox: [50, 100, 450, 400],
+            rotate: 90,
+            fills: [{ box: [60, 110, 30, 30], color: [1, 0, 0] }],
+            runs: [{ text: "Cropped and rotated", x: 100, y: 200 }],
+          },
+        ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
           expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
         );
@@ -811,18 +802,12 @@ it("maps a click on a cropped and rotated page to the signed PDF widget", async 
         const signed = yield* Effect.promise(
           async () => new Uint8Array(await (await fetch(link.href)).arrayBuffer()),
         );
-        const signedDocument = yield* Effect.promise(() => PDFDocument.load(signed));
-        const annotations = signedDocument.getPages()[0]?.node.Annots();
-        const widget =
-          annotations === undefined
-            ? undefined
-            : signedDocument.context.lookupMaybe(annotations.get(annotations.size() - 1), PDFDict);
-        const rect = widget?.lookupMaybe(PDFName.of("Rect"), PDFArray);
+        const rect = yield* lastAnnotationRect(signed, 0).pipe(Effect.provide(pdfCoreBrowserLayer));
         expect(rect).toBeDefined();
-        expect(rect?.lookup(0, PDFNumber).asNumber()).toBeCloseTo(50 + expectedY, 2);
-        expect(rect?.lookup(1, PDFNumber).asNumber()).toBeCloseTo(100, 2);
-        expect(rect?.lookup(2, PDFNumber).asNumber()).toBeCloseTo(178 + expectedY, 2);
-        expect(rect?.lookup(3, PDFNumber).asNumber()).toBeCloseTo(400, 2);
+        expect(rect?.[0]).toBeCloseTo(50 + expectedY, 2);
+        expect(rect?.[1]).toBeCloseTo(100, 2);
+        expect(rect?.[2]).toBeCloseTo(178 + expectedY, 2);
+        expect(rect?.[3]).toBeCloseTo(400, 2);
         const signatures = yield* verifyPdfSignatures({ pdf: signed }).pipe(
           Effect.provide(pdfCoreBrowserLayer),
         );
@@ -858,11 +843,9 @@ it("previews rubrics only on pages other than the main signature page", async ()
       const handwriting = yield* PdfHandwriting;
       const ink = yield* handwriting.render("Nome de teste");
       const createPdf = (count: number) =>
-        Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          for (let i = 0; i < count; i++) document.addPage([400, 500]);
-          return new Uint8Array(await document.save());
-        });
+        textPdf(Array.from({ length: count }, () => ({ width: 400, height: 500 }))).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
       for (const count of [1, 2]) {
         const pdf = yield* createPdf(count);
         const input = {

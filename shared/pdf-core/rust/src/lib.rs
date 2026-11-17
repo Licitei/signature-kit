@@ -17,6 +17,7 @@ mod layout;
 mod markdown;
 mod num;
 mod object;
+mod png;
 mod revision;
 mod syntax;
 mod table;

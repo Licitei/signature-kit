@@ -15,6 +15,8 @@ const OBJECTS_PER_STREAM: usize = 100;
 const REAL_SCALE: f64 = 10_000_000_000.0;
 const REAL_DIGITS: u64 = 10_000_000_000;
 const MAX_FRACTIONAL_REAL: f64 = 900_000_000.0;
+const MAX_CREATED_PAGES: usize = 10_000;
+const MAX_PAGE_SIDE: f64 = 14_400.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Body {
@@ -381,6 +383,42 @@ impl MergeOutput {
         written.out
     }
 
+    fn finish(
+        &mut self,
+        pages_number: u32,
+        catalog_number: u32,
+        kids: Vec<Object>,
+        layout: Packing,
+    ) -> Vec<u8> {
+        let mut pages_dict = Dict::default();
+        pages_dict.insert(b"Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.insert(
+            b"Count",
+            Object::Integer(i64::try_from(kids.len()).unwrap_or(0)),
+        );
+        pages_dict.insert(b"Kids", Object::Array(kids));
+        self.set(pages_number, Object::Dict(pages_dict), None);
+        let mut catalog = Dict::default();
+        catalog.insert(b"Type", Object::Name(b"Catalog".to_vec()));
+        catalog.insert(
+            b"Pages",
+            Object::Ref(ObjRef {
+                number: pages_number,
+                generation: 0,
+            }),
+        );
+        self.set(catalog_number, Object::Dict(catalog), None);
+        let mut trailer = Dict::default();
+        trailer.insert(
+            b"Root",
+            Object::Ref(ObjRef {
+                number: catalog_number,
+                generation: 0,
+            }),
+        );
+        self.emit(trailer, layout)
+    }
+
     fn reserve(&mut self) -> u32 {
         self.bodies.push(None);
         self.datas.push(None);
@@ -512,6 +550,43 @@ impl RefValue for Option<&Object> {
             _ => None,
         }
     }
+}
+
+pub(crate) fn create(sizes: &[[f64; 2]]) -> Outcome<Vec<u8>> {
+    if sizes.is_empty() || sizes.len() > MAX_CREATED_PAGES {
+        return Err(Failure::request("page count is out of range"));
+    }
+    let mut output = MergeOutput {
+        bodies: Vec::new(),
+        datas: Vec::new(),
+    };
+    let pages_number = output.reserve();
+    let catalog_number = output.reserve();
+    let parent = Object::Ref(ObjRef {
+        number: pages_number,
+        generation: 0,
+    });
+    let mut kids: Vec<Object> = Vec::with_capacity(sizes.len());
+    for &[width, height] in sizes {
+        if !(width.is_finite() && height.is_finite() && width > 0.0_f64 && height > 0.0_f64)
+            || width > MAX_PAGE_SIDE
+            || height > MAX_PAGE_SIDE
+        {
+            return Err(Failure::request("page size is out of range"));
+        }
+        let number = output.reserve();
+        let mut page = Dict::default();
+        page.insert(b"Type", Object::Name(b"Page".to_vec()));
+        page.insert(b"Parent", parent.clone());
+        page.insert(b"MediaBox", rect_object([0.0_f64, 0.0_f64, width, height]));
+        page.insert(b"Resources", Object::Dict(Dict::default()));
+        output.set(number, Object::Dict(page), None);
+        kids.push(Object::Ref(ObjRef {
+            number,
+            generation: 0,
+        }));
+    }
+    Ok(output.finish(pages_number, catalog_number, kids, Packing::Classic))
 }
 
 pub(crate) fn incremental(document: &Document<'_>, changed: &Changes) -> Outcome<Vec<u8>> {
@@ -682,33 +757,7 @@ pub(crate) fn merge(
         }
         copier.drain(&mut output)?;
     }
-    let mut pages_dict = Dict::default();
-    pages_dict.insert(b"Type", Object::Name(b"Pages".to_vec()));
-    pages_dict.insert(
-        b"Count",
-        Object::Integer(i64::try_from(kids.len()).unwrap_or(0)),
-    );
-    pages_dict.insert(b"Kids", Object::Array(kids));
-    output.set(pages_number, Object::Dict(pages_dict), None);
-    let mut catalog = Dict::default();
-    catalog.insert(b"Type", Object::Name(b"Catalog".to_vec()));
-    catalog.insert(
-        b"Pages",
-        Object::Ref(ObjRef {
-            number: pages_number,
-            generation: 0,
-        }),
-    );
-    output.set(catalog_number, Object::Dict(catalog), None);
-    let mut trailer = Dict::default();
-    trailer.insert(
-        b"Root",
-        Object::Ref(ObjRef {
-            number: catalog_number,
-            generation: 0,
-        }),
-    );
-    Ok(output.emit(trailer, layout))
+    Ok(output.finish(pages_number, catalog_number, kids, layout))
 }
 
 pub(crate) fn serialize<F>(out: &mut Vec<u8>, object: &Object, map: &F)

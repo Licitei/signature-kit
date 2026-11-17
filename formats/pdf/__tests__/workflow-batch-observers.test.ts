@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import type { PdfSignaturePage, PdfSignatureRect, PdfSignatureTemplate } from "../src/config";
 import { PdfErrorCodeValue } from "../src/config";
@@ -9,13 +8,9 @@ import { Effect, Layer, Redacted } from "effect";
 import type { Signatures } from "@signature-kit/signatures";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
 
-const createPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const document = await PDFDocument.create();
-    document.addPage([320, 180]);
-    return new Uint8Array(await document.save({ useObjectStreams: false }));
-  });
+const createPdf = () => createFixturePdf();
 
 const PASSWORD = Redacted.make("changeit");
 

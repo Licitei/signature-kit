@@ -1,4 +1,3 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 import {
@@ -26,6 +25,7 @@ import {
 import type { PdfSignatureTemplate, PdfSignatureTemplateInput } from "../src/config";
 import { signaturesLayer } from "@signature-kit/signatures";
 import type { SignerAdapter } from "@signature-kit/signatures";
+import { createFixturePdf } from "./pdf-fixtures";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const stubSigner: SignerAdapter = {
@@ -37,15 +37,9 @@ const stubSigner: SignerAdapter = {
   verify: () => Effect.die("stub signer should not be called"),
 };
 
-const createPdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([320, 180]);
-  page.drawText("SignatureKit browser React payload", { x: 32, y: 118, size: 14 });
-  const bytes = await pdf.save({ useObjectStreams: false });
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy;
-});
+const createPdf = createFixturePdf([
+  { text: [{ x: 32, y: 118, size: 14, text: "SignatureKit browser React payload" }] },
+]);
 
 const templateInput = (): PdfSignatureTemplateInput => ({
   id: "template-1",

@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Match, Schema } from "effect";
 import type { Scope } from "effect";
 
 import {
+  PdfCoreCreateOptionsSchema,
   PdfCoreDocumentOptionsSchema,
   PdfCoreDocumentSchema,
   PdfCoreEditOperationsSchema,
@@ -24,20 +25,24 @@ import {
   PdfCoreTablesSchema,
   PdfCoreTextOptionsSchema,
   PdfCoreTextSchema,
+  PdfCoreWinAnsiFontSchema,
 } from "./config.js";
 import type {
+  PdfCoreCreateOptions,
   PdfCoreDocument,
   PdfCoreDocumentOptions,
   PdfCoreEditOperation,
   PdfCoreEditOperations,
   PdfCoreEditOptions,
   PdfCoreEditTarget,
+  PdfCoreFontMetrics,
   PdfCoreInspection,
   PdfCoreInspectOptions,
   PdfCoreMergeOptions,
   PdfCoreMergeSources,
   PdfCoreObjectRef,
   PdfCoreOperation,
+  PdfCorePngSize,
   PdfCoreSchemaName,
   PdfCoreSignatureAnalysis,
   PdfCoreSignatureReport,
@@ -45,6 +50,7 @@ import type {
   PdfCoreTablesOptions,
   PdfCoreText,
   PdfCoreTextOptions,
+  PdfCoreWinAnsiFont,
 } from "./config.js";
 
 export type PdfCoreService = {
@@ -79,6 +85,11 @@ export type PdfCoreService = {
     options?: PdfCoreMergeOptions,
   ) => Effect.Effect<Uint8Array, PdfCoreError>;
   readonly deflate: (data: Uint8Array) => Effect.Effect<Uint8Array, PdfCoreError>;
+  readonly create: (options: PdfCoreCreateOptions) => Effect.Effect<Uint8Array, PdfCoreError>;
+  readonly fontMetrics: (
+    baseFont: PdfCoreWinAnsiFont,
+  ) => Effect.Effect<PdfCoreFontMetrics, PdfCoreError>;
+  readonly pngSize: (png: Uint8Array) => Effect.Effect<PdfCorePngSize, PdfCoreError>;
 };
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
@@ -112,15 +123,18 @@ const SIGNATURES_VERSION = 1;
 const SIGNATURES_HEADER_BYTES = 24;
 const SIGNATURE_RECORD_BYTES = 72;
 const DOCUMENT_MAGIC = 0x4944_4450;
-const DOCUMENT_VERSION = 1;
+const DOCUMENT_VERSION = 2;
 const DOCUMENT_HEADER_BYTES = 32;
 const DOCUMENT_PAGE_RECORD_BYTES = 80;
-const DOCUMENT_ANNOTATION_RECORD_BYTES = 64;
+const DOCUMENT_ANNOTATION_RECORD_BYTES = 72;
 const EDIT_MAGIC = 0x4445_4450;
 const EDIT_VERSION = 1;
 const EDIT_INCREMENTAL = 1;
 const EDIT_REWRITE = 2;
 const EDIT_OBJECT_STREAMS = 4;
+const METRICS_MAGIC = 0x4d46_4450;
+const METRICS_VERSION = 1;
+const METRICS_PAYLOAD_BYTES = 8 + 256 * 4;
 const MERGE_DROP_WIDGETS = 1;
 const MERGE_OBJECT_STREAMS = 2;
 const ALL_PAGES = MAX_UINT32;
@@ -142,6 +156,7 @@ const EDIT_OPCODES = {
   standardFont: 11,
   signature: 12,
   repairCatalog: 13,
+  png: 14,
 } satisfies Record<PdfCoreEditOperation["op"], number>;
 
 const utf8 = new TextDecoder();
@@ -285,6 +300,11 @@ const writeOperation = (writer: PayloadWriter, operation: PdfCoreEditOperation):
       writer.u32(value.colorSpace === "rgb" ? 3 : 1);
       writer.u32(value.alpha ? 1 : 0);
       writer.bytes(value.samples);
+    }),
+    Match.when({ op: "png" }, (value) => {
+      writeRef(writer, value.ref);
+      writeRef(writer, value.softMaskRef);
+      writer.bytes(value.png);
     }),
     Match.when({ op: "standardFont" }, (value) => {
       writeRef(writer, value.ref);
@@ -1021,12 +1041,17 @@ export const makePdfCore = (
           };
         });
         const annotationsAt = pagesAt + pageCount * DOCUMENT_PAGE_RECORD_BYTES;
+        const urisAt = annotationsAt + annotationCount * DOCUMENT_ANNOTATION_RECORD_BYTES;
+        let uriBytes = 0;
         const annotations = Array.from({ length: annotationCount }, (_, index) => {
           const at = annotationsAt + index * DOCUMENT_ANNOTATION_RECORD_BYTES;
           const annotationFlags = view.getUint32(at + 16, true);
           const slot = view.getUint32(at + 20, true);
           const first = view.getUint32(at + 24, true);
           const second = view.getUint32(at + 28, true);
+          const uriOffset = view.getUint32(at + 64, true);
+          const uriLength = view.getUint32(at + 68, true);
+          uriBytes += uriLength;
           const signatureSlot = Match.value(slot).pipe(
             Match.when(1, () => ({ kind: "open", field: { kind: "widget" } })),
             Match.when(2, () => ({
@@ -1047,10 +1072,17 @@ export const makePdfCore = (
             widget: (annotationFlags & 1) !== 0,
             titled: (annotationFlags & 4) !== 0,
             ...((annotationFlags & 2) === 0 ? {} : { rect: box(at + 32) }),
+            ...((annotationFlags & 8) === 0
+              ? {}
+              : {
+                  uri: utf8.decode(
+                    new Uint8Array(block.memory, block.pointer + urisAt + uriOffset, uriLength),
+                  ),
+                }),
             signatureSlot,
           };
         });
-        const nameAt = annotationsAt + annotationCount * DOCUMENT_ANNOTATION_RECORD_BYTES;
+        const nameAt = urisAt + uriBytes;
         const fieldName =
           (flags & 2) !== 0
             ? {
@@ -1208,7 +1240,96 @@ export const makePdfCore = (
       );
     });
 
-    return { inspect, text, tables, signatures, revisionComplete, document, edit, merge, deflate };
+    const create = Effect.fn(function* (rawOptions: PdfCoreCreateOptions) {
+      const operation = PdfCoreOperationValue.create;
+      const options = yield* Schema.decodeUnknownEffect(PdfCoreCreateOptionsSchema)(
+        rawOptions,
+      ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.createOptions)));
+      const sizes = Float64Array.from(options.pages.flatMap((page) => [page.width, page.height]));
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const input = yield* allocate(operation, sizes.byteLength);
+          new Float64Array(core.memory.buffer, input.pointer, sizes.length).set(sizes);
+          const block = yield* resultBlock(operation, () =>
+            core.pdf_core_create(input.pointer, sizes.length),
+          );
+          return yield* payloadBytes(operation, block);
+        }),
+      );
+    });
+
+    const fontMetrics = Effect.fn(function* (rawBaseFont: PdfCoreWinAnsiFont) {
+      const operation = PdfCoreOperationValue.fontMetrics;
+      const baseFont = yield* Schema.decodeUnknownEffect(PdfCoreWinAnsiFontSchema)(
+        rawBaseFont,
+      ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.fontName)));
+      const name = utf8Encoder.encode(baseFont);
+      const payload = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const input = yield* copyIn(operation, name);
+          const block = yield* resultBlock(operation, () =>
+            core.pdf_core_font_metrics(input.pointer, name.byteLength),
+          );
+          return yield* payloadBytes(operation, block);
+        }),
+      );
+      const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      if (
+        payload.byteLength !== METRICS_PAYLOAD_BYTES ||
+        view.getUint32(0, true) !== METRICS_MAGIC ||
+        view.getUint32(4, true) !== METRICS_VERSION
+      ) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.wasmLoadFailed,
+          operation,
+          reason: "The PDF core returned malformed font metrics.",
+        });
+      }
+      const unicode = new Uint16Array(256);
+      const widths = new Uint16Array(256);
+      for (let code = 0; code < 256; code += 1) {
+        unicode[code] = view.getUint16(8 + code * 4, true);
+        widths[code] = view.getUint16(10 + code * 4, true);
+      }
+      return { baseFont, unicode, widths };
+    });
+
+    const pngSize = Effect.fn(function* (png: Uint8Array) {
+      const operation = PdfCoreOperationValue.pngSize;
+      const payload = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const input = yield* copyIn(operation, png);
+          const block = yield* resultBlock(operation, () =>
+            core.pdf_core_png_size(input.pointer, png.byteLength),
+          );
+          return yield* payloadBytes(operation, block);
+        }),
+      );
+      if (payload.byteLength !== 8) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.wasmLoadFailed,
+          operation,
+          reason: "The PDF core returned a malformed PNG size.",
+        });
+      }
+      const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      return { width: view.getUint32(0, true), height: view.getUint32(4, true) };
+    });
+
+    return {
+      inspect,
+      text,
+      tables,
+      signatures,
+      revisionComplete,
+      document,
+      edit,
+      merge,
+      deflate,
+      create,
+      fontMetrics,
+      pngSize,
+    };
   });
 
 export const pdfCoreLayer = (module: WebAssembly.Module): Layer.Layer<PdfCore, PdfCoreError> =>

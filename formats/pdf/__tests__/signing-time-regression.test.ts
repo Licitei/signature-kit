@@ -1,16 +1,11 @@
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue, PdfSigningRequestSchema } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createFixturePdf } from "./pdf-fixtures";
 
-const createPdf = (): Effect.Effect<Uint8Array> =>
-  Effect.promise(async () => {
-    const pdf = await PDFDocument.create();
-    pdf.addPage([320, 180]);
-    return new Uint8Array(await pdf.save({ useObjectStreams: false }));
-  });
+const createPdf = () => createFixturePdf();
 
 describe("PDF signing time boundaries", () => {
   it.effect("rejects an invalid signing time before loading PDF bytes", () =>

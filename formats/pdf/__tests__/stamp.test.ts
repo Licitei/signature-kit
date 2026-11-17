@@ -1,15 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { deflateSync, inflateSync } from "node:zlib";
-import {
-  PDFArray,
-  PDFDict,
-  PDFDocument,
-  PDFHexString,
-  PDFName,
-  PDFNumber,
-  StandardFonts,
-  degrees,
-} from "@cantoo/pdf-lib";
+import { deflateSync } from "node:zlib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { signPdf } from "@signature-kit/pdf/sign";
 import { verifyPdf } from "@signature-kit/pdf/verify";
@@ -19,11 +9,14 @@ import { signPdf as signPdfFromSource } from "../src/sign";
 import { preparePdfByteRange } from "../src/byte-range";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { verifyPdf as verifyPdfFromSource } from "../src/verify";
+import { pdfTextWidth } from "../src/content";
 import {
+  isSafePdfStampPng,
   layoutPdfSignatureBadge,
-  pdfCoordinateTupleFromTopLeftRect,
-  topLeftRectFromPdfCoordinateTuple,
-  visiblePdfPageSize,
+  loadPdfStandardFont,
+  pdfCoordinateTupleFromPdfPageGeometry,
+  topLeftRectFromPdfPageGeometry,
+  visiblePdfPageSizeFromGeometry,
   rubricPageIndexesExcludingSignature,
   rubricRectForPage,
   stampPdfRubric,
@@ -31,7 +24,11 @@ import {
   stampPdfVisibleSignature,
   stampPdfVisibleSignatures,
 } from "../src/stamp";
-import type { PdfSignatureBadgeLayoutRect, PdfSignatureBadgeTextRunLayout } from "../src/stamp";
+import type {
+  PdfPageGeometry,
+  PdfSignatureBadgeLayoutRect,
+  PdfSignatureBadgeTextRunLayout,
+} from "../src/stamp";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import type {
   PdfCoordinateTuple,
@@ -40,16 +37,30 @@ import type {
   PdfVisibleStampInput,
 } from "../src/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import {
+  acroFormField,
+  createFixturePdf,
+  editFixturePdf,
+  entryRef,
+  fixtureDocument,
+  objectSource,
+  pdfStringEntry,
+} from "./pdf-fixtures";
+import { decodedFlateStreams } from "./pdf-streams";
 
-const createThreePagePdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  for (let index = 0; index < 3; index += 1) {
-    const page = pdf.addPage([320, 180]);
-    page.drawText(`Page ${index + 1}`, { x: 32, y: 150, size: 12 });
-  }
-  const bytes = await pdf.save({ useObjectStreams: false });
-  return new Uint8Array(bytes);
-});
+const createThreePagePdf = createFixturePdf(
+  [0, 1, 2].map((index) => ({ text: [{ x: 32, y: 150, size: 12, text: `Page ${index + 1}` }] })),
+);
+
+const badgeFonts = Effect.all({
+  regularFont: loadPdfStandardFont("Helvetica"),
+  boldFont: loadPdfStandardFont("Helvetica-Bold"),
+}).pipe(Effect.orDie);
+
+const upperHex = (text: string): string =>
+  `<${Array.from(text, (character) =>
+    (character.codePointAt(0) ?? 0).toString(16).padStart(2, "0").toUpperCase(),
+  ).join("")}>`;
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
   atob(
@@ -298,73 +309,25 @@ it("nudges repeated rubrics away from LiteParse text boxes", () => {
   expect(textBox.y < nudged.y + nudged.height && textBox.y + textBox.height > nudged.y).toBe(false);
 });
 
-const pageCount = (bytes: Uint8Array): Effect.Effect<number> =>
-  Effect.promise(async () => (await PDFDocument.load(bytes)).getPageCount());
+const pageCount = (bytes: Uint8Array) =>
+  fixtureDocument(bytes).pipe(Effect.map((document) => document.pages.length));
 
-const decodedFlateStreams = (bytes: Uint8Array): string => {
-  const pdf = Buffer.from(bytes);
-  const text = pdf.toString("latin1");
-  const chunks: string[] = [];
-  let offset = 0;
-  while (offset < text.length) {
-    const filterIndex = text.indexOf("/Filter /FlateDecode", offset);
-    if (filterIndex === -1) offset = text.length;
-    if (filterIndex !== -1) {
-      const dictionaryStart = text.lastIndexOf("<<", filterIndex);
-      const streamMarker = text.indexOf("stream", filterIndex);
-      const dictionaryText =
-        dictionaryStart === -1 || streamMarker === -1
-          ? ""
-          : text.slice(dictionaryStart, streamMarker);
-      const lengthText = /\/Length\s+(\d+)/.exec(dictionaryText)?.[1];
-      if (streamMarker === -1 || lengthText === undefined) {
-        offset = filterIndex + "/Filter /FlateDecode".length;
-      } else {
-        let dataStart = streamMarker + "stream".length;
-        if (text[dataStart] === "\r" && text[dataStart + 1] === "\n") dataStart += 2;
-        else if (text[dataStart] === "\n") dataStart += 1;
-        const dataEnd = dataStart + Number.parseInt(lengthText, 10);
-        if (!dictionaryText.includes("/Type /ObjStm")) {
-          const decoded = inflateSync(pdf.subarray(dataStart, dataEnd)).toString("latin1");
-          if (/(^|\n)(q|BT)\b|\scm\b|\srg\b|\sRG\b|\sTj\b/.test(decoded)) chunks.push(decoded);
-        }
-        offset = dataEnd;
-      }
-    }
-  }
-  return chunks.join("\n");
-};
+const linkAnnotationsForPage = (bytes: Uint8Array, pageIndex: number) =>
+  fixtureDocument(bytes, [pageIndex]).pipe(
+    Effect.map((document) =>
+      document.annotations.flatMap((annotation): ReadonlyArray<LinkAnnotation> => {
+        if (annotation.uri === undefined || annotation.rect === undefined) return [];
+        const [left, bottom, right, top] = annotation.rect;
+        return [
+          {
+            uri: annotation.uri,
+            rect: { x: left, y: bottom, width: right - left, height: top - bottom },
+          },
+        ];
+      }),
+    ),
+  );
 
-const linkAnnotationsForPage = (
-  bytes: Uint8Array,
-  pageIndex: number,
-): Effect.Effect<ReadonlyArray<LinkAnnotation>> =>
-  Effect.promise(async () => {
-    const pdfDoc = await PDFDocument.load(bytes);
-    const page = pdfDoc.getPages()[pageIndex];
-    if (page === undefined) return [];
-    const annots = page.node.Annots();
-    if (annots === undefined) return [];
-    const links: LinkAnnotation[] = [];
-    for (let index = 0; index < annots.size(); index += 1) {
-      const annotation = pdfDoc.context.lookupMaybe(annots.get(index), PDFDict);
-      const subtype = annotation?.lookupMaybe(PDFName.of("Subtype"), PDFName);
-      const action = annotation?.lookupMaybe(PDFName.of("A"), PDFDict);
-      const uri = action?.lookupMaybe(PDFName.of("URI"), PDFHexString)?.decodeText();
-      const rect = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-      if (subtype?.toString() === "/Link" && uri !== undefined && rect !== undefined) {
-        const left = rect.lookup(0, PDFNumber).asNumber();
-        const bottom = rect.lookup(1, PDFNumber).asNumber();
-        const right = rect.lookup(2, PDFNumber).asNumber();
-        const top = rect.lookup(3, PDFNumber).asNumber();
-        links.push({
-          uri,
-          rect: { x: left, y: bottom, width: right - left, height: top - bottom },
-        });
-      }
-    }
-    return links;
-  });
 const GEOMETRY_EPSILON = 0.000001;
 
 const expectRectInside = (
@@ -393,11 +356,7 @@ describe("stampPdfRubric", () => {
     Effect.gen(function* () {
       const pdf = yield* createThreePagePdf;
       const value = "TrustSign Tests";
-      const encoded = yield* Effect.promise(async () => {
-        const document = await PDFDocument.create();
-        const font = await document.embedFont(StandardFonts.Helvetica);
-        return font.encodeText(value).toString();
-      });
+      const encoded = upperHex(value);
       const stamped = yield* stampPdfVisibleSignature({
         pdf,
         pageIndex: 0,
@@ -427,22 +386,19 @@ describe("stampPdfRubric", () => {
   it.effect("lays out logo, QR and handwriting without overlap on rotated cropped pages", () =>
     Effect.gen(function* () {
       const badge = { ...BADGE_STAMP, logoPng: ONE_BY_ONE_PNG, signaturePng: ONE_BY_ONE_PNG };
-      const fixture = yield* Effect.promise(async () => {
-        const document = await PDFDocument.create();
-        for (const angle of [0, 90, 180, 270]) {
-          const page = document.addPage([500, 500]);
-          page.setCropBox(40, 50, 400, 400);
-          page.setRotation(degrees(angle));
-        }
-        const font = await document.embedFont(StandardFonts.Helvetica);
-        const bold = await document.embedFont(StandardFonts.HelveticaBold);
-        return { pdf: new Uint8Array(await document.save()), font, bold };
-      });
+      const fixturePdf = yield* createFixturePdf(
+        [0, 90, 180, 270].map((angle) => ({
+          size: [500, 500],
+          cropBox: [40, 50, 440, 450],
+          rotate: angle,
+        })),
+      );
+      const { regularFont, boldFont } = yield* badgeFonts;
       const layout = layoutPdfSignatureBadge(
         badge,
         { x: 0, y: 0, width: 320, height: 128 },
-        fixture.font,
-        fixture.bold,
+        regularFont,
+        boldFont,
       );
       expect(layout.logo).toBeDefined();
       expect(layout.signature).toBeDefined();
@@ -455,7 +411,7 @@ describe("stampPdfRubric", () => {
           );
       const stamped = yield* stampPdfVisibleSignatures(
         {
-          pdf: fixture.pdf,
+          pdf: fixturePdf,
           badge,
           stamps: [
             { pageIndex: 0, rect: { pageIndex: 0, x: 20, y: 20, width: 320, height: 128 } },
@@ -467,10 +423,13 @@ describe("stampPdfRubric", () => {
         },
         false,
       );
-      const document = yield* Effect.promise(() => PDFDocument.load(stamped));
-      expect(document.getPageCount()).toBe(4);
-      for (const page of document.getPages())
-        expect(page.node.Resources()?.get(PDFName.of("XObject"))).toBeDefined();
+      const document = yield* fixtureDocument(stamped);
+      expect(document.pages).toHaveLength(4);
+      for (const page of document.pages) {
+        const pageSource =
+          page.ref === undefined ? "" : (objectSource(stamped, page.ref.number) ?? "");
+        expect(pageSource).toMatch(/\/XObject\s*<<[^>]*\/SigKitBadgeLogo\d+\s+\d+\s+\d+\s+R/u);
+      }
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
@@ -817,14 +776,69 @@ describe("stampPdfRubric", () => {
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
+  it.effect("validates stamp PNGs with the core decoder", () =>
+    Effect.gen(function* () {
+      const valid = INTERLACED_ONE_BY_ONE_PNG;
+      const trailing = new Uint8Array(valid.byteLength + 1);
+      trailing.set(valid);
+      const corrupt = valid.slice();
+      corrupt[41] = 0xff;
+      corrupt[42] = 0xff;
+
+      expect(yield* isSafePdfStampPng(valid)).toBe(true);
+      expect(yield* isSafePdfStampPng(trailing)).toBe(false);
+      expect(yield* isSafePdfStampPng(corrupt)).toBe(false);
+      expect(yield* isSafePdfStampPng(apngWithHugeFrame())).toBe(false);
+      expect(yield* isSafePdfStampPng(compressedPngExpansionBomb())).toBe(false);
+      expect(yield* isSafePdfStampPng(OVERSIZED_PNG_HEADER)).toBe(false);
+      expect(yield* isSafePdfStampPng(valid.subarray(0, 20))).toBe(false);
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
+  it.effect("rejects text outside WinAnsi in rubric lines and badge headers and footers", () =>
+    Effect.gen(function* () {
+      const pdf = yield* createThreePagePdf;
+      const badge = {
+        header: { text: "ASSINADO DIGITALMENTE" },
+        rows: [[{ label: "Signatário", value: "Maria" }]],
+        footer: [{ text: "validar.iti.gov.br" }],
+      };
+      for (const text of ["签名", "Łukasz", "✓ conferido", "assinado 😀"]) {
+        const failures = [
+          yield* Effect.result(
+            stampPdfRubric(pdf, { rect: RUBRIC_RECT, pages: [0], lines: [text] }),
+          ),
+          yield* Effect.result(
+            stampPdfVisibleSignature({
+              pdf,
+              pageIndex: QR_SIGNATURE_RECT.pageIndex,
+              rect: QR_SIGNATURE_RECT,
+              badge: { ...badge, header: { text } },
+            }),
+          ),
+          yield* Effect.result(
+            stampPdfVisibleSignature({
+              pdf,
+              pageIndex: QR_SIGNATURE_RECT.pageIndex,
+              rect: QR_SIGNATURE_RECT,
+              badge: { ...badge, footer: [{ text: "MP 2.200-2/2001" }, { text }] },
+            }),
+          ),
+        ];
+        for (const result of failures) {
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
+            expect(result.failure.reason).toContain("WinAnsi");
+          }
+        }
+      }
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
   it.effect("resolves reordered rubric metadata by declared page index", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(async () => {
-        const pdfDoc = await PDFDocument.create();
-        pdfDoc.addPage([320, 180]);
-        pdfDoc.addPage([600, 1000]);
-        return new Uint8Array(await pdfDoc.save({ useObjectStreams: false }));
-      });
+      const pdf = yield* createFixturePdf([{ size: [320, 180] }, { size: [600, 1000] }]);
       const reordered = yield* stampPdfRubricOnPages({
         pdf,
         pageDimensions: [
@@ -907,7 +921,7 @@ describe("stampPdfRubric", () => {
         qr: { text: VALIDAR_ITI_URL },
       });
       const content = decodedFlateStreams(stamped);
-      const filledPathOperators = content.match(/\sh\s/g)?.length ?? 0;
+      const filledPathOperators = content.match(/\sre\s/g)?.length ?? 0;
       const signed = yield* signPdf({
         pdf: stamped,
         reason: "SignatureKit QR stamp regression test",
@@ -925,10 +939,8 @@ describe("stampPdfRubric", () => {
   );
 
   it.effect("lays out every structured badge element inside the badge container", () =>
-    Effect.promise(async () => {
-      const pdfDoc = await PDFDocument.create();
-      const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    Effect.gen(function* () {
+      const { regularFont, boldFont } = yield* badgeFonts;
       const layout = layoutPdfSignatureBadge(
         BADGE_STAMP,
         REFERENCE_BADGE_CONTAINER,
@@ -1001,10 +1013,8 @@ describe("stampPdfRubric", () => {
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("truncates unbreakable badge values before they leave the badge", () =>
-    Effect.promise(async () => {
-      const pdfDoc = await PDFDocument.create();
-      const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    Effect.gen(function* () {
+      const { regularFont, boldFont } = yield* badgeFonts;
       const value = "X".repeat(1000);
       const layout = layoutPdfSignatureBadge(
         {
@@ -1025,7 +1035,7 @@ describe("stampPdfRubric", () => {
         expectRunInside(item.value, layout.container);
         expect(item.value.text).not.toBe(value);
         expect(item.value.text).toMatch(/\.\.\.$/);
-        expect(regularFont.widthOfTextAtSize(item.value.text, layout.rowSize)).toBeLessThanOrEqual(
+        expect(pdfTextWidth(regularFont, item.value.text, layout.rowSize)).toBeLessThanOrEqual(
           item.value.rect.width + GEOMETRY_EPSILON,
         );
       }
@@ -1054,7 +1064,7 @@ describe("stampPdfRubric", () => {
         }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })));
         const verification = yield* verifyPdf({ pdf: signed });
 
-        expect(content).toMatch(/\s[vy]\s/);
+        expect(content).toMatch(/(?:\s-?[\d.]+){6} c\s/u);
         expect(content).toMatch(/\[\s*4\s+4\s*\]\s+0\s+d/);
         expect(links).toHaveLength(1);
         expect(links[0]?.uri).toBe(VALIDAR_ITI_URL);
@@ -1080,10 +1090,7 @@ describe("stampPdfRubric", () => {
         },
       });
       const links = yield* linkAnnotationsForPage(stamped, QR_SIGNATURE_RECT.pageIndex);
-      const roundTripped = yield* Effect.promise(async () => {
-        const reloaded = await PDFDocument.load(stamped);
-        return new Uint8Array(await reloaded.save({ useObjectStreams: false }));
-      });
+      const roundTripped = yield* editFixturePdf(stamped, () => []);
       const roundTrippedLinks = yield* linkAnnotationsForPage(
         roundTripped,
         QR_SIGNATURE_RECT.pageIndex,
@@ -1118,22 +1125,15 @@ describe("stampPdfRubric", () => {
         location: `Local ${MALICIOUS_PDF_TEXT}`,
       });
       const prepared = yield* preparePdfByteRange(placeholder);
-      const metadata = yield* Effect.promise(async () => {
-        const pdfDoc = await PDFDocument.load(prepared.pdf);
-        const acroForm = pdfDoc.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict);
-        const fields = acroForm?.lookupMaybe(PDFName.of("Fields"), PDFArray);
-        const field =
-          fields === undefined ? undefined : pdfDoc.context.lookupMaybe(fields.get(0), PDFDict);
-        const signature = field?.lookupMaybe(PDFName.of("V"), PDFDict);
-        return {
-          reason: signature?.lookupMaybe(PDFName.of("Reason"), PDFHexString)?.decodeText(),
-          contactInfo: signature
-            ?.lookupMaybe(PDFName.of("ContactInfo"), PDFHexString)
-            ?.decodeText(),
-          name: signature?.lookupMaybe(PDFName.of("Name"), PDFHexString)?.decodeText(),
-          location: signature?.lookupMaybe(PDFName.of("Location"), PDFHexString)?.decodeText(),
-        };
-      });
+      const signatureNumber = entryRef(acroFormField(prepared.pdf, 0), "V");
+      const signature =
+        signatureNumber === undefined ? "" : (objectSource(prepared.pdf, signatureNumber) ?? "");
+      const metadata = {
+        reason: pdfStringEntry(signature, "Reason"),
+        contactInfo: pdfStringEntry(signature, "ContactInfo"),
+        name: pdfStringEntry(signature, "Name"),
+        location: pdfStringEntry(signature, "Location"),
+      };
       const links = yield* linkAnnotationsForPage(prepared.pdf, QR_SIGNATURE_RECT.pageIndex);
       const rawPdf = Buffer.from(prepared.pdf).toString("latin1");
       expect(rawPdf).not.toContain(MALICIOUS_PDF_TEXT);
@@ -1194,25 +1194,18 @@ describe("stampPdfRubric", () => {
   it.effect("maps visible stamps through the rotated CropBox coordinate system", () =>
     Effect.gen(function* () {
       const rect = { pageIndex: 0, x: 0, y: 0, width: 80, height: 40 };
-      const geometry = yield* Effect.promise(async () => {
-        const cropOnlyDoc = await PDFDocument.create();
-        const cropOnlyPage = cropOnlyDoc.addPage([400, 400]);
-        cropOnlyPage.setCropBox(100, 100, 200, 160);
-        const pdfDoc = await PDFDocument.create();
-        const page = pdfDoc.addPage([400, 400]);
-        page.setCropBox(100, 100, 200, 160);
-        page.setRotation(degrees(90));
-        const rotatedWidgetRect = pdfCoordinateTupleFromTopLeftRect(rect, page);
-        return {
-          pdf: new Uint8Array(await pdfDoc.save({ useObjectStreams: false })),
-          cropOnlyPdf: new Uint8Array(await cropOnlyDoc.save({ useObjectStreams: false })),
-          cropOnlyPageSize: visiblePdfPageSize(cropOnlyPage),
-          rotatedPageSize: visiblePdfPageSize(page),
-          cropOnlyWidgetRect: pdfCoordinateTupleFromTopLeftRect(rect, cropOnlyPage),
-          rotatedWidgetRect,
-          rotatedVisibleRect: topLeftRectFromPdfCoordinateTuple(rotatedWidgetRect, page),
-        };
-      });
+      const cropOnlyGeometry: PdfPageGeometry = { cropBox: [100, 100, 300, 260], rotate: 0 };
+      const rotatedGeometry: PdfPageGeometry = { cropBox: [100, 100, 300, 260], rotate: 90 };
+      const rotatedWidgetRect = pdfCoordinateTupleFromPdfPageGeometry(rect, rotatedGeometry);
+      const geometry = {
+        pdf: yield* createFixturePdf([{ size: [400, 400], ...rotatedGeometry }]),
+        cropOnlyPdf: yield* createFixturePdf([{ size: [400, 400], ...cropOnlyGeometry }]),
+        cropOnlyPageSize: visiblePdfPageSizeFromGeometry(cropOnlyGeometry),
+        rotatedPageSize: visiblePdfPageSizeFromGeometry(rotatedGeometry),
+        cropOnlyWidgetRect: pdfCoordinateTupleFromPdfPageGeometry(rect, cropOnlyGeometry),
+        rotatedWidgetRect,
+        rotatedVisibleRect: topLeftRectFromPdfPageGeometry(rotatedWidgetRect, rotatedGeometry),
+      };
       const stamped = yield* stampPdfVisibleSignature({
         pdf: geometry.pdf,
         pageIndex: 0,
@@ -1241,16 +1234,20 @@ describe("stampPdfRubric", () => {
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("round-trips non-square CropBox coordinates across every page rotation", () =>
-    Effect.promise(async () => {
-      const pdfDoc = await PDFDocument.create();
-      for (const rotation of [0, 90, 180, 270]) {
-        const page = pdfDoc.addPage([500, 400]);
-        page.setCropBox(100, 25, 200, 100);
-        page.setRotation(degrees(rotation));
+    Effect.gen(function* () {
+      const pdf = yield* createFixturePdf(
+        [0, 90, 180, 270].map((rotation) => ({
+          size: [500, 400],
+          cropBox: [100, 25, 300, 125],
+          rotate: rotation,
+        })),
+      );
+      for (const page of (yield* fixtureDocument(pdf)).pages) {
+        const geometry = { cropBox: page.cropBox, rotate: page.rotate };
         const rect = { pageIndex: 0, x: 20, y: 30, width: 40, height: 25 };
-        const tuple = pdfCoordinateTupleFromTopLeftRect(rect, page);
+        const tuple = pdfCoordinateTupleFromPdfPageGeometry(rect, geometry);
 
-        expect(topLeftRectFromPdfCoordinateTuple(tuple, page)).toStrictEqual({
+        expect(topLeftRectFromPdfPageGeometry(tuple, geometry)).toStrictEqual({
           x: rect.x,
           y: rect.y,
           width: rect.width,
@@ -1261,16 +1258,10 @@ describe("stampPdfRubric", () => {
   );
   it.effect("maps rubric helpers through non-square rotated CropBoxes", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(async () => {
-        const pdfDoc = await PDFDocument.create();
-        const clockwise = pdfDoc.addPage([400, 400]);
-        clockwise.setCropBox(100, 100, 200, 160);
-        clockwise.setRotation(degrees(90));
-        const counterclockwise = pdfDoc.addPage([400, 400]);
-        counterclockwise.setCropBox(100, 100, 200, 160);
-        counterclockwise.setRotation(degrees(270));
-        return new Uint8Array(await pdfDoc.save({ useObjectStreams: false }));
-      });
+      const pdf = yield* createFixturePdf([
+        { size: [400, 400], cropBox: [100, 100, 300, 260], rotate: 90 },
+        { size: [400, 400], cropBox: [100, 100, 300, 260], rotate: 270 },
+      ]);
       const stamped = yield* stampPdfRubricOnPages({
         pdf,
         pageDimensions: [
@@ -1391,13 +1382,9 @@ describe("stampPdfRubric", () => {
 
   it.effect("rejects visible rects outside rotated CropBox dimensions", () =>
     Effect.gen(function* () {
-      const pdf = yield* Effect.promise(async () => {
-        const pdfDoc = await PDFDocument.create();
-        const page = pdfDoc.addPage([400, 400]);
-        page.setCropBox(100, 100, 200, 100);
-        page.setRotation(degrees(90));
-        return new Uint8Array(await pdfDoc.save({ useObjectStreams: false }));
-      });
+      const pdf = yield* createFixturePdf([
+        { size: [400, 400], cropBox: [100, 100, 300, 200], rotate: 90 },
+      ]);
       const result = yield* Effect.result(
         stampPdfVisibleSignature({
           pdf,
@@ -1432,12 +1419,9 @@ describe("stampPdfRubric", () => {
         }
       }
 
-      const croppedPdf = yield* Effect.promise(async () => {
-        const pdfDoc = await PDFDocument.create();
-        const page = pdfDoc.addPage([400, 400]);
-        page.setCropBox(100, 100, 200, 160);
-        return new Uint8Array(await pdfDoc.save({ useObjectStreams: false }));
-      });
+      const croppedPdf = yield* createFixturePdf([
+        { size: [400, 400], cropBox: [100, 100, 300, 260] },
+      ]);
       const outsideResult = yield* Effect.result(
         stampPdfRubric(croppedPdf, { rect: [20, 20, 92, 52], pages: [0], lines: ["x"] }),
       );

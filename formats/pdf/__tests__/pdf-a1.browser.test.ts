@@ -1,5 +1,4 @@
 import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.browser";
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "vitest";
 import { a1SignaturesLayer, parseA1CertificateProfile } from "@signature-kit/a1/signer";
 import {
@@ -10,6 +9,13 @@ import {
 import { signPdfSignatureField } from "@signature-kit/pdf/workflow";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { findPdfTextAnchors } from "../src/anchors";
+import {
+  acroFormField,
+  createFixturePdf,
+  entryRef,
+  objectSource,
+  pdfStringEntry,
+} from "./pdf-fixtures";
 import { LiteParseWorkerFactory, renderPdfPagesBrowser } from "../src/liteparse-browser";
 import type { LiteParseWorker } from "../src/liteparse-browser";
 import {
@@ -22,12 +28,9 @@ import { Effect, Layer, Redacted, Result, Schema } from "effect";
 const PASSWORD = Redacted.make("changeit");
 const latin1 = new TextDecoder("latin1");
 
-const createPdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([320, 180]);
-  page.drawText("SignatureKit PDF signing", { x: 32, y: 118, size: 14 });
-  return pdf.save({ useObjectStreams: false });
-});
+const createPdf = createFixturePdf([
+  { text: [{ x: 32, y: 118, size: 14, text: "SignatureKit PDF signing" }] },
+]).pipe(Effect.provide(pdfCoreBrowserLayer));
 
 const createTemplate = () =>
   createPdfSignatureTemplate({
@@ -155,19 +158,11 @@ if (typeof document === "undefined") {
             signatureLength: 16384,
           }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })));
           const text = latin1.decode(signed);
-          const reason = yield* Effect.promise(async () => {
-            const signedPdf = await PDFDocument.load(signed);
-            const acroForm = signedPdf.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict);
-            const fields = acroForm?.lookupMaybe(PDFName.of("Fields"), PDFArray);
-            const field =
-              fields === undefined
-                ? undefined
-                : signedPdf.context.lookupMaybe(fields.get(0), PDFDict);
-            return field
-              ?.lookupMaybe(PDFName.of("V"), PDFDict)
-              ?.lookupMaybe(PDFName.of("Reason"), PDFHexString)
-              ?.decodeText();
-          });
+          const signatureNumber = entryRef(acroFormField(signed, 0), "V");
+          const reason = pdfStringEntry(
+            signatureNumber === undefined ? "" : (objectSource(signed, signatureNumber) ?? ""),
+            "Reason",
+          );
 
           expect(profile.document).toBe("12345678901");
           expect(signed.byteLength).toBeGreaterThan(pdf.byteLength);
@@ -259,9 +254,9 @@ if (typeof document === "undefined") {
     });
 
     it("resolves normal placement and rejects non-advancing automatic grids", async () => {
-      const document = await PDFDocument.create();
-      document.addPage([320, 180]);
-      const pdf = await document.save({ useObjectStreams: false });
+      const pdf = await Effect.runPromise(
+        createFixturePdf().pipe(Effect.provide(pdfCoreBrowserLayer)),
+      );
       const normal = await Effect.runPromise(
         resolveSignatureWidgetPlacement(pdf, {
           placement: {

@@ -9,6 +9,7 @@ import {
   SignatureKitErrorCodeValue,
   signatureKitErrorMessages,
 } from "@signature-kit/signatures";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { loadPdfSignatureDocument, readPdfBlobBytes } from "@signature-kit/pdf/workflow";
 import { createPdfSignatureBuilderStateFromTemplate } from "@signature-kit/pdf/builder";
 import {
@@ -320,7 +321,7 @@ const SigningMount = Mount.define("SigningMount", {
                         id: String(index),
                         name: file.name,
                         pdf: bytes,
-                      });
+                      }).pipe(Effect.provide(pdfCoreBrowserLayer));
                       const pages = yield* renderPdfPagesBrowser(bytes, document.pages.length).pipe(
                         Effect.provide(liteParseWorkerBrowserLayer),
                       );
@@ -503,7 +504,10 @@ const SigningMount = Mount.define("SigningMount", {
               }).pipe(
                 Effect.map((bytes) => new Uint8Array(bytes)),
                 Effect.flatMap((bytes) =>
-                  isSafePdfStampPng(bytes).pipe(Effect.map((valid) => ({ bytes, valid }))),
+                  isSafePdfStampPng(bytes).pipe(
+                    Effect.map((valid) => ({ bytes, valid })),
+                    Effect.provide(pdfCoreBrowserLayer),
+                  ),
                 ),
                 Effect.tap(({ bytes, valid }) =>
                   Effect.sync(() => {

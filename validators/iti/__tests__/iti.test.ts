@@ -1,18 +1,21 @@
 import { describe, expect, it } from "@effect/vitest";
-import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
 import { readFile } from "node:fs/promises";
 import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
 import { vi } from "vitest";
+import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { CmsOid } from "@signature-kit/cms/config";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { extractPdfSignature } from "@signature-kit/pdf/byte-range";
-import { Effect, Layer, Result, Schema } from "effect";
+import { signPdf } from "@signature-kit/pdf/sign";
+import { Effect, Layer, Redacted, Result, Schema } from "effect";
+import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { validatePdfConformance } from "../src/conformance";
 import { validatePdfWithIti } from "../src/remote";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createTextPdf } from "./pdf-fixture";
 
 const ITI_ENDPOINT = "https://validar.iti.gov.br/arquivo";
 const POLICY_OID = "2.16.76.1.7.1.11.1.1";
@@ -157,13 +160,8 @@ const restoreFetch = Effect.sync(() => {
   vi.unstubAllGlobals();
 });
 
-const createPdf = Effect.promise(async () => {
-  const document = await PDFDocument.create();
-  const page = document.addPage([300, 200]);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  page.drawText("SignatureKit ITI validation fixture", { x: 24, y: 140, size: 12, font });
-  return new Uint8Array(await document.save());
-});
+const createPdf = (objectStreams: boolean) =>
+  createTextPdf("SignatureKit ITI validation fixture", { objectStreams });
 
 const expectedAdRbPolicyOid = POLICY_OID;
 
@@ -238,17 +236,42 @@ describe("ITI local conformance", () => {
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
-  it.effect("returns a rejected report for an unsigned PDF", () =>
-    Effect.gen(function* () {
-      const pdf = yield* createPdf;
-      const report = yield* validatePdfConformance({ pdf });
+  for (const objectStreams of [false, true]) {
+    it.effect(
+      `returns a rejected report for an unsigned PDF (object streams: ${objectStreams})`,
+      () =>
+        Effect.gen(function* () {
+          const pdf = yield* createPdf(objectStreams);
+          const report = yield* validatePdfConformance({ pdf });
+          const source = new TextDecoder("latin1").decode(pdf);
 
-      expect(report.approved).toBe(false);
-      expect(report.outcome).toBe("rejected");
-      expect(report.signatureCount).toBe(0);
-      expect(report.signatures).toEqual([]);
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+          expect(source.includes("/Type /ObjStm")).toBe(objectStreams);
+          expect(source.includes("/Type /XRef")).toBe(objectStreams);
+          expect(report.approved).toBe(false);
+          expect(report.outcome).toBe("rejected");
+          expect(report.signatureCount).toBe(0);
+          expect(report.signatures).toEqual([]);
+        }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect(`approves a freshly signed AD-RB PDF (object streams: ${objectStreams})`, () =>
+      Effect.gen(function* () {
+        const pfx = yield* readA1Fixture("ecnpj");
+        const signed = yield* signPdf({
+          pdf: yield* createPdf(objectStreams),
+          policy: "pades-icp-brasil",
+          signatureLength: 32768,
+          reason: "SignatureKit ITI validation fixture",
+        }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make("changeit") })));
+        const report = yield* validatePdfConformance({ pdf: signed });
+
+        expect(report.approved).toBe(true);
+        expect(report.outcome).toBe("approved");
+        expect(report.signatureCount).toBe(1);
+        expect(report.signatures[0]?.signatureType).toBe("PA_PAdES_AD_RB_v1_1");
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+  }
 });
 
 describe("ITI remote client", () => {
