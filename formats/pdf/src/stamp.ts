@@ -1630,6 +1630,9 @@ const drawInVisibleCoordinateSystem = (
 const STAMP_REGULAR_FONT = "SigKitHelvetica";
 const STAMP_BOLD_FONT = "SigKitHelveticaBold";
 
+const stampResourceName = (document: PdfCoreDocument, name: string): string =>
+  `${name}${document.nextObjectNumber}`;
+
 const stampFailure = (reason: string) => (): PdfError =>
   new PdfError({
     code: PdfErrorCodeValue.stampFailed,
@@ -2077,14 +2080,14 @@ const stampPdfRubricTargets = (
   }
 
   return Effect.gen(function* () {
-    const image = yield* stampImage(
-      "SigKitRubricImage",
-      stamp.imagePng,
-      "PNG image exceeds supported input or decoded pixel limits.",
-    );
     const { document, coordinateSystems } = yield* loadStampDocument(
       pdf,
       "Failed to load the PDF for rubric stamping.",
+    );
+    const image = yield* stampImage(
+      stampResourceName(document, "SigKitRubricImage"),
+      stamp.imagePng,
+      "PNG image exceeds supported input or decoded pixel limits.",
     );
     const pageCount = document.pages.length;
     const resolvedTargets = resolveRubricTargets(targets, pageCount);
@@ -2119,7 +2122,10 @@ const stampPdfRubricTargets = (
       });
     }
 
-    const font = yield* loadStampFont(STAMP_REGULAR_FONT, "Helvetica");
+    const font = yield* loadStampFont(
+      stampResourceName(document, STAMP_REGULAR_FONT),
+      "Helvetica",
+    );
     yield* encodableStampText(font, [
       ...(stamp.lines ?? []),
       ...(stamp.initials === undefined ? [] : [deriveSignerInitials(stamp.initials)]),
@@ -2253,25 +2259,25 @@ export const stampPdfVisibleSignatures = (
               "Structured signature badge requires a positive drawing area inside its padding. Increase the stamp width and height beyond 16 points.",
           });
         }
+        const { document, coordinateSystems } = yield* loadStampDocument(
+          valid.pdf,
+          "Failed to load the PDF for visible signature stamping.",
+        );
         const badgeImageReason = "Badge PNG image exceeds supported input or decoded pixel limits.";
         const logoImage = yield* stampImage(
-          "SigKitBadgeLogo",
+          stampResourceName(document, "SigKitBadgeLogo"),
           valid.badge?.logoPng,
           badgeImageReason,
         );
         const signatureImage = yield* stampImage(
-          "SigKitBadgeSignature",
+          stampResourceName(document, "SigKitBadgeSignature"),
           valid.badge?.signaturePng,
           badgeImageReason,
         );
         const inkImage = yield* stampImage(
-          "SigKitInk",
+          stampResourceName(document, "SigKitInk"),
           valid.badge === undefined ? valid.inkPng : undefined,
           "PNG image exceeds supported input or decoded pixel limits.",
-        );
-        const { document, coordinateSystems } = yield* loadStampDocument(
-          valid.pdf,
-          "Failed to load the PDF for visible signature stamping.",
         );
         const invalidPage = valid.stamps.find((stamp) =>
           isPageOutOfRange(stamp.pageIndex, document.pages.length),
@@ -2316,9 +2322,14 @@ export const stampPdfVisibleSignatures = (
           });
         }
         const qrMatrix = qr === undefined ? undefined : yield* encodeVisibleStampQr(qr);
-        const font = yield* loadStampFont(STAMP_REGULAR_FONT, "Helvetica");
+        const font = yield* loadStampFont(
+          stampResourceName(document, STAMP_REGULAR_FONT),
+          "Helvetica",
+        );
         const boldFont =
-          badge === undefined ? font : yield* loadStampFont(STAMP_BOLD_FONT, "Helvetica-Bold");
+          badge === undefined
+            ? font
+            : yield* loadStampFont(stampResourceName(document, STAMP_BOLD_FONT), "Helvetica-Bold");
         if (badge === undefined) {
           yield* encodableStampText(font, lines);
         } else {
@@ -2591,8 +2602,14 @@ export const createIllustrativePdf = (
           Effect.mapError(stampFailure(reason)),
         );
         const { document } = yield* loadStampDocument(pdf, reason);
-        const font = yield* loadStampFont(STAMP_REGULAR_FONT, "Helvetica");
-        const bold = yield* loadStampFont(STAMP_BOLD_FONT, "Helvetica-Bold");
+        const font = yield* loadStampFont(
+          stampResourceName(document, STAMP_REGULAR_FONT),
+          "Helvetica",
+        );
+        const bold = yield* loadStampFont(
+          stampResourceName(document, STAMP_BOLD_FONT),
+          "Helvetica-Bold",
+        );
         const markLabel = data.markLabel ?? "EXAMPLE";
         yield* encodableStampText(bold, [data.title, ...(data.marked ? [markLabel] : [])]);
         yield* encodableStampText(font, [data.body]);

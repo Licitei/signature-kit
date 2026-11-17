@@ -427,7 +427,7 @@ describe("stampPdfRubric", () => {
       for (const page of document.pages) {
         const pageSource =
           page.ref === undefined ? "" : (objectSource(stamped, page.ref.number) ?? "");
-        expect(pageSource).toMatch(/\/XObject\s*<<[^>]*\/SigKitBadgeLogo\s+\d+\s+\d+\s+R/u);
+        expect(pageSource).toMatch(/\/XObject\s*<<[^>]*\/SigKitBadgeLogo\d+\s+\d+\s+\d+\s+R/u);
       }
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );

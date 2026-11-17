@@ -40,8 +40,8 @@ describe("visible stamp geometry", () => {
 
       expect(contentLines(yield* pageContent(stamped, 0))).toStrictEqual([
         "q 0.45 0.45 0.45 RG 0.6 w 20 20 120 44 re S Q",
-        "q 22.52 0 0 22.52 68.74 38.48 cm /SigKitRubricImage Do Q",
-        "q BT 0.1 0.1 0.1 rg /SigKitHelvetica 7 Tf 24 TL 1 0 0 1 23 30.48 Tm <52756272696361> Tj T* ET Q",
+        "q 22.52 0 0 22.52 68.74 38.48 cm /SigKitRubricImage5 Do Q",
+        "q BT 0.1 0.1 0.1 rg /SigKitHelvetica5 7 Tf 24 TL 1 0 0 1 23 30.48 Tm <52756272696361> Tj T* ET Q",
       ]);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
@@ -68,7 +68,7 @@ describe("visible stamp geometry", () => {
         `${bracket} 74.48 88.48 m 74.48 97.44 l S Q`,
         `${bracket} 137.52 88.48 m 128.56 88.48 l S Q`,
         `${bracket} 137.52 88.48 m 137.52 97.44 l S Q`,
-        "q BT 0.1137 0.3059 0.8471 rg /SigKitHelvetica 15.36 Tf 24 TL 1 0 0 1 97.0374 93.5488 Tm <4A41> Tj T* ET Q",
+        "q BT 0.1137 0.3059 0.8471 rg /SigKitHelvetica5 15.36 Tf 24 TL 1 0 0 1 97.0374 93.5488 Tm <4A41> Tj T* ET Q",
         "Q",
       ]);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
@@ -117,14 +117,14 @@ describe("visible stamp geometry", () => {
       });
 
       expect(contentLines(yield* pageContent(pdf, 0))).toStrictEqual([
-        "q BT 0 0 0 rg /SigKitHelveticaBold 20 Tf 24 TL 1 0 0 1 48 770 Tm <41636F72646F> Tj T* ET Q",
-        "q BT 0 0 0 rg /SigKitHelvetica 11 Tf 17 TL 1 0 0 1 48 720 Tm <436F72706F20646F20646F63756D656E746F> Tj T* ET Q",
-        "q BT 0 0 0 rg /SigKitHelveticaBold 12 Tf 24 TL 1 0 0 1 48 125 Tm <4558454D504C4F2056495355414C202F2056495355414C204558414D504C45> Tj T* ET Q",
-        "q BT 0 0 0 rg /SigKitHelvetica 10 Tf 24 TL 1 0 0 1 48 105 Tm <4E414F204520415353494E4154555241204449474954414C202F204E4F542041204449474954414C205349474E4154555245> Tj T* ET Q",
+        "q BT 0 0 0 rg /SigKitHelveticaBold4 20 Tf 24 TL 1 0 0 1 48 770 Tm <41636F72646F> Tj T* ET Q",
+        "q BT 0 0 0 rg /SigKitHelvetica4 11 Tf 17 TL 1 0 0 1 48 720 Tm <436F72706F20646F20646F63756D656E746F> Tj T* ET Q",
+        "q BT 0 0 0 rg /SigKitHelveticaBold4 12 Tf 24 TL 1 0 0 1 48 125 Tm <4558454D504C4F2056495355414C202F2056495355414C204558414D504C45> Tj T* ET Q",
+        "q BT 0 0 0 rg /SigKitHelvetica4 10 Tf 24 TL 1 0 0 1 48 105 Tm <4E414F204520415353494E4154555241204449474954414C202F204E4F542041204449474954414C205349474E4154555245> Tj T* ET Q",
         "q 0 0 0 RG 1 w [] 0 d 48 190 m 300 190 l S Q",
         "q 0.45 0.45 0.45 RG 1 w 48 185 252 42 re S Q",
-        "q BT 0 0 0 rg /SigKitHelvetica 10 Tf 24 TL 1 0 0 1 48 170 Tm <6669656C64> Tj T* ET Q",
-        "q BT 0 0 0 rg /SigKitHelveticaBold 16 Tf 24 TL 1 0 0 1 55 202 Tm <4558414D504C45> Tj T* ET Q",
+        "q BT 0 0 0 rg /SigKitHelvetica4 10 Tf 24 TL 1 0 0 1 48 170 Tm <6669656C64> Tj T* ET Q",
+        "q BT 0 0 0 rg /SigKitHelveticaBold4 16 Tf 24 TL 1 0 0 1 55 202 Tm <4558414D504C45> Tj T* ET Q",
       ]);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
