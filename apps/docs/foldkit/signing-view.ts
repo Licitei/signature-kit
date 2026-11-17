@@ -22,7 +22,6 @@ import {
   pdfPageRendererWorkerLayer,
   renderPdfPagesBrowser,
 } from "@signature-kit/pdf/render-browser";
-import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import type {
   PdfPrepareAndSignInput,
   PdfSignatureBadge,
