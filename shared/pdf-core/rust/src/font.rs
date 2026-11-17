@@ -7,7 +7,9 @@ use std::sync::OnceLock;
 use crate::cmap::{CMap, UnicodeMap};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{BuiltinEncoding, Standard14Font, encoding_glyph_name};
-use crate::fontprog::{FontProgram, agl_components, load_font_file_bytes, parse_font_program};
+use crate::fontprog::{
+    FontProgram, FontStyle, agl_components, load_font_file_bytes, parse_font_program, sfnt_style_of,
+};
 use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
 
@@ -119,6 +121,14 @@ impl Font {
             FontKind::Simple(simple) => simple.decode(bytes, glyphs, text),
             FontKind::Composite(composite) => composite.decode(bytes, glyphs, text),
         }
+    }
+
+    pub(crate) fn program_style(&self) -> Option<FontStyle> {
+        let program = match &self.inner {
+            FontKind::Simple(simple) => simple.program.as_ref(),
+            FontKind::Composite(composite) => composite.program.as_ref(),
+        };
+        program.map(FontProgram::style)
     }
 
     pub(crate) fn is_vertical(&self) -> bool {
@@ -712,6 +722,15 @@ fn load_cmap(
         }
         _ => CMap::identity(false),
     }
+}
+
+pub(crate) fn embedded_style(
+    descriptor: &Dict,
+    resolver: &dyn Resolver,
+    limits: &Limits,
+) -> Option<FontStyle> {
+    let bytes = load_font_file_bytes(b"FontFile2", descriptor, resolver, limits).ok()?;
+    sfnt_style_of(&bytes)
 }
 
 fn read_font_program(

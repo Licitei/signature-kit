@@ -329,8 +329,15 @@ pub(crate) struct Type1Encoding {
     entries: Vec<(u8, Vec<u8>)>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FontStyle {
+    pub bold: bool,
+    pub italic: bool,
+}
+
 pub(crate) struct FontProgram {
     data: Vec<u8>,
+    style: FontStyle,
     cmaps: Vec<CmapSubtable>,
     post: Option<(usize, usize)>,
     gsub: Option<(usize, usize)>,
@@ -350,6 +357,7 @@ pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
     let head = read_u32(&bytes, 0)?;
     let mut program = FontProgram {
         data: Vec::new(),
+        style: FontStyle::default(),
         cmaps: Vec::new(),
         post: None,
         gsub: None,
@@ -390,6 +398,7 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
     let mut cff = None;
     let mut hhea = None;
     let mut hmtx = None;
+    let mut os2 = None;
     for index in 0..table_count {
         let base = 12_usize.checked_add(index.checked_mul(16)?)?;
         let tag = [
@@ -416,9 +425,11 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
             b"CFF " => cff = range,
             b"hhea" => hhea = range,
             b"hmtx" => hmtx = range,
+            b"OS/2" => os2 = range,
             _ => {}
         }
     }
+    program.style = sfnt_style(bytes, head, os2);
     if let Some((offset, _)) = maxp {
         program.glyph_count = usize::from(read_u16(bytes, offset.checked_add(4)?)?);
     }
@@ -449,6 +460,50 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
         });
     }
     Some(())
+}
+
+pub(crate) fn sfnt_style_of(bytes: &[u8]) -> Option<FontStyle> {
+    let head = read_u32(bytes, 0)?;
+    if !matches!(head, SFNT_TRUETYPE | SFNT_OPENTYPE | SFNT_TRUE) {
+        return None;
+    }
+    let table_count = usize::from(read_u16(bytes, 4)?).min(MAX_TABLES);
+    let mut found = (None, None);
+    for index in 0..table_count {
+        let base = 12_usize.checked_add(index.checked_mul(16)?)?;
+        let tag = bytes.get(base..base.checked_add(4)?)?;
+        let offset = usize::try_from(read_u32(bytes, base.checked_add(8)?)?).ok()?;
+        let length = usize::try_from(read_u32(bytes, base.checked_add(12)?)?).ok()?;
+        let range = Some((offset, offset.checked_add(length)?));
+        match tag {
+            b"head" => found.0 = range,
+            b"OS/2" => found.1 = range,
+            _ => {}
+        }
+    }
+    (found.0.is_some() || found.1.is_some()).then(|| sfnt_style(bytes, found.0, found.1))
+}
+
+fn sfnt_style(
+    bytes: &[u8],
+    head: Option<(usize, usize)>,
+    os2: Option<(usize, usize)>,
+) -> FontStyle {
+    let weight = os2.and_then(|(offset, _)| read_u16(bytes, offset.checked_add(4)?));
+    let selection = os2.and_then(|(offset, _)| read_u16(bytes, offset.checked_add(62)?));
+    if let (Some(weight), Some(selection)) = (weight, selection) {
+        return FontStyle {
+            bold: selection & 0x20 != 0 || weight >= 600,
+            italic: selection & 0x201 != 0,
+        };
+    }
+    let mac_style = head
+        .and_then(|(offset, _)| read_u16(bytes, offset.checked_add(44)?))
+        .unwrap_or(0);
+    FontStyle {
+        bold: mac_style & 1 != 0,
+        italic: mac_style & 2 != 0,
+    }
 }
 
 fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut FontProgram) {
@@ -486,6 +541,10 @@ fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut Fo
 }
 
 impl FontProgram {
+    pub(crate) const fn style(&self) -> FontStyle {
+        self.style
+    }
+
     #[cfg(test)]
     pub(crate) const fn glyph_count(&self) -> usize {
         self.glyph_count

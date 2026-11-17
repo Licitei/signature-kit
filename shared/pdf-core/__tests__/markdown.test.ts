@@ -51,7 +51,7 @@ describe("PdfCore markdown", () => {
           format: "markdown",
         });
         const golden = readGolden(fixture.pdf.replace(/\.pdf$/, ".md"));
-        const actual = pages.length === 1 ? pages[0] : pages.join("\n\n---\n\n");
+        const actual = pages.filter((page) => page !== "").join("\n\n");
         expect(actual).toBe(golden);
       }).pipe(Effect.provide(layer)),
     );

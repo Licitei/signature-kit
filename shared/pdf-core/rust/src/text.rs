@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use crate::document::{Document, Page};
 use crate::failure::{Failure, FailureCode, Outcome};
-use crate::font::{Font, Glyph};
+use crate::font::{Font, Glyph, embedded_style};
+use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
 use crate::syntax::{ContentLexer, ContentToken};
@@ -47,6 +48,7 @@ const OP_TZ: u32 = op(b"Tz");
 const OP_TL: u32 = op(b"TL");
 const OP_TF: u32 = op(b"Tf");
 const OP_TS: u32 = op(b"Ts");
+const OP_TR: u32 = op(b"Tr");
 const OP_TD: u32 = op(b"Td");
 const OP_TD_LEADING: u32 = op(b"TD");
 const OP_TM: u32 = op(b"Tm");
@@ -160,8 +162,9 @@ const AXIS_TOLERANCE: f64 = 1.0;
 const MIN_RULING: f64 = 2.0;
 const THIN_FILL: f64 = 2.0;
 const FRAME_FRACTION: f64 = 0.9;
-const CELL_MAX_FRAC: f64 = 0.55;
 const FORCE_BOLD: i64 = 1 << 18;
+const ITALIC_FLAG: i64 = 1 << 6;
+const ITALIC_ANGLE: f64 = 4.0;
 
 fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
     let [a, b, c, d, e, f] = *matrix;
@@ -240,27 +243,6 @@ impl PathBuilder {
         self.start = None;
         self.current = None;
     }
-
-    fn bounds(&self) -> Option<[f64; 4]> {
-        if self.segments.is_empty() {
-            return None;
-        }
-        let mut x0 = f64::INFINITY;
-        let mut y0 = f64::INFINITY;
-        let mut x1 = f64::NEG_INFINITY;
-        let mut y1 = f64::NEG_INFINITY;
-        for [ax, ay, bx, by] in &self.segments {
-            for (x, y) in [(*ax, *ay), (*bx, *by)] {
-                if x.is_finite() && y.is_finite() {
-                    x0 = x0.min(x);
-                    y0 = y0.min(y);
-                    x1 = x1.max(x);
-                    y1 = y1.max(y);
-                }
-            }
-        }
-        (x0.is_finite() && y0.is_finite() && x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
-    }
 }
 
 fn text_string(bytes: &[u8]) -> String {
@@ -331,6 +313,7 @@ struct GState {
     leading: f64,
     rise: f64,
     line_width: f64,
+    stroked_fill: bool,
 }
 
 impl GState {
@@ -345,6 +328,7 @@ impl GState {
             leading: 0.0,
             rise: 0.0,
             line_width: 1.0,
+            stroked_fill: false,
         }
     }
 }
@@ -520,6 +504,7 @@ pub(crate) struct Ruling {
 pub(crate) struct Capture {
     pub split_repositioned: bool,
     pub structure: bool,
+    pub split_style: bool,
 }
 
 #[derive(Debug, Default)]
@@ -557,6 +542,7 @@ pub(crate) fn extract_runs(
     let capture = Capture {
         split_repositioned,
         structure: false,
+        split_style: false,
     };
     Ok(extract_content(document, page, limits, capture, session)?.runs)
 }
@@ -768,6 +754,11 @@ impl Interpreter<'_, '_> {
                     state.rise = value;
                 }
             }
+            OP_TR => {
+                if let Some([value]) = tail_numbers::<1>(operands) {
+                    state.stroked_fill = (value - 2.0).abs() < 0.5;
+                }
+            }
             OP_TF => self.set_font(operands, scope, state),
             OP_GS => self.apply_ext_gstate(operands, scope, state),
             OP_TD => {
@@ -901,39 +892,10 @@ impl Interpreter<'_, '_> {
         true
     }
 
-    fn push_filled_cell_rulings(
-        &mut self,
-        rect: [f64; 4],
-        page_width: f64,
-        page_height: f64,
-        width: f64,
-    ) {
-        let [x0, y0, x1, y1] = rect;
-        let frame =
-            x1 - x0 >= FRAME_FRACTION * page_width && y1 - y0 >= FRAME_FRACTION * page_height;
-        if frame {
-            return;
-        }
-        let (w, h) = (x1 - x0, y1 - y0);
-        let cell_like = w >= MIN_RULING
-            && h >= MIN_RULING
-            && w <= page_width * CELL_MAX_FRAC
-            && h <= page_height * CELL_MAX_FRAC;
-        if cell_like {
-            self.push_ruling([x0, y0, x1, y0], width);
-            self.push_ruling([x0, y1, x1, y1], width);
-            self.push_ruling([x0, y0, x0, y1], width);
-            self.push_ruling([x1, y0, x1, y1], width);
-        }
-    }
-
     fn paint(&mut self, path: &mut PathBuilder, state: &GState, stroke: bool) {
         let [a, b, c, d, _, _] = state.ctm;
         let width = state.line_width.abs() * (a * d - b * c).abs().sqrt();
         let (page_width, page_height) = self.page_extent;
-        if !stroke && let Some(bounds) = path.bounds() {
-            self.push_filled_cell_rulings(bounds, page_width, page_height, width);
-        }
         for rect in &path.rects {
             let [x0, y0, x1, y1] = *rect;
             let frame =
@@ -947,7 +909,6 @@ impl Interpreter<'_, '_> {
                 self.push_ruling([x0, y0, x0, y1], width);
                 self.push_ruling([x1, y0, x1, y1], width);
             } else {
-                self.push_filled_cell_rulings(*rect, page_width, page_height, width);
                 let (w, h) = (x1 - x0, y1 - y0);
                 let thin = w.min(h) <= THIN_FILL && w.max(h) >= MIN_RULING;
                 if thin && w >= h {
@@ -1067,11 +1028,7 @@ impl Interpreter<'_, '_> {
         let dict = resolved.as_dict()?;
         let font = Font::load(self.document, dict, self.limits).ok()?;
         let (ascent, descent) = self.vertical_metrics(dict);
-        let bold = self.weight_is_bold(dict);
-        let italic = dict
-            .get(b"BaseFont")
-            .and_then(Object::as_name)
-            .is_some_and(is_italic_name);
+        let FontStyle { bold, italic } = self.font_style(dict, &font);
         Some(Rc::new(FontEntry {
             font,
             ascent,
@@ -1081,28 +1038,73 @@ impl Interpreter<'_, '_> {
         }))
     }
 
-    fn weight_is_bold(&self, font: &Dict) -> bool {
-        if font
-            .get(b"BaseFont")
-            .and_then(Object::as_name)
-            .is_some_and(is_bold_name)
-        {
-            return true;
-        }
-        let descriptor_forces = |descriptor: &Object| {
-            self.document.follow(descriptor).is_ok_and(|resolved| {
-                resolved.as_dict().is_some_and(|dict| {
-                    dict.get(b"Flags")
-                        .and_then(Object::as_number)
-                        .is_some_and(|flags| f64_to_i64(flags) & FORCE_BOLD != 0)
-                        || dict
-                            .get(b"FontWeight")
-                            .and_then(Object::as_number)
-                            .is_some_and(|weight| weight >= 600.0)
-                })
-            })
+    fn descendant(&self, font: &Dict) -> Option<Rc<Object>> {
+        let array = self.document.follow(font.get(b"DescendantFonts")?).ok()?;
+        let first = array.as_array()?.first()?;
+        self.document.follow(first).ok()
+    }
+
+    fn descriptor_style(&self, font: &Dict) -> FontStyle {
+        let Some(descriptor) = font
+            .get(b"FontDescriptor")
+            .and_then(|descriptor| self.document.follow(descriptor).ok())
+        else {
+            return FontStyle::default();
         };
-        font.get(b"FontDescriptor").is_some_and(descriptor_forces)
+        let Some(dict) = descriptor.as_dict() else {
+            return FontStyle::default();
+        };
+        let flags = dict
+            .get(b"Flags")
+            .and_then(Object::as_number)
+            .map_or(0, f64_to_i64);
+        let heavy = dict
+            .get(b"FontWeight")
+            .and_then(Object::as_number)
+            .is_some_and(|weight| weight >= 600.0);
+        let slanted = dict
+            .get(b"ItalicAngle")
+            .and_then(Object::as_number)
+            .is_some_and(|angle| angle.abs() >= ITALIC_ANGLE);
+        FontStyle {
+            bold: flags & FORCE_BOLD != 0 || heavy,
+            italic: flags & ITALIC_FLAG != 0 || slanted,
+        }
+    }
+
+    fn font_style(&self, font: &Dict, loaded: &Font) -> FontStyle {
+        let descendant = self.descendant(font);
+        let nested = descendant.as_deref().and_then(Object::as_dict);
+        let names = [Some(font), nested]
+            .into_iter()
+            .flatten()
+            .filter_map(|dict| dict.get(b"BaseFont").and_then(Object::as_name));
+        let mut style = loaded.program_style().unwrap_or_else(|| {
+            if !self.capture.split_style {
+                return FontStyle::default();
+            }
+            [nested, Some(font)]
+                .into_iter()
+                .flatten()
+                .filter_map(|dict| dict.get(b"FontDescriptor"))
+                .filter_map(|descriptor| self.document.follow(descriptor).ok())
+                .find_map(|descriptor| {
+                    descriptor
+                        .as_dict()
+                        .and_then(|dict| embedded_style(dict, self.document, self.limits))
+                })
+                .unwrap_or_default()
+        });
+        for name in names {
+            style.bold |= is_bold_name(name);
+            style.italic |= is_italic_name(name);
+        }
+        for dict in [Some(font), nested].into_iter().flatten() {
+            let described = self.descriptor_style(dict);
+            style.bold |= described.bold;
+            style.italic |= described.italic;
+        }
+        style
     }
 
     fn descriptor_metrics(&self, descriptor: &Object) -> Option<(f64, f64)> {
@@ -1213,6 +1215,7 @@ impl Interpreter<'_, '_> {
         let direction = (dir_x / dir_length, dir_y / dir_length);
         let mut pen_x = 0.0;
         let mut pen_y = 0.0;
+        let style = (entry.bold || state.stroked_fill, entry.italic);
         for glyph in glyphs {
             let replacement = match self.actual.as_ref() {
                 Some(text) if !self.actual_emitted => Some(text.clone()),
@@ -1281,13 +1284,20 @@ impl Interpreter<'_, '_> {
                     join = Join::Split;
                 }
                 repositioned = false;
+                if self.capture.split_style
+                    && visible
+                    && matches!(join, Join::Same | Join::Spaced)
+                    && (self.pending.bold, self.pending.italic) != style
+                {
+                    join = Join::Split;
+                }
                 if matches!(join, Join::Same | Join::Spaced) {
                     self.extend(glyph_text, visible, join == Join::Spaced);
                     if visible {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
                         self.merge_bounds(bounds);
-                        self.pending.bold &= entry.bold;
-                        self.pending.italic &= entry.italic;
+                        self.pending.bold &= style.0;
+                        self.pending.italic &= style.1;
                     }
                     self.pending.end = end;
                 } else {
@@ -1296,7 +1306,7 @@ impl Interpreter<'_, '_> {
                     }
                     if visible {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.begin(glyph_text, bounds, effective_size, direction, end, entry);
+                        self.begin(glyph_text, bounds, effective_size, direction, end, style);
                     }
                 }
             }
@@ -1339,11 +1349,11 @@ impl Interpreter<'_, '_> {
         size: f64,
         direction: (f64, f64),
         end: (f64, f64),
-        entry: &FontEntry,
+        style: (bool, bool),
     ) {
         self.pending.open = true;
-        self.pending.bold = entry.bold;
-        self.pending.italic = entry.italic;
+        self.pending.bold = style.0;
+        self.pending.italic = style.1;
         self.pending.text.clear();
         self.pending.text.push_str(text);
         self.pending.bounds = bounds;
@@ -1837,6 +1847,7 @@ mod tests {
         let capture = Capture {
             split_repositioned: true,
             structure: true,
+            split_style: false,
         };
         extract_content(
             &document,
@@ -1947,6 +1958,7 @@ mod tests {
         let capture = Capture {
             split_repositioned: true,
             structure: false,
+            split_style: false,
         };
         extract_content(
             &document,
@@ -1976,7 +1988,7 @@ mod tests {
         assert!(lines.contains(&(20.0, 20.0, 20.0, 60.0)));
         assert!(lines.contains(&(120.0, 20.0, 120.0, 60.0)));
         assert!(lines.contains(&(100.0, 100.25, 180.0, 100.25)));
-        assert_eq!(lines.len(), 9);
+        assert_eq!(lines.len(), 5);
     }
 
     #[test]
@@ -2023,6 +2035,7 @@ mod tests {
         let capture = Capture {
             split_repositioned: true,
             structure: true,
+            split_style: false,
         };
         let result = extract_content(
             &document,

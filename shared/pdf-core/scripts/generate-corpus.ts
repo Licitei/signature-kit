@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { PDFFont, PDFPage } from "@cantoo/pdf-lib";
+
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
 
 const { PDFDocument, PDFHexString, PDFString, rgb, StandardFonts } =
@@ -256,6 +258,69 @@ const buildIncrementalUpdate = async (): Promise<Uint8Array> => {
   return updated.save();
 };
 
+type DrawnPiece = { readonly text: string; readonly font: PDFFont };
+
+const drawPieces = (
+  page: PDFPage,
+  pieces: ReadonlyArray<DrawnPiece>,
+  x: number,
+  y: number,
+  size: number,
+): void => {
+  let cursor = x;
+  for (const piece of pieces) {
+    page.drawText(piece.text, { x: cursor, y, size, font: piece.font });
+    cursor += piece.font.widthOfTextAtSize(piece.text, size);
+  }
+};
+
+const wrapWords = (text: string, font: PDFFont, size: number, width: number): string[] => {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(" ")) {
+    const candidate = current === "" ? word : `${current} ${word}`;
+    if (current !== "" && font.widthOfTextAtSize(candidate, size) > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current !== "") {
+    lines.push(current);
+  }
+  return lines;
+};
+
+const drawJustified = (
+  page: PDFPage,
+  lines: ReadonlyArray<string>,
+  options: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly font: PDFFont;
+    readonly size: number;
+    readonly leading: number;
+  },
+): void => {
+  const { x, y, width, font, size, leading } = options;
+  for (const [index, line] of lines.entries()) {
+    const baseline = y - index * leading;
+    const words = line.split(" ");
+    if (index === lines.length - 1 || words.length < 2) {
+      page.drawText(line, { x, y: baseline, size, font });
+      continue;
+    }
+    const extra = (width - font.widthOfTextAtSize(line, size)) / (words.length - 1);
+    let cursor = x;
+    for (const word of words) {
+      page.drawText(word, { x: cursor, y: baseline, size, font });
+      cursor += font.widthOfTextAtSize(`${word} `, size) + extra;
+    }
+  }
+};
+
 const buildMarkdownBasics = async (): Promise<Uint8Array> => {
   const document = await PDFDocument.create();
   stampMetadata(document);
@@ -264,9 +329,17 @@ const buildMarkdownBasics = async (): Promise<Uint8Array> => {
   const oblique = await document.embedFont(StandardFonts.HelveticaOblique);
   const page = document.addPage(PAGE_SIZE);
   page.drawText("1. INFORMAÇÕES GERAIS", { x: 72, y: 720, size: 14, font: bold });
-  page.drawText("Texto de corpo com destaque ", { x: 72, y: 690, size: 11, font: regular });
-  page.drawText("CONCORRÊNCIA", { x: 248, y: 690, size: 11, font: bold });
-  page.drawText(" aberta.", { x: 356, y: 690, size: 11, font: regular });
+  drawPieces(
+    page,
+    [
+      { text: "Texto de corpo com destaque ", font: regular },
+      { text: "CONCORRÊNCIA", font: bold },
+      { text: " aberta.", font: regular },
+    ],
+    72,
+    690,
+    11,
+  );
   page.drawText("• primeiro item", { x: 72, y: 660, size: 11, font: regular });
   page.drawText("• segundo item", { x: 72, y: 642, size: 11, font: regular });
   page.drawText("1.1. cláusula numerada permanece parágrafo.", {
@@ -286,7 +359,14 @@ const buildMarkdownBasics = async (): Promise<Uint8Array> => {
     for (let col = 0; col < 2; col += 1) {
       const x = 72 + col * 150;
       const y = 440 - row * 28;
-      page.drawRectangle({ x, y, width: 150, height: 28, borderWidth: 0.5 });
+      page.drawRectangle({
+        x,
+        y,
+        width: 150,
+        height: 28,
+        borderWidth: 0.5,
+        borderColor: rgb(0, 0, 0),
+      });
     }
   }
   page.drawText("Item", { x: 78, y: 450, size: 10, font: bold });
@@ -296,14 +376,36 @@ const buildMarkdownBasics = async (): Promise<Uint8Array> => {
   return document.save({ useObjectStreams: false });
 };
 
+const HYPHENATED_PARAGRAPHS: ReadonlyArray<ReadonlyArray<string>> = [
+  [
+    "A planilha orçamentária contempla toda a mão-de-",
+    "obra direta, os encargos sociais, os insumos e o",
+    "apoio técnico e o custo do suporte administra-",
+    "tivo aprovado pela comissão.",
+  ],
+  [
+    "Caso a garantia seja exigida, a contratada deverá apresentá-",
+    "lo em até cinco dias úteis, preservado o bem-estar dos",
+    "trabalhadores.",
+  ],
+];
+
 const buildMarkdownHyphenation = async (): Promise<Uint8Array> => {
   const document = await PDFDocument.create();
   stampMetadata(document);
   const font = await document.embedFont(StandardFonts.Helvetica);
   const page = document.addPage(PAGE_SIZE);
-  page.drawText("Orçamento de mão-de-", { x: 72, y: 700, size: 11, font });
-  page.drawText("obra com carga administra-", { x: 72, y: 685, size: 11, font });
-  page.drawText("tivo aprovado.", { x: 72, y: 670, size: 11, font });
+  const size = 11;
+  const width = Math.max(
+    ...HYPHENATED_PARAGRAPHS.flatMap((lines) =>
+      lines.slice(0, -1).map((line) => font.widthOfTextAtSize(line, size)),
+    ),
+  );
+  let y = 700;
+  for (const lines of HYPHENATED_PARAGRAPHS) {
+    drawJustified(page, lines, { x: 72, y, width, font, size, leading: 14 });
+    y -= lines.length * 14 + 14;
+  }
   return document.save({ useObjectStreams: false });
 };
 
@@ -312,61 +414,99 @@ const buildMarkdownPageContinue = async (): Promise<Uint8Array> => {
   stampMetadata(document);
   const regular = await document.embedFont(StandardFonts.Helvetica);
   const small = await document.embedFont(StandardFonts.HelveticaOblique);
-  const header = "EDITAL DE TESTE — PÁGINA";
-  const footer = "Licitei — corpus markdown";
-  for (let index = 0; index < 2; index += 1) {
+  const bodies: ReadonlyArray<ReadonlyArray<ReadonlyArray<string>>> = [
+    [
+      [
+        "O presente edital trata da contratação de serviços contínuos de",
+        "manutenção predial.",
+      ],
+      [
+        "A proposta deve considerar a mão-de-obra, os encargos e os insumos",
+        "necessários à execução dos serviços, sem interrup-",
+      ],
+    ],
+    [["ção contratual, durante toda a vigência do contrato."], ["Segundo parágrafo da página dois."]],
+  ];
+  for (const [index, paragraphs] of bodies.entries()) {
     const page = document.addPage(PAGE_SIZE);
-    page.drawText(header, { x: 72, y: 760, size: 9, font: small });
-    page.drawText(footer, { x: 72, y: 48, size: 9, font: small });
-    if (index === 0) {
-      page.drawText("A proposta deve considerar mão-de-obra e encargos sem interrup-", {
-        x: 72,
-        y: 700,
-        size: 11,
-        font: regular,
-      });
-    } else {
-      page.drawText("ção contratual em continuidade.", {
-        x: 72,
-        y: 700,
-        size: 11,
-        font: regular,
-      });
+    page.drawText(`EDITAL Nº 7/2026 — PÁGINA ${index + 1} DE ${bodies.length}`, {
+      x: 72,
+      y: 760,
+      size: 9,
+      font: small,
+    });
+    page.drawText(`Licitei — corpus markdown — ${index + 1}/${bodies.length}`, {
+      x: 72,
+      y: 40,
+      size: 9,
+      font: small,
+    });
+    let y = 700;
+    for (const lines of paragraphs) {
+      for (const line of lines) {
+        page.drawText(line, { x: 72, y, size: 11, font: regular });
+        y -= 14;
+      }
+      y -= 12;
     }
   }
   return document.save({ useObjectStreams: false });
 };
+
+const NESTED_LIST_LINES: ReadonlyArray<readonly [number, number, string]> = [
+  [72, 720, "• Documentos de habilitação:"],
+  [90, 704, "– certidão negativa de débitos;"],
+  [90, 688, "– balanço patrimonial."],
+  [72, 672, "• Proposta comercial."],
+  [72, 646, "1. Prazo de entrega"],
+  [72, 630, "2. Local de entrega:"],
+  [90, 614, "a) almoxarifado central;"],
+  [90, 598, "b) unidade de saúde."],
+  [72, 582, "3. Forma de pagamento"],
+  [72, 556, "I - habilitação jurídica;"],
+  [72, 540, "II - qualificação técnica."],
+];
 
 const buildMarkdownNestedLists = async (): Promise<Uint8Array> => {
   const document = await PDFDocument.create();
   stampMetadata(document);
   const font = await document.embedFont(StandardFonts.Helvetica);
   const page = document.addPage(PAGE_SIZE);
-  const lines = [
-    "• nível um",
-    "  - filho A",
-    "  - filho B",
-    "1. numerado",
-    "  a) subitem A",
-    "  I - item romano",
-  ];
-  let y = 720;
-  for (const line of lines) {
-    page.drawText(line, { x: 72, y, size: 11, font });
-    y -= 18;
+  for (const [x, y, line] of NESTED_LIST_LINES) {
+    page.drawText(line, { x, y, size: 11, font });
   }
   return document.save({ useObjectStreams: false });
 };
+
+const TWO_COLUMN_TEXT: ReadonlyArray<ReadonlyArray<string>> = [
+  [
+    "A coluna da esquerda começa com um parágrafo que ocupa algumas linhas de texto corrido sem interrupção até o ponto final.",
+    "Segundo parágrafo à esquerda.",
+  ],
+  [
+    "A coluna da direita traz outro texto independente, que também segue em linhas paralelas às da coluna esquerda.",
+    "Segundo parágrafo à direita.",
+  ],
+];
 
 const buildMarkdownTwoColumn = async (): Promise<Uint8Array> => {
   const document = await PDFDocument.create();
   stampMetadata(document);
   const font = await document.embedFont(StandardFonts.Helvetica);
   const page = document.addPage(PAGE_SIZE);
-  page.drawText("Coluna esquerda parágrafo", { x: 72, y: 700, size: 11, font, maxWidth: 200 });
-  page.drawText("segunda linha esquerda", { x: 72, y: 670, size: 11, font });
-  page.drawText("Coluna direita independente", { x: 320, y: 700, size: 11, font, maxWidth: 200 });
-  page.drawText("continuação direita", { x: 320, y: 670, size: 11, font });
+  const size = 10;
+  const width = 230;
+  for (const [column, paragraphs] of TWO_COLUMN_TEXT.entries()) {
+    const x = 72 + column * (width + 20);
+    let y = 700;
+    for (const paragraph of paragraphs) {
+      for (const line of wrapWords(paragraph, font, size, width)) {
+        page.drawText(line, { x, y, size, font });
+        y -= 13;
+      }
+      y -= 10;
+    }
+  }
   return document.save({ useObjectStreams: false });
 };
 

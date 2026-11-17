@@ -1,7 +1,5 @@
-*EDITAL DE TESTE — PÁGINA*
+O presente edital trata da contratação de serviços contínuos de manutenção predial.
 
-A proposta deve considerar mão-de-obra e encargos sem interrup-
+A proposta deve considerar a mão-de-obra, os encargos e os insumos necessários à execução dos serviços, sem interrupção contratual, durante toda a vigência do contrato.
 
----
-
-*Licitei — corpus markdown* ção contratual em continuidade.
+Segundo parágrafo da página dois.

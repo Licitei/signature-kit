@@ -1,3 +1,7 @@
-Coluna esquerda parágrafo Coluna direita independente
+A coluna da esquerda começa com um parágrafo que ocupa algumas linhas de texto corrido sem interrupção até o ponto final.
 
-segunda linha esquerda continuação direita
+Segundo parágrafo à esquerda.
+
+A coluna da direita traz outro texto independente, que também segue em linhas paralelas às da coluna esquerda.
+
+Segundo parágrafo à direita.
