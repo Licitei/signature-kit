@@ -21,9 +21,6 @@ else
   exit 1
 fi
 
-# Drop Debug formatting and panic location metadata from the binary. Debug
-# derives stay for the type system / clippy; they emit no format strings.
-export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Z fmt-debug=none -Z location-detail=none"
 
 cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST"
 mkdir -p "$OUT_DIR"
