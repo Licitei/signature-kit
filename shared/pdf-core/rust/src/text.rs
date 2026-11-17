@@ -664,7 +664,6 @@ impl Interpreter<'_, '_> {
         let mut lexer = ContentLexer::new(data);
         while let Some(token) = lexer.next() {
             let name = match token {
-                Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
                 Err(_) => break,
                 Ok(ContentToken::Operand(operand)) => {
                     if operands.len() >= MAX_OPERANDS {
@@ -1902,6 +1901,16 @@ mod tests {
         let restored = extract_with(&simple_pdf(&shifted), &Limits::default()).unwrap();
         assert_eq!(texts(&restored), ["base"]);
         assert!(restored[0].rect[0] < 20.0);
+    }
+
+    #[test]
+    fn deeply_nested_content_arrays_end_the_stream_without_failing() {
+        let content = format!(
+            "BT /F1 10 Tf 1 0 0 1 10 700 Tm (kept) Tj {} (lost) Tj ET",
+            "[".repeat(100)
+        );
+        let items = extract_with(&simple_pdf(&content), &Limits::default()).unwrap();
+        assert_eq!(texts(&items), ["kept"]);
     }
 
     #[test]
