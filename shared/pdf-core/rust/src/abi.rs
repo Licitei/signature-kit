@@ -18,6 +18,7 @@ use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::num::widen;
 use crate::png;
+use crate::render::{self, RenderedPage};
 use crate::revision::{Analysis, Report, analyze, revision_complete};
 use crate::table::Table;
 use crate::write::{Packing, create, merge};
@@ -41,6 +42,10 @@ const TABLES_VERSION: u32 = 1;
 const TABLES_HEADER_LEN: usize = 16;
 const TABLE_RECORD_LEN: usize = 48;
 const CELL_RECORD_LEN: usize = 56;
+const RENDER_MAGIC: u32 = 0x4C52_4450;
+const RENDER_VERSION: u32 = 1;
+const RENDER_HEADER_LEN: usize = 16;
+const RENDER_PAGE_HEADER_LEN: usize = 56;
 const ALIGNMENT: usize = 8;
 const SIGNATURES_MAGIC: u32 = 0x4753_4450;
 const SIGNATURES_VERSION: u32 = 1;
@@ -443,6 +448,49 @@ fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
         }
     }
     out.align();
+    out.done()
+}
+
+fn encode_render(pages: &[RenderedPage]) -> Outcome<Writer> {
+    let mut capacity = RENDER_HEADER_LEN;
+    for page in pages {
+        capacity = capacity
+            .saturating_add(RENDER_PAGE_HEADER_LEN)
+            .saturating_add(padded(page.list.ops.len())?)
+            .saturating_add(padded(page.list.blobs.len().saturating_mul(8))?)
+            .saturating_add(page.list.blob_bytes)
+            .saturating_add(page.list.blobs.len().saturating_mul(ALIGNMENT));
+    }
+    let mut out = Writer::with_capacity(capacity);
+    out.u32(RENDER_MAGIC);
+    out.u32(RENDER_VERSION);
+    out.u32(len32(pages.len())?);
+    out.u32(0);
+    for page in pages {
+        let start = out.payload_len();
+        out.u32(page.page_index);
+        out.i32(page.rotate);
+        out.u32(len32(page.list.ops.len())?);
+        out.u32(len32(page.list.blobs.len())?);
+        out.boxed(&page.view);
+        out.u32(0);
+        out.u32(0);
+        out.bytes(&page.list.ops);
+        out.align();
+        let mut cursor = 0_usize;
+        for blob in &page.list.blobs {
+            out.u32(len32(cursor)?);
+            out.u32(len32(blob.len())?);
+            cursor = cursor.saturating_add(padded(blob.len())?);
+        }
+        out.align();
+        for blob in &page.list.blobs {
+            out.bytes(blob);
+            out.align();
+        }
+        let section = len32(out.payload_len().saturating_sub(start))?;
+        out.patch_u32(start.saturating_add(48), section);
+    }
     out.done()
 }
 
@@ -929,6 +977,31 @@ pub(crate) unsafe extern "C" fn pdf_core_signatures(
             _ => return Err(Failure::request("unknown signature analysis mode")),
         };
         encode_signatures(&analyze(bytes, analysis))
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_render(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+    scale: f64,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|inner_request| {
+        let pages = render::render_pages(
+            inner_request.pdf,
+            inner_request.pages,
+            scale,
+            &Limits::default(),
+        )?;
+        encode_render(&pages)
     }))
 }
 
@@ -1717,5 +1790,76 @@ mod tests {
             assert_eq!(block.status, STATUS_OK);
             release(&block);
         }
+    }
+
+    /// # Safety
+    ///
+    /// Same contract as [`pdf_core_render`].
+    unsafe extern "C" fn render_at_two(
+        pdf_ptr: *const u8,
+        pdf_len: usize,
+        flags: u32,
+        pages_ptr: *const u32,
+        pages_len: usize,
+    ) -> *mut u8 {
+        // SAFETY: forwarded from this function's contract.
+        unsafe { pdf_core_render(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, 2.0) }
+    }
+
+    fn read_u32(payload: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(payload[at..at.saturating_add(4)].try_into().unwrap())
+    }
+
+    fn read_f64(payload: &[u8], at: usize) -> f64 {
+        f64::from_le_bytes(payload[at..at.saturating_add(8)].try_into().unwrap())
+    }
+
+    #[test]
+    fn render_payload_carries_views_ops_and_blobs() {
+        let bytes = document(
+            &[
+                page("0 0 1 rg 10 10 20 20 re f".to_owned()),
+                page(
+                    "q 20 0 0 10 10 10 cm BI /W 1 /H 1 /CS /G /BPC 8 /F /AHx ID 80> EI Q"
+                        .to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let block = call_entry(render_at_two, &bytes, FLAG_PAGE_INDEXES, &[1]);
+        assert_eq!(block.status, STATUS_OK);
+        let payload = &block.payload;
+        assert_eq!(read_u32(payload, 0), RENDER_MAGIC);
+        assert_eq!(read_u32(payload, 4), RENDER_VERSION);
+        assert_eq!(read_u32(payload, 8), 1);
+        let page_at = RENDER_HEADER_LEN;
+        assert_eq!(read_u32(payload, page_at), 1);
+        let ops_len = widen(read_u32(payload, page_at + 8));
+        assert!(ops_len > 0);
+        assert_eq!(read_u32(payload, page_at + 12), 1);
+        assert_exact(
+            &[
+                read_f64(payload, page_at + 16),
+                read_f64(payload, page_at + 24),
+                read_f64(payload, page_at + 32),
+                read_f64(payload, page_at + 40),
+            ],
+            &[0.0_f64, 0.0_f64, 600.0_f64, 800.0_f64],
+        );
+        let section = widen(read_u32(payload, page_at + 48));
+        assert_eq!(section, payload.len() - RENDER_HEADER_LEN);
+        assert_eq!(section & (ALIGNMENT - 1), 0);
+        let table_at = (page_at + RENDER_PAGE_HEADER_LEN + ops_len + 7) & !7;
+        let blobs_at = (table_at + 8 + 7) & !7;
+        let blob_offset = widen(read_u32(payload, table_at));
+        let blob_len = widen(read_u32(payload, table_at + 4));
+        assert_eq!(
+            &payload[blobs_at + blob_offset..blobs_at + blob_offset + blob_len],
+            &[128, 128, 128, 255]
+        );
+        release(&block);
+        let failed = call_entry(render_at_two, &bytes, FLAG_PAGE_INDEXES, &[7]);
+        assert_eq!(failed.status, u32::from(FailureCode::InvalidPdf));
+        release(&failed);
     }
 }

@@ -6,8 +6,10 @@ use core::cell::OnceCell;
 use std::collections::HashMap;
 
 use crate::cff::CffFont;
+use crate::display::PathData;
 use crate::failure::Failure;
 use crate::font_tables::{BuiltinEncoding, encoding_glyph_name, lookup_agl};
+use crate::glyph::{Type1Glyphs, parse_type1, truetype_outline};
 use crate::inspection::Limits;
 
 const MAX_TABLES: usize = 128;
@@ -341,6 +343,7 @@ pub(crate) struct FontStyle {
 }
 
 pub(crate) struct FontProgram {
+    cff_start: usize,
     cmaps: Vec<CmapSubtable>,
     codes: OnceCell<HashMap<u16, u32>>,
     data: Vec<u8>,
@@ -353,6 +356,7 @@ pub(crate) struct FontProgram {
     post: Option<(usize, usize)>,
     reverse: OnceCell<HashMap<u16, u32>>,
     style: FontStyle,
+    type1: OnceCell<Option<Type1Glyphs>>,
 }
 
 type TableRange = Option<(usize, usize)>;
@@ -464,6 +468,21 @@ impl FontProgram {
         Some(parts.into_iter().map(|(_, component)| component).collect())
     }
 
+    pub(crate) fn font_matrix(&self, gid: u16) -> [f64; 6] {
+        match &self.outlines {
+            Outlines::Cff(cff) => cff.font_matrix(gid),
+            Outlines::TrueType(outlines) => {
+                let scale = 1.0 / f64::from(outlines.units_per_em.max(16));
+                [scale, 0.0, 0.0, scale, 0.0, 0.0]
+            }
+            Outlines::Type1(_) => self
+                .type1_glyphs()
+                .and_then(Type1Glyphs::matrix)
+                .unwrap_or([0.001, 0.0, 0.0, 0.001, 0.0, 0.0]),
+            Outlines::None => [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+        }
+    }
+
     pub(crate) fn gid_for_name(&self, name: &[u8]) -> Option<u16> {
         let index = self.name_index.get_or_init(|| {
             let mut map = HashMap::new();
@@ -547,6 +566,10 @@ impl FontProgram {
         matches!(&self.outlines, Outlines::Cff(_) | Outlines::Type1(_))
     }
 
+    pub(crate) const fn has_cmaps(&self) -> bool {
+        !self.cmaps.is_empty()
+    }
+
     pub(crate) fn is_cid_keyed(&self) -> bool {
         matches!(&self.outlines, Outlines::Cff(cff) if cff.is_cid_keyed())
     }
@@ -561,6 +584,18 @@ impl FontProgram {
             }
             map
         })
+    }
+
+    pub(crate) fn outline(&self, gid: u16, path: &mut PathData) -> Option<()> {
+        match &self.outlines {
+            Outlines::TrueType(outlines) => {
+                let locate = |glyph: u16| glyph_range(&self.data, outlines, glyph);
+                truetype_outline(&self.data, &locate, gid, path)
+            }
+            Outlines::Cff(cff) => cff.outline(self.data.get(self.cff_start..)?, gid, path),
+            Outlines::Type1(_) => self.type1_glyphs()?.outline(gid, path),
+            Outlines::None => None,
+        }
     }
 
     fn post_names(&self) -> &[Vec<u8>] {
@@ -646,6 +681,17 @@ impl FontProgram {
     pub(crate) const fn style(&self) -> FontStyle {
         self.style
     }
+
+    pub(crate) fn type1_gid(&self, name: &[u8]) -> Option<u16> {
+        self.type1_glyphs()?.gid(name)
+    }
+
+    fn type1_glyphs(&self) -> Option<&Type1Glyphs> {
+        if !matches!(self.outlines, Outlines::Type1(_)) {
+            return None;
+        }
+        self.type1.get_or_init(|| parse_type1(&self.data)).as_ref()
+    }
 }
 
 impl Type1Encoding {
@@ -676,6 +722,7 @@ pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
     }
     let head = read_u32(&bytes, 0)?;
     let mut program = FontProgram {
+        cff_start: 0,
         data: Vec::new(),
         style: FontStyle::default(),
         cmaps: Vec::new(),
@@ -688,6 +735,7 @@ pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
         reverse: OnceCell::new(),
         codes: OnceCell::new(),
         ligatures: OnceCell::new(),
+        type1: OnceCell::new(),
     };
     match head {
         SFNT_TRUETYPE | SFNT_OPENTYPE | SFNT_TRUE => parse_sfnt(&bytes, &mut program)?,
@@ -758,6 +806,7 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
     }
     if let Some((offset, end)) = cff {
         let font = CffFont::parse(bytes.get(offset..end)?)?;
+        program.cff_start = offset;
         program.glyph_count = program.glyph_count.max(font.glyph_count());
         program.outlines = Outlines::Cff(Box::new(font));
     } else if let (

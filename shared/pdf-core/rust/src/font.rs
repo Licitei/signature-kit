@@ -31,13 +31,11 @@ const LIGATURE_ADVANCE_BELOW: f64 = 0.10;
 const LIGATURE_ADVANCE_ABOVE: f64 = 0.03;
 const DEFAULT_VERTICAL_ORIGIN: f64 = 880.0;
 const DEFAULT_VERTICAL_ADVANCE: f64 = 1000.0;
-
 const UNRESOLVED: IdentitySlot = IdentitySlot {
     start: usize::MAX,
     end: usize::MAX,
     advance: 0.0,
 };
-
 static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; BuiltinEncoding::COUNT] =
     [const { OnceLock::new() }; BuiltinEncoding::COUNT];
 
@@ -146,13 +144,42 @@ impl Font {
     }
 
     pub(crate) fn load(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<Self> {
+        Self::load_with(resolver, font, limits, false)
+    }
+
+    pub(crate) fn load_for_render(
+        resolver: &dyn Resolver,
+        font: &Dict,
+        limits: &Limits,
+    ) -> Outcome<Self> {
+        Self::load_with(resolver, font, limits, true)
+    }
+
+    fn load_with(
+        resolver: &dyn Resolver,
+        font: &Dict,
+        limits: &Limits,
+        force_program: bool,
+    ) -> Outcome<Self> {
         let subtype = name_bytes(font.get(b"Subtype"));
         let inner = if subtype == Some(b"Type0") {
-            FontKind::Composite(Box::new(load_type0(resolver, font, limits)?))
+            FontKind::Composite(Box::new(load_type0(resolver, font, limits, force_program)?))
         } else {
-            FontKind::Simple(Box::new(load_simple(resolver, font, limits)?))
+            FontKind::Simple(Box::new(load_simple(
+                resolver,
+                font,
+                limits,
+                force_program,
+            )?))
         };
         Ok(Self { inner })
+    }
+
+    pub(crate) fn program(&self) -> Option<&FontProgram> {
+        match &self.inner {
+            FontKind::Simple(simple) => simple.program.as_ref(),
+            FontKind::Composite(composite) => composite.program.as_ref(),
+        }
     }
 
     pub(crate) fn program_style(&self) -> Option<FontStyle> {
@@ -161,6 +188,23 @@ impl Font {
             FontKind::Composite(composite) => composite.program.as_ref(),
         };
         program.map(FontProgram::style)
+    }
+
+    pub(crate) fn render_gid(&self, code: u32) -> Option<u16> {
+        match &self.inner {
+            FontKind::Simple(simple) => simple.render_gid(code),
+            FontKind::Composite(composite) => {
+                let program = composite.program.as_ref()?;
+                composite.gid_for_cid(program, code)
+            }
+        }
+    }
+
+    pub(crate) fn render_name(&self, code: u32) -> Option<&[u8]> {
+        match &self.inner {
+            FontKind::Simple(simple) => simple.encoding_name(code),
+            FontKind::Composite(_) => None,
+        }
     }
 
     pub(crate) fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
@@ -201,6 +245,15 @@ impl SimpleFont {
                 text: text_start..text.len(),
             });
         }
+    }
+
+    fn encoding_name(&self, code: u32) -> Option<&[u8]> {
+        if let Some(name) = self.encoding.difference(code) {
+            return Some(name);
+        }
+        let byte = u8::try_from(code).ok()?;
+        let base = encoding_glyph_name(self.encoding.builtin, byte);
+        (!base.is_empty()).then_some(base.as_bytes())
     }
 
     fn gid_text(&self, program: &FontProgram, gid: u16) -> Option<Vec<u32>> {
@@ -266,6 +319,50 @@ impl SimpleFont {
         }
         let gid = program.code_to_gid(code, self.symbolic)?;
         self.gid_text(program, gid)
+    }
+
+    fn render_gid(&self, code: u32) -> Option<u16> {
+        let program = self.program.as_ref()?;
+        let byte = u8::try_from(code).ok()?;
+        if program.has_authoritative_names() {
+            let name = self
+                .encoding
+                .difference(code)
+                .or_else(|| {
+                    self.encoding.base_explicit.then(|| {
+                        let base = encoding_glyph_name(self.encoding.builtin, byte);
+                        (!base.is_empty()).then_some(base.as_bytes())
+                    })?
+                })
+                .or_else(|| program.builtin_name(byte))
+                .or_else(|| {
+                    let standard = encoding_glyph_name(BuiltinEncoding::Standard, byte);
+                    (!standard.is_empty()).then_some(standard.as_bytes())
+                })?;
+            return program
+                .gid_for_name(name)
+                .or_else(|| program.type1_gid(name));
+        }
+        if !program.has_cmaps() {
+            return Some(u16::from(byte));
+        }
+        if self.symbolic
+            && let Some(gid) = program.code_to_gid(code, true)
+        {
+            return Some(gid);
+        }
+        if let Some(name) = self.encoding_name(code) {
+            if let Some(gid) = agl_components(name)
+                .filter(|codepoints| codepoints.len() == 1)
+                .and_then(|codepoints| program.code_to_gid(*codepoints.first()?, false))
+            {
+                return Some(gid);
+            }
+            if let Some(gid) = program.gid_for_name(name) {
+                return Some(gid);
+            }
+        }
+        program.code_to_gid(code, self.symbolic)
     }
 
     fn resolve(&self, code: u32) -> Box<[u32]> {
@@ -639,7 +736,12 @@ fn deref_dict(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Dict> {
     deref(resolver, value)?.as_dict().cloned()
 }
 
-fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<SimpleFont> {
+fn load_simple(
+    resolver: &dyn Resolver,
+    font: &Dict,
+    limits: &Limits,
+    force_program: bool,
+) -> Outcome<SimpleFont> {
     let subtype = name_bytes(font.get(b"Subtype"));
     let descriptor = deref_dict(resolver, font.get(b"FontDescriptor"));
     let flags = descriptor
@@ -658,7 +760,8 @@ fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome
     let font_scale = read_font_matrix(resolver, font)
         .map(|matrix| (matrix[0] * matrix[0] + matrix[1] * matrix[1]).sqrt())
         .filter(|scale| *scale > 0.0_f64);
-    let needs_program = simple_needs_program(&encoding, &to_unicode, &widths, symbolic);
+    let needs_program =
+        force_program || simple_needs_program(&encoding, &to_unicode, &widths, symbolic);
     let program = descriptor
         .as_ref()
         .filter(|_| needs_program && subtype != Some(b"Type3"))
@@ -723,21 +826,27 @@ fn simple_needs_program(
     false
 }
 
-fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<CompositeFont> {
+fn load_type0(
+    resolver: &dyn Resolver,
+    font: &Dict,
+    limits: &Limits,
+    force_program: bool,
+) -> Outcome<CompositeFont> {
     let descendant = resolve_descendant(resolver, font)?;
     let to_unicode = load_to_unicode(font, resolver, limits);
     let cmap = load_cmap(resolver, font.get(b"Encoding"), limits, 0);
     let horizontal = load_cid_widths(resolver, &descendant);
     let vertical = load_vertical_metrics(resolver, &descendant);
-    let needs_program = !cmap.is_unicode_keyed()
-        && (to_unicode.is_empty()
-            || to_unicode.has_unusable()
-            || (cmap.is_identity()
-                && horizontal
-                    .entries
-                    .iter()
-                    .take(MAX_PROGRAM_CHECKS)
-                    .any(|(start, _, _)| to_unicode.usable(*start).is_none())));
+    let needs_program = force_program
+        || !cmap.is_unicode_keyed()
+            && (to_unicode.is_empty()
+                || to_unicode.has_unusable()
+                || (cmap.is_identity()
+                    && horizontal
+                        .entries
+                        .iter()
+                        .take(MAX_PROGRAM_CHECKS)
+                        .any(|(start, _, _)| to_unicode.usable(*start).is_none())));
     let descriptor = deref_dict(resolver, descendant.get(b"FontDescriptor"));
     let program = descriptor
         .as_ref()
