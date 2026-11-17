@@ -3,11 +3,13 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { PDFFont, PDFPage } from "@cantoo/pdf-lib";
+
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
 
 const { PDFDocument, PDFHexString, PDFString, rgb, StandardFonts } =
   await import("@cantoo/pdf-lib");
-const { renderToBuffer, Document, Page, Text, View, Font, StyleSheet } =
+const { renderToBuffer, Document, Link, Page, Text, View, Font, StyleSheet } =
   await import("@react-pdf/renderer");
 const React = await import("react");
 
@@ -88,8 +90,8 @@ const buildHelveticaWinansi = async (): Promise<Uint8Array> => {
 const requireFromModule = createRequire(import.meta.url);
 
 const liberationFontPath = (): string => {
-  const pdfjsRoot = dirname(fileURLToPath(requireFromModule.resolve("pdfjs-dist/package.json")));
-  return join(pdfjsRoot, "standard_fonts", "LiberationSans-Regular.ttf");
+  const pdfjsPackage = requireFromModule.resolve("pdfjs-dist/package.json");
+  return join(dirname(pdfjsPackage), "standard_fonts", "LiberationSans-Regular.ttf");
 };
 
 const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
@@ -256,6 +258,295 @@ const buildIncrementalUpdate = async (): Promise<Uint8Array> => {
   return updated.save();
 };
 
+type DrawnPiece = { readonly text: string; readonly font: PDFFont };
+
+const drawPieces = (
+  page: PDFPage,
+  pieces: ReadonlyArray<DrawnPiece>,
+  x: number,
+  y: number,
+  size: number,
+): void => {
+  let cursor = x;
+  for (const piece of pieces) {
+    page.drawText(piece.text, { x: cursor, y, size, font: piece.font });
+    cursor += piece.font.widthOfTextAtSize(piece.text, size);
+  }
+};
+
+const wrapWords = (text: string, font: PDFFont, size: number, width: number): string[] => {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(" ")) {
+    const candidate = current === "" ? word : `${current} ${word}`;
+    if (current !== "" && font.widthOfTextAtSize(candidate, size) > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current !== "") {
+    lines.push(current);
+  }
+  return lines;
+};
+
+const drawJustified = (
+  page: PDFPage,
+  lines: ReadonlyArray<string>,
+  options: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly font: PDFFont;
+    readonly size: number;
+    readonly leading: number;
+  },
+): void => {
+  const { x, y, width, font, size, leading } = options;
+  for (const [index, line] of lines.entries()) {
+    const baseline = y - index * leading;
+    const words = line.split(" ");
+    if (index === lines.length - 1 || words.length < 2) {
+      page.drawText(line, { x, y: baseline, size, font });
+      continue;
+    }
+    const extra = (width - font.widthOfTextAtSize(line, size)) / (words.length - 1);
+    let cursor = x;
+    for (const word of words) {
+      page.drawText(word, { x: cursor, y: baseline, size, font });
+      cursor += font.widthOfTextAtSize(`${word} `, size) + extra;
+    }
+  }
+};
+
+const buildMarkdownBasics = async (): Promise<Uint8Array> => {
+  const document = await PDFDocument.create();
+  stampMetadata(document);
+  const regular = await document.embedFont(StandardFonts.Helvetica);
+  const bold = await document.embedFont(StandardFonts.HelveticaBold);
+  const oblique = await document.embedFont(StandardFonts.HelveticaOblique);
+  const page = document.addPage(PAGE_SIZE);
+  page.drawText("1. INFORMAÇÕES GERAIS", { x: 72, y: 720, size: 14, font: bold });
+  drawPieces(
+    page,
+    [
+      { text: "Texto de corpo com destaque ", font: regular },
+      { text: "CONCORRÊNCIA", font: bold },
+      { text: " aberta.", font: regular },
+    ],
+    72,
+    690,
+    11,
+  );
+  page.drawText("• primeiro item", { x: 72, y: 660, size: 11, font: regular });
+  page.drawText("• segundo item", { x: 72, y: 642, size: 11, font: regular });
+  page.drawText("1.1. cláusula numerada permanece parágrafo.", {
+    x: 72,
+    y: 614,
+    size: 11,
+    font: oblique,
+  });
+  addLinkAnnotation(
+    document,
+    page,
+    "https://signature-kit.dev/corpus/markdown-link",
+    [72, 520, 260, 540],
+  );
+  page.drawText("Link para documentação", { x: 72, y: 528, size: 11, font: regular });
+  for (let row = 0; row < 2; row += 1) {
+    for (let col = 0; col < 2; col += 1) {
+      const x = 72 + col * 150;
+      const y = 440 - row * 28;
+      page.drawRectangle({
+        x,
+        y,
+        width: 150,
+        height: 28,
+        borderWidth: 0.5,
+        borderColor: rgb(0, 0, 0),
+      });
+    }
+  }
+  page.drawText("Item", { x: 78, y: 450, size: 10, font: bold });
+  page.drawText("Qtd", { x: 228, y: 450, size: 10, font: bold });
+  page.drawText("Areia", { x: 78, y: 422, size: 10, font: regular });
+  page.drawText("4", { x: 228, y: 422, size: 10, font: regular });
+  return document.save({ useObjectStreams: false });
+};
+
+const HYPHENATED_PARAGRAPHS: ReadonlyArray<ReadonlyArray<string>> = [
+  [
+    "A planilha orçamentária contempla toda a mão-de-",
+    "obra direta, os encargos sociais, os insumos e o",
+    "apoio técnico e o custo do suporte administra-",
+    "tivo aprovado pela comissão.",
+  ],
+  [
+    "Caso a garantia seja exigida, a contratada deverá apresentá-",
+    "lo em até cinco dias úteis, preservado o bem-estar dos",
+    "trabalhadores.",
+  ],
+];
+
+const buildMarkdownHyphenation = async (): Promise<Uint8Array> => {
+  const document = await PDFDocument.create();
+  stampMetadata(document);
+  const font = await document.embedFont(StandardFonts.Helvetica);
+  const page = document.addPage(PAGE_SIZE);
+  const size = 11;
+  const width = Math.max(
+    ...HYPHENATED_PARAGRAPHS.flatMap((lines) =>
+      lines.slice(0, -1).map((line) => font.widthOfTextAtSize(line, size)),
+    ),
+  );
+  let y = 700;
+  for (const lines of HYPHENATED_PARAGRAPHS) {
+    drawJustified(page, lines, { x: 72, y, width, font, size, leading: 14 });
+    y -= lines.length * 14 + 14;
+  }
+  return document.save({ useObjectStreams: false });
+};
+
+const buildMarkdownPageContinue = async (): Promise<Uint8Array> => {
+  const document = await PDFDocument.create();
+  stampMetadata(document);
+  const regular = await document.embedFont(StandardFonts.Helvetica);
+  const small = await document.embedFont(StandardFonts.HelveticaOblique);
+  const bodies: ReadonlyArray<ReadonlyArray<ReadonlyArray<string>>> = [
+    [
+      ["O presente edital trata da contratação de serviços contínuos de", "manutenção predial."],
+      [
+        "A proposta deve considerar a mão-de-obra, os encargos e os insumos",
+        "necessários à execução dos serviços, sem interrup-",
+      ],
+    ],
+    [
+      ["ção contratual, durante toda a vigência do contrato."],
+      ["Segundo parágrafo da página dois."],
+    ],
+  ];
+  for (const [index, paragraphs] of bodies.entries()) {
+    const page = document.addPage(PAGE_SIZE);
+    page.drawText(`EDITAL Nº 7/2026 — PÁGINA ${index + 1} DE ${bodies.length}`, {
+      x: 72,
+      y: 760,
+      size: 9,
+      font: small,
+    });
+    page.drawText(`Licitei — corpus markdown — ${index + 1}/${bodies.length}`, {
+      x: 72,
+      y: 40,
+      size: 9,
+      font: small,
+    });
+    let y = 700;
+    for (const lines of paragraphs) {
+      for (const line of lines) {
+        page.drawText(line, { x: 72, y, size: 11, font: regular });
+        y -= 14;
+      }
+      y -= 12;
+    }
+  }
+  return document.save({ useObjectStreams: false });
+};
+
+const NESTED_LIST_LINES: ReadonlyArray<readonly [number, number, string]> = [
+  [72, 720, "• Documentos de habilitação:"],
+  [90, 704, "– certidão negativa de débitos;"],
+  [90, 688, "– balanço patrimonial."],
+  [72, 672, "• Proposta comercial."],
+  [72, 646, "1. Prazo de entrega"],
+  [72, 630, "2. Local de entrega:"],
+  [90, 614, "a) almoxarifado central;"],
+  [90, 598, "b) unidade de saúde."],
+  [72, 582, "3. Forma de pagamento"],
+  [72, 556, "I - habilitação jurídica;"],
+  [72, 540, "II - qualificação técnica."],
+];
+
+const buildMarkdownNestedLists = async (): Promise<Uint8Array> => {
+  const document = await PDFDocument.create();
+  stampMetadata(document);
+  const font = await document.embedFont(StandardFonts.Helvetica);
+  const page = document.addPage(PAGE_SIZE);
+  for (const [x, y, line] of NESTED_LIST_LINES) {
+    page.drawText(line, { x, y, size: 11, font });
+  }
+  return document.save({ useObjectStreams: false });
+};
+
+const TWO_COLUMN_TEXT: ReadonlyArray<ReadonlyArray<string>> = [
+  [
+    "A coluna da esquerda começa com um parágrafo que ocupa algumas linhas de texto corrido sem interrupção até o ponto final.",
+    "Segundo parágrafo à esquerda.",
+  ],
+  [
+    "A coluna da direita traz outro texto independente, que também segue em linhas paralelas às da coluna esquerda.",
+    "Segundo parágrafo à direita.",
+  ],
+];
+
+const buildMarkdownTwoColumn = async (): Promise<Uint8Array> => {
+  const document = await PDFDocument.create();
+  stampMetadata(document);
+  const font = await document.embedFont(StandardFonts.Helvetica);
+  const page = document.addPage(PAGE_SIZE);
+  const size = 10;
+  const width = 230;
+  for (const [column, paragraphs] of TWO_COLUMN_TEXT.entries()) {
+    const x = 72 + column * (width + 20);
+    let y = 700;
+    for (const paragraph of paragraphs) {
+      for (const line of wrapWords(paragraph, font, size, width)) {
+        page.drawText(line, { x, y, size, font });
+        y -= 13;
+      }
+      y -= 10;
+    }
+  }
+  return document.save({ useObjectStreams: false });
+};
+
+const buildMarkdownHeadingsReact = async (): Promise<Uint8Array> => {
+  const styles = StyleSheet.create({
+    page: { padding: 48, fontFamily: "Helvetica" },
+    title: { fontSize: 20, marginBottom: 10, fontFamily: "Helvetica-Bold" },
+    h2: { fontSize: 16, marginBottom: 8, fontFamily: "Helvetica-Bold" },
+    h3: { fontSize: 13, marginBottom: 6, fontFamily: "Helvetica-Bold" },
+    body: { fontSize: 11, marginBottom: 6, lineHeight: 1.3 },
+    link: { fontSize: 11, color: "#0b57d0" },
+  });
+  const body = React.createElement(
+    Document,
+    {},
+    React.createElement(
+      Page,
+      { size: "A4", style: styles.page },
+      React.createElement(Text, { style: styles.title }, "Título sem numeração"),
+      React.createElement(Text, { style: styles.h2 }, "1. Seção principal"),
+      React.createElement(Text, { style: styles.h3 }, "1.1. Subseção"),
+      React.createElement(
+        Text,
+        { style: styles.body },
+        "Corpo com ",
+        React.createElement(Text, { style: { fontFamily: "Helvetica-Bold" } }, "negrito"),
+        " e ",
+        React.createElement(Text, { style: { fontFamily: "Helvetica-Oblique" } }, "itálico"),
+        " no mesmo parágrafo.",
+      ),
+      React.createElement(
+        Link,
+        { src: "https://signature-kit.dev/corpus/headings-link", style: styles.link },
+        "Documentação",
+      ),
+    ),
+  );
+  return new Uint8Array(await renderToBuffer(body));
+};
+
 const buildBrokenXref = async (): Promise<Uint8Array> => {
   const document = await PDFDocument.create();
   stampMetadata(document);
@@ -278,6 +569,12 @@ const buildBrokenXref = async (): Promise<Uint8Array> => {
 
 const main = async (): Promise<void> => {
   mkdirSync(PDF_CORE_FIXTURES_DIR, { recursive: true });
+  writeFixture("markdown-basics.pdf", await buildMarkdownBasics());
+  writeFixture("markdown-hyphenation.pdf", await buildMarkdownHyphenation());
+  writeFixture("markdown-page-continue.pdf", await buildMarkdownPageContinue());
+  writeFixture("markdown-nested-lists.pdf", await buildMarkdownNestedLists());
+  writeFixture("markdown-two-column.pdf", await buildMarkdownTwoColumn());
+  writeFixture("markdown-headings-react.pdf", await buildMarkdownHeadingsReact());
   writeFixture("helvetica-winansi.pdf", await buildHelveticaWinansi());
   writeFixture("react-pdf-declaration.pdf", await buildReactPdfDeclaration());
   writeFixture("rotated-cropped.pdf", await buildRotatedCropped());

@@ -1,9 +1,12 @@
+use crate::font_tables::BuiltinEncoding as FontEncoding;
+use crate::font_tables::encoding_glyph_name;
+use core::mem;
 include!(concat!(env!("OUT_DIR"), "/cff_tables.rs"));
 
-const MAX_GLYPHS: usize = 65_535;
+const MAX_GLYPHS: usize = 0xFFFF;
 const MAX_DICT_ENTRIES: usize = 256;
 const MAX_OPERANDS: usize = 48;
-const MAX_CUSTOM_STRINGS: usize = 65_535;
+const MAX_CUSTOM_STRINGS: usize = 0xFFFF;
 const ISO_ADOBE_LAST_SID: usize = 228;
 const OP_CHARSET: u16 = 15;
 const OP_ENCODING: u16 = 16;
@@ -12,30 +15,56 @@ const OP_ROS: u16 = 0x0C1E;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum BuiltinEncoding {
-    Standard,
     Expert,
+    Standard,
     Table(Vec<u16>),
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct CffFont {
-    glyph_count: usize,
-    cid_keyed: bool,
     charset: Vec<u16>,
+    cid_index: Vec<(u16, u16)>,
+    cid_keyed: bool,
     custom_strings: Vec<Vec<u8>>,
     encoding: BuiltinEncoding,
-    cid_index: Vec<(u16, u16)>,
+    glyph_count: usize,
 }
 
 struct Index {
     count: usize,
-    off_size: usize,
-    offsets: usize,
     data: usize,
     end: usize,
+    off_size: usize,
+    offsets: usize,
 }
 
 impl Index {
+    fn get<'data>(&self, bytes: &'data [u8], item: usize) -> Option<&'data [u8]> {
+        if item >= self.count {
+            return None;
+        }
+        let first = read_offset(
+            bytes,
+            self.offsets.checked_add(item.checked_mul(self.off_size)?)?,
+            self.off_size,
+        )?;
+        let next = read_offset(
+            bytes,
+            self.offsets
+                .checked_add(item.checked_add(1)?.checked_mul(self.off_size)?)?,
+            self.off_size,
+        )?;
+        if first == 0 || next < first {
+            return None;
+        }
+        let start = self.data.checked_add(first)?.checked_sub(1)?;
+        let stop = self.data.checked_add(next)?.checked_sub(1)?;
+        if stop > self.end {
+            return None;
+        }
+        bytes.get(start..stop)
+    }
+
     fn parse(bytes: &[u8], position: usize) -> Option<Self> {
         let count = usize::from(read_u16(bytes, position)?);
         if count == 0 {
@@ -64,41 +93,66 @@ impl Index {
         }
         Some(Self {
             count,
-            off_size,
-            offsets,
             data,
             end,
+            off_size,
+            offsets,
         })
-    }
-
-    fn get<'a>(&self, bytes: &'a [u8], item: usize) -> Option<&'a [u8]> {
-        if item >= self.count {
-            return None;
-        }
-        let first = read_offset(
-            bytes,
-            self.offsets.checked_add(item.checked_mul(self.off_size)?)?,
-            self.off_size,
-        )?;
-        let next = read_offset(
-            bytes,
-            self.offsets
-                .checked_add(item.checked_add(1)?.checked_mul(self.off_size)?)?,
-            self.off_size,
-        )?;
-        if first == 0 || next < first {
-            return None;
-        }
-        let start = self.data.checked_add(first)?.checked_sub(1)?;
-        let stop = self.data.checked_add(next)?.checked_sub(1)?;
-        if stop > self.end {
-            return None;
-        }
-        bytes.get(start..stop)
     }
 }
 
 impl CffFont {
+    pub(crate) fn builtin_name(&self, code: u8) -> Option<&[u8]> {
+        match &self.encoding {
+            BuiltinEncoding::Standard => {
+                let name = encoding_glyph_name(FontEncoding::Standard, code);
+                (!name.is_empty()).then_some(name.as_bytes())
+            }
+            BuiltinEncoding::Expert => {
+                let sid = *CFF_EXPERT_ENCODING.get(usize::from(code))?;
+                (sid != 0).then(|| self.sid_name(sid)).flatten()
+            }
+            BuiltinEncoding::Table(table) => {
+                let sid = *table.get(usize::from(code))?;
+                (sid != 0).then(|| self.sid_name(sid)).flatten()
+            }
+        }
+    }
+
+    pub(crate) fn cid_for_gid(&self, gid: u16) -> Option<u16> {
+        if self.cid_keyed {
+            self.charset.get(usize::from(gid)).copied()
+        } else {
+            (usize::from(gid) < self.glyph_count).then_some(gid)
+        }
+    }
+
+    pub(crate) fn gid_for_cid(&self, cid: u16) -> Option<u16> {
+        if !self.cid_keyed {
+            return (usize::from(cid) < self.glyph_count).then_some(cid);
+        }
+        let position = self
+            .cid_index
+            .binary_search_by_key(&cid, |(key, _)| *key)
+            .ok()?;
+        self.cid_index.get(position).map(|(_, gid)| *gid)
+    }
+
+    pub(crate) const fn glyph_count(&self) -> usize {
+        self.glyph_count
+    }
+
+    pub(crate) fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
+        if self.cid_keyed {
+            return None;
+        }
+        self.sid_name(*self.charset.get(usize::from(gid))?)
+    }
+
+    pub(crate) const fn is_cid_keyed(&self) -> bool {
+        self.cid_keyed
+    }
+
     pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
         if *bytes.first()? != 1 {
             return None;
@@ -119,7 +173,7 @@ impl CffFont {
             return None;
         }
         let cid_keyed = top.iter().any(|(key, _)| *key == OP_ROS);
-        let charset_offset = operand(OP_CHARSET).unwrap_or(0);
+        let charset_offset = operand(OP_CHARSET).unwrap_or(0_i32);
         let charset = read_charset(bytes, charset_offset, glyph_count, cid_keyed)?;
         let mut custom_strings = Vec::new();
         for item in 0..strings.count.min(MAX_CUSTOM_STRINGS) {
@@ -128,88 +182,34 @@ impl CffFont {
         let encoding = if cid_keyed {
             BuiltinEncoding::Table(Vec::new())
         } else {
-            read_encoding(bytes, operand(OP_ENCODING).unwrap_or(0), &charset)?
+            read_encoding(bytes, operand(OP_ENCODING).unwrap_or(0_i32), &charset)?
         };
         let mut cid_index = Vec::new();
         if cid_keyed {
             cid_index = charset
                 .iter()
                 .enumerate()
-                .filter_map(|(gid, cid)| u16::try_from(gid).ok().map(|gid| (*cid, gid)))
+                .filter_map(|(gid, cid)| u16::try_from(gid).ok().map(|inner_gid| (*cid, inner_gid)))
                 .collect();
             cid_index.sort_by_key(|(cid, _)| *cid);
         }
         Some(Self {
-            glyph_count,
-            cid_keyed,
             charset,
+            cid_index,
+            cid_keyed,
             custom_strings,
             encoding,
-            cid_index,
+            glyph_count,
         })
     }
 
-    pub(crate) const fn glyph_count(&self) -> usize {
-        self.glyph_count
-    }
-
-    pub(crate) const fn is_cid_keyed(&self) -> bool {
-        self.cid_keyed
-    }
-
-    pub(crate) fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
-        if self.cid_keyed {
-            return None;
-        }
-        self.sid_name(*self.charset.get(usize::from(gid))?)
-    }
-
-    pub(crate) fn gid_for_cid(&self, cid: u16) -> Option<u16> {
-        if !self.cid_keyed {
-            return (usize::from(cid) < self.glyph_count).then_some(cid);
-        }
-        let position = self
-            .cid_index
-            .binary_search_by_key(&cid, |(key, _)| *key)
-            .ok()?;
-        self.cid_index.get(position).map(|(_, gid)| *gid)
-    }
-
-    pub(crate) fn cid_for_gid(&self, gid: u16) -> Option<u16> {
-        if self.cid_keyed {
-            self.charset.get(usize::from(gid)).copied()
-        } else {
-            (usize::from(gid) < self.glyph_count).then_some(gid)
-        }
-    }
-
-    pub(crate) fn builtin_name(&self, code: u8) -> Option<&[u8]> {
-        match &self.encoding {
-            BuiltinEncoding::Standard => {
-                let name = crate::font_tables::encoding_glyph_name(
-                    crate::font_tables::BuiltinEncoding::Standard,
-                    code,
-                );
-                (!name.is_empty()).then_some(name.as_bytes())
-            }
-            BuiltinEncoding::Expert => {
-                let sid = *CFF_EXPERT_ENCODING.get(usize::from(code))?;
-                (sid != 0).then(|| self.sid_name(sid)).flatten()
-            }
-            BuiltinEncoding::Table(table) => {
-                let sid = *table.get(usize::from(code))?;
-                (sid != 0).then(|| self.sid_name(sid)).flatten()
-            }
-        }
-    }
-
     fn sid_name(&self, sid: u16) -> Option<&[u8]> {
-        let sid = usize::from(sid);
-        match CFF_STANDARD_STRINGS.get(sid) {
+        let sid_usize = usize::from(sid);
+        match CFF_STANDARD_STRINGS.get(sid_usize) {
             Some(name) => Some(name.as_bytes()),
             None => self
                 .custom_strings
-                .get(sid.checked_sub(CFF_STANDARD_STRINGS.len())?)
+                .get(sid_usize.checked_sub(CFF_STANDARD_STRINGS.len())?)
                 .map(Vec::as_slice),
         }
     }
@@ -222,7 +222,7 @@ fn read_charset(
     cid_keyed: bool,
 ) -> Option<Vec<u16>> {
     let mut charset = vec![0_u16; glyph_count];
-    if offset <= 2 {
+    if offset <= 2_i32 {
         let predefined: Option<&[u16]> = match offset {
             1 => Some(&CFF_EXPERT_CHARSET),
             2 => Some(&CFF_EXPERT_SUBSET_CHARSET),
@@ -279,8 +279,8 @@ fn read_charset(
 
 fn read_encoding(bytes: &[u8], offset: i32, charset: &[u16]) -> Option<BuiltinEncoding> {
     match offset {
-        0 => return Some(BuiltinEncoding::Standard),
-        1 => return Some(BuiltinEncoding::Expert),
+        0_i32 => return Some(BuiltinEncoding::Standard),
+        1_i32 => return Some(BuiltinEncoding::Expert),
         _ => {}
     }
     let mut position = usize::try_from(offset).ok()?;
@@ -351,22 +351,22 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
                 if entries.len() >= MAX_DICT_ENTRIES {
                     break;
                 }
-                entries.push((op, std::mem::take(&mut operands)));
+                entries.push((op, mem::take(&mut operands)));
             }
             28 => {
                 let value = read_u16(bytes, position).map(|value| i32::from(value.cast_signed()));
                 position = position.saturating_add(2);
-                push_operand(&mut operands, value.unwrap_or(0));
+                push_operand(&mut operands, value.unwrap_or(0_i32));
             }
             29 => {
                 let value = read_u32(bytes, position).map(u32::cast_signed);
                 position = position.saturating_add(4);
-                push_operand(&mut operands, value.unwrap_or(0));
+                push_operand(&mut operands, value.unwrap_or(0_i32));
             }
             30 => {
                 while let Some(&pair) = bytes.get(position) {
                     position = position.saturating_add(1);
-                    if pair & 0x0F == 0x0F || pair >> 4 == 0x0F {
+                    if pair & 0x0F == 0x0F || pair >> 4_i32 == 0x0F {
                         break;
                     }
                 }
@@ -410,7 +410,7 @@ fn push_operand(operands: &mut Vec<i32>, value: i32) {
 fn read_offset(bytes: &[u8], position: usize, size: usize) -> Option<usize> {
     let mut value = 0_usize;
     for step in 0..size {
-        value = (value << 8) | usize::from(*bytes.get(position.checked_add(step)?)?);
+        value = (value << 8_i32) | usize::from(*bytes.get(position.checked_add(step)?)?);
     }
     Some(value)
 }
@@ -430,7 +430,18 @@ fn read_u32(bytes: &[u8], position: usize) -> Option<u32> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::hint::black_box;
+    use core::hint::black_box;
+    use core::iter;
+
+    pub(crate) struct Layout {
+        pub charset: Vec<u8>,
+        pub charset_id: i32,
+        pub cid_keyed: bool,
+        pub encoding: Vec<u8>,
+        pub encoding_id: i32,
+        pub glyphs: usize,
+        pub names: Vec<&'static str>,
+    }
 
     pub(crate) fn index(items: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -457,16 +468,6 @@ pub(crate) mod tests {
         out
     }
 
-    pub(crate) struct Layout {
-        pub names: Vec<&'static str>,
-        pub charset: Vec<u8>,
-        pub charset_id: i32,
-        pub encoding: Vec<u8>,
-        pub encoding_id: i32,
-        pub cid_keyed: bool,
-        pub glyphs: usize,
-    }
-
     pub(crate) fn build(layout: &Layout) -> Vec<u8> {
         let mut customs: Vec<Vec<u8>> = Vec::new();
         for name in &layout.names {
@@ -474,7 +475,9 @@ pub(crate) mod tests {
         }
         let custom_refs: Vec<&[u8]> = customs.iter().map(Vec::as_slice).collect();
         let strings = index(&custom_refs);
-        let charstring_items: Vec<&[u8]> = (0..layout.glyphs).map(|_| [14_u8].as_slice()).collect();
+        let charstring_items: Vec<&[u8]> = iter::repeat_with(|| [14_u8].as_slice())
+            .take(layout.glyphs)
+            .collect();
         let charstrings = index(&charstring_items);
         let header = [1_u8, 0, 4, 2];
         let name_index = index(&[b"T"]);
@@ -494,7 +497,7 @@ pub(crate) mod tests {
             dict.push(17);
             dict
         };
-        let probe = index(&[&dict_len(0, 0, 0)]);
+        let probe = index(&[&dict_len(0_i32, 0_i32, 0_i32)]);
         let base = (((header.len().saturating_add(name_index.len())).saturating_add(probe.len()))
             .saturating_add(strings.len()))
         .saturating_add(2);
@@ -678,16 +681,16 @@ pub(crate) mod tests {
         assert!(CffFont::parse(&[2, 0, 4, 2, 0, 0]).is_none());
         let mut seed = 0x1234_5678_u32;
         for round in 0..2000_usize {
-            let len = 8 + round % 96;
+            let len = 8 + round.rem_euclid(96);
             let mut data = vec![0_u8; len];
             for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *slot = u8::try_from(seed >> 24).unwrap();
+                *slot = u8::try_from(seed >> 24_i32).unwrap();
             }
             if let Some(first) = data.first_mut() {
                 *first = 1;
             }
-            black_box(CffFont::parse(&data));
+            drop(black_box(CffFont::parse(&data)));
         }
     }
 
@@ -709,11 +712,11 @@ pub(crate) mod tests {
             for value in [0_u8, 1, 0x7F, 0xFF] {
                 let mut data = valid.clone();
                 data[position] = value;
-                black_box(CffFont::parse(&data));
+                drop(black_box(CffFont::parse(&data)));
             }
         }
         for cut in 0..valid.len() {
-            black_box(CffFont::parse(&valid[..cut]));
+            drop(black_box(CffFont::parse(&valid[..cut])));
         }
     }
 }

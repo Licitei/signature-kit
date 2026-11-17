@@ -11,6 +11,8 @@ mod tests {
     const LINK_INDIRECT: &str = "https://signature-kit.dev/corpus/link-indirect";
     const LINK_ROTATED: &str = "https://signature-kit.dev/corpus/rotated-page-link";
 
+    type Expectation = (&'static str, usize, Option<(f64, f64)>);
+
     fn fixture(name: &str) -> &'static [u8] {
         match name {
             "links.pdf" => include_bytes!("../../__tests__/fixtures/links.pdf"),
@@ -60,7 +62,7 @@ mod tests {
         let (width, height) = page_size(inspection.pages[0].media_box);
         assert!(approx_eq(width, 612.0));
         assert!(approx_eq(height, 792.0));
-        assert_eq!(inspection.pages[0].rotate, 0);
+        assert_eq!(inspection.pages[0].rotate, 0_i32);
         assert_eq!(inspection.links.len(), 3);
         let uris: Vec<&str> = inspection
             .links
@@ -78,8 +80,8 @@ mod tests {
     fn rotated_cropped_pages_links_and_rotation() {
         let inspection = inspect_full(fixture("rotated-cropped.pdf"));
         assert_eq!(inspection.pages.len(), 2);
-        assert_eq!(inspection.pages[0].rotate, 90);
-        assert_eq!(inspection.pages[1].rotate, 270);
+        assert_eq!(inspection.pages[0].rotate, 90_i32);
+        assert_eq!(inspection.pages[1].rotate, 270_i32);
         let media0 = inspection.pages[0].media_box;
         assert!(approx_eq(media0[2] - media0[0], 612.0));
         assert!(approx_eq(media0[3] - media0[1], 792.0));
@@ -87,20 +89,22 @@ mod tests {
         assert!(inspection.links.iter().all(|link| link.uri == LINK_ROTATED));
     }
 
-    type Expectation = (&'static str, usize, Option<(f64, f64)>);
-
     #[test]
     fn corpus_page_counts_and_liteparse_dims() {
         let expectations: [Expectation; 9] = [
-            ("links.pdf", 1, Some((612.0, 792.0))),
-            ("helvetica-winansi.pdf", 1, Some((612.0, 792.0))),
-            ("react-pdf-declaration.pdf", 1, Some((595.28, 841.89))),
-            ("rotated-cropped.pdf", 2, Some((612.0, 792.0))),
-            ("object-streams.pdf", 1, Some((612.0, 792.0))),
-            ("incremental-update.pdf", 1, Some((612.0, 792.0))),
-            ("broken-xref.pdf", 1, Some((612.0, 792.0))),
-            ("icp-signed.pdf", 1, Some((300.0, 200.0))),
-            ("habilitacao-150.pdf", 150, Some((612.0, 792.0))),
+            ("links.pdf", 1, Some((612.0_f64, 792.0_f64))),
+            ("helvetica-winansi.pdf", 1, Some((612.0_f64, 792.0_f64))),
+            (
+                "react-pdf-declaration.pdf",
+                1,
+                Some((595.28_f64, 841.89_f64)),
+            ),
+            ("rotated-cropped.pdf", 2, Some((612.0_f64, 792.0_f64))),
+            ("object-streams.pdf", 1, Some((612.0_f64, 792.0_f64))),
+            ("incremental-update.pdf", 1, Some((612.0_f64, 792.0_f64))),
+            ("broken-xref.pdf", 1, Some((612.0_f64, 792.0_f64))),
+            ("icp-signed.pdf", 1, Some((300.0_f64, 200.0_f64))),
+            ("habilitacao-150.pdf", 150, Some((612.0_f64, 792.0_f64))),
         ];
         for (name, count, dims) in expectations {
             let inspection = inspect_full(fixture(name));
@@ -149,7 +153,10 @@ mod tests {
         let Some(fonts_value) = page.resources.get(b"Font") else {
             return Vec::new();
         };
-        let Ok(Object::Dict(font_table)) = document.resolve(fonts_value) else {
+        let Ok(resolved_table) = document.resolve(fonts_value) else {
+            return Vec::new();
+        };
+        let Object::Dict(font_table) = &*resolved_table else {
             return Vec::new();
         };
         let mut fonts = Vec::new();
@@ -157,10 +164,10 @@ mod tests {
             let Ok(resolved) = document.resolve(entry) else {
                 continue;
             };
-            let Object::Dict(font_dict) = resolved else {
+            let Object::Dict(font_dict) = &*resolved else {
                 continue;
             };
-            if let Ok(font) = Font::load(document, &font_dict, &Limits::default()) {
+            if let Ok(font) = Font::load(document, font_dict, &Limits::default()) {
                 fonts.push(font);
             }
         }

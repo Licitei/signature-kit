@@ -1,5 +1,7 @@
+use crate::num::i64_to_f64;
 use crate::num::u64_to_f64;
-use std::ops::Range;
+use alloc::borrow::Cow;
+use core::ops::Range;
 
 use crate::failure::{Failure, Outcome};
 use crate::object::{Dict, ObjRef, Object, Stream};
@@ -7,6 +9,762 @@ use crate::object::{Dict, ObjRef, Object, Stream};
 const CONTENT_NESTING: usize = 32;
 const KEYWORD_PROBE: usize = 16;
 const IMAGE_END_PROBE: usize = 10;
+
+const POW10: [f64; 19] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18,
+];
+
+const SPARE_ARRAYS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reject {
+    Garbage,
+    TooDeep,
+}
+
+impl Reject {
+    pub(crate) fn into_failure(self) -> Failure {
+        match self {
+            Self::Garbage => Failure::invalid("malformed object"),
+            Self::TooDeep => Failure::limit("object nesting exceeds limit"),
+        }
+    }
+}
+
+type Parsed<T> = Result<T, Reject>;
+
+pub(crate) struct Parser<'data> {
+    data: &'data [u8],
+    max_depth: usize,
+    pos: usize,
+    refs: bool,
+}
+
+impl<'data> Parser<'data> {
+    fn array(&mut self, depth: usize) -> Parsed<Object> {
+        if depth >= self.max_depth {
+            self.pos = self.pos.saturating_add(1);
+            return Err(Reject::TooDeep);
+        }
+        self.pos = self.pos.saturating_add(1);
+        let mut items = Vec::new();
+        loop {
+            self.skip_whitespace();
+            match self.peek() {
+                None => break,
+                Some(b']') => {
+                    self.pos = self.pos.saturating_add(1);
+                    break;
+                }
+                Some(_) => {}
+            }
+            match self.garbage_keyword() {
+                Some(true) => break,
+                Some(false) => continue,
+                None => {}
+            }
+            match self.value(depth.saturating_add(1)) {
+                Ok(item) => items.push(item),
+                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
+                Err(Reject::Garbage) => {}
+            }
+        }
+        Ok(Object::Array(items))
+    }
+
+    fn dictionary(&mut self, depth: usize) -> Parsed<Object> {
+        if depth >= self.max_depth {
+            self.pos = self.pos.saturating_add(1);
+            return Err(Reject::TooDeep);
+        }
+        self.pos = self.pos.saturating_add(2);
+        let mut dict = Dict::default();
+        loop {
+            self.skip_whitespace();
+            let Some(byte) = self.peek() else { break };
+            if byte == b'>' {
+                if self.peek_at(1) == Some(b'>') {
+                    self.pos = self.pos.saturating_add(2);
+                    break;
+                }
+                self.pos = self.pos.saturating_add(1);
+                continue;
+            }
+            if byte != b'/' {
+                match self.garbage_keyword() {
+                    Some(true) => break,
+                    Some(false) => continue,
+                    None => {}
+                }
+                match self.value(depth.saturating_add(1)) {
+                    Err(Reject::TooDeep) => return Err(Reject::TooDeep),
+                    _ => continue,
+                }
+            }
+            let key = self.name();
+            self.skip_whitespace();
+            match self.peek() {
+                None => break,
+                Some(b'>') if self.peek_at(1) == Some(b'>') => continue,
+                Some(_) => {}
+            }
+            match self.garbage_keyword() {
+                Some(true) => break,
+                Some(false) => continue,
+                None => {}
+            }
+            match self.value(depth.saturating_add(1)) {
+                Ok(value) => dict.entries.push((key, value)),
+                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
+                Err(Reject::Garbage) => {}
+            }
+        }
+        Ok(Object::Dict(dict))
+    }
+
+    fn garbage_keyword(&mut self) -> Option<bool> {
+        let byte = self.peek()?;
+        if !is_regular(byte) || is_number_start(byte) {
+            return None;
+        }
+        let start = self.pos;
+        let mut end = start;
+        while end.saturating_sub(start) < KEYWORD_PROBE
+            && self.data.get(end).copied().is_some_and(is_regular)
+        {
+            end = end.saturating_add(1);
+        }
+        let run = self.slice(start, end);
+        if matches!(run, b"true" | b"false" | b"null") {
+            return None;
+        }
+        let terminator = matches!(
+            run,
+            b"endobj" | b"stream" | b"endstream" | b"obj" | b"startxref" | b"xref" | b"trailer"
+        );
+        if terminator || !self.refs {
+            return Some(true);
+        }
+        let _: &[u8] = self.regular_run();
+        Some(false)
+    }
+
+    fn hex_string(&mut self) -> Vec<u8> {
+        let start = self.pos.saturating_add(1);
+        let rest = self.data.get(start..).unwrap_or_default();
+        let length = rest.iter().position(|&byte| byte == b'>');
+        let end = start.saturating_add(length.unwrap_or(rest.len()));
+        self.pos = if length.is_some() {
+            end.saturating_add(1)
+        } else {
+            end
+        };
+        let mut out = Vec::new();
+        decode_hex(self.slice(start, end), &mut out);
+        out
+    }
+
+    fn inline_image(&mut self) -> Outcome<ContentToken<'data>> {
+        let mut length: Option<usize> = None;
+        loop {
+            self.skip_whitespace();
+            let Some(byte) = self.peek() else {
+                return Ok(ContentToken::Operator(b"EI"));
+            };
+            if self.keyword_here(b"ID") {
+                self.pos = self.pos.saturating_add(2);
+                break;
+            }
+            if self.keyword_here(b"EI") {
+                self.pos = self.pos.saturating_add(2);
+                return Ok(ContentToken::Operator(b"EI"));
+            }
+            if byte == b'/' {
+                let key = self.name();
+                self.skip_whitespace();
+                if self.keyword_here(b"ID") {
+                    continue;
+                }
+                match self.value(0) {
+                    Ok(value) => {
+                        if key == b"L" || key == b"Length" {
+                            length = value.as_integer().and_then(|raw| usize::try_from(raw).ok());
+                        }
+                    }
+                    Err(reject @ Reject::TooDeep) => return Err(reject.into_failure()),
+                    Err(Reject::Garbage) => {}
+                }
+            } else if let Err(reject @ Reject::TooDeep) = self.value(0) {
+                return Err(reject.into_failure());
+            }
+        }
+        if let Some(byte) = self.peek()
+            && is_whitespace(byte)
+        {
+            self.pos = self.pos.saturating_add(1);
+            if byte == b'\r' && self.peek() == Some(b'\n') {
+                self.pos = self.pos.saturating_add(1);
+            }
+        }
+        self.pos = inline_image_end(self.data, self.pos, length);
+        Ok(ContentToken::Operator(b"EI"))
+    }
+
+    fn keyword_here(&self, keyword: &[u8]) -> bool {
+        keyword_at(self.data, self.pos, keyword)
+    }
+
+    fn literal_string(&mut self) -> Vec<u8> {
+        self.pos = self.pos.saturating_add(1);
+        let mut out = Vec::new();
+        let mut depth = 1_usize;
+        loop {
+            let start = self.pos;
+            while let Some(byte) = self.peek() {
+                if matches!(byte, b'(' | b')' | b'\\' | b'\r') {
+                    break;
+                }
+                self.pos = self.pos.saturating_add(1);
+            }
+            out.extend_from_slice(self.slice(start, self.pos));
+            let Some(byte) = self.peek() else { break };
+            self.pos = self.pos.saturating_add(1);
+            match byte {
+                b'(' => {
+                    depth = depth.saturating_add(1);
+                    out.push(b'(');
+                }
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                    out.push(b')');
+                }
+                b'\r' => {
+                    if self.peek() == Some(b'\n') {
+                        self.pos = self.pos.saturating_add(1);
+                    }
+                    out.push(b'\n');
+                }
+                _ => {
+                    let Some(escaped) = self.peek() else { break };
+                    self.pos = self.pos.saturating_add(1);
+                    match escaped {
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
+                        b'b' => out.push(8),
+                        b'f' => out.push(12),
+                        b'\r' => {
+                            if self.peek() == Some(b'\n') {
+                                self.pos = self.pos.saturating_add(1);
+                            }
+                        }
+                        b'\n' => {}
+                        b'0'..=b'7' => {
+                            let mut value = u32::from(escaped.saturating_sub(b'0'));
+                            for _ in 0_i32..2_i32 {
+                                match self.peek() {
+                                    Some(digit @ b'0'..=b'7') => {
+                                        value = (value.saturating_mul(8))
+                                            .saturating_add(u32::from(digit.saturating_sub(b'0')));
+                                        self.pos = self.pos.saturating_add(1);
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            out.push(u8::try_from(value & 0xff).unwrap_or(u8::MAX));
+                        }
+                        other => out.push(other),
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn name(&mut self) -> Vec<u8> {
+        self.pos = self.pos.saturating_add(1);
+        let raw = self.regular_run();
+        if !raw.contains(&b'#') {
+            return raw.to_vec();
+        }
+        let mut out = Vec::with_capacity(raw.len());
+        let mut index = 0;
+        while let Some(&byte) = raw.get(index) {
+            if byte == b'#'
+                && let Some(high) = raw
+                    .get(index.saturating_add(1))
+                    .copied()
+                    .and_then(hex_value)
+                && let Some(low) = raw
+                    .get(index.saturating_add(2))
+                    .copied()
+                    .and_then(hex_value)
+            {
+                out.push((high << 4_i32) | low);
+                index = index.saturating_add(3);
+            } else {
+                out.push(byte);
+                index = index.saturating_add(1);
+            }
+        }
+        out
+    }
+
+    pub(crate) const fn new(data: &'data [u8], pos: usize, max_depth: usize, refs: bool) -> Self {
+        Self {
+            data,
+            max_depth,
+            pos,
+            refs,
+        }
+    }
+
+    fn number(&mut self) -> Object {
+        let mut negative = false;
+        let mut signed = false;
+        match self.peek() {
+            Some(b'+') => {
+                signed = true;
+                self.pos = self.pos.saturating_add(1);
+            }
+            Some(b'-') => {
+                signed = true;
+                negative = true;
+                self.pos = self.pos.saturating_add(1);
+                while self.peek() == Some(b'-') {
+                    self.pos = self.pos.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+        let mut whole: u64 = 0;
+        let mut overflow = false;
+        let mut digits = 0_usize;
+        while let Some(byte @ b'0'..=b'9') = self.peek() {
+            match whole
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(u64::from(byte.saturating_sub(b'0'))))
+            {
+                Some(value) => whole = value,
+                None => overflow = true,
+            }
+            digits = digits.saturating_add(1);
+            self.pos = self.pos.saturating_add(1);
+        }
+        if self.peek() == Some(b'.') {
+            self.pos = self.pos.saturating_add(1);
+            let mut fraction: u64 = 0;
+            let mut scale = 0_usize;
+            while let Some(byte @ b'0'..=b'9') = self.peek() {
+                if scale < 18 {
+                    fraction = (fraction.saturating_mul(10))
+                        .saturating_add(u64::from(byte.saturating_sub(b'0')));
+                    scale = scale.saturating_add(1);
+                }
+                self.pos = self.pos.saturating_add(1);
+            }
+            let divisor = POW10.get(scale).copied().unwrap_or(1e18_f64);
+            let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
+            return Object::Real(if negative { -magnitude } else { magnitude });
+        }
+        if digits == 0 {
+            return Object::Integer(0);
+        }
+        if overflow || whole > i64::MAX.cast_unsigned() {
+            let magnitude = if overflow {
+                f64::MAX
+            } else {
+                u64_to_f64(whole)
+            };
+            return Object::Real(if negative { -magnitude } else { magnitude });
+        }
+        let integer = whole.cast_signed();
+        if self.refs
+            && !signed
+            && let Some((reference, end)) = self.reference(whole)
+        {
+            self.pos = end;
+            return reference;
+        }
+        Object::Integer(if negative {
+            integer.saturating_neg()
+        } else {
+            integer
+        })
+    }
+
+    pub(crate) fn parse_object(&mut self) -> Outcome<Object> {
+        self.skip_whitespace();
+        self.value(0).map_err(Reject::into_failure)
+    }
+
+    #[inline]
+    fn peek(&self) -> Option<u8> {
+        self.data.get(self.pos).copied()
+    }
+
+    #[inline]
+    fn peek_at(&self, ahead: usize) -> Option<u8> {
+        self.data.get(self.pos.saturating_add(ahead)).copied()
+    }
+
+    pub(crate) const fn position(&self) -> usize {
+        self.pos
+    }
+
+    fn reference(&self, number: u64) -> Option<(Object, usize)> {
+        let number_u32 = u32::try_from(number).ok()?;
+        let data = self.data;
+        let mut index = self.pos;
+        let number_gap = index;
+        while data.get(index).copied().is_some_and(is_whitespace) {
+            index = index.saturating_add(1);
+        }
+        if index == number_gap {
+            return None;
+        }
+        let digits_start = index;
+        let mut generation: u32 = 0;
+        while let Some(&byte) = data.get(index) {
+            if !byte.is_ascii_digit() {
+                break;
+            }
+            if index.saturating_sub(digits_start) >= 5 {
+                return None;
+            }
+            generation = (generation.saturating_mul(10))
+                .saturating_add(u32::from(byte.saturating_sub(b'0')));
+            index = index.saturating_add(1);
+        }
+        if index == digits_start {
+            return None;
+        }
+        let reference_gap = index;
+        while data.get(index).copied().is_some_and(is_whitespace) {
+            index = index.saturating_add(1);
+        }
+        if index == reference_gap || !keyword_at(data, index, b"R") {
+            return None;
+        }
+        let reference = ObjRef {
+            number: number_u32,
+            generation: u16::try_from(generation).unwrap_or(u16::MAX),
+        };
+        Some((Object::Ref(reference), index.saturating_add(1)))
+    }
+
+    fn regular_run(&mut self) -> &'data [u8] {
+        let start = self.pos;
+        while let Some(byte) = self.peek() {
+            if !is_regular(byte) {
+                break;
+            }
+            self.pos = self.pos.saturating_add(1);
+        }
+        self.slice(start, self.pos)
+    }
+
+    pub(crate) fn skip_whitespace(&mut self) {
+        self.pos = skip_whitespace_at(self.data, self.pos);
+    }
+
+    fn slice(&self, start: usize, end: usize) -> &'data [u8] {
+        self.data.get(start..end).unwrap_or_default()
+    }
+
+    fn value(&mut self, depth: usize) -> Parsed<Object> {
+        self.skip_whitespace();
+        let Some(byte) = self.peek() else {
+            return Err(Reject::Garbage);
+        };
+        match byte {
+            b'/' => Ok(Object::Name(self.name())),
+            b'(' => Ok(Object::String(self.literal_string())),
+            b'<' => {
+                if self.peek_at(1) == Some(b'<') {
+                    self.dictionary(depth)
+                } else {
+                    Ok(Object::String(self.hex_string()))
+                }
+            }
+            b'[' => self.array(depth),
+            b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
+            b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
+                self.pos = self.pos.saturating_add(1);
+                Err(Reject::Garbage)
+            }
+            _ => {
+                let run = self.regular_run();
+                match run {
+                    b"true" => Ok(Object::Bool(true)),
+                    b"false" => Ok(Object::Bool(false)),
+                    b"null" => Ok(Object::Null),
+                    _ => Err(Reject::Garbage),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Operand<'data> {
+    Array(Vec<Self>),
+    Bool(bool),
+    Hex(&'data [u8]),
+    Integer(i64),
+    Literal(Cow<'data, [u8]>),
+    Name(Cow<'data, [u8]>),
+    Null,
+    Object(Object),
+    Real(f64),
+}
+
+impl Operand<'_> {
+    pub(crate) const fn as_dict(&self) -> Option<&Dict> {
+        if let Self::Object(object) = self {
+            object.as_dict()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn as_name(&self) -> Option<&[u8]> {
+        if let Self::Name(name) = self {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn as_number(&self) -> Option<f64> {
+        match self {
+            Self::Integer(value) => Some(i64_to_f64(*value)),
+            Self::Real(value) => Some(*value),
+            Self::Bool(_)
+            | Self::Null
+            | Self::Name(_)
+            | Self::Literal(_)
+            | Self::Hex(_)
+            | Self::Array(_)
+            | Self::Object(_) => None,
+        }
+    }
+
+    pub(crate) fn string<'seg>(&'seg self, scratch: &'seg mut Vec<u8>) -> Option<&'seg [u8]> {
+        match self {
+            Self::Literal(bytes) => Some(bytes),
+            Self::Hex(raw) => {
+                scratch.clear();
+                decode_hex(raw, scratch);
+                Some(scratch)
+            }
+            Self::Integer(_)
+            | Self::Real(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::Name(_)
+            | Self::Array(_)
+            | Self::Object(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ContentToken<'data> {
+    Operand(Operand<'data>),
+    Operator(&'data [u8]),
+}
+
+pub(crate) struct ContentLexer<'data> {
+    parser: Parser<'data>,
+    spare: Vec<Vec<Operand<'data>>>,
+}
+
+impl<'data> ContentLexer<'data> {
+    fn array(&mut self, depth: usize) -> Parsed<Operand<'data>> {
+        if depth >= self.parser.max_depth {
+            self.parser.pos = self.parser.pos.saturating_add(1);
+            return Err(Reject::TooDeep);
+        }
+        self.parser.pos = self.parser.pos.saturating_add(1);
+        let mut items = self.spare.pop().unwrap_or_default();
+        loop {
+            self.parser.skip_whitespace();
+            match self.parser.peek() {
+                None => break,
+                Some(b']') => {
+                    self.parser.pos = self.parser.pos.saturating_add(1);
+                    break;
+                }
+                Some(_) => {}
+            }
+            match self.parser.garbage_keyword() {
+                Some(true) => break,
+                Some(false) => continue,
+                None => {}
+            }
+            match self.value(depth.saturating_add(1)) {
+                Ok(item) => items.push(item),
+                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
+                Err(Reject::Garbage) => {}
+            }
+        }
+        Ok(Operand::Array(items))
+    }
+
+    fn hex(&mut self) -> &'data [u8] {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let rest = parser.data.get(start..).unwrap_or_default();
+        let length = rest.iter().position(|&byte| byte == b'>');
+        let end = start.saturating_add(length.unwrap_or(rest.len()));
+        parser.pos = if length.is_some() {
+            end.saturating_add(1)
+        } else {
+            end
+        };
+        parser.slice(start, end)
+    }
+
+    fn literal(&mut self) -> Cow<'data, [u8]> {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let mut end = start;
+        while let Some(&byte) = parser.data.get(end) {
+            match byte {
+                b')' => {
+                    parser.pos = end.saturating_add(1);
+                    return Cow::Borrowed(parser.slice(start, end));
+                }
+                b'(' | b'\\' | b'\r' => break,
+                _ => end = end.saturating_add(1),
+            }
+        }
+        Cow::Owned(parser.literal_string())
+    }
+
+    fn name(&mut self) -> Cow<'data, [u8]> {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let mut end = start;
+        while let Some(&byte) = parser.data.get(end) {
+            if !is_regular(byte) {
+                break;
+            }
+            if byte == b'#' {
+                return Cow::Owned(parser.name());
+            }
+            end = end.saturating_add(1);
+        }
+        parser.pos = end;
+        Cow::Borrowed(parser.slice(start, end))
+    }
+
+    pub(crate) const fn new(data: &'data [u8]) -> Self {
+        Self {
+            parser: Parser::new(data, 0, CONTENT_NESTING, false),
+            spare: Vec::new(),
+        }
+    }
+
+    fn number(&mut self) -> Operand<'data> {
+        match self.parser.number() {
+            Object::Real(value) => Operand::Real(value),
+            Object::Integer(value) => Operand::Integer(value),
+            Object::Null
+            | Object::Bool(_)
+            | Object::Name(_)
+            | Object::String(_)
+            | Object::Array(_)
+            | Object::Dict(_)
+            | Object::Stream(_)
+            | Object::Ref(_) => Operand::Null,
+        }
+    }
+
+    pub(crate) fn recycle(&mut self, operand: Operand<'data>) {
+        if let Operand::Array(mut items) = operand
+            && self.spare.len() < SPARE_ARRAYS
+        {
+            items.clear();
+            self.spare.push(items);
+        }
+    }
+
+    fn value(&mut self, depth: usize) -> Parsed<Operand<'data>> {
+        self.parser.skip_whitespace();
+        let Some(byte) = self.parser.peek() else {
+            return Err(Reject::Garbage);
+        };
+        match byte {
+            b'/' => Ok(Operand::Name(self.name())),
+            b'(' => Ok(Operand::Literal(self.literal())),
+            b'<' if self.parser.peek_at(1) == Some(b'<') => {
+                self.parser.dictionary(depth).map(Operand::Object)
+            }
+            b'<' => Ok(Operand::Hex(self.hex())),
+            b'[' => self.array(depth),
+            b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
+            b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
+                self.parser.pos = self.parser.pos.saturating_add(1);
+                Err(Reject::Garbage)
+            }
+            _ => match self.parser.regular_run() {
+                b"true" => Ok(Operand::Bool(true)),
+                b"false" => Ok(Operand::Bool(false)),
+                b"null" => Ok(Operand::Null),
+                _ => Err(Reject::Garbage),
+            },
+        }
+    }
+}
+
+impl<'data> Iterator for ContentLexer<'data> {
+    type Item = Outcome<ContentToken<'data>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.parser.skip_whitespace();
+        let byte = self.parser.peek()?;
+        let token = match byte {
+            b'0'..=b'9' | b'+' | b'-' | b'.' => ContentToken::Operand(self.number()),
+            b'/' => ContentToken::Operand(Operand::Name(self.name())),
+            b'(' => ContentToken::Operand(Operand::Literal(self.literal())),
+            b'<' | b'[' => match self.value(0) {
+                Ok(operand) => ContentToken::Operand(operand),
+                Err(reject) => return Some(Err(reject.into_failure())),
+            },
+            b')' | b']' | b'>' | b'{' | b'}' | b'%' => {
+                let parser = &mut self.parser;
+                let start = parser.pos;
+                parser.pos = parser.pos.saturating_add(1);
+                ContentToken::Operator(parser.slice(start, parser.pos))
+            }
+            _ => {
+                let parser = &mut self.parser;
+                let run = parser.regular_run();
+                match run {
+                    b"true" => ContentToken::Operand(Operand::Bool(true)),
+                    b"false" => ContentToken::Operand(Operand::Bool(false)),
+                    b"null" => ContentToken::Operand(Operand::Null),
+                    b"BI" => return Some(parser.inline_image()),
+                    _ => ContentToken::Operator(run),
+                }
+            }
+        };
+        Some(Ok(token))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct IndirectObject {
+    pub end: usize,
+    pub obj_ref: ObjRef,
+    pub object: Object,
+}
 
 #[inline]
 pub(crate) const fn is_whitespace(byte: u8) -> bool {
@@ -101,506 +859,6 @@ pub(crate) fn keyword_at(data: &[u8], pos: usize, keyword: &[u8]) -> bool {
             .is_some_and(is_regular)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reject {
-    Garbage,
-    TooDeep,
-}
-
-impl Reject {
-    pub(crate) fn into_failure(self) -> Failure {
-        match self {
-            Self::Garbage => Failure::invalid("malformed object"),
-            Self::TooDeep => Failure::limit("object nesting exceeds limit"),
-        }
-    }
-}
-
-type Parsed<T> = Result<T, Reject>;
-
-pub(crate) struct Parser<'a> {
-    data: &'a [u8],
-    pos: usize,
-    max_depth: usize,
-    refs: bool,
-}
-
-impl<'a> Parser<'a> {
-    pub(crate) const fn new(data: &'a [u8], pos: usize, max_depth: usize, refs: bool) -> Self {
-        Self {
-            data,
-            pos,
-            max_depth,
-            refs,
-        }
-    }
-
-    pub(crate) const fn position(&self) -> usize {
-        self.pos
-    }
-
-    #[inline]
-    fn peek(&self) -> Option<u8> {
-        self.data.get(self.pos).copied()
-    }
-
-    #[inline]
-    fn peek_at(&self, ahead: usize) -> Option<u8> {
-        self.data.get(self.pos.saturating_add(ahead)).copied()
-    }
-
-    fn slice(&self, start: usize, end: usize) -> &'a [u8] {
-        self.data.get(start..end).unwrap_or_default()
-    }
-
-    pub(crate) fn skip_whitespace(&mut self) {
-        self.pos = skip_whitespace_at(self.data, self.pos);
-    }
-
-    pub(crate) fn parse_object(&mut self) -> Outcome<Object> {
-        self.skip_whitespace();
-        self.value(0).map_err(Reject::into_failure)
-    }
-
-    fn regular_run(&mut self) -> &'a [u8] {
-        let start = self.pos;
-        while let Some(byte) = self.peek() {
-            if !is_regular(byte) {
-                break;
-            }
-            self.pos = self.pos.saturating_add(1);
-        }
-        self.slice(start, self.pos)
-    }
-
-    fn keyword_here(&self, keyword: &[u8]) -> bool {
-        keyword_at(self.data, self.pos, keyword)
-    }
-
-    fn value(&mut self, depth: usize) -> Parsed<Object> {
-        self.skip_whitespace();
-        let Some(byte) = self.peek() else {
-            return Err(Reject::Garbage);
-        };
-        match byte {
-            b'/' => Ok(Object::Name(self.name())),
-            b'(' => Ok(Object::String(self.literal_string())),
-            b'<' => {
-                if self.peek_at(1) == Some(b'<') {
-                    self.dictionary(depth)
-                } else {
-                    Ok(Object::String(self.hex_string()))
-                }
-            }
-            b'[' => self.array(depth),
-            b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
-            b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
-                self.pos = self.pos.saturating_add(1);
-                Err(Reject::Garbage)
-            }
-            _ => {
-                let run = self.regular_run();
-                match run {
-                    b"true" => Ok(Object::Bool(true)),
-                    b"false" => Ok(Object::Bool(false)),
-                    b"null" => Ok(Object::Null),
-                    _ => Err(Reject::Garbage),
-                }
-            }
-        }
-    }
-
-    fn garbage_keyword(&mut self) -> Option<bool> {
-        let byte = self.peek()?;
-        if !is_regular(byte) || is_number_start(byte) {
-            return None;
-        }
-        let start = self.pos;
-        let mut end = start;
-        while end.saturating_sub(start) < KEYWORD_PROBE
-            && self.data.get(end).copied().is_some_and(is_regular)
-        {
-            end = end.saturating_add(1);
-        }
-        let run = self.slice(start, end);
-        if matches!(run, b"true" | b"false" | b"null") {
-            return None;
-        }
-        let terminator = matches!(
-            run,
-            b"endobj" | b"stream" | b"endstream" | b"obj" | b"startxref" | b"xref" | b"trailer"
-        );
-        if terminator || !self.refs {
-            return Some(true);
-        }
-        self.regular_run();
-        Some(false)
-    }
-
-    fn array(&mut self, depth: usize) -> Parsed<Object> {
-        if depth >= self.max_depth {
-            self.pos = self.pos.saturating_add(1);
-            return Err(Reject::TooDeep);
-        }
-        self.pos = self.pos.saturating_add(1);
-        let mut items = Vec::new();
-        loop {
-            self.skip_whitespace();
-            match self.peek() {
-                None => break,
-                Some(b']') => {
-                    self.pos = self.pos.saturating_add(1);
-                    break;
-                }
-                Some(_) => {}
-            }
-            match self.garbage_keyword() {
-                Some(true) => break,
-                Some(false) => continue,
-                None => {}
-            }
-            match self.value(depth.saturating_add(1)) {
-                Ok(item) => items.push(item),
-                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
-                Err(Reject::Garbage) => {}
-            }
-        }
-        Ok(Object::Array(items))
-    }
-
-    fn dictionary(&mut self, depth: usize) -> Parsed<Object> {
-        if depth >= self.max_depth {
-            self.pos = self.pos.saturating_add(1);
-            return Err(Reject::TooDeep);
-        }
-        self.pos = self.pos.saturating_add(2);
-        let mut dict = Dict::default();
-        loop {
-            self.skip_whitespace();
-            let Some(byte) = self.peek() else { break };
-            if byte == b'>' {
-                if self.peek_at(1) == Some(b'>') {
-                    self.pos = self.pos.saturating_add(2);
-                    break;
-                }
-                self.pos = self.pos.saturating_add(1);
-                continue;
-            }
-            if byte != b'/' {
-                match self.garbage_keyword() {
-                    Some(true) => break,
-                    Some(false) => continue,
-                    None => {}
-                }
-                match self.value(depth.saturating_add(1)) {
-                    Err(Reject::TooDeep) => return Err(Reject::TooDeep),
-                    _ => continue,
-                }
-            }
-            let key = self.name();
-            self.skip_whitespace();
-            match self.peek() {
-                None => break,
-                Some(b'>') if self.peek_at(1) == Some(b'>') => continue,
-                Some(_) => {}
-            }
-            match self.garbage_keyword() {
-                Some(true) => break,
-                Some(false) => continue,
-                None => {}
-            }
-            match self.value(depth.saturating_add(1)) {
-                Ok(value) => dict.entries.push((key, value)),
-                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
-                Err(Reject::Garbage) => {}
-            }
-        }
-        Ok(Object::Dict(dict))
-    }
-
-    fn name(&mut self) -> Vec<u8> {
-        self.pos = self.pos.saturating_add(1);
-        let raw = self.regular_run();
-        if !raw.contains(&b'#') {
-            return raw.to_vec();
-        }
-        let mut out = Vec::with_capacity(raw.len());
-        let mut index = 0;
-        while let Some(&byte) = raw.get(index) {
-            if byte == b'#'
-                && let Some(high) = raw
-                    .get(index.saturating_add(1))
-                    .copied()
-                    .and_then(hex_value)
-                && let Some(low) = raw
-                    .get(index.saturating_add(2))
-                    .copied()
-                    .and_then(hex_value)
-            {
-                out.push(high << 4 | low);
-                index = index.saturating_add(3);
-            } else {
-                out.push(byte);
-                index = index.saturating_add(1);
-            }
-        }
-        out
-    }
-
-    fn hex_string(&mut self) -> Vec<u8> {
-        self.pos = self.pos.saturating_add(1);
-        let mut out = Vec::new();
-        let mut high: Option<u8> = None;
-        while let Some(byte) = self.peek() {
-            self.pos = self.pos.saturating_add(1);
-            if byte == b'>' {
-                break;
-            }
-            if let Some(nibble) = hex_value(byte) {
-                match high.take() {
-                    Some(upper) => out.push(upper << 4 | nibble),
-                    None => high = Some(nibble),
-                }
-            }
-        }
-        if let Some(upper) = high {
-            out.push(upper << 4);
-        }
-        out
-    }
-
-    fn literal_string(&mut self) -> Vec<u8> {
-        self.pos = self.pos.saturating_add(1);
-        let mut out = Vec::new();
-        let mut depth = 1_usize;
-        loop {
-            let start = self.pos;
-            while let Some(byte) = self.peek() {
-                if matches!(byte, b'(' | b')' | b'\\' | b'\r') {
-                    break;
-                }
-                self.pos = self.pos.saturating_add(1);
-            }
-            out.extend_from_slice(self.slice(start, self.pos));
-            let Some(byte) = self.peek() else { break };
-            self.pos = self.pos.saturating_add(1);
-            match byte {
-                b'(' => {
-                    depth = depth.saturating_add(1);
-                    out.push(b'(');
-                }
-                b')' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        break;
-                    }
-                    out.push(b')');
-                }
-                b'\r' => {
-                    if self.peek() == Some(b'\n') {
-                        self.pos = self.pos.saturating_add(1);
-                    }
-                    out.push(b'\n');
-                }
-                _ => {
-                    let Some(escaped) = self.peek() else { break };
-                    self.pos = self.pos.saturating_add(1);
-                    match escaped {
-                        b'n' => out.push(b'\n'),
-                        b'r' => out.push(b'\r'),
-                        b't' => out.push(b'\t'),
-                        b'b' => out.push(8),
-                        b'f' => out.push(12),
-                        b'\r' => {
-                            if self.peek() == Some(b'\n') {
-                                self.pos = self.pos.saturating_add(1);
-                            }
-                        }
-                        b'\n' => {}
-                        b'0'..=b'7' => {
-                            let mut value = u32::from(escaped.saturating_sub(b'0'));
-                            for _ in 0..2 {
-                                match self.peek() {
-                                    Some(digit @ b'0'..=b'7') => {
-                                        value = (value.saturating_mul(8))
-                                            .saturating_add(u32::from(digit.saturating_sub(b'0')));
-                                        self.pos = self.pos.saturating_add(1);
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            out.push(u8::try_from(value & 0xff).unwrap_or(u8::MAX));
-                        }
-                        other => out.push(other),
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn number(&mut self) -> Object {
-        let mut negative = false;
-        let mut signed = false;
-        match self.peek() {
-            Some(b'+') => {
-                signed = true;
-                self.pos = self.pos.saturating_add(1);
-            }
-            Some(b'-') => {
-                signed = true;
-                negative = true;
-                self.pos = self.pos.saturating_add(1);
-                while self.peek() == Some(b'-') {
-                    self.pos = self.pos.saturating_add(1);
-                }
-            }
-            _ => {}
-        }
-        let mut whole: u64 = 0;
-        let mut overflow = false;
-        let mut digits = 0_usize;
-        while let Some(byte @ b'0'..=b'9') = self.peek() {
-            match whole
-                .checked_mul(10)
-                .and_then(|value| value.checked_add(u64::from(byte.saturating_sub(b'0'))))
-            {
-                Some(value) => whole = value,
-                None => overflow = true,
-            }
-            digits = digits.saturating_add(1);
-            self.pos = self.pos.saturating_add(1);
-        }
-        if self.peek() == Some(b'.') {
-            self.pos = self.pos.saturating_add(1);
-            let mut fraction: u64 = 0;
-            let mut scale = 0_usize;
-            while let Some(byte @ b'0'..=b'9') = self.peek() {
-                if scale < 18 {
-                    fraction = (fraction.saturating_mul(10))
-                        .saturating_add(u64::from(byte.saturating_sub(b'0')));
-                    scale = scale.saturating_add(1);
-                }
-                self.pos = self.pos.saturating_add(1);
-            }
-            let divisor = 10_f64.powi(i32::try_from(scale).unwrap_or(0));
-            let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
-            return Object::Real(if negative { -magnitude } else { magnitude });
-        }
-        if digits == 0 {
-            return Object::Integer(0);
-        }
-        if overflow || whole > i64::MAX.cast_unsigned() {
-            let magnitude = if overflow {
-                f64::MAX
-            } else {
-                u64_to_f64(whole)
-            };
-            return Object::Real(if negative { -magnitude } else { magnitude });
-        }
-        let integer = whole.cast_signed();
-        if self.refs
-            && !signed
-            && let Some((reference, end)) = self.reference(whole)
-        {
-            self.pos = end;
-            return reference;
-        }
-        Object::Integer(if negative {
-            integer.saturating_neg()
-        } else {
-            integer
-        })
-    }
-
-    fn reference(&self, number: u64) -> Option<(Object, usize)> {
-        let number = u32::try_from(number).ok()?;
-        let data = self.data;
-        let mut index = self.pos;
-        let number_gap = index;
-        while data.get(index).copied().is_some_and(is_whitespace) {
-            index = index.saturating_add(1);
-        }
-        if index == number_gap {
-            return None;
-        }
-        let digits_start = index;
-        let mut generation: u32 = 0;
-        while let Some(&byte) = data.get(index) {
-            if !byte.is_ascii_digit() {
-                break;
-            }
-            if index.saturating_sub(digits_start) >= 5 {
-                return None;
-            }
-            generation = (generation.saturating_mul(10))
-                .saturating_add(u32::from(byte.saturating_sub(b'0')));
-            index = index.saturating_add(1);
-        }
-        if index == digits_start {
-            return None;
-        }
-        let reference_gap = index;
-        while data.get(index).copied().is_some_and(is_whitespace) {
-            index = index.saturating_add(1);
-        }
-        if index == reference_gap || !keyword_at(data, index, b"R") {
-            return None;
-        }
-        let reference = ObjRef {
-            number,
-            generation: u16::try_from(generation).unwrap_or(u16::MAX),
-        };
-        Some((Object::Ref(reference), index.saturating_add(1)))
-    }
-
-    fn inline_image(&mut self) -> Outcome<ContentToken<'a>> {
-        let mut length: Option<usize> = None;
-        loop {
-            self.skip_whitespace();
-            let Some(byte) = self.peek() else {
-                return Ok(ContentToken::Operator(b"EI"));
-            };
-            if self.keyword_here(b"ID") {
-                self.pos = self.pos.saturating_add(2);
-                break;
-            }
-            if self.keyword_here(b"EI") {
-                self.pos = self.pos.saturating_add(2);
-                return Ok(ContentToken::Operator(b"EI"));
-            }
-            if byte == b'/' {
-                let key = self.name();
-                self.skip_whitespace();
-                if self.keyword_here(b"ID") {
-                    continue;
-                }
-                match self.value(0) {
-                    Ok(value) => {
-                        if key == b"L" || key == b"Length" {
-                            length = value.as_integer().and_then(|n| usize::try_from(n).ok());
-                        }
-                    }
-                    Err(reject @ Reject::TooDeep) => return Err(reject.into_failure()),
-                    Err(Reject::Garbage) => {}
-                }
-            } else if let Err(reject @ Reject::TooDeep) = self.value(0) {
-                return Err(reject.into_failure());
-            }
-        }
-        if let Some(byte) = self.peek()
-            && is_whitespace(byte)
-        {
-            self.pos = self.pos.saturating_add(1);
-            if byte == b'\r' && self.peek() == Some(b'\n') {
-                self.pos = self.pos.saturating_add(1);
-            }
-        }
-        self.pos = inline_image_end(self.data, self.pos, length);
-        Ok(ContentToken::Operator(b"EI"))
-    }
-}
-
 fn image_terminated(data: &[u8], pos: usize) -> bool {
     data.get(pos)
         .is_none_or(|&byte| is_whitespace(byte) || is_delimiter(byte))
@@ -647,64 +905,19 @@ fn inline_image_end(data: &[u8], start: usize, length: Option<usize>) -> usize {
     data.len()
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ContentToken<'a> {
-    Operand(Object),
-    Operator(&'a [u8]),
-}
-
-pub(crate) struct ContentLexer<'a> {
-    parser: Parser<'a>,
-}
-
-impl<'a> ContentLexer<'a> {
-    pub(crate) const fn new(data: &'a [u8]) -> Self {
-        Self {
-            parser: Parser::new(data, 0, CONTENT_NESTING, false),
+fn decode_hex(raw: &[u8], out: &mut Vec<u8>) {
+    let mut high: Option<u8> = None;
+    for &byte in raw {
+        if let Some(nibble) = hex_value(byte) {
+            match high.take() {
+                Some(upper) => out.push((upper << 4_i32) | nibble),
+                None => high = Some(nibble),
+            }
         }
     }
-}
-
-impl<'a> Iterator for ContentLexer<'a> {
-    type Item = Outcome<ContentToken<'a>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let parser = &mut self.parser;
-        parser.skip_whitespace();
-        let byte = parser.peek()?;
-        let token = match byte {
-            b'0'..=b'9' | b'+' | b'-' | b'.' => ContentToken::Operand(parser.number()),
-            b'/' => ContentToken::Operand(Object::Name(parser.name())),
-            b'(' => ContentToken::Operand(Object::String(parser.literal_string())),
-            b'<' | b'[' => match parser.value(0) {
-                Ok(object) => ContentToken::Operand(object),
-                Err(reject) => return Some(Err(reject.into_failure())),
-            },
-            b')' | b']' | b'>' | b'{' | b'}' | b'%' => {
-                let start = parser.pos;
-                parser.pos = parser.pos.saturating_add(1);
-                ContentToken::Operator(parser.slice(start, parser.pos))
-            }
-            _ => {
-                let run = parser.regular_run();
-                match run {
-                    b"true" => ContentToken::Operand(Object::Bool(true)),
-                    b"false" => ContentToken::Operand(Object::Bool(false)),
-                    b"null" => ContentToken::Operand(Object::Null),
-                    b"BI" => return Some(parser.inline_image()),
-                    _ => ContentToken::Operator(run),
-                }
-            }
-        };
-        Some(Ok(token))
+    if let Some(upper) = high {
+        out.push(upper << 4_i32);
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct IndirectObject {
-    pub obj_ref: ObjRef,
-    pub object: Object,
-    pub end: usize,
 }
 
 pub(crate) fn parse_object_header(data: &[u8], offset: usize) -> Option<(ObjRef, usize)> {
@@ -747,8 +960,7 @@ fn stream_start(data: &[u8], keyword_end: usize) -> usize {
     }
 }
 
-fn trim_stream_end(data: &[u8], start: usize, end: usize) -> usize {
-    let mut end = end;
+fn trim_stream_end(data: &[u8], start: usize, mut end: usize) -> usize {
     if end > start && data.get(end.saturating_sub(1)) == Some(&b'\n') {
         end = end.saturating_sub(1);
         if end > start && data.get(end.saturating_sub(1)) == Some(&b'\r') {
@@ -843,7 +1055,8 @@ pub(crate) fn parse_indirect_object(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::hint::black_box;
+    use crate::failure::FailureCode;
+    use core::hint::black_box;
 
     fn parse(input: &[u8]) -> Object {
         Parser::new(input, 0, 64, true)
@@ -876,7 +1089,7 @@ mod tests {
     #[test]
     fn saturates_integer_overflow() {
         let huge = parse(b"99999999999999999999999999");
-        assert!(matches!(huge, Object::Real(value) if value > 1e18));
+        assert!(matches!(huge, Object::Real(value) if value > 1e18_f64));
         assert_eq!(parse(b"9223372036854775807"), Object::Integer(i64::MAX));
     }
 
@@ -1034,17 +1247,11 @@ mod tests {
     fn nesting_limit_fails_hard() {
         let deep = vec![b'['; 200];
         let result = Parser::new(&deep, 0, 64, true).parse_object();
-        assert_eq!(
-            result.map_err(|f| f.code),
-            Err(crate::failure::FailureCode::LimitExceeded)
-        );
+        assert_eq!(result.map_err(|f| f.code), Err(FailureCode::LimitExceeded));
         let nested = b"[[[[1]]]]";
-        assert!(Parser::new(nested, 0, 64, true).parse_object().is_ok());
+        drop(Parser::new(nested, 0, 64, true).parse_object().unwrap());
         let shallow = Parser::new(nested, 0, 3, true).parse_object();
-        assert_eq!(
-            shallow.map_err(|f| f.code),
-            Err(crate::failure::FailureCode::LimitExceeded)
-        );
+        assert_eq!(shallow.map_err(|f| f.code), Err(FailureCode::LimitExceeded));
     }
 
     #[test]
@@ -1092,12 +1299,12 @@ mod tests {
 
     #[test]
     fn rejects_missing_header() {
-        assert!(parse_indirect_object(b"hello", 0, 64, no_length).is_err());
-        assert!(parse_indirect_object(b"1 0 objx", 0, 64, no_length).is_err());
-        assert!(parse_indirect_object(b"10obj", 0, 64, no_length).is_err());
+        drop(parse_indirect_object(b"hello", 0, 64, no_length).unwrap_err());
+        drop(parse_indirect_object(b"1 0 objx", 0, 64, no_length).unwrap_err());
+        drop(parse_indirect_object(b"10obj", 0, 64, no_length).unwrap_err());
     }
 
-    fn stream_bytes<'a>(data: &'a [u8], parsed: &IndirectObject) -> &'a [u8] {
+    fn stream_bytes<'data>(data: &'data [u8], parsed: &IndirectObject) -> &'data [u8] {
         if let Object::Stream(stream) = &parsed.object {
             data.get(stream.data.clone()).unwrap_or_default()
         } else {
@@ -1196,18 +1403,18 @@ mod tests {
             tokens,
             vec![
                 op(b"BT"),
-                ContentToken::Operand(name("F1")),
-                ContentToken::Operand(Object::Integer(12)),
+                ContentToken::Operand(Operand::Name(Cow::Borrowed(b"F1"))),
+                ContentToken::Operand(Operand::Integer(12)),
                 op(b"Tf"),
-                ContentToken::Operand(Object::Integer(72)),
-                ContentToken::Operand(Object::Integer(720)),
+                ContentToken::Operand(Operand::Integer(72)),
+                ContentToken::Operand(Operand::Integer(720)),
                 op(b"Td"),
-                ContentToken::Operand(Object::String(b"Hello".to_vec())),
+                ContentToken::Operand(Operand::Literal(Cow::Borrowed(b"Hello"))),
                 op(b"Tj"),
-                ContentToken::Operand(Object::Array(vec![
-                    Object::String(b"A".to_vec()),
-                    Object::Integer(-120),
-                    Object::String(b"B".to_vec())
+                ContentToken::Operand(Operand::Array(vec![
+                    Operand::Literal(Cow::Borrowed(b"A")),
+                    Operand::Integer(-120),
+                    Operand::Literal(Cow::Borrowed(b"B"))
                 ])),
                 op(b"TJ"),
                 op(b"ET"),
@@ -1216,12 +1423,61 @@ mod tests {
     }
 
     #[test]
+    fn content_lexer_borrows_plain_operands_and_owns_escaped_ones() {
+        let tokens = lex(b"/A#20B /Plain (esc\\)aped) (nest(ed)) (plain) <48 65 6>");
+        assert_eq!(
+            tokens,
+            vec![
+                ContentToken::Operand(Operand::Name(Cow::Owned(b"A B".to_vec()))),
+                ContentToken::Operand(Operand::Name(Cow::Borrowed(b"Plain"))),
+                ContentToken::Operand(Operand::Literal(Cow::Owned(b"esc)aped".to_vec()))),
+                ContentToken::Operand(Operand::Literal(Cow::Owned(b"nest(ed)".to_vec()))),
+                ContentToken::Operand(Operand::Literal(Cow::Borrowed(b"plain"))),
+                ContentToken::Operand(Operand::Hex(b"48 65 6")),
+            ]
+        );
+        let mut scratch = Vec::new();
+        let Some(ContentToken::Operand(hex)) = tokens.last() else {
+            panic!("hex operand expected");
+        };
+        assert_eq!(hex.string(&mut scratch), Some(&b"He`"[..]));
+        assert_eq!(
+            lex(b"<41"),
+            vec![ContentToken::Operand(Operand::Hex(b"41"))]
+        );
+    }
+
+    #[test]
+    fn content_lexer_recycles_array_buffers() {
+        let data = b"[(a) 1] TJ [(b)] TJ";
+        let mut lexer = ContentLexer::new(data);
+        let Some(Ok(ContentToken::Operand(first))) = lexer.next() else {
+            panic!("array expected");
+        };
+        let Operand::Array(items) = &first else {
+            panic!("array expected, got {first:?}");
+        };
+        let capacity = items.capacity();
+        lexer.recycle(first);
+        assert_eq!(lexer.next(), Some(Ok(op(b"TJ"))));
+        let Some(Ok(ContentToken::Operand(Operand::Array(second)))) = lexer.next() else {
+            panic!("array expected");
+        };
+        assert_eq!(second.capacity(), capacity);
+        assert_eq!(second, vec![Operand::Literal(Cow::Borrowed(b"b"))]);
+    }
+
+    #[test]
     fn content_lexer_handles_tight_syntax_and_quotes() {
         let tokens = lex(b"BT/F1 1 Tf(A)'(B)\" 1 0 0 1 0 0 Tm<41>Tj");
         assert!(tokens.contains(&op(b"'")));
         assert!(tokens.contains(&op(b"\"")));
         assert!(tokens.contains(&op(b"Tm")));
-        assert!(tokens.contains(&ContentToken::Operand(Object::String(b"A".to_vec()))));
+        assert!(
+            tokens.contains(&ContentToken::Operand(Operand::Literal(Cow::Borrowed(
+                b"A"
+            ))))
+        );
     }
 
     #[test]
@@ -1230,8 +1486,8 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operand(Object::Integer(1)),
-                ContentToken::Operand(Object::Integer(0)),
+                ContentToken::Operand(Operand::Integer(1)),
+                ContentToken::Operand(Operand::Integer(0)),
                 op(b"R"),
             ]
         );
@@ -1243,7 +1499,7 @@ mod tests {
         assert_eq!(tokens.len(), 4);
         assert!(matches!(
             tokens.get(1),
-            Some(ContentToken::Operand(Object::Dict(_)))
+            Some(ContentToken::Operand(Operand::Object(Object::Dict(_))))
         ));
         assert_eq!(tokens.get(2), Some(&op(b"BDC")));
     }
@@ -1285,15 +1541,15 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operand(Object::Integer(1)),
-                ContentToken::Operand(Object::Integer(2)),
+                ContentToken::Operand(Operand::Integer(1)),
+                ContentToken::Operand(Operand::Integer(2)),
                 op(b")"),
                 op(b"]"),
                 op(b">"),
                 op(b"}"),
                 op(b"{"),
                 op(b"foo"),
-                ContentToken::Operand(Object::Integer(3)),
+                ContentToken::Operand(Operand::Integer(3)),
                 op(b"bar"),
             ]
         );
@@ -1324,9 +1580,9 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operand(Object::Bool(true)),
-                ContentToken::Operand(Object::Bool(false)),
-                ContentToken::Operand(Object::Null),
+                ContentToken::Operand(Operand::Bool(true)),
+                ContentToken::Operand(Operand::Bool(false)),
+                ContentToken::Operand(Operand::Null),
             ]
         );
     }

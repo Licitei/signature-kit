@@ -1,21 +1,24 @@
 use crate::num::f64_to_i64;
 use crate::num::widen;
+use alloc::rc::Rc;
+use core::mem;
+use core::ops::Range;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 use crate::document::{Document, Page};
 use crate::failure::{Failure, FailureCode, Outcome};
-use crate::font::{Font, Glyph};
+use crate::font::{Font, Glyph, embedded_style};
+use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
-use crate::syntax::{ContentLexer, ContentToken};
-
-type Matrix = [f64; 6];
+use crate::syntax::{ContentLexer, ContentToken, Operand};
 
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
 const MAX_OPERANDS: usize = 512;
 const MAX_FORM_DEPTH: usize = 24;
 const MAX_CACHED_FONTS: usize = 2048;
+const MAX_CACHED_FORM_BYTES: usize = 16 << 20;
 const SPACE_GAP: f64 = 0.2;
 const BREAK_GAP: f64 = 1.5;
 const BACK_GAP: f64 = 0.4;
@@ -27,18 +30,10 @@ const DEFAULT_ASCENT: f64 = 0.945;
 const DEFAULT_DESCENT: f64 = 0.224;
 const BOLD_ASCENT: f64 = 0.962;
 const BOLD_DESCENT: f64 = 0.227;
-
-const fn op(name: &[u8]) -> u32 {
-    match name {
-        [a] => u32::from_be_bytes([0, 0, 0, *a]),
-        [a, b] => u32::from_be_bytes([0, 0, *a, *b]),
-        [a, b, c] => u32::from_be_bytes([0, *a, *b, *c]),
-        _ => 0,
-    }
-}
-
 const OP_SAVE: u32 = op(b"q");
+
 const OP_RESTORE: u32 = op(b"Q");
+
 const OP_CM: u32 = op(b"cm");
 const OP_BT: u32 = op(b"BT");
 const OP_TC: u32 = op(b"Tc");
@@ -47,6 +42,7 @@ const OP_TZ: u32 = op(b"Tz");
 const OP_TL: u32 = op(b"TL");
 const OP_TF: u32 = op(b"Tf");
 const OP_TS: u32 = op(b"Ts");
+const OP_TR: u32 = op(b"Tr");
 const OP_TD: u32 = op(b"Td");
 const OP_TD_LEADING: u32 = op(b"TD");
 const OP_TM: u32 = op(b"Tm");
@@ -78,122 +74,65 @@ const OP_NO_PAINT: u32 = op(b"n");
 const OP_BMC: u32 = op(b"BMC");
 const OP_BDC: u32 = op(b"BDC");
 const OP_EMC: u32 = op(b"EMC");
+const AXIS_TOLERANCE: f64 = 1.0;
+const MIN_RULING: f64 = 2.0;
+
+const THIN_FILL: f64 = 2.0;
+
+const FRAME_FRACTION: f64 = 0.9;
+
+const FORCE_BOLD: i64 = 1 << 18;
+
+const ITALIC_FLAG: i64 = 1 << 6;
+
+const ITALIC_ANGLE: f64 = 4.0;
+
+type Matrix = [f64; 6];
 
 #[derive(PartialEq, Eq)]
 enum Shows {
-    Text,
     Forms,
     Nothing,
+    Text,
 }
 
-fn scan_shows(data: &[u8]) -> Shows {
-    let mut forms = false;
-    let mut at = 0_usize;
-    while let Some(offset) = data.get(at..).and_then(|rest| {
-        rest.iter()
-            .position(|byte| matches!(byte, b'T' | b'D' | b'\'' | b'"'))
-    }) {
-        let index = at.saturating_add(offset);
-        match data.get(index) {
-            Some(b'\'' | b'"') => return Shows::Text,
-            Some(b'T') if matches!(data.get(index.saturating_add(1)), Some(b'j' | b'J')) => {
-                return Shows::Text;
-            }
-            Some(b'D') if data.get(index.saturating_add(1)) == Some(&b'o') => forms = true,
-            _ => {}
-        }
-        at = index.saturating_add(1);
+trait Numeric {
+    fn number(&self) -> Option<f64>;
+}
+
+impl Numeric for Object {
+    fn number(&self) -> Option<f64> {
+        self.as_number()
     }
-    if forms { Shows::Forms } else { Shows::Nothing }
 }
 
-fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
-    let [a1, b1, c1, d1, e1, f1] = *first;
-    let [a2, b2, c2, d2, e2, f2] = *second;
-    [
-        a1 * a2 + b1 * c2,
-        a1 * b2 + b1 * d2,
-        c1 * a2 + d1 * c2,
-        c1 * b2 + d1 * d2,
-        e1 * a2 + f1 * c2 + e2,
-        e1 * b2 + f1 * d2 + f2,
-    ]
-}
-
-fn tail_numbers<const N: usize>(operands: &[Object]) -> Option<[f64; N]> {
-    let start = operands.len().checked_sub(N)?;
-    let mut out = [0.0; N];
-    for (slot, object) in out.iter_mut().zip(operands.get(start..)?) {
-        *slot = object.as_number()?;
+impl Numeric for Operand<'_> {
+    fn number(&self) -> Option<f64> {
+        self.as_number()
     }
-    Some(out)
 }
-
-fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
-    let items = object?.as_array()?;
-    if items.len() != 6 {
-        return None;
-    }
-    tail_numbers::<6>(items)
-}
-
-fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
-    let [a, b, c, d, e, f] = *matrix;
-    let mut bounds = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
-        let px = x * a + y * c + e;
-        let py = x * b + y * d + f;
-        bounds[0] = bounds[0].min(px);
-        bounds[1] = bounds[1].min(py);
-        bounds[2] = bounds[2].max(px);
-        bounds[3] = bounds[3].max(py);
-    }
-    bounds
-}
-
-const AXIS_TOLERANCE: f64 = 1.0;
-const MIN_RULING: f64 = 2.0;
-const THIN_FILL: f64 = 2.0;
-const FRAME_FRACTION: f64 = 0.9;
-const FORCE_BOLD: i64 = 1 << 18;
-
-fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
-    let [a, b, c, d, e, f] = *matrix;
-    (x * a + y * c + e, x * b + y * d + f)
-}
-
-fn axis_aligned(matrix: &Matrix) -> bool {
-    let [a, b, c, d, _, _] = *matrix;
-    let straight = a.abs() + d.abs();
-    let turned = b.abs() + c.abs();
-    straight > MIN_SCALE && turned <= 1e-3 * straight
-        || turned > MIN_SCALE && straight <= 1e-3 * turned
-}
-
 #[derive(Default)]
 struct PathBuilder {
-    segments: Vec<[f64; 4]>,
-    rects: Vec<[f64; 4]>,
-    start: Option<(f64, f64)>,
     current: Option<(f64, f64)>,
+    rects: Vec<[f64; 4]>,
+    segments: Vec<[f64; 4]>,
+    start: Option<(f64, f64)>,
 }
-
 impl PathBuilder {
-    const fn move_to(&mut self, point: (f64, f64)) {
-        self.start = Some(point);
-        self.current = Some(point);
+    fn clear(&mut self) {
+        self.segments.clear();
+        self.rects.clear();
+        self.start = None;
+        self.current = None;
     }
 
-    const fn move_current(&mut self, point: (f64, f64)) {
-        self.current = Some(point);
-        if self.start.is_none() {
-            self.start = Some(point);
+    fn close(&mut self, cap: usize) {
+        if let (Some(start), Some(current)) = (self.start, self.current)
+            && start != current
+        {
+            self.line_to(start, cap);
         }
+        self.current = self.start;
     }
 
     fn line_to(&mut self, point: (f64, f64), cap: usize) {
@@ -208,13 +147,16 @@ impl PathBuilder {
         }
     }
 
-    fn close(&mut self, cap: usize) {
-        if let (Some(start), Some(current)) = (self.start, self.current)
-            && start != current
-        {
-            self.line_to(start, cap);
+    const fn move_current(&mut self, point: (f64, f64)) {
+        self.current = Some(point);
+        if self.start.is_none() {
+            self.start = Some(point);
         }
-        self.current = self.start;
+    }
+
+    const fn move_to(&mut self, point: (f64, f64)) {
+        self.start = Some(point);
+        self.current = Some(point);
     }
 
     fn rect(&mut self, ctm: &Matrix, rect: [f64; 4], cap: usize) {
@@ -232,69 +174,64 @@ impl PathBuilder {
             corner_a.1.max(corner_b.1),
         ]);
     }
-
-    fn clear(&mut self) {
-        self.segments.clear();
-        self.rects.clear();
-        self.start = None;
-        self.current = None;
+}
+struct Placement {
+    direction: (f64, f64),
+    effective_size: f64,
+    linear: [f64; 4],
+    usable: bool,
+    vertical: bool,
+}
+impl Placement {
+    fn new(entry: &FontEntry, state: &GState, tm: &Matrix) -> Self {
+        let [a1, b1, c1, d1, _, _] = *tm;
+        let [a2, b2, c2, d2, _, _] = state.ctm;
+        let a = a1 * a2 + b1 * c2;
+        let b = a1 * b2 + b1 * d2;
+        let c = c1 * a2 + d1 * c2;
+        let d = c1 * b2 + d1 * d2;
+        let vertical = entry.font.is_vertical();
+        let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
+        let dir_length = (dir_x * dir_x + dir_y * dir_y).sqrt();
+        let effective_size = (state.size * (c * c + d * d).sqrt()).abs();
+        Self {
+            linear: [a, b, c, d],
+            direction: (dir_x / dir_length, dir_y / dir_length),
+            effective_size,
+            usable: dir_length > MIN_SCALE
+                && effective_size > MIN_SCALE
+                && dir_length.is_finite()
+                && effective_size.is_finite(),
+            vertical,
+        }
     }
 }
-
-fn text_string(bytes: &[u8]) -> String {
-    match bytes {
-        [0xFE, 0xFF, rest @ ..] => decode_utf16(rest, u16::from_be_bytes),
-        [0xFF, 0xFE, rest @ ..] => decode_utf16(rest, u16::from_le_bytes),
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        _ => bytes.iter().map(|&byte| char::from(byte)).collect(),
-    }
-}
-
-fn decode_utf16(bytes: &[u8], read: fn([u8; 2]) -> u16) -> String {
-    let units = bytes.as_chunks::<2>().0.iter().map(|pair| read(*pair));
-    char::decode_utf16(units)
-        .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect()
-}
-
-fn actual_text(operands: &[Object]) -> Option<String> {
-    let properties = operands.last()?.as_dict()?;
-    let Object::String(bytes) = properties.get(b"ActualText")? else {
-        return None;
-    };
-    Some(text_string(bytes))
-}
-
-fn is_bold_name(name: &[u8]) -> bool {
-    [&b"Bold"[..], b"bold", b"Black", b"Heavy", b"BOLD"]
-        .iter()
-        .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
-}
-
 struct FontEntry {
-    font: Font,
     ascent: f64,
-    descent: f64,
     bold: bool,
+    descent: f64,
+    font: Font,
+    italic: bool,
 }
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum FontKey {
     Indirect(ObjRef),
     Inline(u32, u32),
+    Within(ObjRef, u32),
 }
 
 #[derive(Clone)]
 struct GState {
+    char_space: f64,
     ctm: Matrix,
     font: Option<Rc<FontEntry>>,
-    size: f64,
-    char_space: f64,
-    word_space: f64,
-    scale: f64,
     leading: f64,
-    rise: f64,
     line_width: f64,
+    rise: f64,
+    scale: f64,
+    size: f64,
+    stroked_fill: bool,
+    word_space: f64,
 }
 
 impl GState {
@@ -309,19 +246,20 @@ impl GState {
             leading: 0.0,
             rise: 0.0,
             line_width: 1.0,
+            stroked_fill: false,
         }
     }
 }
 
 #[derive(Clone, Copy)]
 struct TextMatrices {
-    tm: Matrix,
     tlm: Matrix,
+    tm: Matrix,
 }
 
 impl TextMatrices {
     fn line_move(&mut self, tx: f64, ty: f64) {
-        self.tlm = multiply(&[1.0, 0.0, 0.0, 1.0, tx, ty], &self.tlm);
+        self.tlm = multiply(&[1.0_f64, 0.0_f64, 0.0_f64, 1.0_f64, tx, ty], &self.tlm);
         self.tm = self.tlm;
     }
 
@@ -332,29 +270,46 @@ impl TextMatrices {
 }
 
 enum Lazy {
-    Unset,
-    Missing,
     Found(Rc<Object>),
+    Missing,
+    Unset,
 }
 
 struct Scope {
-    id: u32,
-    resources: Rc<Object>,
-    fonts: Lazy,
-    xobjects: Lazy,
     ext_gstates: Lazy,
+    fonts: Lazy,
+    fonts_origin: Option<ObjRef>,
     forms: Option<bool>,
+    id: u32,
+    origin: Option<ObjRef>,
+    resources: Rc<Object>,
+    xobjects: Lazy,
 }
 
 impl Scope {
-    const fn new(id: u32, resources: Rc<Object>) -> Self {
-        Self {
-            id,
-            resources,
-            fonts: Lazy::Unset,
-            xobjects: Lazy::Unset,
-            ext_gstates: Lazy::Unset,
-            forms: None,
+    fn category(&mut self, document: &Document<'_>, key: &[u8]) -> Option<Rc<Object>> {
+        let slot = if key == b"Font" {
+            &mut self.fonts
+        } else if key == b"ExtGState" {
+            &mut self.ext_gstates
+        } else {
+            &mut self.xobjects
+        };
+        if matches!(slot, Lazy::Unset) {
+            let entry = self.resources.as_dict().and_then(|dict| dict.get(key));
+            if key == b"Font"
+                && let Some(Object::Ref(reference)) = entry
+            {
+                self.fonts_origin = Some(*reference);
+            }
+            let found = entry
+                .and_then(|resolved_entry| document.follow(resolved_entry).ok())
+                .filter(|resolved| resolved.as_dict().is_some());
+            *slot = found.map_or(Lazy::Missing, Lazy::Found);
+        }
+        match slot {
+            Lazy::Found(resolved) => Some(Rc::clone(resolved)),
+            Lazy::Missing | Lazy::Unset => None,
         }
     }
 
@@ -381,28 +336,24 @@ impl Scope {
         found
     }
 
-    fn category(&mut self, document: &Document<'_>, key: &[u8]) -> Option<Rc<Object>> {
-        let slot = if key == b"Font" {
-            &mut self.fonts
-        } else if key == b"ExtGState" {
-            &mut self.ext_gstates
-        } else {
-            &mut self.xobjects
-        };
-        if matches!(slot, Lazy::Unset) {
-            let found = self
-                .resources
-                .as_dict()
-                .and_then(|dict| dict.get(key))
-                .and_then(|entry| document.follow(entry).ok())
-                .filter(|resolved| resolved.as_dict().is_some());
-            *slot = found.map_or(Lazy::Missing, Lazy::Found);
-        }
-        match slot {
-            Lazy::Found(resolved) => Some(Rc::clone(resolved)),
-            Lazy::Missing | Lazy::Unset => None,
+    const fn new(id: u32, resources: Rc<Object>, origin: Option<ObjRef>) -> Self {
+        Self {
+            id,
+            resources,
+            origin,
+            fonts_origin: None,
+            fonts: Lazy::Unset,
+            xobjects: Lazy::Unset,
+            ext_gstates: Lazy::Unset,
+            forms: None,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct ShowContext<'ops, 'data> {
+    depth: usize,
+    operands: &'ops [Operand<'data>],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -414,13 +365,14 @@ enum Join {
 }
 
 struct PendingRun {
-    open: bool,
-    text: String,
+    bold: bool,
     bounds: [f64; 4],
-    size: f64,
     dir: (f64, f64),
     end: (f64, f64),
-    bold: bool,
+    italic: bool,
+    open: bool,
+    size: f64,
+    text: String,
 }
 
 impl Default for PendingRun {
@@ -433,231 +385,505 @@ impl Default for PendingRun {
             dir: (1.0, 0.0),
             end: (0.0, 0.0),
             bold: false,
+            italic: false,
         }
     }
 }
 
-struct Interpreter<'d, 'a> {
-    document: &'d Document<'a>,
-    limits: &'d Limits,
-    fonts: HashMap<FontKey, Option<Rc<FontEntry>>>,
-    skipped: HashSet<ObjRef>,
+struct Interpreter<'doc, 'data> {
     active: Vec<ObjRef>,
-    scopes: u32,
-    budget: usize,
-    max_depth: usize,
-    items: Vec<Run>,
-    text_bytes: usize,
-    glyphs: Vec<Glyph>,
-    decoded: String,
-    pending: PendingRun,
-    capture: Capture,
-    repositioned: bool,
-    rulings: Vec<Ruling>,
-    ruling_cap: usize,
-    page_extent: (f64, f64),
-    clip: Option<[f64; 4]>,
     actual: Option<String>,
     actual_emitted: bool,
+    budget: usize,
+    capture: Capture,
+    clip: Option<[f64; 4]>,
+    decoded: String,
+    document: &'doc Document<'data>,
+    fonts: FontCache,
+    forms: FormCache,
+    generation: u32,
+    glyphs: Vec<Glyph>,
+    items: Vec<Run>,
+    limits: &'doc Limits,
+    max_depth: usize,
+    page_extent: (f64, f64),
+    pending: PendingRun,
+    repositioned: bool,
+    ruling_cap: usize,
+    rulings: Vec<Ruling>,
+    scopes: u32,
+    skipped: HashSet<ObjRef>,
+    text: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Run {
-    pub item: TextItem,
-    pub direction: (f64, f64),
     pub bold: bool,
+    pub direction: (f64, f64),
+    pub font_size: f64,
+    pub italic: bool,
+    pub rect: [f64; 4],
+    pub text: Range<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ruling {
-    pub x0: f64,
-    pub y0: f64,
-    pub x1: f64,
-    pub y1: f64,
     pub width: f64,
+    pub x0: f64,
+    pub x1: f64,
+    pub y0: f64,
+    pub y1: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Capture {
     pub split_repositioned: bool,
+    pub split_style: bool,
     pub structure: bool,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct PageContent {
-    pub runs: Vec<Run>,
     pub rulings: Vec<Ruling>,
+    pub runs: Vec<Run>,
+    pub text: String,
+}
+
+impl PageContent {
+    pub(crate) fn items(&self) -> Vec<TextItem> {
+        self.runs
+            .iter()
+            .map(|run| TextItem {
+                rect: run.rect,
+                font_size: run.font_size,
+                text: self.text_of(run).to_owned(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn text_of(&self, run: &Run) -> &str {
+        self.text
+            .get(widen(run.text.start)..widen(run.text.end))
+            .unwrap_or_default()
+    }
+}
+
+type FontCache = HashMap<FontKey, (Option<Rc<FontEntry>>, u32)>;
+
+#[derive(Default)]
+struct FormCache {
+    bytes: usize,
+    entries: HashMap<ObjRef, (Rc<[u8]>, u32)>,
+}
+
+impl FormCache {
+    fn get(&mut self, reference: ObjRef, generation: u32) -> Option<Rc<[u8]>> {
+        let (data, used) = self.entries.get_mut(&reference)?;
+        *used = generation;
+        Some(Rc::clone(data))
+    }
+
+    fn insert(&mut self, reference: ObjRef, data: &Rc<[u8]>, generation: u32) {
+        let fits = |bytes: usize| bytes.saturating_add(data.len()) <= MAX_CACHED_FORM_BYTES;
+        if !fits(self.bytes) {
+            let previous = generation.wrapping_sub(1);
+            self.entries
+                .retain(|_, (_, used)| *used == generation || *used == previous);
+            self.bytes = self
+                .entries
+                .values()
+                .fold(0, |sum, (cached, _)| sum.saturating_add(cached.len()));
+        }
+        if fits(self.bytes) {
+            self.bytes = self.bytes.saturating_add(data.len());
+            drop(
+                self.entries
+                    .insert(reference, (Rc::clone(data), generation)),
+            );
+        }
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct Session {
-    fonts: HashMap<FontKey, Option<Rc<FontEntry>>>,
+    fonts: FontCache,
+    forms: FormCache,
+    generation: u32,
     scopes: u32,
-}
-
-pub(crate) fn extract_page(
-    document: &Document<'_>,
-    page: &Page,
-    limits: &Limits,
-) -> Outcome<Vec<TextItem>> {
-    Ok(
-        extract_runs(document, page, limits, false, &mut Session::default())?
-            .into_iter()
-            .map(|run| run.item)
-            .collect(),
-    )
-}
-
-pub(crate) fn extract_runs(
-    document: &Document<'_>,
-    page: &Page,
-    limits: &Limits,
-    split_repositioned: bool,
-    session: &mut Session,
-) -> Outcome<Vec<Run>> {
-    let capture = Capture {
-        split_repositioned,
-        structure: false,
-    };
-    Ok(extract_content(document, page, limits, capture, session)?.runs)
-}
-
-pub(crate) fn extract_content(
-    document: &Document<'_>,
-    page: &Page,
-    limits: &Limits,
-    capture: Capture,
-    session: &mut Session,
-) -> Outcome<PageContent> {
-    let content = document.content(page)?;
-    if content.is_empty() {
-        return Ok(PageContent::default());
-    }
-    let [mx0, my0, mx1, my1] = page.info.crop_box;
-    if session.fonts.len() > MAX_CACHED_FONTS {
-        session.fonts.clear();
-    }
-    let mut interpreter = Interpreter {
-        document,
-        limits,
-        fonts: std::mem::take(&mut session.fonts),
-        skipped: HashSet::new(),
-        active: Vec::new(),
-        scopes: session.scopes,
-        budget: limits.max_decoded_stream_bytes,
-        max_depth: limits.max_nesting.min(MAX_FORM_DEPTH),
-        items: Vec::new(),
-        text_bytes: 0,
-        glyphs: Vec::new(),
-        decoded: String::new(),
-        pending: PendingRun::default(),
-        capture,
-        repositioned: false,
-        rulings: Vec::new(),
-        ruling_cap: limits.max_items_per_page,
-        page_extent: ((mx1 - mx0).abs(), (my1 - my0).abs()),
-        clip: None,
-        actual: None,
-        actual_emitted: false,
-    };
-    let mut scope = Scope::new(
-        interpreter.next_scope(),
-        Rc::new(Object::Dict(page.resources.clone())),
-    );
-    let mut state = GState::initial();
-    let mut matrices = TextMatrices {
-        tm: IDENTITY,
-        tlm: IDENTITY,
-    };
-    let outcome = interpreter
-        .run(&content, &mut scope, &mut state, &mut matrices, 0)
-        .and_then(|()| interpreter.flush());
-    session.fonts = std::mem::take(&mut interpreter.fonts);
-    session.scopes = interpreter.scopes;
-    outcome?;
-    Ok(PageContent {
-        runs: interpreter.items,
-        rulings: interpreter.rulings,
-    })
+    skipped: HashSet<ObjRef>,
 }
 
 impl Interpreter<'_, '_> {
-    const fn next_scope(&mut self) -> u32 {
-        self.scopes = self.scopes.wrapping_add(1);
-        self.scopes
-    }
-
-    fn run(
+    fn apply_ext_gstate(
         &mut self,
-        data: &[u8],
+        operands: &[Operand<'_>],
         scope: &mut Scope,
         state: &mut GState,
-        matrices: &mut TextMatrices,
+    ) {
+        let Some(key) = operands.last().and_then(Operand::as_name) else {
+            return;
+        };
+        let Some(ext) = scope.category(self.document, b"ExtGState") else {
+            return;
+        };
+        let Some(dict) = ext.as_dict() else {
+            return;
+        };
+        let Some(entry) = dict.entries.iter().find(|(name, _)| name.as_slice() == key) else {
+            return;
+        };
+        let Ok(resolved) = self.document.follow(&entry.1) else {
+            return;
+        };
+        let Some(gs) = resolved.as_dict() else {
+            return;
+        };
+        if let Some(Object::Array(items)) = gs.get(b"Font") {
+            let name = items
+                .len()
+                .checked_sub(2)
+                .and_then(|index| items.get(index))
+                .and_then(Object::as_name);
+            let size = items.last().and_then(Object::as_number);
+            self.set_font(name, size, scope, state);
+        }
+    }
+
+    fn begin(
+        &mut self,
+        text: &str,
+        bounds: [f64; 4],
+        size: f64,
+        direction: (f64, f64),
+        end: (f64, f64),
+        style: (bool, bool),
+    ) {
+        self.pending.open = true;
+        self.pending.bold = style.0;
+        self.pending.italic = style.1;
+        self.pending.text.clear();
+        self.pending.text.push_str(text);
+        self.pending.bounds = bounds;
+        self.pending.size = size;
+        self.pending.dir = direction;
+        self.pending.end = end;
+    }
+
+    fn descendant(&self, font: &Dict) -> Option<Rc<Object>> {
+        let array = self.document.follow(font.get(b"DescendantFonts")?).ok()?;
+        let first = array.as_array()?.first()?;
+        self.document.follow(first).ok()
+    }
+
+    fn descriptor_metrics(&self, descriptor: &Object) -> Option<(f64, f64)> {
+        let resolved = self.document.follow(descriptor).ok()?;
+        let dict = resolved.as_dict()?;
+        let ascent = dict.get(b"Ascent").and_then(Object::as_number)? / 1_000.0_f64;
+        let descent = dict.get(b"Descent").and_then(Object::as_number)?.abs() / 1_000.0_f64;
+        ((0.2..=2.0).contains(&ascent) && (0.0..=1.0).contains(&descent))
+            .then_some((ascent, descent))
+    }
+
+    fn descriptor_style(&self, font: &Dict) -> FontStyle {
+        let Some(descriptor) = font
+            .get(b"FontDescriptor")
+            .and_then(|descriptor| self.document.follow(descriptor).ok())
+        else {
+            return FontStyle::default();
+        };
+        let Some(dict) = descriptor.as_dict() else {
+            return FontStyle::default();
+        };
+        let flags = dict
+            .get(b"Flags")
+            .and_then(Object::as_number)
+            .map_or(0, f64_to_i64);
+        let heavy = dict
+            .get(b"FontWeight")
+            .and_then(Object::as_number)
+            .is_some_and(|weight| weight >= 600.0_f64);
+        let slanted = dict
+            .get(b"ItalicAngle")
+            .and_then(Object::as_number)
+            .is_some_and(|angle| angle.abs() >= ITALIC_ANGLE);
+        FontStyle {
+            bold: flags & FORCE_BOLD != 0 || heavy,
+            italic: flags & ITALIC_FLAG != 0 || slanted,
+        }
+    }
+
+    fn do_xobject(
+        &mut self,
+        name: &[u8],
+        scope: &mut Scope,
+        state: &GState,
+        matrices: &TextMatrices,
         depth: usize,
     ) -> Outcome<()> {
-        self.budget = self
-            .budget
-            .checked_sub(data.len())
-            .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
-        match scan_shows(data) {
-            Shows::Text => {}
-            Shows::Forms if scope.has_forms(self.document) => {}
-            Shows::Forms | Shows::Nothing => return Ok(()),
+        if depth >= self.max_depth {
+            return Ok(());
         }
-        let max_stack = self.limits.max_nesting.saturating_mul(4);
-        let mut stack: Vec<GState> = Vec::new();
-        let mut operands: Vec<Object> = Vec::new();
-        let mut path = PathBuilder::default();
-        let mut marked: Vec<bool> = Vec::new();
-        for token in ContentLexer::new(data) {
-            let name = match token {
-                Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
-                Err(_) => break,
-                Ok(ContentToken::Operand(object)) => {
-                    if operands.len() >= MAX_OPERANDS {
-                        operands.clear();
-                    }
-                    operands.push(object);
-                    continue;
-                }
-                Ok(ContentToken::Operator(name)) => name,
-            };
-            let code = op(name);
-            match code {
-                OP_SAVE => {
-                    if stack.len() >= max_stack {
-                        return Err(Failure::limit("graphics state nesting exceeds limit"));
-                    }
-                    stack.push(state.clone());
-                }
-                OP_RESTORE => {
-                    if let Some(previous) = stack.pop() {
-                        *state = previous;
-                    }
-                }
-                OP_BMC | OP_BDC | OP_EMC => {
-                    self.marked_content(code, &operands, &mut marked, max_stack);
-                }
-                _ => {
-                    if !self.state_operator(code, &operands, scope, state, matrices)
-                        && !self.path_operator(code, &operands, state, &mut path)
-                    {
-                        self.show_operator(code, &operands, scope, state, matrices, depth)?;
-                    }
-                }
+        let Some(xobjects) = scope.category(self.document, b"XObject") else {
+            return Ok(());
+        };
+        let Some(entry) = xobjects.as_dict().and_then(|dict| dict.get(name)) else {
+            return Ok(());
+        };
+        let reference = if let Object::Ref(reference) = entry {
+            Some(*reference)
+        } else {
+            None
+        };
+        if let Some(inner_reference) = reference
+            && (self.skipped.contains(&inner_reference) || self.active.contains(&inner_reference))
+        {
+            return Ok(());
+        }
+        let Ok(resolved) = self.document.follow(entry) else {
+            return Ok(());
+        };
+        let Object::Stream(stream) = &*resolved else {
+            return Ok(());
+        };
+        let is_form = stream
+            .dict
+            .get(b"Subtype")
+            .and_then(Object::as_name)
+            .is_some_and(|subtype| subtype == b"Form");
+        if !is_form {
+            if let Some(inner_reference) = reference {
+                let _: bool = self.skipped.insert(inner_reference);
             }
-            operands.clear();
+            return Ok(());
         }
-        if marked.contains(&true) {
-            self.actual = None;
+        let cached = reference.and_then(|known| self.forms.get(known, self.generation));
+        let data: Rc<[u8]> = match cached {
+            Some(data) => data,
+            None => match self.document.stream_data(stream) {
+                Ok(data) => {
+                    let shared_data: Rc<[u8]> = data.into();
+                    if let Some(known) = reference {
+                        if scan_shows(&shared_data) == Shows::Nothing {
+                            let _: bool = self.skipped.insert(known);
+                        } else {
+                            self.forms.insert(known, &shared_data, self.generation);
+                        }
+                    }
+                    shared_data
+                }
+                Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
+                Err(_) => return Ok(()),
+            },
+        };
+        let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
+        let own = stream.dict.get(b"Resources");
+        let (resources, origin) = match own
+            .and_then(|object| self.document.follow(object).ok())
+            .filter(|object| object.as_dict().is_some())
+        {
+            Some(resources) => (
+                resources,
+                match own {
+                    Some(Object::Ref(own_ref)) => Some(*own_ref),
+                    _ => None,
+                },
+            ),
+            None => (Rc::clone(&scope.resources), scope.origin),
+        };
+        let mut inner_scope = Scope::new(self.next_scope(), resources, origin);
+        let mut inner_state = state.clone();
+        inner_state.ctm = multiply(&form_matrix, &state.ctm);
+        let outer_clip = self.clip;
+        if self.capture.structure
+            && let Some(bounds) = stream
+                .dict
+                .get(b"BBox")
+                .and_then(Object::as_array)
+                .filter(|items| items.len() == 4)
+                .and_then(tail_numbers::<4, _>)
+                .map(|[x0, y0, x1, y1]| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
+                .filter(|[x0, y0, x1, y1]| x1 - x0 > 0.0_f64 && y1 - y0 > 0.0_f64)
+        {
+            let [x0, y0, x1, y1] =
+                transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
+            self.clip = Some(outer_clip.map_or([x0, y0, x1, y1], |outer| {
+                [
+                    outer[0].max(x0),
+                    outer[1].max(y0),
+                    outer[2].min(x1),
+                    outer[3].min(y1),
+                ]
+            }));
         }
+        let mut inner_matrices = *matrices;
+        if let Some(inner_reference) = reference {
+            self.active.push(inner_reference);
+        }
+        let result = self.run(
+            &data,
+            &mut inner_scope,
+            &mut inner_state,
+            &mut inner_matrices,
+            depth.saturating_add(1),
+        );
+        if reference.is_some() {
+            let _: Option<ObjRef> = self.active.pop();
+        }
+        self.clip = outer_clip;
+        result
+    }
+
+    fn extend(&mut self, text: &str, visible: bool, spaced: bool) {
+        if spaced && visible {
+            let tail_space = self
+                .pending
+                .text
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace);
+            let head_space = text.chars().next().is_none_or(char::is_whitespace);
+            if !tail_space && !head_space {
+                self.pending.text.push(' ');
+            }
+        }
+        self.pending.text.push_str(text);
+    }
+
+    fn flush(&mut self) -> Outcome<()> {
+        if !self.pending.open {
+            return Ok(());
+        }
+        self.pending.open = false;
+        let trimmed = self.pending.text.trim();
+        if trimmed.is_empty() {
+            self.pending.text.clear();
+            return Ok(());
+        }
+        if self.items.len() >= self.limits.max_items_per_page {
+            return Err(Failure::limit("page text items exceed limit"));
+        }
+        let start = self.text.len();
+        let end = start.saturating_add(trimmed.len());
+        if end > self.limits.max_text_bytes {
+            return Err(Failure::limit("page text bytes exceed limit"));
+        }
+        let (Ok(from), Ok(to)) = (u32::try_from(start), u32::try_from(end)) else {
+            return Err(Failure::limit("page text exceeds 32-bit offsets"));
+        };
+        self.text.push_str(trimmed);
+        self.pending.text.clear();
+        self.items.push(Run {
+            rect: self.pending.bounds,
+            font_size: self.pending.size,
+            text: from..to,
+            direction: self.pending.dir,
+            bold: self.pending.bold,
+            italic: self.pending.italic,
+        });
         Ok(())
+    }
+
+    fn font_style(&self, font: &Dict, loaded: &Font) -> FontStyle {
+        let descendant = self.descendant(font);
+        let nested = descendant.as_deref().and_then(Object::as_dict);
+        let names = [Some(font), nested]
+            .into_iter()
+            .flatten()
+            .filter_map(|dict| dict.get(b"BaseFont").and_then(Object::as_name));
+        let mut style = loaded.program_style().unwrap_or_else(|| {
+            if !self.capture.split_style {
+                return FontStyle::default();
+            }
+            [nested, Some(font)]
+                .into_iter()
+                .flatten()
+                .filter_map(|dict| dict.get(b"FontDescriptor"))
+                .filter_map(|descriptor| self.document.follow(descriptor).ok())
+                .find_map(|descriptor| {
+                    let dict = descriptor.as_dict()?;
+                    embedded_style(dict, self.document, self.limits)
+                })
+                .unwrap_or_default()
+        });
+        for name in names {
+            style.bold |= is_bold_name(name);
+            style.italic |= is_italic_name(name);
+        }
+        for dict in [Some(font), nested].into_iter().flatten() {
+            let described = self.descriptor_style(dict);
+            style.bold |= described.bold;
+            style.italic |= described.italic;
+        }
+        style
+    }
+
+    fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64) -> Join {
+        if !self.pending.open {
+            return Join::Closed;
+        }
+        let dx = origin.0 - self.pending.end.0;
+        let dy = origin.1 - self.pending.end.1;
+        let (ux, uy) = self.pending.dir;
+        let along = dx * ux + dy * uy;
+        let across = dy * ux - dx * uy;
+        let aligned = direction.0 * ux + direction.1 * uy > DIRECTION_COSINE;
+        let similar =
+            (size - self.pending.size).abs() <= SIZE_TOLERANCE * self.pending.size.max(size);
+        let on_line = across.abs() <= BASELINE_TOLERANCE * size;
+        let near = along >= -BACK_GAP * size && along <= BREAK_GAP * size;
+        if aligned && similar && on_line && near {
+            if along > SPACE_GAP * size {
+                Join::Spaced
+            } else {
+                Join::Same
+            }
+        } else {
+            Join::Split
+        }
+    }
+
+    fn load_font(&self, object: &Object) -> Option<Rc<FontEntry>> {
+        let resolved = self.document.follow(object).ok()?;
+        let dict = resolved.as_dict()?;
+        let font = Font::load(self.document, dict, self.limits).ok()?;
+        let (ascent, descent) = self.vertical_metrics(dict);
+        let FontStyle { bold, italic } = self.font_style(dict, &font);
+        Some(Rc::new(FontEntry {
+            ascent,
+            bold,
+            descent,
+            font,
+            italic,
+        }))
+    }
+
+    fn lookup_font(&mut self, scope: &mut Scope, name: &[u8]) -> Option<Rc<FontEntry>> {
+        let fonts = scope.category(self.document, b"Font")?;
+        let dict = fonts.as_dict()?;
+        let (index, (_, entry)) = dict
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(_, (key, _))| key.as_slice() == name)?;
+        let index_u32 = u32::try_from(index).ok()?;
+        let key = match (entry, scope.fonts_origin.or(scope.origin)) {
+            (Object::Ref(reference), _) => FontKey::Indirect(*reference),
+            (_, Some(origin)) => FontKey::Within(origin, index_u32),
+            (_, None) => FontKey::Inline(scope.id, index_u32),
+        };
+        if let Some((hit, used)) = self.fonts.get_mut(&key) {
+            *used = self.generation;
+            return hit.clone();
+        }
+        let loaded = self.load_font(entry);
+        drop(self.fonts.insert(key, (loaded.clone(), self.generation)));
+        loaded
     }
 
     fn marked_content(
         &mut self,
         code: u32,
-        operands: &[Object],
+        operands: &[Operand<'_>],
         marked: &mut Vec<bool>,
         max_stack: usize,
     ) {
@@ -685,181 +911,18 @@ impl Interpreter<'_, '_> {
         }
     }
 
-    fn state_operator(
-        &mut self,
-        code: u32,
-        operands: &[Object],
-        scope: &mut Scope,
-        state: &mut GState,
-        matrices: &mut TextMatrices,
-    ) -> bool {
-        match code {
-            OP_CM => {
-                if let Some(matrix) = tail_numbers::<6>(operands) {
-                    state.ctm = multiply(&matrix, &state.ctm);
-                }
-            }
-            OP_BT => {
-                self.repositioned = true;
-                matrices.tm = IDENTITY;
-                matrices.tlm = IDENTITY;
-            }
-            OP_TC => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
-                    state.char_space = value;
-                }
-            }
-            OP_TW => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
-                    state.word_space = value;
-                }
-            }
-            OP_TZ => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
-                    state.scale = value / 100.0;
-                }
-            }
-            OP_TL => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
-                    state.leading = value;
-                }
-            }
-            OP_TS => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
-                    state.rise = value;
-                }
-            }
-            OP_TF => self.set_font(operands, scope, state),
-            OP_GS => self.apply_ext_gstate(operands, scope, state),
-            OP_TD => {
-                self.repositioned = true;
-                if let Some([tx, ty]) = tail_numbers::<2>(operands) {
-                    matrices.line_move(tx, ty);
-                }
-            }
-            OP_TD_LEADING => {
-                self.repositioned = true;
-                if let Some([tx, ty]) = tail_numbers::<2>(operands) {
-                    state.leading = -ty;
-                    matrices.line_move(tx, ty);
-                }
-            }
-            OP_TM => {
-                self.repositioned = true;
-                if let Some(matrix) = tail_numbers::<6>(operands) {
-                    matrices.tm = matrix;
-                    matrices.tlm = matrix;
-                }
-            }
-            OP_TSTAR => {
-                self.repositioned = true;
-                matrices.line_move(0.0, -state.leading);
-            }
-            OP_LINE_WIDTH => {
-                if let Some([width]) = tail_numbers::<1>(operands) {
-                    state.line_width = width;
-                }
-            }
-            _ => return false,
-        }
-        true
+    const fn merge_bounds(&mut self, bounds: [f64; 4]) {
+        let [x0, y0, x1, y1] = bounds;
+        let [ox0, oy0, ox1, oy1] = &mut self.pending.bounds;
+        *ox0 = ox0.min(x0);
+        *oy0 = oy0.min(y0);
+        *ox1 = ox1.max(x1);
+        *oy1 = oy1.max(y1);
     }
 
-    fn show_operator(
-        &mut self,
-        code: u32,
-        operands: &[Object],
-        scope: &mut Scope,
-        state: &mut GState,
-        matrices: &mut TextMatrices,
-        depth: usize,
-    ) -> Outcome<()> {
-        match code {
-            OP_TJ => {
-                if let Some(Object::String(bytes)) = operands.last() {
-                    self.show(state, matrices, bytes)?;
-                }
-            }
-            OP_QUOTE => {
-                self.repositioned = true;
-                matrices.line_move(0.0, -state.leading);
-                if let Some(Object::String(bytes)) = operands.last() {
-                    self.show(state, matrices, bytes)?;
-                }
-            }
-            OP_DQUOTE => {
-                self.repositioned = true;
-                if let Some([word, character]) = operands
-                    .len()
-                    .checked_sub(3)
-                    .and_then(|start| operands.get(start..start.saturating_add(2)))
-                    .and_then(tail_numbers::<2>)
-                {
-                    state.word_space = word;
-                    state.char_space = character;
-                }
-                matrices.line_move(0.0, -state.leading);
-                if let Some(Object::String(bytes)) = operands.last() {
-                    self.show(state, matrices, bytes)?;
-                }
-            }
-            OP_TJ_ARRAY => {
-                if let Some(Object::Array(items)) = operands.last() {
-                    self.show_array(state, matrices, items)?;
-                }
-            }
-            OP_DO => {
-                if let Some(Object::Name(xobject)) = operands.last() {
-                    self.do_xobject(xobject, scope, state, matrices, depth)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn path_operator(
-        &mut self,
-        code: u32,
-        operands: &[Object],
-        state: &GState,
-        path: &mut PathBuilder,
-    ) -> bool {
-        if !self.capture.structure {
-            return false;
-        }
-        match code {
-            OP_MOVE => {
-                if let Some([x, y]) = tail_numbers::<2>(operands) {
-                    path.move_to(apply(&state.ctm, x, y));
-                }
-            }
-            OP_LINE => {
-                if let Some([x, y]) = tail_numbers::<2>(operands) {
-                    path.line_to(apply(&state.ctm, x, y), self.ruling_cap);
-                }
-            }
-            OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
-                if let Some([x, y]) = tail_numbers::<2>(operands) {
-                    path.move_current(apply(&state.ctm, x, y));
-                }
-            }
-            OP_RECT => {
-                if let Some([x, y, width, height]) = tail_numbers::<4>(operands) {
-                    path.rect(&state.ctm, [x, y, width, height], self.ruling_cap);
-                }
-            }
-            OP_CLOSE => path.close(self.ruling_cap),
-            OP_NO_PAINT => path.clear(),
-            OP_STROKE | OP_FILL_STROKE | OP_FILL_STROKE_EO => self.paint(path, state, true),
-            OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO => {
-                path.close(self.ruling_cap);
-                self.paint(path, state, true);
-            }
-            OP_FILL | OP_FILL_OLD | OP_FILL_EO => self.paint(path, state, false),
-            _ => return false,
-        }
-        true
+    const fn next_scope(&mut self) -> u32 {
+        self.scopes = self.scopes.wrapping_add(1);
+        self.scopes
     }
 
     fn paint(&mut self, path: &mut PathBuilder, state: &GState, stroke: bool) {
@@ -879,12 +942,18 @@ impl Interpreter<'_, '_> {
                 self.push_ruling([x0, y0, x0, y1], width);
                 self.push_ruling([x1, y0, x1, y1], width);
             } else {
-                let (w, h) = (x1 - x0, y1 - y0);
-                let thin = w.min(h) <= THIN_FILL && w.max(h) >= MIN_RULING;
-                if thin && w >= h {
-                    self.push_ruling([x0, f64::midpoint(y0, y1), x1, f64::midpoint(y0, y1)], h);
+                let (span_x, span_y) = (x1 - x0, y1 - y0);
+                let thin = span_x.min(span_y) <= THIN_FILL && span_x.max(span_y) >= MIN_RULING;
+                if thin && span_x >= span_y {
+                    self.push_ruling(
+                        [x0, f64::midpoint(y0, y1), x1, f64::midpoint(y0, y1)],
+                        span_y,
+                    );
                 } else if thin {
-                    self.push_ruling([f64::midpoint(x0, x1), y0, f64::midpoint(x0, x1), y1], w);
+                    self.push_ruling(
+                        [f64::midpoint(x0, x1), y0, f64::midpoint(x0, x1), y1],
+                        span_x,
+                    );
                 }
             }
         }
@@ -894,6 +963,174 @@ impl Interpreter<'_, '_> {
             }
         }
         path.clear();
+    }
+
+    fn path_operator(
+        &mut self,
+        code: u32,
+        operands: &[Operand<'_>],
+        state: &GState,
+        path: &mut PathBuilder,
+    ) -> bool {
+        if !self.capture.structure {
+            return false;
+        }
+        match code {
+            OP_MOVE => {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
+                    path.move_to(apply(&state.ctm, x, y));
+                }
+            }
+            OP_LINE => {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
+                    path.line_to(apply(&state.ctm, x, y), self.ruling_cap);
+                }
+            }
+            OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
+                    path.move_current(apply(&state.ctm, x, y));
+                }
+            }
+            OP_RECT => {
+                if let Some([x, y, width, height]) = tail_numbers::<4, _>(operands) {
+                    path.rect(&state.ctm, [x, y, width, height], self.ruling_cap);
+                }
+            }
+            OP_CLOSE => path.close(self.ruling_cap),
+            OP_NO_PAINT => path.clear(),
+            OP_STROKE | OP_FILL_STROKE | OP_FILL_STROKE_EO => self.paint(path, state, true),
+            OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO => {
+                path.close(self.ruling_cap);
+                self.paint(path, state, true);
+            }
+            OP_FILL | OP_FILL_OLD | OP_FILL_EO => self.paint(path, state, false),
+            _ => return false,
+        }
+        true
+    }
+
+    fn place(
+        &mut self,
+        entry: &FontEntry,
+        placement: &Placement,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        glyphs: &[Glyph],
+        decoded: &str,
+    ) -> Outcome<()> {
+        let mut repositioned = mem::take(&mut self.repositioned);
+        let [a, b, c, d] = placement.linear;
+        let [_, _, _, _, e1, f1] = matrices.tm;
+        let [a2, b2, c2, d2, e2, f2] = state.ctm;
+        let e = e1 * a2 + f1 * c2 + e2;
+        let f = e1 * b2 + f1 * d2 + f2;
+        let mapping = [a, b, c, d, e, f];
+        let size = state.size;
+        let scale = state.scale;
+        let vertical = placement.vertical;
+        let usable = placement.usable;
+        let direction = placement.direction;
+        let effective_size = placement.effective_size;
+        let mut pen_x = 0.0_f64;
+        let mut pen_y = 0.0_f64;
+        let style = (entry.bold || state.stroked_fill, entry.italic);
+        for glyph in glyphs {
+            let replacement = match self.actual.as_ref() {
+                Some(text) if !self.actual_emitted => Some(text.clone()),
+                _ => None,
+            };
+            if replacement.is_some() {
+                self.actual_emitted = true;
+            }
+            let spanned = self.actual.is_some();
+            let glyph_text = match replacement.as_deref() {
+                Some(text) => text,
+                None if spanned => "",
+                None => decoded.get(glyph.text.clone()).unwrap_or_default(),
+            };
+            let spacing = state.char_space
+                + if glyph.is_word_space {
+                    state.word_space
+                } else {
+                    0.0_f64
+                };
+            let (x0, y0, x1, y1, step_x, step_y);
+            if vertical {
+                let metrics = entry.font.vertical_metrics(glyph.code);
+                let span = metrics.advance * size;
+                let em = size.abs() * scale;
+                x0 = pen_x - metrics.origin_x * em;
+                x1 = x0 + glyph.advance * em;
+                y1 = pen_y + state.rise;
+                y0 = y1 - span;
+                step_x = 0.0_f64;
+                step_y = -span + spacing;
+            } else {
+                let width = glyph.advance * size * scale;
+                x0 = pen_x;
+                x1 = pen_x + width;
+                y0 = state.rise - entry.descent * size;
+                y1 = state.rise + entry.ascent * size;
+                step_x = width + spacing * scale;
+                step_y = 0.0_f64;
+            }
+            let clipped = usable
+                && self.clip.is_some_and(|clip| {
+                    let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
+                    bounds[2] < clip[0]
+                        || bounds[0] > clip[2]
+                        || bounds[3] < clip[1]
+                        || bounds[1] > clip[3]
+                });
+            if usable && !clipped {
+                let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
+                let origin = (
+                    pen_x * a + (pen_y + state.rise) * c + e,
+                    pen_x * b + (pen_y + state.rise) * d + f,
+                );
+                let end = (
+                    (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
+                    (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
+                );
+                let mut join = self.join(origin, direction, effective_size);
+                if self.capture.split_repositioned
+                    && repositioned
+                    && matches!(join, Join::Same | Join::Spaced)
+                {
+                    join = Join::Split;
+                }
+                repositioned = false;
+                if self.capture.split_style
+                    && visible
+                    && matches!(join, Join::Same | Join::Spaced)
+                    && (self.pending.bold, self.pending.italic) != style
+                {
+                    join = Join::Split;
+                }
+                if matches!(join, Join::Same | Join::Spaced) {
+                    self.extend(glyph_text, visible, join == Join::Spaced);
+                    if visible {
+                        let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
+                        self.merge_bounds(bounds);
+                        self.pending.bold &= style.0;
+                        self.pending.italic &= style.1;
+                    }
+                    self.pending.end = end;
+                } else {
+                    if join == Join::Split {
+                        self.flush()?;
+                    }
+                    if visible {
+                        let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
+                        self.begin(glyph_text, bounds, effective_size, direction, end, style);
+                    }
+                }
+            }
+            pen_x += step_x;
+            pen_y += step_y;
+        }
+        matrices.translate(pen_x, pen_y);
+        Ok(())
     }
 
     fn push_ruling(&mut self, segment: [f64; 4], width: f64) {
@@ -932,112 +1169,303 @@ impl Interpreter<'_, '_> {
         }
     }
 
-    fn set_font(&mut self, operands: &[Object], scope: &mut Scope, state: &mut GState) {
-        let Some(size) = operands.last().and_then(Object::as_number) else {
-            return;
-        };
-        let name = operands
-            .len()
-            .checked_sub(2)
-            .and_then(|index| operands.get(index))
-            .and_then(Object::as_name);
-        let Some(name) = name else { return };
-        state.size = size;
-        state.font = self.lookup_font(scope, name);
-    }
-
-    fn apply_ext_gstate(&mut self, operands: &[Object], scope: &mut Scope, state: &mut GState) {
-        let Some(Object::Name(key)) = operands.last() else {
-            return;
-        };
-        let Some(ext) = scope.category(self.document, b"ExtGState") else {
-            return;
-        };
-        let Some(dict) = ext.as_dict() else {
-            return;
-        };
-        let Some(entry) = dict.entries.iter().find(|(name, _)| name.as_slice() == key) else {
-            return;
-        };
-        let Ok(resolved) = self.document.follow(&entry.1) else {
-            return;
-        };
-        let Some(gs) = resolved.as_dict() else {
-            return;
-        };
-        if let Some(Object::Array(items)) = gs.get(b"Font") {
-            let mut temp = Vec::new();
-            temp.extend(items.iter().cloned());
-            self.set_font(&temp, scope, state);
+    fn run(
+        &mut self,
+        data: &[u8],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+        depth: usize,
+    ) -> Outcome<()> {
+        self.budget = self
+            .budget
+            .checked_sub(data.len())
+            .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
+        match scan_shows(data) {
+            Shows::Text => {}
+            Shows::Forms if scope.has_forms(self.document) => {}
+            Shows::Forms | Shows::Nothing => return Ok(()),
         }
-    }
-
-    fn lookup_font(&mut self, scope: &mut Scope, name: &[u8]) -> Option<Rc<FontEntry>> {
-        let fonts = scope.category(self.document, b"Font")?;
-        let dict = fonts.as_dict()?;
-        let (index, (_, entry)) = dict
-            .entries
-            .iter()
-            .enumerate()
-            .find(|(_, (key, _))| key.as_slice() == name)?;
-        let key = if let Object::Ref(reference) = entry {
-            FontKey::Indirect(*reference)
-        } else {
-            FontKey::Inline(scope.id, u32::try_from(index).ok()?)
-        };
-        if let Some(hit) = self.fonts.get(&key) {
-            return hit.clone();
+        let max_stack = self.limits.max_nesting.saturating_mul(4);
+        let mut stack: Vec<GState> = Vec::new();
+        let mut overflow = 0_usize;
+        let mut operands: Vec<Operand<'_>> = Vec::new();
+        let mut path = PathBuilder::default();
+        let mut marked: Vec<bool> = Vec::new();
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut lexer = ContentLexer::new(data);
+        while let Some(token) = lexer.next() {
+            let name = match token {
+                Err(_) => break,
+                Ok(ContentToken::Operand(operand)) => {
+                    if operands.len() >= MAX_OPERANDS {
+                        while let Some(stale) = operands.pop() {
+                            lexer.recycle(stale);
+                        }
+                    }
+                    operands.push(operand);
+                    continue;
+                }
+                Ok(ContentToken::Operator(name)) => name,
+            };
+            let code = op(name);
+            match code {
+                OP_SAVE => {
+                    if stack.len() >= max_stack {
+                        overflow = overflow.saturating_add(1);
+                    } else {
+                        stack.push(state.clone());
+                    }
+                }
+                OP_RESTORE => {
+                    if overflow > 0 {
+                        overflow = overflow.saturating_sub(1);
+                    } else if let Some(previous) = stack.pop() {
+                        *state = previous;
+                    }
+                }
+                OP_BMC | OP_BDC | OP_EMC => {
+                    self.marked_content(code, &operands, &mut marked, max_stack);
+                }
+                _ => {
+                    if !self.state_operator(code, &operands, scope, state, matrices)
+                        && !self.path_operator(code, &operands, state, &mut path)
+                    {
+                        let shown = ShowContext {
+                            operands: &operands,
+                            depth,
+                        };
+                        self.show_operator(code, shown, scope, state, matrices, &mut scratch)?;
+                    }
+                }
+            }
+            while let Some(used) = operands.pop() {
+                lexer.recycle(used);
+            }
         }
-        let loaded = self.load_font(entry);
-        self.fonts.insert(key, loaded.clone());
-        loaded
-    }
-
-    fn load_font(&self, object: &Object) -> Option<Rc<FontEntry>> {
-        let resolved = self.document.follow(object).ok()?;
-        let dict = resolved.as_dict()?;
-        let font = Font::load(self.document, dict, self.limits).ok()?;
-        let (ascent, descent) = self.vertical_metrics(dict);
-        let bold = self.weight_is_bold(dict);
-        Some(Rc::new(FontEntry {
-            font,
-            ascent,
-            descent,
-            bold,
-        }))
-    }
-
-    fn weight_is_bold(&self, font: &Dict) -> bool {
-        if font
-            .get(b"BaseFont")
-            .and_then(Object::as_name)
-            .is_some_and(is_bold_name)
-        {
-            return true;
+        if marked.contains(&true) {
+            self.actual = None;
         }
-        let descriptor_forces = |descriptor: &Object| {
-            self.document.follow(descriptor).is_ok_and(|resolved| {
-                resolved.as_dict().is_some_and(|dict| {
-                    dict.get(b"Flags")
-                        .and_then(Object::as_number)
-                        .is_some_and(|flags| f64_to_i64(flags) & FORCE_BOLD != 0)
-                        || dict
-                            .get(b"FontWeight")
-                            .and_then(Object::as_number)
-                            .is_some_and(|weight| weight >= 600.0)
-                })
-            })
-        };
-        font.get(b"FontDescriptor").is_some_and(descriptor_forces)
+        Ok(())
     }
 
-    fn descriptor_metrics(&self, descriptor: &Object) -> Option<(f64, f64)> {
-        let resolved = self.document.follow(descriptor).ok()?;
-        let dict = resolved.as_dict()?;
-        let ascent = dict.get(b"Ascent").and_then(Object::as_number)? / 1000.0;
-        let descent = dict.get(b"Descent").and_then(Object::as_number)?.abs() / 1000.0;
-        ((0.2..=2.0).contains(&ascent) && (0.0..=1.0).contains(&descent))
-            .then_some((ascent, descent))
+    fn set_font(
+        &mut self,
+        name: Option<&[u8]>,
+        size: Option<f64>,
+        scope: &mut Scope,
+        state: &mut GState,
+    ) {
+        let (Some(name_next), Some(size_next)) = (name, size) else {
+            return;
+        };
+        state.size = size_next;
+        state.font = self.lookup_font(scope, name_next);
+    }
+
+    fn show(&mut self, state: &GState, matrices: &mut TextMatrices, bytes: &[u8]) -> Outcome<()> {
+        let Some(entry) = state.font.clone() else {
+            return Ok(());
+        };
+        let placement = Placement::new(&entry, state, &matrices.tm);
+        self.show_with(&entry, &placement, state, matrices, bytes)
+    }
+
+    fn show_array(
+        &mut self,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        items: &[Operand<'_>],
+        scratch: &mut Vec<u8>,
+    ) -> Outcome<()> {
+        let prepared = state.font.clone().map(|entry| {
+            let placement = Placement::new(&entry, state, &matrices.tm);
+            (entry, placement)
+        });
+        let vertical = prepared
+            .as_ref()
+            .is_some_and(|(_, placement)| placement.vertical);
+        for item in items {
+            if let Some(bytes) = item.string(scratch) {
+                if let Some((entry, placement)) = &prepared {
+                    self.show_with(entry, placement, state, matrices, bytes)?;
+                }
+            } else if let Some(amount) = item.as_number() {
+                let shift = -amount / 1_000.0_f64 * state.size;
+                if vertical {
+                    matrices.translate(0.0, shift);
+                } else {
+                    matrices.translate(shift * state.scale, 0.0);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn show_operator(
+        &mut self,
+        code: u32,
+        shown: ShowContext<'_, '_>,
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+        scratch: &mut Vec<u8>,
+    ) -> Outcome<()> {
+        let ShowContext { operands, depth } = shown;
+        match code {
+            OP_TJ => {
+                if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
+                    self.show(state, matrices, bytes)?;
+                }
+            }
+            OP_QUOTE => {
+                self.repositioned = true;
+                matrices.line_move(0.0, -state.leading);
+                if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
+                    self.show(state, matrices, bytes)?;
+                }
+            }
+            OP_DQUOTE => {
+                self.repositioned = true;
+                if let Some([word, character]) = operands
+                    .len()
+                    .checked_sub(3)
+                    .and_then(|start| operands.get(start..start.saturating_add(2)))
+                    .and_then(tail_numbers::<2, _>)
+                {
+                    state.word_space = word;
+                    state.char_space = character;
+                }
+                matrices.line_move(0.0, -state.leading);
+                if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
+                    self.show(state, matrices, bytes)?;
+                }
+            }
+            OP_TJ_ARRAY => {
+                if let Some(Operand::Array(items)) = operands.last() {
+                    self.show_array(state, matrices, items, scratch)?;
+                }
+            }
+            OP_DO => {
+                if let Some(xobject) = operands.last().and_then(Operand::as_name) {
+                    self.do_xobject(xobject, scope, state, matrices, depth)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn show_with(
+        &mut self,
+        entry: &FontEntry,
+        placement: &Placement,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        bytes: &[u8],
+    ) -> Outcome<()> {
+        let mut glyphs = mem::take(&mut self.glyphs);
+        let mut decoded = mem::take(&mut self.decoded);
+        glyphs.clear();
+        decoded.clear();
+        entry.font.decode(bytes, &mut glyphs, &mut decoded);
+        let result = self.place(entry, placement, state, matrices, &glyphs, &decoded);
+        self.glyphs = glyphs;
+        self.decoded = decoded;
+        result
+    }
+
+    fn state_operator(
+        &mut self,
+        code: u32,
+        operands: &[Operand<'_>],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+    ) -> bool {
+        match code {
+            OP_CM => {
+                if let Some(matrix) = tail_numbers::<6, _>(operands) {
+                    state.ctm = multiply(&matrix, &state.ctm);
+                }
+            }
+            OP_BT => {
+                self.repositioned = true;
+                matrices.tm = IDENTITY;
+                matrices.tlm = IDENTITY;
+            }
+            OP_TC => {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
+                    state.char_space = value;
+                }
+            }
+            OP_TW => {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
+                    state.word_space = value;
+                }
+            }
+            OP_TZ => {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
+                    state.scale = value / 100.0_f64;
+                }
+            }
+            OP_TL => {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
+                    state.leading = value;
+                }
+            }
+            OP_TS => {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
+                    state.rise = value;
+                }
+            }
+            OP_TR => {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
+                    state.stroked_fill = (value - 2.0).abs() < 0.5_f64;
+                }
+            }
+            OP_TF => {
+                let name = operands
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|index| operands.get(index))
+                    .and_then(Operand::as_name);
+                let size = operands.last().and_then(Operand::as_number);
+                self.set_font(name, size, scope, state);
+            }
+            OP_GS => self.apply_ext_gstate(operands, scope, state),
+            OP_TD => {
+                self.repositioned = true;
+                if let Some([tx, ty]) = tail_numbers::<2, _>(operands) {
+                    matrices.line_move(tx, ty);
+                }
+            }
+            OP_TD_LEADING => {
+                self.repositioned = true;
+                if let Some([tx, ty]) = tail_numbers::<2, _>(operands) {
+                    state.leading = -ty;
+                    matrices.line_move(tx, ty);
+                }
+            }
+            OP_TM => {
+                self.repositioned = true;
+                if let Some(matrix) = tail_numbers::<6, _>(operands) {
+                    matrices.tm = matrix;
+                    matrices.tlm = matrix;
+                }
+            }
+            OP_TSTAR => {
+                self.repositioned = true;
+                matrices.line_move(0.0, -state.leading);
+            }
+            OP_LINE_WIDTH => {
+                if let Some([width]) = tail_numbers::<1, _>(operands) {
+                    state.line_width = width;
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn vertical_metrics(&self, font: &Dict) -> (f64, f64) {
@@ -1051,10 +1479,8 @@ impl Interpreter<'_, '_> {
             .get(b"DescendantFonts")
             .and_then(|object| self.document.follow(object).ok())
             .and_then(|resolved| {
-                resolved
-                    .as_array()
-                    .and_then(|items| items.first())
-                    .and_then(|first| self.document.follow(first).ok())
+                let first = resolved.as_array().and_then(|items| items.first())?;
+                self.document.follow(first).ok()
             });
         let nested = descendant
             .as_deref()
@@ -1074,369 +1500,226 @@ impl Interpreter<'_, '_> {
             (DEFAULT_ASCENT, DEFAULT_DESCENT)
         }
     }
+}
 
-    fn show_array(
-        &mut self,
-        state: &GState,
-        matrices: &mut TextMatrices,
-        items: &[Object],
-    ) -> Outcome<()> {
-        let vertical = state
-            .font
-            .as_ref()
-            .is_some_and(|entry| entry.font.is_vertical());
-        for item in items {
-            if let Object::String(bytes) = item {
-                self.show(state, matrices, bytes)?;
-            } else if let Some(amount) = item.as_number() {
-                let shift = -amount / 1000.0 * state.size;
-                if vertical {
-                    matrices.translate(0.0, shift);
-                } else {
-                    matrices.translate(shift * state.scale, 0.0);
-                }
+const fn op(name: &[u8]) -> u32 {
+    match name {
+        [a] => u32::from_be_bytes([0, 0, 0, *a]),
+        [a, b] => u32::from_be_bytes([0, 0, *a, *b]),
+        [a, b, c] => u32::from_be_bytes([0, *a, *b, *c]),
+        _ => 0,
+    }
+}
+
+fn scan_shows(data: &[u8]) -> Shows {
+    let mut forms = false;
+    let mut at = 0_usize;
+    while let Some(offset) = data.get(at..).and_then(|rest| {
+        rest.iter()
+            .position(|byte| matches!(byte, b'T' | b'D' | b'\'' | b'"'))
+    }) {
+        let index = at.saturating_add(offset);
+        match data.get(index) {
+            Some(b'\'' | b'"') => return Shows::Text,
+            Some(b'T') if matches!(data.get(index.saturating_add(1)), Some(b'j' | b'J')) => {
+                return Shows::Text;
             }
+            Some(b'D') if data.get(index.saturating_add(1)) == Some(&b'o') => forms = true,
+            _ => {}
         }
-        Ok(())
+        at = index.saturating_add(1);
     }
+    if forms { Shows::Forms } else { Shows::Nothing }
+}
 
-    fn show(&mut self, state: &GState, matrices: &mut TextMatrices, bytes: &[u8]) -> Outcome<()> {
-        let Some(entry) = state.font.clone() else {
-            return Ok(());
-        };
-        let mut glyphs = std::mem::take(&mut self.glyphs);
-        let mut decoded = std::mem::take(&mut self.decoded);
-        glyphs.clear();
-        decoded.clear();
-        entry.font.decode(bytes, &mut glyphs, &mut decoded);
-        let result = self.place(&entry, state, matrices, &glyphs, &decoded);
-        self.glyphs = glyphs;
-        self.decoded = decoded;
-        result
-    }
+fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
+    let [a1, b1, c1, d1, e1, f1] = *first;
+    let [a2, b2, c2, d2, e2, f2] = *second;
+    [
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    ]
+}
 
-    fn place(
-        &mut self,
-        entry: &FontEntry,
-        state: &GState,
-        matrices: &mut TextMatrices,
-        glyphs: &[Glyph],
-        decoded: &str,
-    ) -> Outcome<()> {
-        let mut repositioned = std::mem::take(&mut self.repositioned);
-        let mapping = multiply(&matrices.tm, &state.ctm);
-        let [a, b, c, d, e, f] = mapping;
-        let size = state.size;
-        let scale = state.scale;
-        let vertical = entry.font.is_vertical();
-        let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
-        let dir_length = dir_x.hypot(dir_y);
-        let effective_size = (size * c.hypot(d)).abs();
-        let usable = dir_length > MIN_SCALE
-            && effective_size > MIN_SCALE
-            && dir_length.is_finite()
-            && effective_size.is_finite();
-        let direction = (dir_x / dir_length, dir_y / dir_length);
-        let mut pen_x = 0.0;
-        let mut pen_y = 0.0;
-        for glyph in glyphs {
-            let replacement = match self.actual.as_ref() {
-                Some(text) if !self.actual_emitted => Some(text.clone()),
-                _ => None,
-            };
-            if replacement.is_some() {
-                self.actual_emitted = true;
-            }
-            let spanned = self.actual.is_some();
-            let glyph_text = match replacement.as_deref() {
-                Some(text) => text,
-                None if spanned => "",
-                None => decoded
-                    .get(widen(glyph.text.start)..widen(glyph.text.end))
-                    .unwrap_or_default(),
-            };
-            let spacing = state.char_space
-                + if glyph.is_word_space {
-                    state.word_space
-                } else {
-                    0.0
-                };
-            let (x0, y0, x1, y1, step_x, step_y);
-            if vertical {
-                let metrics = entry.font.vertical_metrics(glyph.code);
-                let span = metrics.advance * size;
-                let em = size.abs() * scale;
-                x0 = pen_x - metrics.origin_x * em;
-                x1 = x0 + glyph.advance * em;
-                y1 = pen_y + state.rise;
-                y0 = y1 - span;
-                step_x = 0.0;
-                step_y = -span + spacing;
-            } else {
-                let width = glyph.advance * size * scale;
-                x0 = pen_x;
-                x1 = pen_x + width;
-                y0 = state.rise - entry.descent * size;
-                y1 = state.rise + entry.ascent * size;
-                step_x = width + spacing * scale;
-                step_y = 0.0;
-            }
-            let clipped = usable
-                && self.clip.is_some_and(|clip| {
-                    let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                    bounds[2] < clip[0]
-                        || bounds[0] > clip[2]
-                        || bounds[3] < clip[1]
-                        || bounds[1] > clip[3]
-                });
-            if usable && !clipped {
-                let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
-                let origin = (
-                    pen_x * a + (pen_y + state.rise) * c + e,
-                    pen_x * b + (pen_y + state.rise) * d + f,
-                );
-                let end = (
-                    (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
-                    (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
-                );
-                let mut join = self.join(origin, direction, effective_size);
-                if self.capture.split_repositioned
-                    && repositioned
-                    && matches!(join, Join::Same | Join::Spaced)
-                {
-                    join = Join::Split;
-                }
-                repositioned = false;
-                if matches!(join, Join::Same | Join::Spaced) {
-                    self.extend(glyph_text, visible, join == Join::Spaced);
-                    if visible {
-                        let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.merge_bounds(bounds);
-                        self.pending.bold &= entry.bold;
-                    }
-                    self.pending.end = end;
-                } else {
-                    if join == Join::Split {
-                        self.flush()?;
-                    }
-                    if visible {
-                        let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.begin(
-                            glyph_text,
-                            bounds,
-                            effective_size,
-                            direction,
-                            end,
-                            entry.bold,
-                        );
-                    }
-                }
-            }
-            pen_x += step_x;
-            pen_y += step_y;
-        }
-        matrices.translate(pen_x, pen_y);
-        Ok(())
+fn tail_numbers<const N: usize, T>(operands: &[T]) -> Option<[f64; N]>
+where
+    T: Numeric,
+{
+    let start = operands.len().checked_sub(N)?;
+    let mut out = [0.0_f64; N];
+    for (slot, object) in out.iter_mut().zip(operands.get(start..)?) {
+        *slot = object.number()?;
     }
+    Some(out)
+}
 
-    fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64) -> Join {
-        if !self.pending.open {
-            return Join::Closed;
-        }
-        let dx = origin.0 - self.pending.end.0;
-        let dy = origin.1 - self.pending.end.1;
-        let (ux, uy) = self.pending.dir;
-        let along = dx * ux + dy * uy;
-        let across = dy * ux - dx * uy;
-        let aligned = direction.0 * ux + direction.1 * uy > DIRECTION_COSINE;
-        let similar =
-            (size - self.pending.size).abs() <= SIZE_TOLERANCE * self.pending.size.max(size);
-        let on_line = across.abs() <= BASELINE_TOLERANCE * size;
-        let near = along >= -BACK_GAP * size && along <= BREAK_GAP * size;
-        if aligned && similar && on_line && near {
-            if along > SPACE_GAP * size {
-                Join::Spaced
-            } else {
-                Join::Same
-            }
-        } else {
-            Join::Split
-        }
+fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
+    let items = object?.as_array()?;
+    if items.len() != 6 {
+        return None;
     }
+    tail_numbers::<6, _>(items)
+}
 
-    fn begin(
-        &mut self,
-        text: &str,
-        bounds: [f64; 4],
-        size: f64,
-        direction: (f64, f64),
-        end: (f64, f64),
-        bold: bool,
-    ) {
-        self.pending.open = true;
-        self.pending.bold = bold;
-        self.pending.text.clear();
-        self.pending.text.push_str(text);
-        self.pending.bounds = bounds;
-        self.pending.size = size;
-        self.pending.dir = direction;
-        self.pending.end = end;
+fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
+    let [a, b, c, d, e, f] = *matrix;
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+        let px = x * a + y * c + e;
+        let py = x * b + y * d + f;
+        bounds[0] = bounds[0].min(px);
+        bounds[1] = bounds[1].min(py);
+        bounds[2] = bounds[2].max(px);
+        bounds[3] = bounds[3].max(py);
     }
+    bounds
+}
 
-    fn extend(&mut self, text: &str, visible: bool, spaced: bool) {
-        if spaced && visible {
-            let tail_space = self
-                .pending
-                .text
-                .chars()
-                .next_back()
-                .is_none_or(char::is_whitespace);
-            let head_space = text.chars().next().is_none_or(char::is_whitespace);
-            if !tail_space && !head_space {
-                self.pending.text.push(' ');
-            }
-        }
-        self.pending.text.push_str(text);
-    }
+fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
+    let [a, b, c, d, e, f] = *matrix;
+    (x * a + y * c + e, x * b + y * d + f)
+}
 
-    const fn merge_bounds(&mut self, bounds: [f64; 4]) {
-        let [x0, y0, x1, y1] = bounds;
-        let [ox0, oy0, ox1, oy1] = &mut self.pending.bounds;
-        *ox0 = ox0.min(x0);
-        *oy0 = oy0.min(y0);
-        *ox1 = ox1.max(x1);
-        *oy1 = oy1.max(y1);
-    }
+fn axis_aligned(matrix: &Matrix) -> bool {
+    let [a, b, c, d, _, _] = *matrix;
+    let straight = a.abs() + d.abs();
+    let turned = b.abs() + c.abs();
+    straight > MIN_SCALE && turned <= 1e-3 * straight
+        || turned > MIN_SCALE && straight <= 1e-3 * turned
+}
 
-    fn flush(&mut self) -> Outcome<()> {
-        if !self.pending.open {
-            return Ok(());
-        }
-        self.pending.open = false;
-        let trimmed = self.pending.text.trim();
-        if trimmed.is_empty() {
-            self.pending.text.clear();
-            return Ok(());
-        }
-        if self.items.len() >= self.limits.max_items_per_page {
-            return Err(Failure::limit("page text items exceed limit"));
-        }
-        self.text_bytes = self.text_bytes.saturating_add(trimmed.len());
-        if self.text_bytes > self.limits.max_text_bytes {
-            return Err(Failure::limit("page text bytes exceed limit"));
-        }
-        let text = trimmed.to_owned();
-        self.pending.text.clear();
-        self.items.push(Run {
-            item: TextItem {
-                rect: self.pending.bounds,
-                font_size: self.pending.size,
-                text,
-            },
-            direction: self.pending.dir,
-            bold: self.pending.bold,
-        });
-        Ok(())
+fn text_string(bytes: &[u8]) -> String {
+    match bytes {
+        [0xFE, 0xFF, rest @ ..] => decode_utf16(rest, u16::from_be_bytes),
+        [0xFF, 0xFE, rest @ ..] => decode_utf16(rest, u16::from_le_bytes),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        _ => bytes.iter().map(|&byte| char::from(byte)).collect(),
     }
+}
 
-    fn do_xobject(
-        &mut self,
-        name: &[u8],
-        scope: &mut Scope,
-        state: &GState,
-        matrices: &TextMatrices,
-        depth: usize,
-    ) -> Outcome<()> {
-        if depth >= self.max_depth {
-            return Ok(());
-        }
-        let Some(xobjects) = scope.category(self.document, b"XObject") else {
-            return Ok(());
-        };
-        let Some(entry) = xobjects.as_dict().and_then(|dict| dict.get(name)) else {
-            return Ok(());
-        };
-        let reference = if let Object::Ref(reference) = entry {
-            Some(*reference)
-        } else {
-            None
-        };
-        if let Some(reference) = reference
-            && (self.skipped.contains(&reference) || self.active.contains(&reference))
-        {
-            return Ok(());
-        }
-        let Ok(resolved) = self.document.follow(entry) else {
-            return Ok(());
-        };
-        let Object::Stream(stream) = &*resolved else {
-            return Ok(());
-        };
-        let is_form = stream
-            .dict
-            .get(b"Subtype")
-            .and_then(Object::as_name)
-            .is_some_and(|subtype| subtype == b"Form");
-        if !is_form {
-            if let Some(reference) = reference {
-                self.skipped.insert(reference);
-            }
-            return Ok(());
-        }
-        let data = match self.document.stream_data(stream) {
-            Ok(data) => data,
-            Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
-            Err(_) => return Ok(()),
-        };
-        let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
-        let resources = stream
-            .dict
-            .get(b"Resources")
-            .and_then(|object| self.document.follow(object).ok())
-            .filter(|object| object.as_dict().is_some())
-            .unwrap_or_else(|| Rc::clone(&scope.resources));
-        let mut inner_scope = Scope::new(self.next_scope(), resources);
-        let mut inner_state = state.clone();
-        inner_state.ctm = multiply(&form_matrix, &state.ctm);
-        let outer_clip = self.clip;
-        if self.capture.structure
-            && let Some(bounds) = stream
-                .dict
-                .get(b"BBox")
-                .and_then(Object::as_array)
-                .filter(|items| items.len() == 4)
-                .and_then(tail_numbers::<4>)
-                .map(|[x0, y0, x1, y1]| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
-                .filter(|[x0, y0, x1, y1]| x1 - x0 > 0.0 && y1 - y0 > 0.0)
-        {
-            let [x0, y0, x1, y1] =
-                transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
-            self.clip = Some(outer_clip.map_or([x0, y0, x1, y1], |outer| {
-                [
-                    outer[0].max(x0),
-                    outer[1].max(y0),
-                    outer[2].min(x1),
-                    outer[3].min(y1),
-                ]
-            }));
-        }
-        let mut inner_matrices = *matrices;
-        if let Some(reference) = reference {
-            self.active.push(reference);
-        }
-        let result = self.run(
-            &data,
-            &mut inner_scope,
-            &mut inner_state,
-            &mut inner_matrices,
-            depth.saturating_add(1),
-        );
-        if reference.is_some() {
-            self.active.pop();
-        }
-        self.clip = outer_clip;
-        result
+fn decode_utf16(bytes: &[u8], read: fn([u8; 2]) -> u16) -> String {
+    let units = bytes.as_chunks::<2>().0.iter().map(|pair| read(*pair));
+    char::decode_utf16(units)
+        .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+fn actual_text(operands: &[Operand<'_>]) -> Option<String> {
+    let properties = operands.last()?.as_dict()?;
+    let Object::String(bytes) = properties.get(b"ActualText")? else {
+        return None;
+    };
+    Some(text_string(bytes))
+}
+
+fn is_bold_name(name: &[u8]) -> bool {
+    [&b"Bold"[..], b"bold", b"Black", b"Heavy", b"BOLD"]
+        .iter()
+        .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
+}
+
+fn is_italic_name(name: &[u8]) -> bool {
+    [
+        &b"Italic"[..],
+        b"italic",
+        b"Oblique",
+        b"oblique",
+        b"Ital",
+        b"ITAL",
+    ]
+    .iter()
+    .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
+}
+
+pub(crate) fn extract_runs(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    split_repositioned: bool,
+    session: &mut Session,
+) -> Outcome<PageContent> {
+    let capture = Capture {
+        split_repositioned,
+        structure: false,
+        split_style: false,
+    };
+    extract_content(document, page, limits, capture, session)
+}
+
+pub(crate) fn extract_content(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    capture: Capture,
+    session: &mut Session,
+) -> Outcome<PageContent> {
+    let content = document.content(page)?;
+    if content.is_empty() {
+        return Ok(PageContent::default());
     }
+    let [mx0, my0, mx1, my1] = page.info.crop_box;
+    let previous = session.generation;
+    session.generation = previous.wrapping_add(1);
+    if session.fonts.len() > MAX_CACHED_FONTS {
+        session.fonts.retain(|_, (_, used)| *used == previous);
+    }
+    let mut interpreter = Interpreter {
+        document,
+        limits,
+        fonts: mem::take(&mut session.fonts),
+        forms: mem::take(&mut session.forms),
+        generation: session.generation,
+        skipped: mem::take(&mut session.skipped),
+        active: Vec::new(),
+        scopes: session.scopes,
+        budget: limits.max_decoded_stream_bytes,
+        max_depth: limits.max_nesting.min(MAX_FORM_DEPTH),
+        items: Vec::new(),
+        text: String::new(),
+        glyphs: Vec::new(),
+        decoded: String::new(),
+        pending: PendingRun::default(),
+        capture,
+        repositioned: false,
+        rulings: Vec::new(),
+        ruling_cap: limits.max_items_per_page,
+        page_extent: ((mx1 - mx0).abs(), (my1 - my0).abs()),
+        clip: None,
+        actual: None,
+        actual_emitted: false,
+    };
+    let mut scope = Scope::new(
+        interpreter.next_scope(),
+        Rc::new(Object::Dict(page.resources.clone())),
+        page.resources_ref,
+    );
+    let mut state = GState::initial();
+    let mut matrices = TextMatrices {
+        tm: IDENTITY,
+        tlm: IDENTITY,
+    };
+    let outcome = interpreter
+        .run(&content, &mut scope, &mut state, &mut matrices, 0)
+        .and_then(|()| interpreter.flush());
+    session.fonts = mem::take(&mut interpreter.fonts);
+    session.forms = mem::take(&mut interpreter.forms);
+    session.skipped = mem::take(&mut interpreter.skipped);
+    session.scopes = interpreter.scopes;
+    outcome?;
+    Ok(PageContent {
+        runs: interpreter.items,
+        text: interpreter.text,
+        rulings: interpreter.rulings,
+    })
 }
 
 #[cfg(test)]
@@ -1444,11 +1727,199 @@ mod tests {
     use super::*;
     use crate::document::inspect;
     use crate::inspection::{InspectOptions, Inspection};
-    use std::fmt::Write as _;
-    use std::hint::black_box;
+    use core::fmt::Write as _;
+    use core::hint::black_box;
+    use core::iter;
+
+    macro_rules! fixture {
+        ($name:literal) => {
+            (
+                include_bytes!(concat!("../../__tests__/fixtures/", $name, ".pdf")).as_slice(),
+                include_str!(concat!(
+                    "../../__tests__/fixtures/",
+                    $name,
+                    ".liteparse.json"
+                )),
+            )
+        };
+    }
 
     const HELVETICA: &str =
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+
+    const HELLO_WIDTH: f64 = 2.278;
+
+    const HELVETICA_BOLD: &str =
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
+
+    struct Json;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Value {
+        Bool(bool),
+        List(Vec<Self>),
+        Map(Vec<(String, Self)>),
+        Null,
+        Number(f64),
+        Text(String),
+    }
+
+    impl Value {
+        fn get(&self, key: &str) -> Option<&Self> {
+            if let Self::Map(entries) = self {
+                entries
+                    .iter()
+                    .find(|(entry_key, _)| entry_key == key)
+                    .map(|(_, value)| value)
+            } else {
+                None
+            }
+        }
+
+        fn list(&self, key: &str) -> &[Self] {
+            match self.get(key) {
+                Some(Self::List(items)) => items,
+                _ => &[],
+            }
+        }
+
+        fn number(&self, key: &str) -> f64 {
+            match self.get(key) {
+                Some(Self::Number(value)) => *value,
+                other => panic!("missing number {key}: {other:?}"),
+            }
+        }
+
+        fn text(&self, key: &str) -> &str {
+            match self.get(key) {
+                Some(Self::Text(text)) => text,
+                other => panic!("missing text {key}: {other:?}"),
+            }
+        }
+    }
+
+    impl Json {
+        fn parse(source: &str) -> Value {
+            let bytes = source.as_bytes();
+            let mut pos = 0;
+            Self::value(bytes, &mut pos)
+        }
+
+        fn skip(bytes: &[u8], pos: &mut usize) {
+            while bytes.get(*pos).is_some_and(u8::is_ascii_whitespace) {
+                *pos = (*pos).saturating_add(1);
+            }
+        }
+
+        fn value(bytes: &[u8], pos: &mut usize) -> Value {
+            Self::skip(bytes, pos);
+            match bytes[*pos] {
+                b'{' => {
+                    *pos = (*pos).saturating_add(1);
+                    let mut entries = Vec::new();
+                    loop {
+                        Self::skip(bytes, pos);
+                        if bytes[*pos] == b'}' {
+                            *pos = (*pos).saturating_add(1);
+                            return Value::Map(entries);
+                        }
+                        if bytes[*pos] == b',' {
+                            *pos = (*pos).saturating_add(1);
+                            continue;
+                        }
+                        let Value::Text(key) = Self::value(bytes, pos) else {
+                            panic!("key");
+                        };
+                        Self::skip(bytes, pos);
+                        *pos = (*pos).saturating_add(1);
+                        entries.push((key, Self::value(bytes, pos)));
+                    }
+                }
+                b'[' => {
+                    *pos = (*pos).saturating_add(1);
+                    let mut items = Vec::new();
+                    loop {
+                        Self::skip(bytes, pos);
+                        if bytes[*pos] == b']' {
+                            *pos = (*pos).saturating_add(1);
+                            return Value::List(items);
+                        }
+                        if bytes[*pos] == b',' {
+                            *pos = (*pos).saturating_add(1);
+                            continue;
+                        }
+                        items.push(Self::value(bytes, pos));
+                    }
+                }
+                b'"' => {
+                    *pos = (*pos).saturating_add(1);
+                    let mut out = Vec::new();
+                    while bytes[*pos] != b'"' {
+                        if bytes[*pos] == b'\\' {
+                            *pos = (*pos).saturating_add(1);
+                            match bytes[*pos] {
+                                b'n' => out.push(b'\n'),
+                                b't' => out.push(b'\t'),
+                                b'u' => {
+                                    let code = str::from_utf8(
+                                        &bytes[(*pos).saturating_add(1)..(*pos).saturating_add(5)],
+                                    )
+                                    .unwrap();
+                                    let ch = char::from_u32(u32::from_str_radix(code, 16).unwrap())
+                                        .unwrap();
+                                    let mut buffer = [0_u8; 4];
+                                    out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
+                                    *pos = (*pos).saturating_add(4);
+                                }
+                                other => out.push(other),
+                            }
+                        } else {
+                            out.push(bytes[*pos]);
+                        }
+                        *pos = (*pos).saturating_add(1);
+                    }
+                    *pos = (*pos).saturating_add(1);
+                    Value::Text(String::from_utf8(out).unwrap())
+                }
+                b't' => {
+                    *pos = (*pos).saturating_add(4);
+                    Value::Bool(true)
+                }
+                b'f' => {
+                    *pos = (*pos).saturating_add(5);
+                    Value::Bool(false)
+                }
+                b'n' => {
+                    *pos = (*pos).saturating_add(4);
+                    Value::Null
+                }
+                _ => {
+                    let start = *pos;
+                    while bytes
+                        .get(*pos)
+                        .is_some_and(|b| b.is_ascii_digit() || b"+-.eE".contains(b))
+                    {
+                        *pos = (*pos).saturating_add(1);
+                    }
+                    Value::Number(
+                        str::from_utf8(&bytes[start..*pos])
+                            .unwrap()
+                            .parse()
+                            .unwrap(),
+                    )
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct Golden {
+        height: f64,
+        text: String,
+        width: f64,
+        x: f64,
+        y: f64,
+    }
 
     fn stream_object(dict: &str, data: &str) -> String {
         format!(
@@ -1470,7 +1941,7 @@ mod tests {
         let max = objects.iter().map(|(number, _)| *number).max().unwrap_or(0);
         bytes.extend_from_slice(format!("xref\n0 {}\n", max.saturating_add(1)).as_bytes());
         for number in 0..=max {
-            match offsets.iter().find(|(n, _)| *n == number) {
+            match offsets.iter().find(|(found, _)| *found == number) {
                 Some((_, offset)) => {
                     bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
                 }
@@ -1514,7 +1985,14 @@ mod tests {
     fn extract_with(bytes: &[u8], limits: &Limits) -> Outcome<Vec<TextItem>> {
         let document = Document::open(bytes, limits)?;
         let pages = document.pages()?;
-        extract_page(&document, pages.first().unwrap(), limits)
+        extract_runs(
+            &document,
+            pages.first().unwrap(),
+            limits,
+            false,
+            &mut Session::default(),
+        )
+        .map(|content| content.items())
     }
 
     fn extract(bytes: &[u8]) -> Vec<TextItem> {
@@ -1539,8 +2017,6 @@ mod tests {
         }
     }
 
-    const HELLO_WIDTH: f64 = 2.278;
-
     #[test]
     fn positions_a_simple_run() {
         let items = extract(&simple_pdf("BT /F1 12 Tf 100 700 Td (Hello) Tj ET"));
@@ -1549,10 +2025,10 @@ mod tests {
         assert_rect(
             item,
             [
-                100.0,
-                700.0 - DEFAULT_DESCENT * 12.0,
-                100.0 + HELLO_WIDTH * 12.0,
-                700.0 + DEFAULT_ASCENT * 12.0,
+                100.0_f64,
+                700.0_f64 - DEFAULT_DESCENT * 12.0_f64,
+                100.0_f64 + HELLO_WIDTH * 12.0_f64,
+                700.0_f64 + DEFAULT_ASCENT * 12.0_f64,
             ],
         );
         assert!(close(item.font_size, 12.0));
@@ -1573,7 +2049,7 @@ mod tests {
         ));
         assert_eq!(texts(&items), ["Hello World"]);
         let item = items.first().unwrap();
-        let expected_right = 100.0 + (2.278 + 0.4 - 0.03 + 2.611) * 12.0;
+        let expected_right = 100.0_f64 + (2.278_f64 + 0.4_f64 - 0.03_f64 + 2.611_f64) * 12.0_f64;
         assert!(close(item.rect[2], expected_right), "{:?}", item.rect);
     }
 
@@ -1732,10 +2208,32 @@ mod tests {
     }
 
     #[test]
-    fn graphics_state_depth_limit_is_enforced() {
-        let content = format!("{}BT /F1 10 Tf (a) Tj ET", "q ".repeat(1000));
-        let result = extract_with(&simple_pdf(&content), &Limits::default());
-        assert_eq!(result.unwrap_err().code, FailureCode::LimitExceeded);
+    fn graphics_state_pushes_past_the_cap_are_ignored() {
+        let content = format!(
+            "{}BT /F1 10 Tf 1 0 0 1 10 700 Tm (deep) Tj ET {}BT /F1 10 Tf 1 0 0 1 10 600 Tm (shallow) Tj ET",
+            "q 1 0 0 1 0 0 cm ".repeat(1000),
+            "Q ".repeat(1000)
+        );
+        let items = extract_with(&simple_pdf(&content), &Limits::default()).unwrap();
+        assert_eq!(texts(&items), ["deep", "shallow"]);
+        let mut nesting = String::with_capacity(8_000);
+        nesting.extend(iter::repeat_n("q ", 1000));
+        nesting.extend(iter::repeat_n("Q ", 1000));
+        let shifted =
+            format!("q 1 0 0 1 100 0 cm {nesting}Q BT /F1 10 Tf 1 0 0 1 10 700 Tm (base) Tj ET");
+        let restored = extract_with(&simple_pdf(&shifted), &Limits::default()).unwrap();
+        assert_eq!(texts(&restored), ["base"]);
+        assert!(restored[0].rect[0] < 20.0_f64);
+    }
+
+    #[test]
+    fn deeply_nested_content_arrays_end_the_stream_without_failing() {
+        let content = format!(
+            "BT /F1 10 Tf 1 0 0 1 10 700 Tm (kept) Tj {} (lost) Tj ET",
+            "[".repeat(100)
+        );
+        let items = extract_with(&simple_pdf(&content), &Limits::default()).unwrap();
+        assert_eq!(texts(&items), ["kept"]);
     }
 
     #[test]
@@ -1749,16 +2247,11 @@ mod tests {
         let page = pages.first().unwrap();
         let merged =
             extract_runs(&document, page, &limits, false, &mut Session::default()).unwrap();
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].item.text, "abc def");
+        assert_eq!(run_texts(&merged), ["abc def"]);
         let split = extract_runs(&document, page, &limits, true, &mut Session::default()).unwrap();
-        let split_texts: Vec<&str> = split.iter().map(|run| run.item.text.as_str()).collect();
-        assert_eq!(split_texts, ["abc", "def"]);
-        assert_eq!(split[0].direction, (1.0, 0.0));
+        assert_eq!(run_texts(&split), ["abc", "def"]);
+        assert_eq!(split.runs[0].direction, (1.0_f64, 0.0_f64));
     }
-
-    const HELVETICA_BOLD: &str =
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
 
     fn structured(bytes: &[u8]) -> PageContent {
         let limits = Limits::default();
@@ -1767,6 +2260,7 @@ mod tests {
         let capture = Capture {
             split_repositioned: true,
             structure: true,
+            split_style: false,
         };
         extract_content(
             &document,
@@ -1782,13 +2276,13 @@ mod tests {
         content
             .runs
             .iter()
-            .map(|run| run.item.text.as_str())
+            .map(|run| content.text_of(run))
             .collect()
     }
 
     #[test]
     fn clip_render_modes_still_extract_text() {
-        for mode in 4..=7 {
+        for mode in 4_i32..=7_i32 {
             let bytes = simple_pdf(&format!(
                 "BT /F1 12 Tf {mode} Tr 50 700 Td (clipped {mode}) Tj ET"
             ));
@@ -1842,7 +2336,7 @@ mod tests {
         let bytes = simple_pdf(
             "/Span << /ActualText <FEFF00520065006100E7> >> BDC /P BMC BT /F1 10 Tf 50 700 Td (x) Tj ET EMC /Span << /ActualText (inner) >> BDC BT /F1 10 Tf 50 680 Td (y) Tj ET EMC EMC",
         );
-        assert_eq!(run_texts(&structured(&bytes)), ["Reaç"]);
+        assert_eq!(run_texts(&structured(&bytes)), ["Rea\u{e7}"]);
     }
 
     #[test]
@@ -1862,11 +2356,11 @@ mod tests {
         let horizontal = content.rulings[0];
         assert_eq!(
             (horizontal.x0, horizontal.y0, horizontal.x1, horizontal.y1),
-            (100.0, 500.0, 300.0, 500.0)
+            (100.0_f64, 500.0_f64, 300.0_f64, 500.0_f64)
         );
         let vertical = content.rulings[1];
-        assert_eq!((vertical.x0, vertical.x1), (200.0, 200.0));
-        assert!((vertical.y1 - 600.4).abs() < 1e-9);
+        assert_eq!((vertical.x0, vertical.x1), (200.0_f64, 200.0_f64));
+        assert!((vertical.y1 - 600.4).abs() < 1e-9_f64);
         assert!(extract_runs_rulings_empty(&bytes));
     }
 
@@ -1877,6 +2371,7 @@ mod tests {
         let capture = Capture {
             split_repositioned: true,
             structure: false,
+            split_style: false,
         };
         extract_content(
             &document,
@@ -1901,11 +2396,11 @@ mod tests {
             .iter()
             .map(|ruling| (ruling.x0, ruling.y0, ruling.x1, ruling.y1))
             .collect();
-        assert!(lines.contains(&(20.0, 20.0, 120.0, 20.0)));
-        assert!(lines.contains(&(20.0, 60.0, 120.0, 60.0)));
-        assert!(lines.contains(&(20.0, 20.0, 20.0, 60.0)));
-        assert!(lines.contains(&(120.0, 20.0, 120.0, 60.0)));
-        assert!(lines.contains(&(100.0, 100.25, 180.0, 100.25)));
+        assert!(lines.contains(&(20.0_f64, 20.0_f64, 120.0_f64, 20.0_f64)));
+        assert!(lines.contains(&(20.0_f64, 60.0_f64, 120.0_f64, 60.0_f64)));
+        assert!(lines.contains(&(20.0_f64, 20.0_f64, 20.0_f64, 60.0_f64)));
+        assert!(lines.contains(&(120.0_f64, 20.0_f64, 120.0_f64, 60.0_f64)));
+        assert!(lines.contains(&(100.0_f64, 100.25_f64, 180.0_f64, 100.25_f64)));
         assert_eq!(lines.len(), 5);
     }
 
@@ -1929,7 +2424,7 @@ mod tests {
         let flags: Vec<(&str, bool)> = content
             .runs
             .iter()
-            .map(|run| (run.item.text.as_str(), run.bold))
+            .map(|run| (content.text_of(run), run.bold))
             .collect();
         assert_eq!(
             flags,
@@ -1940,8 +2435,14 @@ mod tests {
     #[test]
     fn path_capture_is_bounded_by_the_item_limit() {
         let mut content = String::from("BT /F1 10 Tf 50 700 Td (x) Tj ET ");
-        for index in 0..50 {
-            write!(content, "{} 10 m {} 10 l S ", index * 5, index * 5 + 20).unwrap();
+        for index in 0_i32..50_i32 {
+            write!(
+                content,
+                "{} 10 m {} 10 l S ",
+                index * 5_i32,
+                index * 5_i32 + 20_i32
+            )
+            .unwrap();
         }
         let bytes = simple_pdf(&content);
         let limits = Limits {
@@ -1953,6 +2454,7 @@ mod tests {
         let capture = Capture {
             split_repositioned: true,
             structure: true,
+            split_style: false,
         };
         let result = extract_content(
             &document,
@@ -1973,11 +2475,148 @@ mod tests {
         let pages = document.pages().unwrap();
         let page = pages.first().unwrap();
         let mut session = Session::default();
-        for _ in 0..3 {
+        for _ in 0_i32..3_i32 {
             let runs = extract_runs(&document, page, &limits, true, &mut session).unwrap();
-            assert_eq!(runs[0].item.text, "Again");
+            assert_eq!(run_texts(&runs), ["Again"]);
         }
         assert_eq!(session.fonts.len(), 1);
+    }
+
+    fn shared_inline_font_pdf() -> Vec<u8> {
+        let content = "BT /F1 10 Tf 20 100 Td (Shared) Tj ET";
+        let form = stream_object(
+            "/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources 5 0 R",
+            "BT /F1 10 Tf 20 200 Td (Form) Tj ET",
+        );
+        build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 /Resources 5 0 R >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R >>"
+                    .to_owned(),
+            ),
+            (4, stream_object("", &format!("{content} /X Do"))),
+            (
+                5,
+                format!("<< /Font << /F1 {HELVETICA} >> /XObject << /X 8 0 R >> >>"),
+            ),
+            (
+                6,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 7 0 R >>"
+                    .to_owned(),
+            ),
+            (7, stream_object("", content)),
+            (8, form),
+        ])
+    }
+
+    #[test]
+    fn inline_fonts_in_shared_resources_load_once() {
+        let bytes = shared_inline_font_pdf();
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        let first = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+        let second = extract_runs(&document, &pages[1], &limits, true, &mut session).unwrap();
+        assert_eq!(run_texts(&first), ["Shared", "Form"]);
+        assert_eq!(run_texts(&second), ["Shared"]);
+        assert_eq!(session.fonts.len(), 1);
+        assert!(matches!(
+            session.fonts.keys().next(),
+            Some(FontKey::Within(_, 0))
+        ));
+    }
+
+    #[test]
+    fn forms_are_decoded_once_per_session_and_text_free_forms_are_skipped() {
+        let bytes = shared_inline_font_pdf();
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        for _ in 0_i32..3_i32 {
+            let content = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+            assert_eq!(run_texts(&content), ["Shared", "Form"]);
+        }
+        assert_eq!(session.forms.entries.len(), 1);
+        assert!(session.skipped.is_empty());
+
+        let drawing = page_pdf(
+            "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
+            "/X Do BT /F1 10 Tf 20 100 Td (After) Tj ET",
+            &[
+                (5, HELVETICA.to_owned()),
+                (
+                    6,
+                    stream_object(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                        "0 0 m 10 10 l S",
+                    ),
+                ),
+            ],
+        );
+        let drawn = Document::open(&drawing, &limits).unwrap();
+        let drawn_pages = drawn.pages().unwrap();
+        let mut fresh = Session::default();
+        for _ in 0_i32..2_i32 {
+            let content = extract_runs(&drawn, &drawn_pages[0], &limits, true, &mut fresh).unwrap();
+            assert_eq!(run_texts(&content), ["After"]);
+        }
+        assert_eq!(fresh.forms.entries.len(), 0);
+        assert!(fresh.skipped.contains(&ObjRef {
+            number: 6,
+            generation: 0
+        }));
+    }
+
+    #[test]
+    fn form_cache_stays_within_its_byte_budget() {
+        let chunk = (MAX_CACHED_FORM_BYTES >> 1_i32) + 1;
+        let block = |byte: u8| -> Rc<[u8]> { vec![byte; chunk].into() };
+        let key = |number: u32| ObjRef {
+            number,
+            generation: 0,
+        };
+        let mut cache = FormCache::default();
+        cache.insert(key(1), &block(1), 1);
+        cache.insert(key(2), &block(2), 3);
+        assert!(cache.get(key(1), 3).is_none());
+        assert!(cache.get(key(2), 3).is_some());
+        cache.insert(key(3), &block(3), 3);
+        assert!(cache.get(key(3), 3).is_none());
+        assert_eq!(cache.bytes, chunk);
+        cache.insert(key(4), &vec![0; MAX_CACHED_FORM_BYTES + 1].into(), 9);
+        assert!(cache.get(key(4), 9).is_none());
+        assert!(cache.bytes <= MAX_CACHED_FORM_BYTES);
+    }
+
+    #[test]
+    fn font_cache_eviction_keeps_fonts_of_the_previous_page() {
+        let bytes = simple_pdf("BT /F1 10 Tf 20 100 Td (Hot) Tj ET");
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        drop(extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap());
+        let (&hot_key, (hot, _)) = session.fonts.iter().next().unwrap();
+        let shared_hot = Rc::clone(hot.as_ref().unwrap());
+        for index in 0..=u32::try_from(MAX_CACHED_FONTS).unwrap() {
+            drop(
+                session
+                    .fonts
+                    .insert(FontKey::Inline(u32::MAX, index), (None, 0)),
+            );
+        }
+        let runs = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+        assert_eq!(run_texts(&runs), ["Hot"]);
+        assert_eq!(session.fonts.len(), 1);
+        let (kept, _) = &session.fonts[&hot_key];
+        assert!(Rc::ptr_eq(kept.as_ref().unwrap(), &shared_hot));
     }
 
     #[test]
@@ -2059,10 +2698,10 @@ mod tests {
         assert_rect(
             item,
             [
-                20.0,
-                100.0 - 2.0,
-                20.0 + (0.6 + 0.5 + 0.7 + 0.6) * 10.0,
-                100.0 + 8.0,
+                20.0_f64,
+                100.0_f64 - 2.0_f64,
+                20.0_f64 + (0.6_f64 + 0.5_f64 + 0.7_f64 + 0.6_f64) * 10.0_f64,
+                100.0_f64 + 8.0_f64,
             ],
         );
     }
@@ -2143,172 +2782,6 @@ mod tests {
         assert_eq!(texts(&items), ["Page", "Form", "Form"]);
     }
 
-    struct Json;
-
-    #[derive(Debug, Clone, PartialEq)]
-    enum Value {
-        Null,
-        Bool(bool),
-        Number(f64),
-        Text(String),
-        List(Vec<Self>),
-        Map(Vec<(String, Self)>),
-    }
-
-    impl Value {
-        fn get(&self, key: &str) -> Option<&Self> {
-            if let Self::Map(entries) = self {
-                entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-            } else {
-                None
-            }
-        }
-
-        fn number(&self, key: &str) -> f64 {
-            match self.get(key) {
-                Some(Self::Number(value)) => *value,
-                other => panic!("missing number {key}: {other:?}"),
-            }
-        }
-
-        fn list(&self, key: &str) -> &[Self] {
-            match self.get(key) {
-                Some(Self::List(items)) => items,
-                _ => &[],
-            }
-        }
-
-        fn text(&self, key: &str) -> &str {
-            match self.get(key) {
-                Some(Self::Text(text)) => text,
-                other => panic!("missing text {key}: {other:?}"),
-            }
-        }
-    }
-
-    impl Json {
-        fn parse(source: &str) -> Value {
-            let bytes = source.as_bytes();
-            let mut pos = 0;
-            Self::value(bytes, &mut pos)
-        }
-
-        fn skip(bytes: &[u8], pos: &mut usize) {
-            while bytes.get(*pos).is_some_and(u8::is_ascii_whitespace) {
-                *pos = (*pos).saturating_add(1);
-            }
-        }
-
-        fn value(bytes: &[u8], pos: &mut usize) -> Value {
-            Self::skip(bytes, pos);
-            match bytes[*pos] {
-                b'{' => {
-                    *pos = (*pos).saturating_add(1);
-                    let mut entries = Vec::new();
-                    loop {
-                        Self::skip(bytes, pos);
-                        if bytes[*pos] == b'}' {
-                            *pos = (*pos).saturating_add(1);
-                            return Value::Map(entries);
-                        }
-                        if bytes[*pos] == b',' {
-                            *pos = (*pos).saturating_add(1);
-                            continue;
-                        }
-                        let Value::Text(key) = Self::value(bytes, pos) else {
-                            panic!("key");
-                        };
-                        Self::skip(bytes, pos);
-                        *pos = (*pos).saturating_add(1);
-                        entries.push((key, Self::value(bytes, pos)));
-                    }
-                }
-                b'[' => {
-                    *pos = (*pos).saturating_add(1);
-                    let mut items = Vec::new();
-                    loop {
-                        Self::skip(bytes, pos);
-                        if bytes[*pos] == b']' {
-                            *pos = (*pos).saturating_add(1);
-                            return Value::List(items);
-                        }
-                        if bytes[*pos] == b',' {
-                            *pos = (*pos).saturating_add(1);
-                            continue;
-                        }
-                        items.push(Self::value(bytes, pos));
-                    }
-                }
-                b'"' => {
-                    *pos = (*pos).saturating_add(1);
-                    let mut out = Vec::new();
-                    while bytes[*pos] != b'"' {
-                        if bytes[*pos] == b'\\' {
-                            *pos = (*pos).saturating_add(1);
-                            match bytes[*pos] {
-                                b'n' => out.push(b'\n'),
-                                b't' => out.push(b'\t'),
-                                b'u' => {
-                                    let code = std::str::from_utf8(
-                                        &bytes[(*pos).saturating_add(1)..(*pos).saturating_add(5)],
-                                    )
-                                    .unwrap();
-                                    let ch = char::from_u32(u32::from_str_radix(code, 16).unwrap())
-                                        .unwrap();
-                                    let mut buffer = [0_u8; 4];
-                                    out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
-                                    *pos = (*pos).saturating_add(4);
-                                }
-                                other => out.push(other),
-                            }
-                        } else {
-                            out.push(bytes[*pos]);
-                        }
-                        *pos = (*pos).saturating_add(1);
-                    }
-                    *pos = (*pos).saturating_add(1);
-                    Value::Text(String::from_utf8(out).unwrap())
-                }
-                b't' => {
-                    *pos = (*pos).saturating_add(4);
-                    Value::Bool(true)
-                }
-                b'f' => {
-                    *pos = (*pos).saturating_add(5);
-                    Value::Bool(false)
-                }
-                b'n' => {
-                    *pos = (*pos).saturating_add(4);
-                    Value::Null
-                }
-                _ => {
-                    let start = *pos;
-                    while bytes
-                        .get(*pos)
-                        .is_some_and(|b| b.is_ascii_digit() || b"+-.eE".contains(b))
-                    {
-                        *pos = (*pos).saturating_add(1);
-                    }
-                    Value::Number(
-                        std::str::from_utf8(&bytes[start..*pos])
-                            .unwrap()
-                            .parse()
-                            .unwrap(),
-                    )
-                }
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct Golden {
-        text: String,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    }
-
     fn goldens(source: &str) -> Vec<Vec<Golden>> {
         let parsed = Json::parse(source);
         parsed
@@ -2353,19 +2826,6 @@ mod tests {
         .unwrap()
     }
 
-    macro_rules! fixture {
-        ($name:literal) => {
-            (
-                include_bytes!(concat!("../../__tests__/fixtures/", $name, ".pdf")).as_slice(),
-                include_str!(concat!(
-                    "../../__tests__/fixtures/",
-                    $name,
-                    ".liteparse.json"
-                )),
-            )
-        };
-    }
-
     fn fixtures() -> Vec<(&'static str, &'static [u8], &'static str)> {
         let all = [
             ("helvetica-winansi", fixture!("helvetica-winansi")),
@@ -2395,9 +2855,13 @@ mod tests {
         let mut compared = 0_usize;
         for (name, bytes, golden) in fixtures() {
             let inspection = inspect_text(bytes);
-            let golden = goldens(golden);
-            assert_eq!(inspection.text.len(), golden.len(), "{name} page count");
-            for (page_index, expected_items) in golden.iter().enumerate() {
+            let golden_next = goldens(golden);
+            assert_eq!(
+                inspection.text.len(),
+                golden_next.len(),
+                "{name} page count"
+            );
+            for (page_index, expected_items) in golden_next.iter().enumerate() {
                 let page = inspection.pages[page_index];
                 let items = &inspection.text[page_index].items;
                 assert_eq!(
@@ -2415,7 +2879,7 @@ mod tests {
                     let wanted = [expected.x, expected.y, expected.width, expected.height];
                     for (value, target) in actual.iter().zip(wanted) {
                         assert!(
-                            (value - target).abs() <= 0.5,
+                            (value - target).abs() <= 0.5_f64,
                             "{name} page {page_index} {:?}: {actual:?} vs {wanted:?}",
                             expected.text
                         );
@@ -2477,9 +2941,9 @@ mod tests {
     fn extraction_survives_random_content_streams() {
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
+            state ^= state << 13_i32;
+            state ^= state >> 7_i32;
+            state ^= state << 17_i32;
             state
         };
         let tokens = [
@@ -2523,11 +2987,14 @@ mod tests {
             "ID",
             "EI",
         ];
-        for _ in 0..300 {
+        for _ in 0_i32..300_i32 {
             let mut content = String::new();
-            for _ in 0..200 {
+            for _ in 0_i32..200_i32 {
                 content.push_str(
-                    tokens[usize::try_from(next() % u64::try_from(tokens.len()).unwrap()).unwrap()],
+                    tokens[usize::try_from(
+                        next().rem_euclid(u64::try_from(tokens.len()).unwrap()),
+                    )
+                    .unwrap()],
                 );
                 content.push(' ');
             }

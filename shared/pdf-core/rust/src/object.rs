@@ -1,9 +1,14 @@
-use std::ops::Range;
+use alloc::rc::Rc;
+use core::ops::Range;
 
 use crate::failure::Outcome;
 use crate::num::i64_to_f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[expect(
+    clippy::arbitrary_source_item_ordering,
+    reason = "derived Ord must compare the object number before the generation"
+)]
 pub(crate) struct ObjRef {
     pub number: u32,
     pub generation: u16,
@@ -11,16 +16,16 @@ pub(crate) struct ObjRef {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Object {
-    Null,
-    Bool(bool),
-    Integer(i64),
-    Real(f64),
-    Name(Vec<u8>),
-    String(Vec<u8>),
     Array(Vec<Self>),
+    Bool(bool),
     Dict(Dict),
-    Stream(Stream),
+    Integer(i64),
+    Name(Vec<u8>),
+    Null,
+    Real(f64),
     Ref(ObjRef),
+    Stream(Stream),
+    String(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -30,8 +35,8 @@ pub(crate) struct Dict {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Stream {
-    pub dict: Dict,
     pub data: Range<usize>,
+    pub dict: Dict,
 }
 
 impl Dict {
@@ -55,45 +60,6 @@ impl Dict {
 }
 
 impl Object {
-    pub(crate) const fn as_number(&self) -> Option<f64> {
-        match self {
-            Self::Integer(value) => Some(i64_to_f64(*value)),
-            Self::Real(value) => Some(*value),
-            Self::Null
-            | Self::Bool(_)
-            | Self::Name(_)
-            | Self::String(_)
-            | Self::Array(_)
-            | Self::Dict(_)
-            | Self::Stream(_)
-            | Self::Ref(_) => None,
-        }
-    }
-
-    pub(crate) const fn as_integer(&self) -> Option<i64> {
-        if let Self::Integer(value) = self {
-            Some(*value)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn as_name(&self) -> Option<&[u8]> {
-        if let Self::Name(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn as_string(&self) -> Option<&[u8]> {
-        if let Self::String(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
     pub(crate) fn as_array(&self) -> Option<&[Self]> {
         if let Self::Array(value) = self {
             Some(value)
@@ -117,8 +83,35 @@ impl Object {
         }
     }
 
-    pub(crate) const fn is_ref(&self) -> bool {
-        matches!(self, Self::Ref(_))
+    pub(crate) const fn as_integer(&self) -> Option<i64> {
+        if let Self::Integer(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn as_name(&self) -> Option<&[u8]> {
+        if let Self::Name(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn as_number(&self) -> Option<f64> {
+        match self {
+            Self::Integer(value) => Some(i64_to_f64(*value)),
+            Self::Real(value) => Some(*value),
+            Self::Null
+            | Self::Bool(_)
+            | Self::Name(_)
+            | Self::String(_)
+            | Self::Array(_)
+            | Self::Dict(_)
+            | Self::Stream(_)
+            | Self::Ref(_) => None,
+        }
     }
 
     pub(crate) const fn as_stream(&self) -> Option<&Stream> {
@@ -128,9 +121,24 @@ impl Object {
             None
         }
     }
+
+    pub(crate) fn as_string(&self) -> Option<&[u8]> {
+        if let Self::String(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn is_ref(&self) -> bool {
+        matches!(self, Self::Ref(_))
+    }
 }
 
 pub(crate) trait Resolver {
-    fn resolve(&self, object: &Object) -> Outcome<Object>;
+    fn resolve(&self, object: &Object) -> Outcome<Rc<Object>>;
     fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>>;
+    fn stream_prefix(&self, stream: &Stream, _len: usize) -> Outcome<Vec<u8>> {
+        self.stream_data(stream)
+    }
 }

@@ -1,5 +1,8 @@
 use crate::num::widen;
-use std::cell::OnceCell;
+use crate::object::Dict;
+use crate::object::Object;
+use crate::object::Resolver;
+use core::cell::OnceCell;
 use std::collections::HashMap;
 
 use crate::cff::CffFont;
@@ -9,14 +12,14 @@ use crate::inspection::Limits;
 
 const MAX_TABLES: usize = 128;
 const MAX_SUBTABLES: usize = 64;
-const MAX_GLYPHS: usize = 65_535;
-const MAX_REVERSE_CODES: usize = 262_144;
+const MAX_GLYPHS: usize = 0xFFFF;
+const MAX_REVERSE_CODES: usize = 0x0004_0000;
 const MAX_LOOKUPS: usize = 128;
 const MAX_LOOKUP_SUBTABLES: usize = 64;
-const MAX_LIGATURES: usize = 16_384;
+const MAX_LIGATURES: usize = 0x4000;
 const MAX_LIGATURE_PARTS: usize = 16;
 const MAX_COMPONENTS: usize = 32;
-const MAX_TYPE1_TOKENS: usize = 16_384;
+const MAX_TYPE1_TOKENS: usize = 0x4000;
 const MAX_TYPE1_SCAN: usize = 1 << 20;
 const MAX_AGL_COMPONENTS: usize = 32;
 const POST_STANDARD_NAMES: usize = 258;
@@ -285,232 +288,89 @@ static POST_STANDARD_GLYPH_NAMES: [&str; POST_STANDARD_NAMES] = [
     "dcroat",
 ];
 
+pub(crate) const SFNT_DIRECTORY_LEN: usize = 12 + 16 * MAX_TABLES;
+
 #[derive(Clone, Copy)]
 struct CmapSubtable {
-    platform: u16,
     encoding: u16,
-    offset: usize,
     format: u16,
+    offset: usize,
+    platform: u16,
 }
 
 #[derive(Clone, Copy, Default)]
 struct TrueTypeOutlines {
     glyf: usize,
     glyf_end: usize,
+    h_metrics: usize,
+    hmtx: usize,
+    hmtx_end: usize,
     loca: usize,
     loca_end: usize,
     long_offsets: bool,
     units_per_em: u16,
-    hmtx: usize,
-    hmtx_end: usize,
-    h_metrics: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GlyphMetrics {
-    pub units_per_em: u16,
     pub advance: u16,
-    pub x_min: i16,
-    pub y_min: i16,
+    pub units_per_em: u16,
     pub x_max: i16,
+    pub x_min: i16,
     pub y_max: i16,
+    pub y_min: i16,
 }
 
 enum Outlines {
+    Cff(Box<CffFont>),
     None,
     TrueType(TrueTypeOutlines),
-    Cff(Box<CffFont>),
     Type1(Type1Encoding),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Type1Encoding {
-    standard: bool,
     entries: Vec<(u8, Vec<u8>)>,
+    standard: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FontStyle {
+    pub bold: bool,
+    pub italic: bool,
 }
 
 pub(crate) struct FontProgram {
-    data: Vec<u8>,
     cmaps: Vec<CmapSubtable>,
-    post: Option<(usize, usize)>,
-    gsub: Option<(usize, usize)>,
-    outlines: Outlines,
-    glyph_count: usize,
-    names: OnceCell<Vec<Vec<u8>>>,
-    name_index: OnceCell<HashMap<Vec<u8>, u16>>,
-    reverse: OnceCell<HashMap<u16, u32>>,
     codes: OnceCell<HashMap<u16, u32>>,
+    data: Vec<u8>,
+    glyph_count: usize,
+    gsub: Option<(usize, usize)>,
     ligatures: OnceCell<HashMap<u16, Vec<u16>>>,
+    name_index: OnceCell<HashMap<Vec<u8>, u16>>,
+    names: OnceCell<Vec<Vec<u8>>>,
+    outlines: Outlines,
+    post: Option<(usize, usize)>,
+    reverse: OnceCell<HashMap<u16, u32>>,
+    style: FontStyle,
 }
 
-pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
-    if bytes.len() < 4 {
-        return None;
-    }
-    let head = read_u32(&bytes, 0)?;
-    let mut program = FontProgram {
-        data: Vec::new(),
-        cmaps: Vec::new(),
-        post: None,
-        gsub: None,
-        outlines: Outlines::None,
-        glyph_count: 0,
-        names: OnceCell::new(),
-        name_index: OnceCell::new(),
-        reverse: OnceCell::new(),
-        codes: OnceCell::new(),
-        ligatures: OnceCell::new(),
-    };
-    match head {
-        SFNT_TRUETYPE | SFNT_OPENTYPE | SFNT_TRUE => parse_sfnt(&bytes, &mut program)?,
-        _ if bytes.first() == Some(&1) && bytes.get(1) == Some(&0) => {
-            let cff = CffFont::parse(&bytes)?;
-            program.glyph_count = cff.glyph_count();
-            program.outlines = Outlines::Cff(Box::new(cff));
-        }
-        _ => {
-            let encoding = parse_type1_encoding(&bytes)?;
-            program.outlines = Outlines::Type1(encoding);
-        }
-    }
-    program.data = bytes;
-    Some(program)
-}
-
-fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
-    let table_count = usize::from(read_u16(bytes, 4)?);
-    if table_count == 0 || table_count > MAX_TABLES {
-        return None;
-    }
-    let mut cmap = None;
-    let mut head = None;
-    let mut maxp = None;
-    let mut loca = None;
-    let mut glyf = None;
-    let mut cff = None;
-    let mut hhea = None;
-    let mut hmtx = None;
-    for index in 0..table_count {
-        let base = 12_usize.checked_add(index.checked_mul(16)?)?;
-        let tag = [
-            *bytes.get(base)?,
-            *bytes.get(base.saturating_add(1))?,
-            *bytes.get(base.saturating_add(2))?,
-            *bytes.get(base.saturating_add(3))?,
-        ];
-        let offset = usize::try_from(read_u32(bytes, base.checked_add(8)?)?).ok()?;
-        let length = usize::try_from(read_u32(bytes, base.checked_add(12)?)?).ok()?;
-        let end = offset.checked_add(length)?;
-        if end > bytes.len() || length == 0 {
-            continue;
-        }
-        let range = Some((offset, end));
-        match &tag {
-            b"cmap" => cmap = range,
-            b"head" => head = range,
-            b"maxp" => maxp = range,
-            b"loca" => loca = range,
-            b"glyf" => glyf = range,
-            b"post" => program.post = range,
-            b"GSUB" => program.gsub = range,
-            b"CFF " => cff = range,
-            b"hhea" => hhea = range,
-            b"hmtx" => hmtx = range,
-            _ => {}
-        }
-    }
-    if let Some((offset, _)) = maxp {
-        program.glyph_count = usize::from(read_u16(bytes, offset.checked_add(4)?)?);
-    }
-    if let Some((offset, end)) = cmap {
-        read_cmap_directory(bytes, offset, end, program);
-    }
-    if let Some((offset, end)) = cff {
-        let font = CffFont::parse(bytes.get(offset..end)?)?;
-        program.glyph_count = program.glyph_count.max(font.glyph_count());
-        program.outlines = Outlines::Cff(Box::new(font));
-    } else if let (Some((loca, loca_end)), Some((glyf, glyf_end)), Some((head, _))) =
-        (loca, glyf, head)
-    {
-        let (hmtx, hmtx_end) = hmtx.unwrap_or_default();
-        let h_metrics = hhea
-            .and_then(|(offset, _)| read_u16(bytes, offset.checked_add(34)?))
-            .map_or(0, usize::from);
-        program.outlines = Outlines::TrueType(TrueTypeOutlines {
-            glyf,
-            glyf_end,
-            loca,
-            loca_end,
-            long_offsets: read_u16(bytes, head.checked_add(50)?)? != 0,
-            units_per_em: read_u16(bytes, head.checked_add(18)?).unwrap_or(0),
-            hmtx,
-            hmtx_end,
-            h_metrics,
-        });
-    }
-    Some(())
-}
-
-fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut FontProgram) {
-    let count = read_u16(bytes, offset.saturating_add(2)).map_or(0, usize::from);
-    for index in 0..count.min(MAX_SUBTABLES) {
-        let head = offset.saturating_add((index.saturating_mul(8)).saturating_add(4));
-        let (Some(platform), Some(encoding), Some(relative)) = (
-            read_u16(bytes, head),
-            read_u16(bytes, head.saturating_add(2)),
-            read_u32(bytes, head.saturating_add(4)),
-        ) else {
-            return;
-        };
-        let Some(sub) = usize::try_from(relative)
-            .ok()
-            .and_then(|relative| offset.checked_add(relative))
-        else {
-            continue;
-        };
-        if sub >= end.min(bytes.len()) {
-            continue;
-        }
-        let Some(format) = read_u16(bytes, sub) else {
-            continue;
-        };
-        if matches!(format, 0 | 4 | 6 | 12) {
-            program.cmaps.push(CmapSubtable {
-                platform,
-                encoding,
-                offset: sub,
-                format,
-            });
-        }
-    }
-}
+type TableRange = Option<(usize, usize)>;
 
 impl FontProgram {
-    #[cfg(test)]
-    pub(crate) const fn glyph_count(&self) -> usize {
-        self.glyph_count
-    }
-
-    pub(crate) const fn has_authoritative_names(&self) -> bool {
-        matches!(&self.outlines, Outlines::Cff(_) | Outlines::Type1(_))
-    }
-
-    pub(crate) fn is_cid_keyed(&self) -> bool {
-        matches!(&self.outlines, Outlines::Cff(cff) if cff.is_cid_keyed())
+    pub(crate) fn builtin_name(&self, code: u8) -> Option<&[u8]> {
+        match &self.outlines {
+            Outlines::Cff(cff) if !cff.is_cid_keyed() => cff.builtin_name(code),
+            Outlines::Type1(encoding) => encoding.name(code),
+            Outlines::Cff(_) | Outlines::None | Outlines::TrueType(_) => None,
+        }
     }
 
     pub(crate) fn cid_to_gid(&self, cid: u32) -> Option<u16> {
-        let cid = u16::try_from(cid).ok()?;
+        let cid_u16 = u16::try_from(cid).ok()?;
         match &self.outlines {
-            Outlines::Cff(cff) => cff.gid_for_cid(cid),
-            Outlines::None | Outlines::TrueType(_) | Outlines::Type1(_) => Some(cid),
-        }
-    }
-
-    pub(crate) fn gid_to_cid(&self, gid: u16) -> Option<u32> {
-        match &self.outlines {
-            Outlines::Cff(cff) => cff.cid_for_gid(gid).map(u32::from),
-            Outlines::None | Outlines::TrueType(_) | Outlines::Type1(_) => Some(u32::from(gid)),
+            Outlines::Cff(cff) => cff.gid_for_cid(cid_u16),
+            Outlines::None | Outlines::TrueType(_) | Outlines::Type1(_) => Some(cid_u16),
         }
     }
 
@@ -525,12 +385,12 @@ impl FontProgram {
                         .filter(|sub| sub.platform == platform && sub.encoding == encoding)
                     {
                         cmap_for_each(&self.data, *sub, &mut |code, glyph| {
-                            let code = if platform == 3 && encoding == 0 && code >= 0xF000 {
+                            let code_next = if platform == 3 && encoding == 0 && code >= 0xF000 {
                                 code & 0xFF
                             } else {
                                 code
                             };
-                            map.entry(glyph).or_insert(code);
+                            let _: &mut u32 = map.entry(glyph).or_insert(code_next);
                         });
                     }
                 }
@@ -538,14 +398,6 @@ impl FontProgram {
             })
             .get(&gid)
             .copied()
-    }
-
-    pub(crate) fn builtin_name(&self, code: u8) -> Option<&[u8]> {
-        match &self.outlines {
-            Outlines::Cff(cff) if !cff.is_cid_keyed() => cff.builtin_name(code),
-            Outlines::Type1(encoding) => encoding.name(code),
-            Outlines::Cff(_) | Outlines::None | Outlines::TrueType(_) => None,
-        }
     }
 
     pub(crate) fn code_to_gid(&self, code: u32, symbolic: bool) -> Option<u16> {
@@ -571,28 +423,68 @@ impl FontProgram {
         if symbolic { None } else { lookup(1, 0, code) }
     }
 
-    pub(crate) fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
-        if let Outlines::Cff(cff) = &self.outlines {
-            return cff.glyph_name(gid);
+    fn composite_parts(&self, gid: u16) -> Option<Vec<u16>> {
+        let Outlines::TrueType(outlines) = &self.outlines else {
+            return None;
+        };
+        let (start, end) = glyph_range(&self.data, outlines, gid)?;
+        let glyph = self.data.get(start..end)?;
+        if ((read_u16(glyph, 0)?).cast_signed()) >= 0 {
+            return None;
         }
-        self.post_names()
-            .get(usize::from(gid))
-            .map(Vec::as_slice)
-            .filter(|name| !name.is_empty())
+        let mut position = 10_usize;
+        let mut parts: Vec<(i32, u16)> = Vec::new();
+        loop {
+            let flags = read_u16(glyph, position)?;
+            let component = read_u16(glyph, position.checked_add(2)?)?;
+            position = position.checked_add(4)?;
+            let offset = if flags & 0x0001 != 0 {
+                let value = i32::from((read_u16(glyph, position)?).cast_signed());
+                position = position.checked_add(4)?;
+                value
+            } else {
+                let value = i32::from((*glyph.get(position)?).cast_signed());
+                position = position.checked_add(2)?;
+                value
+            };
+            let offset_next = if flags & 0x0002 != 0 { offset } else { 0_i32 };
+            if flags & 0x0008 != 0 {
+                position = position.checked_add(2)?;
+            } else if flags & 0x0040 != 0 {
+                position = position.checked_add(4)?;
+            } else if flags & 0x0080 != 0 {
+                position = position.checked_add(8)?;
+            }
+            parts.push((offset_next, component));
+            if flags & 0x0020 == 0 || parts.len() >= MAX_COMPONENTS {
+                break;
+            }
+        }
+        parts.sort_by_key(|(offset, _)| *offset);
+        Some(parts.into_iter().map(|(_, component)| component).collect())
     }
 
     pub(crate) fn gid_for_name(&self, name: &[u8]) -> Option<u16> {
         let index = self.name_index.get_or_init(|| {
             let mut map = HashMap::new();
             for gid in 0..self.glyph_count.min(MAX_GLYPHS) {
-                let Ok(gid) = u16::try_from(gid) else { break };
-                if let Some(glyph) = self.glyph_name(gid) {
-                    map.entry(glyph.to_vec()).or_insert(gid);
+                let Ok(gid_u16) = u16::try_from(gid) else {
+                    break;
+                };
+                if let Some(glyph) = self.glyph_name(gid_u16) {
+                    let _: &mut u16 = map.entry(glyph.to_vec()).or_insert(gid_u16);
                 }
             }
             map
         });
         index.get(name).copied()
+    }
+
+    pub(crate) fn gid_parts(&self, gid: u16) -> Option<Vec<u16>> {
+        if let Some(parts) = self.ligature_map().get(&gid) {
+            return Some(parts.clone());
+        }
+        self.composite_parts(gid)
     }
 
     pub(crate) fn gid_text(&self, gid: u16) -> Option<Vec<u32>> {
@@ -605,11 +497,16 @@ impl FontProgram {
             .filter(|text| text.iter().all(|cp| *cp != 0))
     }
 
-    pub(crate) fn gid_parts(&self, gid: u16) -> Option<Vec<u16>> {
-        if let Some(parts) = self.ligature_map().get(&gid) {
-            return Some(parts.clone());
+    pub(crate) fn gid_to_cid(&self, gid: u16) -> Option<u32> {
+        match &self.outlines {
+            Outlines::Cff(cff) => cff.cid_for_gid(gid).map(u32::from),
+            Outlines::None | Outlines::TrueType(_) | Outlines::Type1(_) => Some(u32::from(gid)),
         }
-        self.composite_parts(gid)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn glyph_count(&self) -> usize {
+        self.glyph_count
     }
 
     pub(crate) fn glyph_metrics(&self, gid: u16) -> Option<GlyphMetrics> {
@@ -633,6 +530,36 @@ impl FontProgram {
             y_min: (read_u16(glyph, 4)?).cast_signed(),
             x_max: (read_u16(glyph, 6)?).cast_signed(),
             y_max: (read_u16(glyph, 8)?).cast_signed(),
+        })
+    }
+
+    pub(crate) fn glyph_name(&self, gid: u16) -> Option<&[u8]> {
+        if let Outlines::Cff(cff) = &self.outlines {
+            return cff.glyph_name(gid);
+        }
+        self.post_names()
+            .get(usize::from(gid))
+            .map(Vec::as_slice)
+            .filter(|name| !name.is_empty())
+    }
+
+    pub(crate) const fn has_authoritative_names(&self) -> bool {
+        matches!(&self.outlines, Outlines::Cff(_) | Outlines::Type1(_))
+    }
+
+    pub(crate) fn is_cid_keyed(&self) -> bool {
+        matches!(&self.outlines, Outlines::Cff(cff) if cff.is_cid_keyed())
+    }
+
+    fn ligature_map(&self) -> &HashMap<u16, Vec<u16>> {
+        self.ligatures.get_or_init(|| {
+            let mut map = HashMap::new();
+            if let Some((start, end)) = self.gsub
+                && let Some(table) = self.data.get(start..end)
+            {
+                read_gsub_ligatures(table, &mut map);
+            }
+            map
         })
     }
 
@@ -708,7 +635,7 @@ impl FontProgram {
                     .filter(|sub| sub.platform == platform && sub.encoding == encoding)
                 {
                     cmap_for_each(&self.data, *sub, &mut |code, gid| {
-                        map.entry(gid).or_insert(code);
+                        let _: &mut u32 = map.entry(gid).or_insert(code);
                     });
                 }
             }
@@ -716,57 +643,8 @@ impl FontProgram {
         })
     }
 
-    fn ligature_map(&self) -> &HashMap<u16, Vec<u16>> {
-        self.ligatures.get_or_init(|| {
-            let mut map = HashMap::new();
-            if let Some((start, end)) = self.gsub
-                && let Some(table) = self.data.get(start..end)
-            {
-                read_gsub_ligatures(table, &mut map);
-            }
-            map
-        })
-    }
-
-    fn composite_parts(&self, gid: u16) -> Option<Vec<u16>> {
-        let Outlines::TrueType(outlines) = &self.outlines else {
-            return None;
-        };
-        let (start, end) = glyph_range(&self.data, outlines, gid)?;
-        let glyph = self.data.get(start..end)?;
-        if ((read_u16(glyph, 0)?).cast_signed()) >= 0 {
-            return None;
-        }
-        let mut position = 10_usize;
-        let mut parts: Vec<(i32, u16)> = Vec::new();
-        loop {
-            let flags = read_u16(glyph, position)?;
-            let component = read_u16(glyph, position.checked_add(2)?)?;
-            position = position.checked_add(4)?;
-            let offset = if flags & 0x0001 != 0 {
-                let value = i32::from((read_u16(glyph, position)?).cast_signed());
-                position = position.checked_add(4)?;
-                value
-            } else {
-                let value = i32::from((*glyph.get(position)?).cast_signed());
-                position = position.checked_add(2)?;
-                value
-            };
-            let offset = if flags & 0x0002 != 0 { offset } else { 0 };
-            if flags & 0x0008 != 0 {
-                position = position.checked_add(2)?;
-            } else if flags & 0x0040 != 0 {
-                position = position.checked_add(4)?;
-            } else if flags & 0x0080 != 0 {
-                position = position.checked_add(8)?;
-            }
-            parts.push((offset, component));
-            if flags & 0x0020 == 0 || parts.len() >= MAX_COMPONENTS {
-                break;
-            }
-        }
-        parts.sort_by_key(|(offset, _)| *offset);
-        Some(parts.into_iter().map(|(_, component)| component).collect())
+    pub(crate) const fn style(&self) -> FontStyle {
+        self.style
     }
 }
 
@@ -782,6 +660,218 @@ impl Type1Encoding {
             .find(|(slot, _)| *slot == code)
             .map(|(_, name)| name.as_slice())
             .filter(|name| *name != b".notdef")
+    }
+}
+
+enum Type1Token<'data> {
+    Close,
+    Name(&'data [u8]),
+    Open,
+    Word(&'data [u8]),
+}
+
+pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let head = read_u32(&bytes, 0)?;
+    let mut program = FontProgram {
+        data: Vec::new(),
+        style: FontStyle::default(),
+        cmaps: Vec::new(),
+        post: None,
+        gsub: None,
+        outlines: Outlines::None,
+        glyph_count: 0,
+        names: OnceCell::new(),
+        name_index: OnceCell::new(),
+        reverse: OnceCell::new(),
+        codes: OnceCell::new(),
+        ligatures: OnceCell::new(),
+    };
+    match head {
+        SFNT_TRUETYPE | SFNT_OPENTYPE | SFNT_TRUE => parse_sfnt(&bytes, &mut program)?,
+        _ if bytes.first() == Some(&1) && bytes.get(1) == Some(&0) => {
+            let cff = CffFont::parse(&bytes)?;
+            program.glyph_count = cff.glyph_count();
+            program.outlines = Outlines::Cff(Box::new(cff));
+        }
+        _ => {
+            let encoding = parse_type1_encoding(&bytes)?;
+            program.outlines = Outlines::Type1(encoding);
+        }
+    }
+    program.data = bytes;
+    Some(program)
+}
+
+fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
+    let table_count = usize::from(read_u16(bytes, 4)?);
+    if table_count == 0 || table_count > MAX_TABLES {
+        return None;
+    }
+    let mut cmap = None;
+    let mut head = None;
+    let mut maxp = None;
+    let mut loca = None;
+    let mut glyf = None;
+    let mut cff = None;
+    let mut hhea = None;
+    let mut hmtx = None;
+    let mut os2 = None;
+    for index in 0..table_count {
+        let base = 12_usize.checked_add(index.checked_mul(16)?)?;
+        let tag = [
+            *bytes.get(base)?,
+            *bytes.get(base.saturating_add(1))?,
+            *bytes.get(base.saturating_add(2))?,
+            *bytes.get(base.saturating_add(3))?,
+        ];
+        let offset = usize::try_from(read_u32(bytes, base.checked_add(8)?)?).ok()?;
+        let length = usize::try_from(read_u32(bytes, base.checked_add(12)?)?).ok()?;
+        let end = offset.checked_add(length)?;
+        if end > bytes.len() || length == 0 {
+            continue;
+        }
+        let range = Some((offset, end));
+        match &tag {
+            b"cmap" => cmap = range,
+            b"head" => head = range,
+            b"maxp" => maxp = range,
+            b"loca" => loca = range,
+            b"glyf" => glyf = range,
+            b"post" => program.post = range,
+            b"GSUB" => program.gsub = range,
+            b"CFF " => cff = range,
+            b"hhea" => hhea = range,
+            b"hmtx" => hmtx = range,
+            b"OS/2" => os2 = range,
+            _ => {}
+        }
+    }
+    program.style = sfnt_style(bytes, head, os2);
+    if let Some((offset, _)) = maxp {
+        program.glyph_count = usize::from(read_u16(bytes, offset.checked_add(4)?)?);
+    }
+    if let Some((offset, end)) = cmap {
+        read_cmap_directory(bytes, offset, end, program);
+    }
+    if let Some((offset, end)) = cff {
+        let font = CffFont::parse(bytes.get(offset..end)?)?;
+        program.glyph_count = program.glyph_count.max(font.glyph_count());
+        program.outlines = Outlines::Cff(Box::new(font));
+    } else if let (
+        Some((inner_loca, loca_end)),
+        Some((inner_glyf, glyf_end)),
+        Some((inner_head, _)),
+    ) = (loca, glyf, head)
+    {
+        let (hmtx_next, hmtx_end) = hmtx.unwrap_or_default();
+        let h_metrics = hhea
+            .and_then(|(offset, _)| read_u16(bytes, offset.checked_add(34)?))
+            .map_or(0, usize::from);
+        program.outlines = Outlines::TrueType(TrueTypeOutlines {
+            glyf: inner_glyf,
+            glyf_end,
+            loca: inner_loca,
+            loca_end,
+            long_offsets: read_u16(bytes, inner_head.checked_add(50)?)? != 0,
+            units_per_em: read_u16(bytes, inner_head.checked_add(18)?).unwrap_or(0),
+            hmtx: hmtx_next,
+            hmtx_end,
+            h_metrics,
+        });
+    }
+    Some(())
+}
+
+pub(crate) fn sfnt_style_of(bytes: &[u8]) -> Option<FontStyle> {
+    let (head, os2) = style_tables(bytes)?;
+    (head.is_some() || os2.is_some()).then(|| sfnt_style(bytes, head, os2))
+}
+
+pub(crate) fn sfnt_style_extent(bytes: &[u8]) -> Option<usize> {
+    let (head, os2) = style_tables(bytes)?;
+    let head_end = head.and_then(|(offset, _)| offset.checked_add(46));
+    let os2_end = os2.and_then(|(offset, _)| offset.checked_add(64));
+    Some(head_end.unwrap_or(0).max(os2_end.unwrap_or(0)))
+}
+
+fn style_tables(bytes: &[u8]) -> Option<(TableRange, TableRange)> {
+    let head = read_u32(bytes, 0)?;
+    if !matches!(head, SFNT_TRUETYPE | SFNT_OPENTYPE | SFNT_TRUE) {
+        return None;
+    }
+    let table_count = usize::from(read_u16(bytes, 4)?).min(MAX_TABLES);
+    let mut found = (None, None);
+    for index in 0..table_count {
+        let base = 12_usize.checked_add(index.checked_mul(16)?)?;
+        let tag = bytes.get(base..base.checked_add(4)?)?;
+        let offset = usize::try_from(read_u32(bytes, base.checked_add(8)?)?).ok()?;
+        let length = usize::try_from(read_u32(bytes, base.checked_add(12)?)?).ok()?;
+        let range = Some((offset, offset.checked_add(length)?));
+        match tag {
+            b"head" => found.0 = range,
+            b"OS/2" => found.1 = range,
+            _ => {}
+        }
+    }
+    Some(found)
+}
+
+fn sfnt_style(
+    bytes: &[u8],
+    head: Option<(usize, usize)>,
+    os2: Option<(usize, usize)>,
+) -> FontStyle {
+    let weight = os2.and_then(|(offset, _)| read_u16(bytes, offset.checked_add(4)?));
+    let selection = os2.and_then(|(offset, _)| read_u16(bytes, offset.checked_add(62)?));
+    if let (Some(inner_weight), Some(inner_selection)) = (weight, selection) {
+        return FontStyle {
+            bold: inner_selection & 0x20 != 0 || inner_weight >= 600,
+            italic: inner_selection & 0x201 != 0,
+        };
+    }
+    let mac_style = head
+        .and_then(|(offset, _)| read_u16(bytes, offset.checked_add(44)?))
+        .unwrap_or(0);
+    FontStyle {
+        bold: mac_style & 1 != 0,
+        italic: mac_style & 2 != 0,
+    }
+}
+
+fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut FontProgram) {
+    let count = read_u16(bytes, offset.saturating_add(2)).map_or(0, usize::from);
+    for index in 0..count.min(MAX_SUBTABLES) {
+        let head = offset.saturating_add((index.saturating_mul(8)).saturating_add(4));
+        let (Some(platform), Some(encoding), Some(relative)) = (
+            read_u16(bytes, head),
+            read_u16(bytes, head.saturating_add(2)),
+            read_u32(bytes, head.saturating_add(4)),
+        ) else {
+            return;
+        };
+        let Some(sub) = usize::try_from(relative)
+            .ok()
+            .and_then(|inner_relative| offset.checked_add(inner_relative))
+        else {
+            continue;
+        };
+        if sub >= end.min(bytes.len()) {
+            continue;
+        }
+        let Some(format) = read_u16(bytes, sub) else {
+            continue;
+        };
+        if matches!(format, 0 | 4 | 6 | 12) {
+            program.cmaps.push(CmapSubtable {
+                platform,
+                encoding,
+                offset: sub,
+                format,
+            });
+        }
     }
 }
 
@@ -834,8 +924,8 @@ fn lookup_format0(data: &[u8], offset: usize, code: u32) -> Option<u16> {
 }
 
 fn lookup_format4(data: &[u8], offset: usize, code: u32) -> Option<u16> {
-    let code = u16::try_from(code).ok()?;
-    let seg_count = usize::from(read_u16(data, offset.checked_add(6)?)?) >> 1;
+    let code_u16 = u16::try_from(code).ok()?;
+    let seg_count = usize::from(read_u16(data, offset.checked_add(6)?)?) >> 1_i32;
     let ends = offset.checked_add(14)?;
     let starts = ends
         .checked_add(seg_count.saturating_mul(2))?
@@ -846,7 +936,7 @@ fn lookup_format4(data: &[u8], offset: usize, code: u32) -> Option<u16> {
     let mut high = seg_count;
     while low < high {
         let mid = low.midpoint(high);
-        if read_u16(data, ends.checked_add(mid.saturating_mul(2))?)? < code {
+        if read_u16(data, ends.checked_add(mid.saturating_mul(2))?)? < code_u16 {
             low = mid.saturating_add(1);
         } else {
             high = mid;
@@ -856,18 +946,18 @@ fn lookup_format4(data: &[u8], offset: usize, code: u32) -> Option<u16> {
         return None;
     }
     let start = read_u16(data, starts.checked_add(low.saturating_mul(2))?)?;
-    if start > code {
+    if start > code_u16 {
         return None;
     }
     let delta = read_u16(data, deltas.checked_add(low.saturating_mul(2))?)?;
     let range = read_u16(data, ranges.checked_add(low.saturating_mul(2))?)?;
     if range == 0 {
-        return Some(code.wrapping_add(delta));
+        return Some(code_u16.wrapping_add(delta));
     }
     let position = ranges
         .checked_add(low.saturating_mul(2))?
         .checked_add(usize::from(range))?
-        .checked_add(usize::from(code.saturating_sub(start)) * 2)?;
+        .checked_add(usize::from(code_u16.saturating_sub(start)) * 2)?;
     let glyph = read_u16(data, position)?;
     (glyph != 0).then(|| glyph.wrapping_add(delta))
 }
@@ -944,7 +1034,7 @@ fn each_format0(data: &[u8], offset: usize, visit: &mut dyn FnMut(u32, u16)) {
 
 fn each_format4(data: &[u8], offset: usize, budget: &mut usize, visit: &mut dyn FnMut(u32, u16)) {
     let Some(seg_count) =
-        read_u16(data, offset.saturating_add(6)).map(|value| usize::from(value) >> 1)
+        read_u16(data, offset.saturating_add(6)).map(|value| usize::from(value) >> 1_i32)
     else {
         return;
     };
@@ -1079,7 +1169,7 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
                 };
                 let Some(target) = usize::try_from(relative)
                     .ok()
-                    .and_then(|relative| subtable.checked_add(relative))
+                    .and_then(|inner_relative| subtable.checked_add(inner_relative))
                 else {
                     continue;
                 };
@@ -1135,11 +1225,11 @@ fn read_ligature_subtable(table: &[u8], subtable: usize, out: &mut HashMap<u16, 
             ) else {
                 continue;
             };
-            let component_count = usize::from(component_count);
-            if !(2..=MAX_LIGATURE_PARTS).contains(&component_count) {
+            let component_count_usize = usize::from(component_count);
+            if !(2..=MAX_LIGATURE_PARTS).contains(&component_count_usize) {
                 continue;
             }
-            let rest: Option<Vec<u16>> = (0..component_count.saturating_sub(1))
+            let rest: Option<Vec<u16>> = (0..component_count_usize.saturating_sub(1))
                 .map(|index| {
                     read_u16(
                         table,
@@ -1147,12 +1237,12 @@ fn read_ligature_subtable(table: &[u8], subtable: usize, out: &mut HashMap<u16, 
                     )
                 })
                 .collect();
-            if let Some(rest) = rest
+            if let Some(inner_rest) = rest
                 && out.len() < MAX_LIGATURES
             {
                 let mut parts = vec![*first];
-                parts.extend(rest);
-                out.entry(glyph).or_insert(parts);
+                parts.extend(inner_rest);
+                let _: &mut Vec<u16> = out.entry(glyph).or_insert(parts);
             }
         }
     }
@@ -1252,13 +1342,6 @@ fn parse_type1_encoding(bytes: &[u8]) -> Option<Type1Encoding> {
     Some(encoding)
 }
 
-enum Type1Token<'a> {
-    Word(&'a [u8]),
-    Name(&'a [u8]),
-    Open,
-    Close,
-}
-
 const fn is_type1_delimiter(value: u8) -> bool {
     matches!(
         value,
@@ -1266,7 +1349,7 @@ const fn is_type1_delimiter(value: u8) -> bool {
     )
 }
 
-fn next_type1_token<'a>(bytes: &'a [u8], position: &mut usize) -> Option<Type1Token<'a>> {
+fn next_type1_token<'data>(bytes: &'data [u8], position: &mut usize) -> Option<Type1Token<'data>> {
     loop {
         let byte = *bytes.get(*position)?;
         if byte == b'%' {
@@ -1320,7 +1403,7 @@ fn next_type1_token<'a>(bytes: &'a [u8], position: &mut usize) -> Option<Type1To
 }
 
 fn parse_type1_int(word: &[u8]) -> Option<u32> {
-    let text = core::str::from_utf8(word).ok()?;
+    let text = str::from_utf8(word).ok()?;
     match text.split_once('#') {
         Some((radix, digits)) => u32::from_str_radix(digits, radix.parse().ok()?).ok(),
         None => text.parse().ok(),
@@ -1334,7 +1417,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 pub(crate) fn agl_components(name: &[u8]) -> Option<Vec<u32>> {
-    let text = core::str::from_utf8(name).ok()?;
+    let text = str::from_utf8(name).ok()?;
     if let Some(found) = lookup_agl(name) {
         return Some(found.to_vec());
     }
@@ -1359,11 +1442,11 @@ fn agl_component(part: &str, out: &mut Vec<u32>) -> Option<()> {
     }
     if let Some(digits) = part.strip_prefix("uni")
         && digits.len() >= 4
-        && digits.len() % 4 == 0
+        && digits.len().is_multiple_of(4)
         && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         for chunk in digits.as_bytes().chunks(4) {
-            let value = u32::from_str_radix(core::str::from_utf8(chunk).ok()?, 16).ok()?;
+            let value = u32::from_str_radix(str::from_utf8(chunk).ok()?, 16).ok()?;
             if (0xD800..=0xDFFF).contains(&value) {
                 return None;
             }
@@ -1386,22 +1469,38 @@ fn agl_component(part: &str, out: &mut Vec<u32>) -> Option<()> {
 
 pub(crate) fn load_font_file_bytes(
     key: &[u8],
-    descriptor: &crate::object::Dict,
-    resolver: &dyn crate::object::Resolver,
+    descriptor: &Dict,
+    resolver: &dyn Resolver,
     limits: &Limits,
 ) -> Result<Vec<u8>, Failure> {
     let Some(stream_obj) = descriptor.get(key) else {
         return Err(Failure::invalid("missing font program stream"));
     };
     let object = resolver.resolve(stream_obj)?;
-    let crate::object::Object::Stream(stream) = object else {
+    let Object::Stream(stream) = &*object else {
         return Err(Failure::invalid("font program is not a stream"));
     };
-    let bytes = resolver.stream_data(&stream)?;
+    let bytes = resolver.stream_data(stream)?;
     if bytes.len() > limits.max_decoded_stream_bytes {
         return Err(Failure::limit("font program exceeds limit"));
     }
     Ok(bytes)
+}
+
+pub(crate) fn load_font_file_prefix(
+    key: &[u8],
+    descriptor: &Dict,
+    resolver: &dyn Resolver,
+    len: usize,
+) -> Result<Vec<u8>, Failure> {
+    let Some(stream_obj) = descriptor.get(key) else {
+        return Err(Failure::invalid("missing font program stream"));
+    };
+    let object = resolver.resolve(stream_obj)?;
+    let Object::Stream(stream) = &*object else {
+        return Err(Failure::invalid("font program is not a stream"));
+    };
+    resolver.stream_prefix(stream, len)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -1420,7 +1519,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 pub(crate) mod tests {
     use super::*;
     use crate::cff::tests::{Layout, build as build_cff};
-    use std::hint::black_box;
+    use core::hint::black_box;
 
     fn be16(value: u16) -> Vec<u8> {
         value.to_be_bytes().to_vec()
@@ -1656,7 +1755,7 @@ pub(crate) mod tests {
         let mut loca = be32(0);
         for glyph in glyphs {
             glyf.extend_from_slice(glyph);
-            while glyf.len() % 4 != 0 {
+            while !glyf.len().is_multiple_of(4) {
                 glyf.push(0);
             }
             loca.extend(be32(u32::try_from(glyf.len()).unwrap()));
@@ -1882,7 +1981,7 @@ pub(crate) mod tests {
         let mut loca = Vec::new();
         for chunk in loca_long.chunks(4) {
             let value = u32::from_be_bytes(chunk.try_into().unwrap());
-            loca.extend(be16(u16::try_from(value >> 1).unwrap()));
+            loca.extend(be16(u16::try_from(value >> 1_i32).unwrap()));
         }
         let font = sfnt(
             SFNT_TRUETYPE,
@@ -2049,21 +2148,21 @@ pub(crate) mod tests {
     }
 
     fn exercise(program: &FontProgram) {
-        for gid in [0_u16, 1, 2, 3, 9, 100, 65535] {
-            black_box(program.gid_text(gid));
-            black_box(program.gid_parts(gid));
-            black_box(program.glyph_name(gid));
+        for gid in [0_u16, 1, 2, 3, 9, 100, 0xFFFF] {
+            drop(black_box(program.gid_text(gid)));
+            drop(black_box(program.gid_parts(gid)));
+            let _: Option<&[u8]> = black_box(program.glyph_name(gid));
         }
         for code in [0_u32, 0x41, 0x61, 0xF041, 0xFFFF, 0x1F600] {
-            black_box(program.code_to_gid(code, true));
-            black_box(program.code_to_gid(code, false));
+            let _: Option<u16> = black_box(program.code_to_gid(code, true));
+            let _: Option<u16> = black_box(program.code_to_gid(code, false));
         }
         for cid in [0_u32, 1, 700, 70000] {
-            black_box(program.cid_to_gid(cid));
+            let _: Option<u16> = black_box(program.cid_to_gid(cid));
         }
-        black_box(program.gid_for_name(b"t_i"));
+        let _: Option<u16> = black_box(program.gid_for_name(b"t_i"));
         for code in 0..=255_u8 {
-            black_box(program.builtin_name(code));
+            let _: Option<&[u8]> = black_box(program.builtin_name(code));
         }
     }
 
@@ -2094,13 +2193,13 @@ pub(crate) mod tests {
     fn random_bytes_never_panic() {
         let mut seed = 0x5165_3729_u32;
         for round in 0..1024_usize {
-            let len = 16 + round % 300;
+            let len = 16 + round.rem_euclid(300);
             let mut data = vec![0_u8; len];
             for slot in &mut data {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *slot = u8::try_from(seed >> 24).unwrap();
+                *slot = u8::try_from(seed >> 24_i32).unwrap();
             }
-            match round % 4 {
+            match round & 3 {
                 0 => data[..4].copy_from_slice(&[0, 1, 0, 0]),
                 1 => data[..4].copy_from_slice(b"OTTO"),
                 2 => data[..2].copy_from_slice(&[1, 0]),

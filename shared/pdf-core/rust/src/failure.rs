@@ -1,15 +1,16 @@
-use std::error::Error;
-use std::fmt;
+use alloc::fmt;
+use core::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureCode {
-    InvalidPdf,
     EncryptedPdf,
+    InvalidPdf,
     LimitExceeded,
     UnsupportedFeature,
 }
 
 impl From<FailureCode> for u32 {
+    #[inline]
     fn from(code: FailureCode) -> Self {
         match code {
             FailureCode::InvalidPdf => 1,
@@ -27,25 +28,40 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    pub(crate) fn new<R: Into<String>>(code: FailureCode, reason: R) -> Self {
+    pub(crate) fn invalid<R>(reason: R) -> Self
+    where
+        R: Into<String>,
+    {
+        Self::new(FailureCode::InvalidPdf, reason)
+    }
+
+    pub(crate) fn limit<R>(reason: R) -> Self
+    where
+        R: Into<String>,
+    {
+        Self::new(FailureCode::LimitExceeded, reason)
+    }
+
+    pub(crate) fn new<R>(code: FailureCode, reason: R) -> Self
+    where
+        R: Into<String>,
+    {
         Self {
             code,
             reason: reason.into(),
         }
     }
-
-    pub(crate) fn invalid<R: Into<String>>(reason: R) -> Self {
-        Self::new(FailureCode::InvalidPdf, reason)
-    }
-
-    pub(crate) fn limit<R: Into<String>>(reason: R) -> Self {
-        Self::new(FailureCode::LimitExceeded, reason)
-    }
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}: {}", self.code, self.reason)
+        let label = match self.code {
+            FailureCode::InvalidPdf => "invalid_pdf",
+            FailureCode::EncryptedPdf => "encrypted_pdf",
+            FailureCode::LimitExceeded => "limit_exceeded",
+            FailureCode::UnsupportedFeature => "unsupported_feature",
+        };
+        write!(f, "{label}: {}", self.reason)
     }
 }
 

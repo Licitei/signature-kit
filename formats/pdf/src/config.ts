@@ -41,6 +41,7 @@ export const PdfErrorCodeSchema = Schema.Literals([
   "pdf.NO_AVAILABLE_PLACEMENT",
   "pdf.FILE_READ_FAILED",
   "pdf.PDF_LOAD_FAILED",
+  "pdf.LIMIT_EXCEEDED",
 ]);
 export type PdfErrorCode = (typeof PdfErrorCodeSchema)["Type"];
 
@@ -62,6 +63,7 @@ export const PdfErrorCodeValue = {
   noAvailablePlacement: "pdf.NO_AVAILABLE_PLACEMENT",
   fileReadFailed: "pdf.FILE_READ_FAILED",
   pdfLoadFailed: "pdf.PDF_LOAD_FAILED",
+  limitExceeded: "pdf.LIMIT_EXCEEDED",
 } satisfies Record<string, PdfErrorCode>;
 
 export type PdfErrorMessageLocale = ErrorMessageLocale;
@@ -90,6 +92,7 @@ export const pdfErrorMessages = {
     "pdf.NO_AVAILABLE_PLACEMENT": "No available PDF signature placement found.",
     "pdf.FILE_READ_FAILED": "Failed to read the PDF file.",
     "pdf.PDF_LOAD_FAILED": "Failed to load the PDF document.",
+    "pdf.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
   },
   "pt-BR": {
     "pdf.INVALID_PDF": "Documento PDF inválido.",
@@ -109,6 +112,7 @@ export const pdfErrorMessages = {
     "pdf.NO_AVAILABLE_PLACEMENT": "Nenhuma posição de assinatura PDF disponível.",
     "pdf.FILE_READ_FAILED": "Não foi possível ler o arquivo PDF.",
     "pdf.PDF_LOAD_FAILED": "Não foi possível carregar o documento PDF.",
+    "pdf.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",
   },
 } satisfies Record<PdfErrorMessageLocale, Record<PdfErrorCode, string>>;
 

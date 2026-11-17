@@ -25,7 +25,7 @@ const contentMatchers: ReadonlyArray<PdfTextAnchorMatcher> = [
 
 export const corpusFixtureNames = (): ReadonlyArray<string> =>
   readdirSync(CORPUS_FIXTURES_DIRECTORY)
-    .filter((entry) => entry.endsWith(".pdf"))
+    .filter((entry) => entry.endsWith(".pdf") && !entry.startsWith("markdown-"))
     .sort();
 
 export const corpusAnchorMatchers = (fixture: string): ReadonlyArray<PdfTextAnchorMatcher> => {

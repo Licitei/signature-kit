@@ -50,7 +50,7 @@ const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
 const STATUS_OK = 0;
 const MAGIC = 0x4346_4450;
-const VERSION = 1;
+const VERSION = 2;
 const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
@@ -71,6 +71,11 @@ const utf8 = new TextDecoder();
 const align8 = (value: number): number => (value + 7) & ~7;
 
 type Allocation = { readonly pointer: number; readonly length: number };
+type ResultBlock = {
+  readonly memory: ArrayBuffer;
+  readonly pointer: number;
+  readonly length: number;
+};
 type Entry = (
   pdfPointer: number,
   pdfLength: number,
@@ -126,13 +131,14 @@ export const makePdfCore = (
           Effect.sync(() => core.pdf_core_free(allocation.pointer, allocation.length)),
       );
 
-    const readBlock = (
+    const readBlock = <A>(
       operation: PdfCoreOperation,
       entry: Entry,
       pdf: Uint8Array,
       flags: number,
       pageIndexes: ReadonlyArray<number>,
-    ): Effect.Effect<ArrayBuffer, PdfCoreError> =>
+      decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
+    ): Effect.Effect<A, PdfCoreError> =>
       Effect.scoped(
         Effect.gen(function* () {
           const input = yield* allocate(operation, pdf.byteLength);
@@ -170,16 +176,26 @@ export const makePdfCore = (
             }),
             (block) => Effect.sync(() => core.pdf_core_free(block.pointer, block.length)),
           );
-          return core.memory.buffer.slice(result.pointer, result.pointer + result.length);
+          return yield* decode({
+            memory: core.memory.buffer,
+            pointer: result.pointer,
+            length: result.length,
+          });
         }),
       );
 
     const failStatus = (
       operation: PdfCoreOperation,
-      block: ArrayBuffer,
+      block: ResultBlock,
     ): Effect.Effect<never, PdfCoreError> => {
-      const status = new DataView(block).getUint32(4, true);
-      const reason = utf8.decode(new Uint8Array(block, RESULT_HEADER_BYTES));
+      const status = new DataView(block.memory, block.pointer, block.length).getUint32(4, true);
+      const reason = utf8.decode(
+        new Uint8Array(
+          block.memory,
+          block.pointer + RESULT_HEADER_BYTES,
+          block.length - RESULT_HEADER_BYTES,
+        ),
+      );
       return Effect.fail(
         Match.value(status).pipe(
           Match.when(
@@ -235,9 +251,11 @@ export const makePdfCore = (
       );
     };
 
-    const decodeBlock = (block: ArrayBuffer): Effect.Effect<PdfCoreInspection, PdfCoreError> =>
+    const decodeBlock = (block: ResultBlock): Effect.Effect<PdfCoreInspection, PdfCoreError> =>
       Effect.gen(function* () {
-        const view = new DataView(block);
+        const view = new DataView(block.memory, block.pointer, block.length);
+        const bytes = (at: number, length: number): Uint8Array =>
+          new Uint8Array(block.memory, block.pointer + at, length);
         const status = view.getUint32(4, true);
         if (status !== STATUS_OK) {
           return yield* failStatus(PdfCoreOperationValue.inspect, block);
@@ -280,11 +298,7 @@ export const makePdfCore = (
             rect: box(at),
             pageIndex: view.getUint32(at + 32, true),
             uri: utf8.decode(
-              new Uint8Array(
-                block,
-                uriStart + view.getUint32(at + 36, true),
-                view.getUint32(at + 40, true),
-              ),
+              bytes(uriStart + view.getUint32(at + 36, true), view.getUint32(at + 40, true)),
             ),
           };
         });
@@ -299,9 +313,17 @@ export const makePdfCore = (
           const blobAt = align8(offsetsAt + (itemCount + 1) * Uint32Array.BYTES_PER_ELEMENT);
           text.push({
             pageIndex: view.getUint32(cursor, true),
-            rects: new Float64Array(block, rectsAt, itemCount * TEXT_ITEM_FLOATS),
-            offsets: new Uint32Array(block, offsetsAt, itemCount + 1),
-            text: utf8.decode(new Uint8Array(block, blobAt, textLength)),
+            rects: new Float64Array(
+              block.memory,
+              block.pointer + rectsAt,
+              itemCount * TEXT_ITEM_FLOATS,
+            ).slice(),
+            offsets: new Uint32Array(
+              block.memory,
+              block.pointer + offsetsAt,
+              itemCount + 1,
+            ).slice(),
+            text: utf8.decode(bytes(blobAt, textLength)),
           });
           cursor = align8(blobAt + textLength);
         }
@@ -343,19 +365,19 @@ export const makePdfCore = (
         (options.text ? FLAG_TEXT : 0) |
         (options.links ? FLAG_LINKS : 0) |
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES);
-      const block = yield* readBlock(
+      return yield* readBlock(
         PdfCoreOperationValue.inspect,
         core.pdf_core_inspect,
         pdf,
         flags,
         pageIndexes,
+        decodeBlock,
       );
-      return yield* decodeBlock(block);
     });
 
-    const decodeTextBlock = (block: ArrayBuffer): Effect.Effect<PdfCoreText, PdfCoreError> =>
+    const decodeTextBlock = (block: ResultBlock): Effect.Effect<PdfCoreText, PdfCoreError> =>
       Effect.gen(function* () {
-        const view = new DataView(block);
+        const view = new DataView(block.memory, block.pointer, block.length);
         if (view.getUint32(4, true) !== STATUS_OK) {
           return yield* failStatus(PdfCoreOperationValue.text, block);
         }
@@ -376,7 +398,9 @@ export const makePdfCore = (
         const pages = Array.from({ length: pageCount }, (_, index) => {
           const start = view.getUint32(offsetsAt + index * 4, true);
           const end = view.getUint32(offsetsAt + (index + 1) * 4, true);
-          return utf8.decode(new Uint8Array(block, blobAt + start, end - start));
+          return utf8.decode(
+            new Uint8Array(block.memory, block.pointer + blobAt + start, end - start),
+          );
         });
         return yield* Schema.decodeUnknownEffect(PdfCoreTextSchema)(pages).pipe(
           Effect.mapError(
@@ -409,19 +433,19 @@ export const makePdfCore = (
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
         (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
         (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
-      const block = yield* readBlock(
+      return yield* readBlock(
         PdfCoreOperationValue.text,
         core.pdf_core_text,
         pdf,
         flags,
         pageIndexes,
+        decodeTextBlock,
       );
-      return yield* decodeTextBlock(block);
     });
 
-    const decodeTablesBlock = (block: ArrayBuffer): Effect.Effect<PdfCoreTables, PdfCoreError> =>
+    const decodeTablesBlock = (block: ResultBlock): Effect.Effect<PdfCoreTables, PdfCoreError> =>
       Effect.gen(function* () {
-        const view = new DataView(block);
+        const view = new DataView(block.memory, block.pointer, block.length);
         if (view.getUint32(4, true) !== STATUS_OK) {
           return yield* failStatus(PdfCoreOperationValue.tables, block);
         }
@@ -464,8 +488,8 @@ export const makePdfCore = (
               bbox: box(cellAt + 16),
               text: utf8.decode(
                 new Uint8Array(
-                  block,
-                  blobAt + view.getUint32(cellAt + 48, true),
+                  block.memory,
+                  block.pointer + blobAt + view.getUint32(cellAt + 48, true),
                   view.getUint32(cellAt + 52, true),
                 ),
               ),
@@ -511,14 +535,14 @@ export const makePdfCore = (
       );
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      const block = yield* readBlock(
+      return yield* readBlock(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
         pdf,
         flags,
         pageIndexes,
+        decodeTablesBlock,
       );
-      return yield* decodeTablesBlock(block);
     });
 
     return { inspect, text, tables };

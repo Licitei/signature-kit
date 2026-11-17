@@ -47,8 +47,8 @@ const pages = yield * core.text(pdf, { pageIndexes: [0, 1] });
 
 Text options:
 
-- `format`: `"text"` (default) or `"markdown"`. Markdown renders every detected table as a GFM table (`|` escaped, multi-line cells joined with `<br>`, merged cells left empty after their first slot); headings stay plain lines.
-- `dropRunningHeaders` (default `true`): lines repeated in the top or bottom 10% of at least half of the selected pages (digits normalised, so `Página 3 de 79` matches `Página 4 de 79`) are dropped, so sentences continue across page breaks. When the repeated line is identical on every page (a fixed address, say) the first page keeps one copy; when its digits change (page numbers) it is dropped everywhere. It needs at least two selected pages. `inspect` is never affected.
+- `format`: `"text"` (default) or `"markdown"`. Markdown keeps the reading order of `text` (columns that each hold flowing paragraphs are read column by column) and groups lines into paragraphs: a line joins the previous one unless the vertical gap exceeds the line pitch, a list or clause marker starts it, the size or emphasis changes, or the previous line ends a sentence and the next word would have fit on it. End-of-line hyphenation is joined (`administra-`/`tivo` becomes `administrativo`; compounds such as `mão-de-`/`obra`, clitics such as `apresentá-`/`lo` and digit groups keep the hyphen), and a paragraph cut by a page break continues on the previous page when it does not end a sentence and the next page starts in lowercase, skipping page stamps in between. Headings come from the size ratio to the body text, bold or uppercase lines and the numbering depth (`1.` is `##`, `1.1.` is `###`); numbered clauses inside body text stay paragraphs. Bold and italic come from the embedded font (`OS/2`, `head`), the font names and descriptors and fill-and-stroke render mode; when a style covers most of the body text it is not marked. Bullets become `- `, numbered items keep their number, and `a)` or `I -` items keep their marker inside a `- ` item, nested by indentation. Link annotations over text become `[text](url)`, bare URLs stay as they are, and every detected table is a GFM table (`|` escaped, wrapped cell lines joined like paragraphs, merged cells left empty after their first slot). There are no page separators; each page is its own string.
+- `dropRunningHeaders` (default `true`): lines repeated in the top or bottom 10% of at least half of the selected pages (markdown: at least three pages and 5% of them) (digits normalised, so `Página 3 de 79` matches `Página 4 de 79`) are dropped, so sentences continue across page breaks. When the repeated line is identical on every page (a fixed address, say) the first page keeps one copy; when its digits change (page numbers) it is dropped everywhere. It needs at least two selected pages. `inspect` is never affected.
 
 Ruled tables (cell borders drawn as strokes or thin filled rectangles, with the CTM applied; clipping-only paths and page-sized frames are ignored) are laid out cell by cell in both formats, so a bordered form reads row by row and a heading below the table never merges into its last cell. Borderless tables are detected from column alignment of the text runs and are structured in `markdown` and `tables` only; `text` keeps the row-major block layout for them.
 
@@ -63,7 +63,7 @@ const tables = yield * core.tables(pdf, { pageIndexes: [0] });
 
 Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully outside a Form XObject `/BBox` are skipped, and text render modes 4-7 (clip) still extract text, in `text`, `markdown` and `tables`.
 
-`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-8 byte offsets into `text`). Results are copied out of wasm memory before the wasm buffers are released.
+`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-16 code unit offsets into `text`, so item `n` is `text.slice(offsets[n], offsets[n + 1])`). Results are decoded straight from wasm memory, and the typed arrays copied out, before the wasm buffers are released.
 
 ## Errors
 
@@ -93,17 +93,17 @@ All integers are little-endian. The block is 8-byte aligned and `total_len` is t
 | 4      | `u32` | `status` — `0` ok, `1` invalid PDF, `2` encrypted, `3` limit exceeded, `4` unsupported |
 | 8      | bytes | payload (UTF-8 reason when `status != 0`)                                              |
 
-### Payload (version 1)
+### Payload (version 2)
 
 Payload offsets are relative to the payload start, so every float section stays 8-byte aligned in memory and can be viewed as a `Float64Array` without copying. Every section is padded with zero bytes to a multiple of 8.
 
-Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`1`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
+Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`2`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
 
 Pages — `page_count` records of 72 bytes: `media_box` (4 × `f64`), `crop_box` (4 × `f64`), `rotate` (`i32`), 4 bytes padding.
 
 Links — `link_count` records of 48 bytes: `rect` (4 × `f64`), `page_index` (`u32`), `uri_offset` (`u32`), `uri_len` (`u32`), 4 bytes padding; then one UTF-8 blob holding every URI (`uri_offset` is relative to the blob start), padded to 8.
 
-Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` offsets into the text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8.
+Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` UTF-16 code unit offsets into the decoded text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8. Version 1 used UTF-8 byte offsets.
 
 ### Text payload (version 1)
 
