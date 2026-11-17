@@ -1,6 +1,8 @@
 import { Effect, Option, Schema } from "effect";
+import type { Scope } from "effect";
 
 import {
+  PDF_CORE_DEFAULT_PAGE_IMAGE_TYPE,
   PdfCoreError,
   PdfCoreErrorCodeValue,
   PdfCoreOperationValue,
@@ -39,6 +41,7 @@ type PaintState = {
 type ImageOp = {
   readonly jpeg: boolean;
   readonly maskJpeg: boolean;
+  readonly interpolate: boolean;
   readonly matte: readonly [number, number, number] | undefined;
   readonly blob: number;
   readonly width: number;
@@ -173,55 +176,76 @@ export const displayListViewport = (
   };
 };
 
+const VERB_COORDS = [2, 2, 6, 0, 4];
+
 class OpReader {
   readonly view: DataView;
   offset = 0;
+  failed = false;
 
   constructor(readonly ops: Uint8Array) {
     this.view = new DataView(ops.buffer, ops.byteOffset, ops.byteLength);
   }
 
   get done(): boolean {
-    return this.offset >= this.ops.byteLength;
+    return this.failed || this.offset >= this.ops.byteLength;
+  }
+
+  claim(length: number): number | undefined {
+    const at = this.offset;
+    if (this.failed || length < 0 || at + length > this.ops.byteLength) {
+      this.failed = true;
+      this.offset = this.ops.byteLength;
+      return undefined;
+    }
+    this.offset = at + length;
+    return at;
   }
 
   u8(): number {
-    const value = this.view.getUint8(this.offset);
-    this.offset += 1;
-    return value;
+    const at = this.claim(1);
+    return at === undefined ? 0 : this.view.getUint8(at);
   }
 
   u32(): number {
-    const value = this.view.getUint32(this.offset, true);
-    this.offset += 4;
-    return value;
+    const at = this.claim(4);
+    return at === undefined ? 0 : this.view.getUint32(at, true);
   }
 
   f32(): number {
-    const value = this.view.getFloat32(this.offset, true);
-    this.offset += 4;
-    return value;
+    const at = this.claim(4);
+    return at === undefined ? 0 : this.view.getFloat32(at, true);
   }
 
   matrix(): Matrix {
     return [this.f32(), this.f32(), this.f32(), this.f32(), this.f32(), this.f32()];
   }
 
-  path(target: CanvasPath): void {
+  path(target: CanvasPath | undefined): void {
     const verbCount = this.u32();
-    const verbsAt = this.offset;
-    this.offset += verbCount;
+    const verbsAt = this.claim(verbCount);
     const coordCount = this.u32();
-    const coordsAt = this.offset;
-    this.offset += coordCount * 4;
+    const coordsAt = this.claim(coordCount * 4);
+    if (verbsAt === undefined || coordsAt === undefined) return;
     let cursor = coordsAt;
+    const end = coordsAt + coordCount * 4;
     const next = (): number => {
       const value = this.view.getFloat32(cursor, true);
       cursor += 4;
       return value;
     };
     for (let index = 0; index < verbCount; index += 1) {
-      switch (this.view.getUint8(verbsAt + index)) {
+      const verb = this.view.getUint8(verbsAt + index);
+      const needed = VERB_COORDS[verb];
+      if (needed === undefined || cursor + needed * 4 > end) {
+        this.failed = true;
+        return;
+      }
+      if (target === undefined) {
+        cursor += needed * 4;
+        continue;
+      }
+      switch (verb) {
         case VERB_MOVE:
           target.moveTo(next(), next());
           break;
@@ -237,17 +261,12 @@ class OpReader {
         case VERB_CLOSE:
           target.closePath();
           break;
-        default:
-          return;
       }
     }
   }
 
   skipPath(): void {
-    const verbCount = this.u32();
-    this.offset += verbCount;
-    const coordCount = this.u32();
-    this.offset += coordCount * 4;
+    this.path(undefined);
   }
 
   gradient(withMatrix: boolean): PatternPaint {
@@ -269,7 +288,10 @@ class OpReader {
       const green = this.u8();
       const blue = this.u8();
       const alpha = this.u8();
-      stops.push([Math.min(1, Math.max(0, offset)), rgba(red, green, blue, alpha)]);
+      stops.push([
+        Number.isFinite(offset) ? Math.min(1, Math.max(0, offset)) : 0,
+        rgba(red, green, blue, alpha),
+      ]);
     }
     return {
       gradient: {
@@ -293,11 +315,12 @@ class OpReader {
     const maskWidth = this.u32();
     const maskHeight = this.u32();
     const matte: readonly [number, number, number] = [this.u8(), this.u8(), this.u8()];
-    this.offset += 1;
+    this.claim(1);
     return {
       jpeg: (flags & 1) !== 0,
       maskJpeg: (flags & 2) !== 0,
       matte: (flags & 4) !== 0 ? matte : undefined,
+      interpolate: (flags & 8) !== 0,
       alpha,
       blob,
       width,
@@ -309,9 +332,8 @@ class OpReader {
   }
 
   skipText(): void {
-    this.offset += 1 + 24 + 4;
-    const length = this.u32();
-    this.offset += length;
+    this.claim(1 + 24 + 4);
+    this.claim(this.u32());
   }
 }
 
@@ -356,32 +378,30 @@ export const displayListImageBlobs = (list: PdfCoreDisplayList): ReadonlyArray<I
       case OP_LINE_CAP:
       case OP_LINE_JOIN:
       case OP_BLEND:
-        reader.offset += 1;
+        reader.claim(1);
         break;
       case OP_FILL_COLOR:
       case OP_STROKE_COLOR:
       case OP_LINE_WIDTH:
       case OP_MITER:
-        reader.offset += 4;
+        reader.claim(4);
         break;
       case OP_TRANSFORM:
-        reader.offset += 24;
+        reader.claim(24);
         break;
       case OP_PATH:
         reader.skipPath();
         break;
       case OP_GLYPH_DEFINE:
-        reader.offset += 4;
+        reader.claim(4);
         reader.skipPath();
         break;
       case OP_GLYPH:
-        reader.offset += 1 + 4 + 24;
+        reader.claim(1 + 4 + 24);
         break;
-      case OP_DASH: {
-        const count = reader.u32();
-        reader.offset += count * 4 + 4;
+      case OP_DASH:
+        reader.claim(reader.u32() * 4 + 4);
         break;
-      }
       case OP_TEXT:
         reader.skipText();
         break;
@@ -407,7 +427,35 @@ export const paintDisplayList = (
   list: PdfCoreDisplayList,
   images: PdfCoreDisplayListImages,
   scale: number = list.scale,
-): void => {
+): Effect.Effect<void, PdfCoreError> =>
+  Effect.try({
+    try: () => paintOps(context, list, images, scale),
+    catch: () =>
+      new PdfCoreError({
+        code: PdfCoreErrorCodeValue.paintFailed,
+        operation: PdfCoreOperationValue.paint,
+        reason: "The page display list could not be painted.",
+      }),
+  }).pipe(
+    Effect.flatMap((complete) =>
+      complete
+        ? Effect.void
+        : Effect.fail(
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.paintFailed,
+              operation: PdfCoreOperationValue.paint,
+              reason: "The page display list is malformed.",
+            }),
+          ),
+    ),
+  );
+
+const paintOps = (
+  context: PdfCoreCanvasContext,
+  list: PdfCoreDisplayList,
+  images: PdfCoreDisplayListImages,
+  scale: number,
+): boolean => {
   const base = displayListViewport(list, scale).transform;
   const reader = new OpReader(list.ops);
   const glyphs = new Map<number, Path2D>();
@@ -605,8 +653,9 @@ export const paintDisplayList = (
         const local = reader.matrix();
         const width = reader.f32();
         const length = reader.u32();
-        const text = utf8.decode(reader.ops.subarray(reader.offset, reader.offset + length));
-        reader.offset += length;
+        const at = reader.claim(length);
+        if (at === undefined) break;
+        const text = utf8.decode(reader.ops.subarray(at, at + length));
         const family =
           FAMILIES[(flags & TEXT_MONO) !== 0 ? 2 : (flags & TEXT_SERIF) !== 0 ? 1 : 0] ??
           "sans-serif";
@@ -644,6 +693,10 @@ export const paintDisplayList = (
         applyTransform();
         context.save();
         context.globalAlpha *= image.alpha / 255;
+        context.imageSmoothingEnabled =
+          image.interpolate ||
+          (Math.hypot(device[0], device[1]) <= image.width &&
+            Math.hypot(device[2], device[3]) <= image.height);
         context.transform(1, 0, 0, -1, 0, 1);
         context.drawImage(source, 0, 0, 1, 1);
         context.restore();
@@ -683,9 +736,10 @@ export const paintDisplayList = (
         state.strokePattern = reader.gradient(true);
         break;
       default:
-        return;
+        return false;
     }
   }
+  return !reader.failed;
 };
 
 const decodeJpeg = (bytes: Uint8Array): Effect.Effect<ImageBitmap, PdfCoreError> =>
@@ -726,22 +780,34 @@ const offscreen = (
     return { canvas, context };
   });
 
+const releaseBitmap = (bitmap: Option.Option<ImageBitmap>): Effect.Effect<void> =>
+  Effect.sync(() => {
+    if (Option.isSome(bitmap)) bitmap.value.close();
+  });
+
 const maskAlpha = (
   image: ImageOp,
   bytes: Uint8Array,
 ): Effect.Effect<Uint8Array | undefined, PdfCoreError> =>
-  Effect.gen(function* () {
-    if (!image.maskJpeg) return bytes;
-    const bitmap = yield* decodeJpeg(bytes).pipe(Effect.option);
-    if (Option.isNone(bitmap)) return undefined;
-    const { context } = yield* offscreen(bitmap.value.width, bitmap.value.height);
-    context.drawImage(bitmap.value, 0, 0);
-    bitmap.value.close();
-    const pixels = context.getImageData(0, 0, image.maskWidth, image.maskHeight).data;
-    const alpha = new Uint8Array(image.maskWidth * image.maskHeight);
-    for (let index = 0; index < alpha.length; index += 1) alpha[index] = pixels[index * 4] ?? 255;
-    return alpha;
-  });
+  image.maskJpeg
+    ? Effect.acquireUseRelease(
+        decodeJpeg(bytes).pipe(Effect.option),
+        (bitmap) =>
+          Option.isNone(bitmap)
+            ? Effect.succeed(undefined)
+            : Effect.gen(function* () {
+                const { context } = yield* offscreen(bitmap.value.width, bitmap.value.height);
+                context.drawImage(bitmap.value, 0, 0);
+                const pixels = context.getImageData(0, 0, image.maskWidth, image.maskHeight).data;
+                const alpha = new Uint8Array(image.maskWidth * image.maskHeight);
+                for (let index = 0; index < alpha.length; index += 1) {
+                  alpha[index] = pixels[index * 4] ?? 255;
+                }
+                return alpha;
+              }),
+        releaseBitmap,
+      )
+    : Effect.succeed(bytes);
 
 const maskedImage = (
   bitmap: ImageBitmap,
@@ -751,7 +817,6 @@ const maskedImage = (
   Effect.gen(function* () {
     const { canvas, context } = yield* offscreen(bitmap.width, bitmap.height);
     context.drawImage(bitmap, 0, 0);
-    bitmap.close();
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
     const data = pixels.data;
     const matte = image.matte;
@@ -773,9 +838,26 @@ const maskedImage = (
     return canvas;
   });
 
+const decodeImage = (
+  image: ImageOp,
+  bytes: Uint8Array,
+): Effect.Effect<Option.Option<ImageBitmap>, PdfCoreError> =>
+  image.jpeg
+    ? decodeJpeg(bytes).pipe(Effect.option)
+    : Effect.tryPromise({
+        try: () =>
+          createImageBitmap(new ImageData(new Uint8ClampedArray(bytes), image.width, image.height)),
+        catch: () =>
+          new PdfCoreError({
+            code: PdfCoreErrorCodeValue.paintFailed,
+            operation: PdfCoreOperationValue.paint,
+            reason: "A decoded image could not be uploaded.",
+          }),
+      }).pipe(Effect.asSome);
+
 export const prepareDisplayListImages = (
   list: PdfCoreDisplayList,
-): Effect.Effect<Map<number, PdfCoreImageSource>, PdfCoreError> =>
+): Effect.Effect<ReadonlyMap<number, PdfCoreImageSource>, PdfCoreError, Scope.Scope> =>
   Effect.gen(function* () {
     const prepared = new Map<number, PdfCoreImageSource>();
     for (const image of displayListImageBlobs(list)) {
@@ -783,41 +865,47 @@ export const prepareDisplayListImages = (
       const bytes = list.blobs[image.blob];
       if (bytes === undefined || image.width === 0 || image.height === 0) continue;
       if (!image.jpeg && bytes.byteLength !== image.width * image.height * 4) continue;
-      const decoded = image.jpeg
-        ? yield* decodeJpeg(bytes).pipe(Effect.option)
-        : Option.some(
-            yield* Effect.tryPromise({
-              try: () =>
-                createImageBitmap(
-                  new ImageData(new Uint8ClampedArray(bytes), image.width, image.height),
-                ),
-              catch: () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.paintFailed,
-                  operation: PdfCoreOperationValue.paint,
-                  reason: "A decoded image could not be uploaded.",
-                }),
-            }),
-          );
-      if (Option.isNone(decoded)) continue;
       const maskBytes = image.mask === NO_BLOB ? undefined : list.blobs[image.mask];
       const alpha = maskBytes === undefined ? undefined : yield* maskAlpha(image, maskBytes);
-      prepared.set(
-        image.blob,
-        alpha === undefined || alpha.byteLength < image.maskWidth * image.maskHeight
-          ? decoded.value
-          : yield* maskedImage(decoded.value, image, alpha),
+      if (alpha === undefined || alpha.byteLength < image.maskWidth * image.maskHeight) {
+        const bitmap = yield* Effect.acquireRelease(decodeImage(image, bytes), releaseBitmap);
+        if (Option.isSome(bitmap)) prepared.set(image.blob, bitmap.value);
+        continue;
+      }
+      const masked = yield* Effect.acquireUseRelease(
+        decodeImage(image, bytes),
+        (bitmap) =>
+          Option.isNone(bitmap)
+            ? Effect.succeed(Option.none<PdfCoreImageSource>())
+            : maskedImage(bitmap.value, image, alpha).pipe(Effect.asSome),
+        releaseBitmap,
       );
+      if (Option.isSome(masked)) prepared.set(image.blob, masked.value);
     }
     return prepared;
   });
 
-const closeImages = (images: PdfCoreDisplayListImages): Effect.Effect<void> =>
-  Effect.sync(() => {
-    for (const source of images.values()) {
-      if ("close" in source) source.close();
-    }
-  });
+const fitScale = (list: PdfCoreDisplayList, scale: number): number => {
+  const fits = (candidate: number): boolean => {
+    const viewport = displayListViewport(list, candidate);
+    return (
+      viewport.width <= MAX_CANVAS_SIDE &&
+      viewport.height <= MAX_CANVAS_SIDE &&
+      viewport.width * viewport.height <= MAX_CANVAS_AREA
+    );
+  };
+  if (fits(scale)) return scale;
+  const viewport = displayListViewport(list, scale);
+  let fitted =
+    scale *
+    Math.min(
+      MAX_CANVAS_SIDE / viewport.width,
+      MAX_CANVAS_SIDE / viewport.height,
+      Math.sqrt(MAX_CANVAS_AREA / (viewport.width * viewport.height)),
+    );
+  for (let attempt = 0; attempt < 16 && !fits(fitted); attempt += 1) fitted *= 0.999;
+  return fitted;
+};
 
 export const renderDisplayListImage = (
   list: PdfCoreDisplayList,
@@ -835,67 +923,46 @@ export const renderDisplayListImage = (
           }),
       ),
     );
-    const scale = options.scale ?? list.scale;
+    const scale = fitScale(list, options.scale ?? list.scale);
     const viewport = displayListViewport(list, scale);
-    if (
-      viewport.width > MAX_CANVAS_SIDE ||
-      viewport.height > MAX_CANVAS_SIDE ||
-      viewport.width * viewport.height > MAX_CANVAS_AREA
-    ) {
+    const images = yield* prepareDisplayListImages(list);
+    const canvas = yield* Effect.try({
+      try: () => new OffscreenCanvas(viewport.width, viewport.height),
+      catch: () =>
+        new PdfCoreError({
+          code: PdfCoreErrorCodeValue.paintFailed,
+          operation: PdfCoreOperationValue.paint,
+          reason: "The page canvas could not be created.",
+        }),
+    });
+    const context = canvas.getContext("2d");
+    if (context === null) {
       return yield* new PdfCoreError({
-        code: PdfCoreErrorCodeValue.limitExceeded,
+        code: PdfCoreErrorCodeValue.paintFailed,
         operation: PdfCoreOperationValue.paint,
-        reason: "The page is too large to paint at this scale.",
+        reason: "The page canvas has no 2D context.",
       });
     }
-    return yield* Effect.acquireUseRelease(
-      prepareDisplayListImages(list),
-      (images) =>
-        Effect.gen(function* () {
-          const canvas = yield* Effect.try({
-            try: () => new OffscreenCanvas(viewport.width, viewport.height),
-            catch: () =>
-              new PdfCoreError({
-                code: PdfCoreErrorCodeValue.paintFailed,
-                operation: PdfCoreOperationValue.paint,
-                reason: "The page canvas could not be created.",
-              }),
-          });
-          const context = canvas.getContext("2d");
-          if (context === null) {
-            return yield* new PdfCoreError({
-              code: PdfCoreErrorCodeValue.paintFailed,
-              operation: PdfCoreOperationValue.paint,
-              reason: "The page canvas has no 2D context.",
-            });
-          }
-          context.fillStyle = "#ffffff";
-          context.fillRect(0, 0, viewport.width, viewport.height);
-          yield* Effect.try({
-            try: () => paintDisplayList(context, list, images, scale),
-            catch: () =>
-              new PdfCoreError({
-                code: PdfCoreErrorCodeValue.paintFailed,
-                operation: PdfCoreOperationValue.paint,
-                reason: "The page display list could not be painted.",
-              }),
-          });
-          const image = yield* Effect.tryPromise({
-            try: () => canvas.convertToBlob({ type: "image/png" }),
-            catch: () =>
-              new PdfCoreError({
-                code: PdfCoreErrorCodeValue.paintFailed,
-                operation: PdfCoreOperationValue.paint,
-                reason: "The page image could not be encoded.",
-              }),
-          });
-          return {
-            pageIndex: list.pageIndex,
-            width: viewport.width,
-            height: viewport.height,
-            image,
-          };
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, viewport.width, viewport.height);
+    yield* paintDisplayList(context, list, images, scale);
+    const type = options.type ?? PDF_CORE_DEFAULT_PAGE_IMAGE_TYPE;
+    const image = yield* Effect.tryPromise({
+      try: () =>
+        canvas.convertToBlob(
+          options.quality === undefined ? { type } : { type, quality: options.quality },
+        ),
+      catch: () =>
+        new PdfCoreError({
+          code: PdfCoreErrorCodeValue.paintFailed,
+          operation: PdfCoreOperationValue.paint,
+          reason: "The page image could not be encoded.",
         }),
-      closeImages,
-    );
-  });
+    });
+    return {
+      pageIndex: list.pageIndex,
+      width: viewport.width,
+      height: viewport.height,
+      image,
+    };
+  }).pipe(Effect.scoped);

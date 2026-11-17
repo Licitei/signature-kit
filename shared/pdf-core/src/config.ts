@@ -183,8 +183,14 @@ export const PdfCoreRenderOptionsSchema = Schema.Struct({
 });
 export type PdfCoreRenderOptions = (typeof PdfCoreRenderOptionsSchema)["Type"];
 
+export const PdfCoreImageTypeSchema = Schema.Literals(["image/png", "image/webp", "image/jpeg"]);
+export type PdfCoreImageType = (typeof PdfCoreImageTypeSchema)["Type"];
+export const PDF_CORE_DEFAULT_PAGE_IMAGE_TYPE: PdfCoreImageType = "image/png";
+
 export const PdfCorePaintOptionsSchema = Schema.Struct({
   scale: Schema.optional(renderScaleSchema),
+  type: Schema.optional(PdfCoreImageTypeSchema),
+  quality: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
 });
 export type PdfCorePaintOptions = (typeof PdfCorePaintOptionsSchema)["Type"];
 
