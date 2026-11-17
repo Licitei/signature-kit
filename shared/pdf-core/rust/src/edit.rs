@@ -6,7 +6,7 @@ use crate::deflate::zlib_compress;
 use crate::document::{Document, Page, decode_text_string};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::{Limits, PageInfo};
-use crate::num::{f64_to_i64, widen};
+use crate::num::{f64_to_i64, unsigned_decimal, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
 use crate::png::{self, Image};
 use crate::revision::revision_complete;
@@ -868,7 +868,13 @@ fn first_unused_field_name(
             full_name = if parent.is_empty() {
                 name
             } else {
-                format!("{parent}.{name}")
+                let mut joined = String::with_capacity(
+                    parent.len().saturating_add(name.len()).saturating_add(1),
+                );
+                joined.push_str(&parent);
+                joined.push('.');
+                joined.push_str(&name);
+                joined
             };
             taken.extend(numbered_suffix(&full_name, prefix).map(|value| [value, 0, 0, 0]));
         }
@@ -896,7 +902,10 @@ fn first_unused_field_name(
             break;
         }
     }
-    Ok(Ok(format!("{prefix}{suffix}")))
+    let mut out = String::with_capacity(prefix.len().saturating_add(20));
+    out.push_str(prefix);
+    out.push_str(&unsigned_decimal(suffix));
+    Ok(Ok(out))
 }
 
 fn numbered_suffix(name: &str, prefix: &str) -> Option<u64> {

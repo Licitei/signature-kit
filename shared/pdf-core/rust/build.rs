@@ -122,6 +122,36 @@ where
     )
 }
 
+fn zlib_compress_bytes(input: &[u8]) -> BuildResult<Vec<u8>> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("python3")
+        .args([
+            "-c",
+            "import sys, zlib; sys.stdout.buffer.write(zlib.compress(sys.stdin.buffer.read(), 9))",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| String::from("python3 stdin unavailable"))?;
+    stdin.write_all(input)?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "python3 zlib failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(output.stdout)
+}
+
 fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
     let mut agl = BTreeMap::new();
     for line in text.lines().map(str::trim) {
@@ -190,7 +220,11 @@ fn font_tables(
     }
     starts.push(u16::try_from(codepoints.len())?);
     emit(&mut out, "AGL_STARTS", "u16", &starts)?;
-    emit(&mut out, "AGL_CODEPOINTS", "u32", &codepoints)?;
+    let codepoints_u16 = codepoints
+        .iter()
+        .map(|code| u16::try_from(*code))
+        .collect::<Result<Vec<_>, _>>()?;
+    emit(&mut out, "AGL_CODEPOINTS", "u16", &codepoints_u16)?;
 
     let mut win_ansi: &[Option<&str>] = &[];
     for (name, table) in &tables {
@@ -215,6 +249,7 @@ fn font_tables(
         return Err("missing section [WinAnsi]".into());
     }
 
+    let mut width_tables: Vec<(String, Vec<u16>)> = Vec::new();
     for (font, lines) in standard14 {
         let mut widths: BTreeMap<&str, u16> = BTreeMap::new();
         for line in lines {
@@ -233,20 +268,18 @@ fn font_tables(
                     .unwrap_or(0)
             })
             .collect();
-        emit(
-            &mut out,
-            &format!("STANDARD14_{}", screaming(font)),
-            "u16",
-            &row,
-        )?;
+        let symbol = format!("STANDARD14_{}", screaming(font));
+        if width_tables.iter().any(|(_, existing)| *existing == row) {
+            continue;
+        }
+        width_tables.push((symbol, row));
+    }
+    for (name, row) in &width_tables {
+        emit(&mut out, name, "u16", row)?;
     }
     Ok(out)
 }
 
-#[expect(
-    clippy::use_debug,
-    reason = "generated Rust uses Debug formatting for static string slice tables"
-)]
 fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
     let strings = section(cff, "StandardStrings")?;
     let sid = |name: &str| -> BuildResult<u16> {
@@ -269,11 +302,31 @@ fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
         }
     }
     let mut out = String::new();
+    let string_text = strings.concat();
+    let string_zlib = zlib_compress_bytes(string_text.as_bytes())?;
     writeln!(
         out,
-        "pub(crate) static CFF_STANDARD_STRINGS: [&str; {}] = {strings:?};",
+        "pub(crate) const CFF_STANDARD_STRING_COUNT: usize = {};",
         strings.len()
     )?;
+    writeln!(
+        out,
+        "pub(crate) const CFF_STANDARD_STRING_TEXT_LEN: usize = {};",
+        string_text.len()
+    )?;
+    emit(
+        &mut out,
+        "CFF_STANDARD_STRING_TEXT_ZLIB",
+        "u8",
+        &string_zlib,
+    )?;
+    let mut end = 0_usize;
+    let mut ends = Vec::with_capacity(strings.len());
+    for name in strings {
+        end = end.saturating_add(name.len());
+        ends.push(u16::try_from(end)?);
+    }
+    emit(&mut out, "CFF_STANDARD_STRING_ENDS", "u16", &ends)?;
     emit(
         &mut out,
         "CFF_EXPERT_CHARSET",

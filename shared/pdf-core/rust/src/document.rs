@@ -1249,7 +1249,7 @@ pub(crate) fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcom
         let position = usize::try_from(index)
             .ok()
             .filter(|position| *position < count)
-            .ok_or_else(|| Failure::invalid(format!("page index {index} out of range")))?;
+            .ok_or_else(|| Failure::invalid("page index out of range"))?;
         if seen.insert(position) {
             chosen.push(position);
         }

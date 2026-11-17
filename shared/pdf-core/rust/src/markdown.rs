@@ -1,5 +1,6 @@
 use crate::inspection::LinkInfo;
 use crate::layout::Band;
+use crate::num::fold_string;
 
 const WORD_GAP: f64 = 0.12;
 const SPACE_EM: f64 = 0.28;
@@ -323,7 +324,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
             weighted.push((line.size, chars));
         }
     }
-    ratios.sort_by(f64::total_cmp);
+    ratios.sort_unstable_by(f64::total_cmp);
     let pitch = ratios
         .get(ratios.len().checked_div(4).unwrap_or(0))
         .copied()
@@ -340,7 +341,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
 }
 
 fn body_size(mut weighted: Vec<(f64, usize)>) -> f64 {
-    weighted.sort_by(|left, right| left.0.total_cmp(&right.0));
+    weighted.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
     let total = weighted
         .iter()
         .map(|entry| entry.1)
@@ -659,7 +660,7 @@ fn strong_continuation(previous: &str, next: &str) -> bool {
         || (hyphen_end(previous) && next_alnum)
         || previous.trim_end().ends_with(',')
         || (next_alnum
-            && FUNCTION_WORDS.contains(&left_word(previous.trim_end()).to_lowercase().as_str()))
+            && FUNCTION_WORDS.contains(&fold_string(left_word(previous.trim_end())).as_str()))
 }
 
 fn first_word_width(line: &Prepared<'_>) -> f64 {
@@ -789,7 +790,7 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             }
             before = Some(line.line);
         }
-        gaps.sort_by(f64::total_cmp);
+        gaps.sort_unstable_by(f64::total_cmp);
         let pitch = if gaps.len() >= FLOW_SAMPLES {
             gaps.get(gaps.len().checked_div(4).unwrap_or(0))
                 .copied()
@@ -870,16 +871,17 @@ fn left_word(text: &str) -> &str {
 }
 
 fn right_word(text: &str) -> String {
-    text.trim_start()
-        .split(char::is_whitespace)
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(|ch: char| !ch.is_alphanumeric())
-        .to_lowercase()
+    fold_string(
+        text.trim_start()
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(|ch: char| !ch.is_alphanumeric()),
+    )
 }
 
 fn keeps_hyphen(stem: &str, right: &str) -> bool {
-    let left = left_word(stem).to_lowercase();
+    let left = fold_string(left_word(stem));
     let word = right_word(right);
     left.contains('-')
         || word.contains('-')
@@ -1147,7 +1149,12 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
         let marker = match inner_family {
             Family::Bullet => "-".to_owned(),
             Family::Ordered => found.label.clone(),
-            Family::Labeled => format!("- {}", found.label),
+            Family::Labeled => {
+                let mut marker = String::with_capacity(found.label.len().saturating_add(2));
+                marker.push_str("- ");
+                marker.push_str(&found.label);
+                marker
+            }
         };
         let shown = match inner_family {
             Family::Labeled => "-",

@@ -1,6 +1,3 @@
-use alloc::fmt;
-use core::error::Error;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureCode {
     EncryptedPdf,
@@ -61,20 +58,5 @@ impl Failure {
         Self::new(FailureCode::InvalidRequest, reason)
     }
 }
-
-impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self.code {
-            FailureCode::InvalidPdf => "invalid_pdf",
-            FailureCode::EncryptedPdf => "encrypted_pdf",
-            FailureCode::LimitExceeded => "limit_exceeded",
-            FailureCode::UnsupportedFeature => "unsupported_feature",
-            FailureCode::InvalidRequest => "invalid_request",
-        };
-        write!(f, "{label}: {}", self.reason)
-    }
-}
-
-impl Error for Failure {}
 
 pub(crate) type Outcome<T> = Result<T, Failure>;
