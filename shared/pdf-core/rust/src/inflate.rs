@@ -73,13 +73,15 @@ const FAST_BITS: u32 = 10;
 const FAST_SIZE: usize = 1 << FAST_BITS;
 const FAST_MASK: u64 = (1 << FAST_BITS) - 1;
 
+const MAX_SYMBOLS: usize = 288;
+
 struct Huffman {
     counts: [u16; MAX_BITS + 1],
     first_code: [u16; MAX_BITS + 1],
     offset: [u16; MAX_BITS + 1],
-    symbols: Vec<u16>,
+    symbols: [u16; MAX_SYMBOLS],
     max_bits: u8,
-    fast: Vec<u32>,
+    fast: [u32; FAST_SIZE],
 }
 
 struct BitReader<'a> {
@@ -170,102 +172,93 @@ impl<'a> BitReader<'a> {
     }
 }
 
-fn build_huffman(lengths: &[u8]) -> Outcome<Huffman> {
-    let mut max_len = 0_u8;
-    for &len in lengths {
-        if len > max_len {
-            max_len = len;
+impl Huffman {
+    const fn new() -> Self {
+        Self {
+            counts: [0; MAX_BITS + 1],
+            first_code: [0; MAX_BITS + 1],
+            offset: [0; MAX_BITS + 1],
+            symbols: [0; MAX_SYMBOLS],
+            max_bits: 0,
+            fast: [0; FAST_SIZE],
         }
     }
-    if max_len == 0 {
-        return Err(Failure::invalid("empty huffman tree"));
-    }
 
-    let mut counts = [0_u16; MAX_BITS + 1];
-    for &len in lengths {
-        if len > 0 {
-            let slot = usize::from(len);
-            if let Some(entry) = counts.get_mut(slot) {
+    fn build(&mut self, lengths: &[u8]) -> Outcome<()> {
+        let mut counts = [0_u16; MAX_BITS + 1];
+        let mut max_len = 0_u8;
+        for &len in lengths {
+            max_len = max_len.max(len);
+            if let Some(entry) = counts.get_mut(usize::from(len)) {
                 *entry = entry.saturating_add(1);
             }
         }
-    }
-
-    let mut next_code = [0_u16; MAX_BITS + 1];
-    let mut code = 0_u16;
-    let mut bits = 1_u8;
-    while usize::from(bits) <= MAX_BITS {
-        let prev = usize::from(bits).saturating_sub(1);
-        let prev_count = counts.get(prev).copied().unwrap_or(0);
-        code = code.saturating_add(prev_count) << 1;
-        if let Some(slot) = next_code.get_mut(usize::from(bits)) {
-            *slot = code;
+        if max_len == 0 {
+            return Err(Failure::invalid("empty huffman tree"));
         }
-        bits = bits.saturating_add(1);
-    }
-
-    let mut first_code = [0_u16; MAX_BITS + 1];
-    let mut offset = [0_u16; MAX_BITS + 1];
-    let mut symbol_offset = 0_u16;
-    let mut bit = 1_u8;
-    while usize::from(bit) <= MAX_BITS {
-        let slot = usize::from(bit);
-        if let Some(dst) = first_code.get_mut(slot) {
-            *dst = next_code.get(slot).copied().unwrap_or(0);
+        if let Some(zero) = counts.first_mut() {
+            *zero = 0;
         }
-        if let Some(dst) = offset.get_mut(slot) {
-            *dst = symbol_offset;
-        }
-        symbol_offset = symbol_offset.saturating_add(counts.get(slot).copied().unwrap_or(0));
-        bit = bit.saturating_add(1);
-    }
 
-    let mut lens_sorted: Vec<(u8, u16)> = lengths
-        .iter()
-        .enumerate()
-        .filter_map(|(sym, &len)| {
-            (len > 0).then_some((len, u16::try_from(sym).unwrap_or(u16::MAX)))
-        })
-        .collect();
-    lens_sorted.sort_by_key(|(len, sym)| (*len, *sym));
-
-    let mut symbols = Vec::with_capacity(lens_sorted.len());
-    for &(_, sym) in &lens_sorted {
-        symbols.push(sym);
-    }
-
-    let mut fast = vec![0_u32; FAST_SIZE];
-    let mut assigned = next_code;
-    for &(len, sym) in &lens_sorted {
-        let slot = usize::from(len);
-        let Some(code_slot) = assigned.get_mut(slot) else {
-            continue;
-        };
-        let assigned_code = u32::from(*code_slot);
-        *code_slot = code_slot.wrapping_add(1);
-        let len32 = u32::from(len);
-        if len32 > FAST_BITS || assigned_code >= (1_u32 << len32) {
-            continue;
-        }
-        let reversed = assigned_code.reverse_bits() >> 32_u32.saturating_sub(len32);
-        let entry = (len32 << 16) | u32::from(sym);
-        let mut index = widen(reversed);
-        while index < FAST_SIZE {
-            if let Some(cell) = fast.get_mut(index) {
-                *cell = entry;
+        let mut code = 0_u16;
+        let mut symbol_offset = 0_u16;
+        for bits in 1..=MAX_BITS {
+            let prev_count = counts.get(bits.saturating_sub(1)).copied().unwrap_or(0);
+            code = code.saturating_add(prev_count) << 1;
+            if let Some(dst) = self.first_code.get_mut(bits) {
+                *dst = code;
             }
-            index = index.saturating_add(1_usize << len32);
+            if let Some(dst) = self.offset.get_mut(bits) {
+                *dst = symbol_offset;
+            }
+            symbol_offset = symbol_offset.saturating_add(counts.get(bits).copied().unwrap_or(0));
         }
-    }
 
-    Ok(Huffman {
-        counts,
-        first_code,
-        offset,
-        symbols,
-        max_bits: max_len,
-        fast,
-    })
+        let mut fill = self.offset;
+        for (sym, &len) in lengths.iter().enumerate() {
+            if len == 0 {
+                continue;
+            }
+            if let Some(at) = fill.get_mut(usize::from(len)) {
+                if let Some(cell) = self.symbols.get_mut(usize::from(*at)) {
+                    *cell = u16::try_from(sym).unwrap_or(u16::MAX);
+                }
+                *at = at.saturating_add(1);
+            }
+        }
+
+        self.fast.fill(0);
+        let fast_max = usize::from(max_len).min(widen(FAST_BITS));
+        for len in 1..=fast_max {
+            let first = u32::from(self.first_code.get(len).copied().unwrap_or(0));
+            let count = usize::from(counts.get(len).copied().unwrap_or(0));
+            let base = usize::from(self.offset.get(len).copied().unwrap_or(0));
+            let len32 = u32::try_from(len).unwrap_or(u32::MAX);
+            let symbols = self
+                .symbols
+                .get(base..base.saturating_add(count))
+                .unwrap_or_default();
+            for (assigned_code, &sym) in (first..).zip(symbols) {
+                if assigned_code >= (1_u32 << len32) {
+                    break;
+                }
+                let reversed = assigned_code.reverse_bits() >> 32_u32.saturating_sub(len32);
+                let entry = (len32 << 16) | u32::from(sym);
+                for cell in self
+                    .fast
+                    .iter_mut()
+                    .skip(widen(reversed))
+                    .step_by(1_usize << len)
+                {
+                    *cell = entry;
+                }
+            }
+        }
+
+        self.counts = counts;
+        self.max_bits = max_len;
+        Ok(())
+    }
 }
 
 #[inline]
@@ -411,7 +404,11 @@ fn inflate_block(
     }
 }
 
-fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
+fn read_dynamic_trees(
+    bits: &mut BitReader<'_>,
+    lit: &mut Huffman,
+    dist: &mut Huffman,
+) -> Outcome<()> {
     let hlit = widen(
         bits.take_bits(5)
             .ok_or_else(|| Failure::invalid("truncated hlit"))?
@@ -441,9 +438,10 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
             *slot = u8::try_from(len).unwrap_or(u8::MAX);
         }
     }
-    let cl_tree = build_huffman(&clens)?;
+    let mut cl_tree = Huffman::new();
+    cl_tree.build(&clens)?;
 
-    let mut lengths = Vec::new();
+    let mut lengths = Vec::with_capacity(hlit.saturating_add(hdist).saturating_add(138));
     while lengths.len() < hlit.saturating_add(hdist) {
         let Some(sym) = decode_symbol(bits, &cl_tree) else {
             return Err(Failure::invalid("truncated code lengths"));
@@ -481,16 +479,24 @@ fn read_dynamic_trees(bits: &mut BitReader<'_>) -> Outcome<(Huffman, Huffman)> {
         }
     }
 
-    let lit_lens = lengths
-        .get(..hlit)
-        .ok_or_else(|| Failure::invalid("lit lengths"))?
-        .to_vec();
-    let dist_lens = lengths
-        .get(hlit..hlit.saturating_add(hdist))
-        .ok_or_else(|| Failure::invalid("dist lengths"))?
-        .to_vec();
+    lit.build(
+        lengths
+            .get(..hlit)
+            .ok_or_else(|| Failure::invalid("lit lengths"))?,
+    )?;
+    dist.build(
+        lengths
+            .get(hlit..hlit.saturating_add(hdist))
+            .ok_or_else(|| Failure::invalid("dist lengths"))?,
+    )
+}
 
-    Ok((build_huffman(&lit_lens)?, build_huffman(&dist_lens)?))
+fn fixed_trees() -> Outcome<(Huffman, Huffman)> {
+    let mut lit = Huffman::new();
+    lit.build(&fixed_lit_lens())?;
+    let mut dist = Huffman::new();
+    dist.build(&FIXED_DIST_LENS)?;
+    Ok((lit, dist))
 }
 
 fn skip_zlib_header(data: &[u8]) -> usize {
@@ -515,6 +521,8 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
     }
     let mut bits = BitReader::new(payload);
     let mut final_block = false;
+    let mut fixed: Option<(Huffman, Huffman)> = None;
+    let mut dynamic = (Huffman::new(), Huffman::new());
 
     while !final_block {
         let Some(hdr) = bits.take_bits(3) else { break };
@@ -538,17 +546,22 @@ pub(crate) fn inflate(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
                 }
             }
             1 => {
-                let lit = build_huffman(&fixed_lit_lens())?;
-                let dist = build_huffman(&FIXED_DIST_LENS)?;
-                match inflate_block(&mut bits, &mut out, max_output, &lit, &dist) {
+                if fixed.is_none() {
+                    fixed = Some(fixed_trees()?);
+                }
+                let Some((lit, dist)) = &fixed else {
+                    return partial_or_err(Failure::invalid("fixed huffman trees"), &out);
+                };
+                match inflate_block(&mut bits, &mut out, max_output, lit, dist) {
                     Ok(true) => {}
                     Ok(false) => return Ok(out),
                     Err(err) => return partial_or_err(err, &out),
                 }
             }
             2 => {
-                let (lit, dist) = read_dynamic_trees(&mut bits)?;
-                match inflate_block(&mut bits, &mut out, max_output, &lit, &dist) {
+                let (lit, dist) = &mut dynamic;
+                read_dynamic_trees(&mut bits, lit, dist)?;
+                match inflate_block(&mut bits, &mut out, max_output, lit, dist) {
                     Ok(true) => {}
                     Ok(false) => return Ok(out),
                     Err(err) => return partial_or_err(err, &out),
@@ -609,8 +622,8 @@ mod tests {
 
     #[test]
     fn fixed_tree_layout() {
-        use super::{build_huffman, fixed_lit_lens};
-        let lit = build_huffman(&fixed_lit_lens()).expect("lit");
+        use super::fixed_trees;
+        let (lit, _) = fixed_trees().expect("lit");
         assert_eq!(lit.counts[8], 152);
         assert_eq!(lit.first_code[8], 48);
         assert_eq!(lit.offset[8], 24);
@@ -619,8 +632,8 @@ mod tests {
 
     #[test]
     fn decode_first_fixed_symbol() {
-        use super::{BitReader, build_huffman, decode_symbol, fixed_lit_lens};
-        let lit = build_huffman(&fixed_lit_lens()).expect("lit");
+        use super::{BitReader, decode_symbol, fixed_trees};
+        let (lit, _) = fixed_trees().expect("lit");
         let data = [
             0xcb_u8, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0x28, 0xcf, 0x2f, 0xca, 0x49, 0x01, 0x00,
         ];
