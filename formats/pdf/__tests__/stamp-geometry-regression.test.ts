@@ -93,7 +93,7 @@ describe("visible stamp geometry", () => {
       const link = document.annotations.find((annotation) => annotation.uri !== undefined);
 
       expect(lines[0]).toBe(
-        "q 0.9412 0.9569 1 rg 0.2314 0.3569 0.8588 RG 1.5 w 20 50 m 300 50 l 310 50 310 60 v 310 160 l 310 170 300 170 v 20 170 l 10 170 10 160 v 10 60 l 10 50 20 50 v h B Q",
+        "q 0.9412 0.9569 1 rg 0.2314 0.3569 0.8588 RG 1.5 w 20 50 m 300 50 l 306.6667 50 310 53.3333 310 60 c 310 160 l 310 166.6667 306.6667 170 300 170 c 20 170 l 13.3333 170 10 166.6667 10 160 c 10 60 l 10 53.3333 13.3333 50 20 50 c h B Q",
       );
       expect(lines[1]).toBe("q 1 1 1 rg 19 132.2264 28.7736 28.7736 re f Q");
       expect(lines[2]).toMatch(/^q 0\.1 0\.1 0\.1 rg 22\.4877 156\.6404 0\.8719 0\.8719 re /u);

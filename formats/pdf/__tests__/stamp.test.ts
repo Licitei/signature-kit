@@ -1003,7 +1003,7 @@ describe("stampPdfRubric", () => {
         }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })));
         const verification = yield* verifyPdf({ pdf: signed });
 
-        expect(content).toMatch(/\s[vy]\s/);
+        expect(content).toMatch(/(?:\s-?[\d.]+){6} c\s/u);
         expect(content).toMatch(/\[\s*4\s+4\s*\]\s+0\s+d/);
         expect(links).toHaveLength(1);
         expect(links[0]?.uri).toBe(VALIDAR_ITI_URL);

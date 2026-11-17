@@ -143,16 +143,33 @@ export const pdfPath = (segments: ReadonlyArray<PdfPathSegment>, paint: PdfPathP
       : paint.fill !== undefined
         ? "f"
         : "S";
+  let current: readonly [x: number, y: number] = [0, 0];
+  let start: readonly [x: number, y: number] = [0, 0];
   const path = segments
     .map((segment) => {
       switch (segment[0]) {
         case "move":
+          current = [segment[1], segment[2]];
+          start = current;
           return `${numbers(segment[1], segment[2])} m`;
         case "line":
+          current = [segment[1], segment[2]];
           return `${numbers(segment[1], segment[2])} l`;
-        case "curve":
-          return `${numbers(segment[1], segment[2], segment[3], segment[4])} v`;
+        case "curve": {
+          const [, controlX, controlY, x, y] = segment;
+          const [fromX, fromY] = current;
+          current = [x, y];
+          return `${numbers(
+            fromX + (2 / 3) * (controlX - fromX),
+            fromY + (2 / 3) * (controlY - fromY),
+            x + (2 / 3) * (controlX - x),
+            y + (2 / 3) * (controlY - y),
+            x,
+            y,
+          )} c`;
+        }
         case "close":
+          current = start;
           return "h";
       }
     })
