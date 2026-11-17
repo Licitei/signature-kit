@@ -63,7 +63,7 @@ const tables = yield * core.tables(pdf, { pageIndexes: [0] });
 
 Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully outside a Form XObject `/BBox` are skipped, and text render modes 4-7 (clip) still extract text, in `text`, `markdown` and `tables`.
 
-`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-8 byte offsets into `text`). Results are copied out of wasm memory before the wasm buffers are released.
+`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-16 code unit offsets into `text`, so item `n` is `text.slice(offsets[n], offsets[n + 1])`). Results are decoded straight from wasm memory, and the typed arrays copied out, before the wasm buffers are released.
 
 ## Errors
 
@@ -93,17 +93,17 @@ All integers are little-endian. The block is 8-byte aligned and `total_len` is t
 | 4      | `u32` | `status` — `0` ok, `1` invalid PDF, `2` encrypted, `3` limit exceeded, `4` unsupported |
 | 8      | bytes | payload (UTF-8 reason when `status != 0`)                                              |
 
-### Payload (version 1)
+### Payload (version 2)
 
 Payload offsets are relative to the payload start, so every float section stays 8-byte aligned in memory and can be viewed as a `Float64Array` without copying. Every section is padded with zero bytes to a multiple of 8.
 
-Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`1`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
+Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`2`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
 
 Pages — `page_count` records of 72 bytes: `media_box` (4 × `f64`), `crop_box` (4 × `f64`), `rotate` (`i32`), 4 bytes padding.
 
 Links — `link_count` records of 48 bytes: `rect` (4 × `f64`), `page_index` (`u32`), `uri_offset` (`u32`), `uri_len` (`u32`), 4 bytes padding; then one UTF-8 blob holding every URI (`uri_offset` is relative to the blob start), padded to 8.
 
-Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` offsets into the text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8.
+Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` UTF-16 code unit offsets into the decoded text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8. Version 1 used UTF-8 byte offsets.
 
 ### Text payload (version 1)
 

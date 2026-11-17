@@ -34,9 +34,6 @@ type VisibleRect = {
   readonly height: number;
 };
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
 const normalize = (text: string): string => text.replace(/\s+/gu, "").replaceAll("—", "-");
 
 const visibleRect = (
@@ -86,11 +83,8 @@ const itemsOf = (inspection: PdfCoreInspection, pageIndex: number) => {
   if (page === undefined || textPage === undefined) {
     return [];
   }
-  const bytes = encoder.encode(textPage.text);
   return Array.from({ length: textPage.offsets.length - 1 }, (_, index) => ({
-    text: normalize(
-      decoder.decode(bytes.subarray(textPage.offsets[index], textPage.offsets[index + 1])),
-    ),
+    text: normalize(textPage.text.slice(textPage.offsets[index], textPage.offsets[index + 1])),
     rect: visibleRect(
       [
         textPage.rects[index * 5] ?? 0,

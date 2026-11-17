@@ -236,9 +236,6 @@ const resolvedAnchorGeometry = (
   return Effect.succeed({ pageTextBoxes });
 };
 
-const utf8Encoder = new TextEncoder();
-const utf8Decoder = new TextDecoder();
-
 const textBoxesFromInspection = (
   inspection: PdfCoreInspection,
   pageCount: number,
@@ -247,15 +244,11 @@ const textBoxesFromInspection = (
   for (const textPage of inspection.text) {
     const geometry = inspection.pages[textPage.pageIndex];
     if (geometry === undefined || textPage.pageIndex >= pageCount) continue;
-    const bytes = utf8Encoder.encode(textPage.text);
-    const isAscii = bytes.length === textPage.text.length;
     const boxes: Array<PdfTextBox> = [];
     for (let item = 0; item + 1 < textPage.offsets.length; item += 1) {
       const start = textPage.offsets[item] ?? 0;
       const end = textPage.offsets[item + 1] ?? start;
-      const text = isAscii
-        ? textPage.text.slice(start, end)
-        : utf8Decoder.decode(bytes.subarray(start, end));
+      const text = textPage.text.slice(start, end);
       if (text.trim().length === 0) continue;
       const at = item * 5;
       const rect = topLeftRectFromPdfPageGeometry(

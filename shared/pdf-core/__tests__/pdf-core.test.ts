@@ -206,6 +206,42 @@ describe("PdfCore", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("returns UTF-16 item offsets that slice non-ASCII text directly", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const content =
+        "BT /F1 10 Tf 1 0 0 1 20 700 Tm (a\\347\\343o) Tj 1 0 0 1 20 650 Tm (\\200 fim) Tj ET";
+      const objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [5 0 R] /Count 1 >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R /Resources << /Font << /F1 3 0 R >> >> >>",
+      ];
+      let source = "%PDF-1.7\n";
+      const offsets: Array<number> = [];
+      objects.forEach((body, index) => {
+        offsets.push(source.length);
+        source += `${index + 1} 0 obj\n${body}\nendobj\n`;
+      });
+      const xref = source.length;
+      source += `xref\n0 6\n0000000000 65535 f \n`;
+      source += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+      source += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+      const inspection = yield* core.inspect(new TextEncoder().encode(source), {
+        text: true,
+        links: false,
+      });
+      const page = inspection.text[0];
+      expect(page).toBeDefined();
+      if (page === undefined) return;
+      const items = Array.from({ length: page.offsets.length - 1 }, (_, index) =>
+        page.text.slice(page.offsets[index], page.offsets[index + 1]),
+      );
+      expect(items).toEqual(["ação", "€ fim"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("rejects malformed input with a typed error", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;

@@ -3,7 +3,7 @@
     reason = "the C ABI boundary hands raw pointers across the WebAssembly import surface"
 )]
 
-use std::alloc::{Layout, alloc, dealloc};
+use std::alloc::{Layout, alloc, dealloc, realloc};
 use std::ptr;
 
 use crate::document;
@@ -13,7 +13,7 @@ use crate::layout::{self, TextOptions};
 use crate::table::Table;
 
 const MAGIC: u32 = 0x4346_4450;
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const HEADER_LEN: usize = 32;
 const PAGE_RECORD_LEN: usize = 72;
 const RESULT_HEADER_LEN: usize = 8;
@@ -51,20 +51,75 @@ fn padded(value: usize) -> Outcome<usize> {
 }
 
 struct Writer {
-    buf: Vec<u8>,
+    data: *mut u8,
+    len: usize,
+    capacity: usize,
+    failed: bool,
 }
 
 impl Writer {
+    fn with_capacity(payload: usize) -> Self {
+        let capacity = payload.saturating_add(RESULT_HEADER_LEN);
+        let data = block_layout(capacity).map_or(ptr::null_mut(), |layout| {
+            // SAFETY: `block_layout` never yields a zero-sized layout.
+            unsafe { alloc(layout) }
+        });
+        Self {
+            data,
+            len: RESULT_HEADER_LEN,
+            capacity,
+            failed: data.is_null(),
+        }
+    }
+
+    const fn payload_len(&self) -> usize {
+        self.len.saturating_sub(RESULT_HEADER_LEN)
+    }
+
+    fn grow(&mut self, needed: usize) -> bool {
+        let target = needed.max(self.capacity.saturating_mul(2));
+        let (Some(current), Some(_)) = (block_layout(self.capacity), block_layout(target)) else {
+            self.failed = true;
+            return false;
+        };
+        // SAFETY: `data` was allocated with `current`, and `target` is a valid non-zero size for the same alignment.
+        let grown = unsafe { realloc(self.data, current, target) };
+        if grown.is_null() {
+            self.failed = true;
+            return false;
+        }
+        self.data = grown;
+        self.capacity = target;
+        true
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        if self.failed {
+            return;
+        }
+        let Some(needed) = self.len.checked_add(bytes.len()) else {
+            self.failed = true;
+            return;
+        };
+        if needed > self.capacity && !self.grow(needed) {
+            return;
+        }
+        let tail = self.data.wrapping_add(self.len);
+        // SAFETY: the block holds `capacity >= needed` bytes, so `bytes` fits at `len`, and Rust-owned `bytes` cannot overlap it.
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), tail, bytes.len()) };
+        self.len = needed;
+    }
+
     fn u32(&mut self, value: u32) {
-        self.buf.extend_from_slice(&value.to_le_bytes());
+        self.bytes(&value.to_le_bytes());
     }
 
     fn i32(&mut self, value: i32) {
-        self.buf.extend_from_slice(&value.to_le_bytes());
+        self.bytes(&value.to_le_bytes());
     }
 
     fn f64(&mut self, value: f64) {
-        self.buf.extend_from_slice(&value.to_le_bytes());
+        self.bytes(&value.to_le_bytes());
     }
 
     fn boxed(&mut self, rect: &[f64; 4]) {
@@ -74,33 +129,92 @@ impl Writer {
     }
 
     fn align(&mut self) {
-        let remainder = self.buf.len() % ALIGNMENT;
+        let remainder = self.payload_len() % ALIGNMENT;
         if remainder != 0 {
-            self.buf.resize(
-                self.buf
-                    .len()
-                    .saturating_add(ALIGNMENT.saturating_sub(remainder)),
-                0,
-            );
+            let zeros = [0_u8; ALIGNMENT];
+            self.bytes(zeros.get(remainder..).unwrap_or_default());
         }
     }
 
+    const fn payload_mut(&mut self) -> &mut [u8] {
+        if self.failed || self.data.is_null() {
+            return &mut [];
+        }
+        let start = self.data.wrapping_add(RESULT_HEADER_LEN);
+        // SAFETY: the block holds `len` initialised bytes owned by this writer, and the payload follows the header.
+        unsafe { std::slice::from_raw_parts_mut(start, self.payload_len()) }
+    }
+
     fn patch_u32(&mut self, at: usize, value: u32) {
-        if let Some(slot) = at.checked_add(4).and_then(|end| self.buf.get_mut(at..end)) {
+        if let Some(slot) = at
+            .checked_add(4)
+            .and_then(|end| self.payload_mut().get_mut(at..end))
+        {
             slot.copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn done(self) -> Outcome<Self> {
+        if self.failed {
+            return Err(Failure::limit("result allocation failed"));
+        }
+        len32(self.len)?;
+        Ok(self)
+    }
+
+    fn publish(mut self, status: u32) -> *mut u8 {
+        let Ok(total) = u32::try_from(self.len) else {
+            return ptr::null_mut();
+        };
+        if self.failed {
+            return ptr::null_mut();
+        }
+        if self.capacity != self.len {
+            let Some(current) = block_layout(self.capacity) else {
+                return ptr::null_mut();
+            };
+            // SAFETY: `data` was allocated with `current`, and `len >= RESULT_HEADER_LEN` is non-zero.
+            let shrunk = unsafe { realloc(self.data, current, self.len) };
+            if shrunk.is_null() {
+                return ptr::null_mut();
+            }
+            self.data = shrunk;
+            self.capacity = self.len;
+        }
+        let mut header = [0_u8; RESULT_HEADER_LEN];
+        let (total_field, status_field) = header.split_at_mut(4);
+        total_field.copy_from_slice(&total.to_le_bytes());
+        status_field.copy_from_slice(&status.to_le_bytes());
+        // SAFETY: the block holds at least `RESULT_HEADER_LEN` bytes, and `header` is a distinct local array.
+        unsafe { ptr::copy_nonoverlapping(header.as_ptr(), self.data, RESULT_HEADER_LEN) };
+        std::mem::replace(&mut self.data, ptr::null_mut())
+    }
+
+    #[cfg(test)]
+    fn payload(mut self) -> Vec<u8> {
+        self.payload_mut().to_vec()
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        if self.data.is_null() {
+            return;
+        }
+        if let Some(layout) = block_layout(self.capacity) {
+            // SAFETY: `data` is still owned by this writer and was allocated with this layout.
+            unsafe { dealloc(self.data, layout) };
         }
     }
 }
 
-fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
+fn encode(inspection: &Inspection) -> Outcome<Writer> {
     let page_count = len32(inspection.pages.len())?;
     let link_count = len32(inspection.links.len())?;
     let text_page_count = len32(inspection.text.len())?;
-    let mut out = Writer {
-        buf: Vec::with_capacity(
-            HEADER_LEN.saturating_add(inspection.pages.len().saturating_mul(PAGE_RECORD_LEN)),
-        ),
-    };
+    let mut out = Writer::with_capacity(
+        HEADER_LEN.saturating_add(inspection.pages.len().saturating_mul(PAGE_RECORD_LEN)),
+    );
     out.u32(MAGIC);
     out.u32(VERSION);
     out.u32(page_count);
@@ -117,7 +231,7 @@ fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
         out.u32(0);
     }
 
-    let links_offset = len32(out.buf.len())?;
+    let links_offset = len32(out.payload_len())?;
     out.patch_u32(24, links_offset);
     let mut uri_cursor: u32 = 0;
     for link in &inspection.links {
@@ -132,11 +246,11 @@ fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
             .ok_or_else(|| Failure::limit("link text exceeds the 32-bit size limit"))?;
     }
     for link in &inspection.links {
-        out.buf.extend_from_slice(link.uri.as_bytes());
+        out.bytes(link.uri.as_bytes());
     }
     out.align();
 
-    let text_offset = len32(out.buf.len())?;
+    let text_offset = len32(out.payload_len())?;
     out.patch_u32(28, text_offset);
     for page in &inspection.text {
         let item_count = len32(page.items.len())?;
@@ -158,28 +272,22 @@ fn encode(inspection: &Inspection) -> Outcome<Vec<u8>> {
         out.u32(cursor);
         for item in &page.items {
             cursor = cursor
-                .checked_add(len32(item.text.len())?)
+                .checked_add(len32(item.text.encode_utf16().count())?)
                 .ok_or_else(|| Failure::limit("page text exceeds the size limit"))?;
             out.u32(cursor);
         }
         out.align();
         for item in &page.items {
-            out.buf.extend_from_slice(item.text.as_bytes());
+            out.bytes(item.text.as_bytes());
         }
         out.align();
     }
 
-    padded(out.buf.len())?;
-    let total = out
-        .buf
-        .len()
-        .checked_add(RESULT_HEADER_LEN)
-        .ok_or_else(|| Failure::limit("result size overflow"))?;
-    len32(total)?;
-    Ok(out.buf)
+    padded(out.payload_len())?;
+    out.done()
 }
 
-fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
+fn encode_text(pages: &[String]) -> Outcome<Writer> {
     let page_count = len32(pages.len())?;
     let mut text_len: usize = 0;
     for page in pages {
@@ -199,9 +307,7 @@ fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
         .and_then(|sum| sum.checked_add(text_len))
         .and_then(|sum| sum.checked_add(ALIGNMENT))
         .ok_or_else(|| Failure::limit("result size overflow"))?;
-    let mut out = Writer {
-        buf: Vec::with_capacity(capacity),
-    };
+    let mut out = Writer::with_capacity(capacity);
     out.u32(TEXT_MAGIC);
     out.u32(TEXT_VERSION);
     out.u32(page_count);
@@ -216,19 +322,13 @@ fn encode_text(pages: &[String]) -> Outcome<Vec<u8>> {
     }
     out.align();
     for page in pages {
-        out.buf.extend_from_slice(page.as_bytes());
+        out.bytes(page.as_bytes());
     }
     out.align();
-    let total = out
-        .buf
-        .len()
-        .checked_add(RESULT_HEADER_LEN)
-        .ok_or_else(|| Failure::limit("result size overflow"))?;
-    len32(total)?;
-    Ok(out.buf)
+    out.done()
 }
 
-fn encode_tables(tables: &[Table]) -> Outcome<Vec<u8>> {
+fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
     let table_count = len32(tables.len())?;
     let mut cell_count: usize = 0;
     let mut text_len: usize = 0;
@@ -256,9 +356,7 @@ fn encode_tables(tables: &[Table]) -> Outcome<Vec<u8>> {
         .and_then(|sum| sum.checked_add(text_len))
         .and_then(|sum| sum.checked_add(ALIGNMENT))
         .ok_or_else(|| Failure::limit("result size overflow"))?;
-    let mut out = Writer {
-        buf: Vec::with_capacity(capacity),
-    };
+    let mut out = Writer::with_capacity(capacity);
     out.u32(TABLES_MAGIC);
     out.u32(TABLES_VERSION);
     out.u32(table_count);
@@ -285,50 +383,21 @@ fn encode_tables(tables: &[Table]) -> Outcome<Vec<u8>> {
     }
     for table in tables {
         for cell in &table.cells {
-            out.buf.extend_from_slice(cell.text.as_bytes());
+            out.bytes(cell.text.as_bytes());
         }
     }
     out.align();
-    let total = out
-        .buf
-        .len()
-        .checked_add(RESULT_HEADER_LEN)
-        .ok_or_else(|| Failure::limit("result size overflow"))?;
-    len32(total)?;
-    Ok(out.buf)
+    out.done()
 }
 
-fn publish(status: u32, payload: &[u8]) -> *mut u8 {
-    let Some(total) = payload.len().checked_add(RESULT_HEADER_LEN) else {
-        return ptr::null_mut();
-    };
-    let Ok(total32) = u32::try_from(total) else {
-        return ptr::null_mut();
-    };
-    let Some(layout) = block_layout(total) else {
-        return ptr::null_mut();
-    };
-    // SAFETY: `block_layout` never yields a zero-sized layout.
-    let block = unsafe { alloc(layout) };
-    if block.is_null() {
-        return block;
-    }
-    let mut header = [0_u8; RESULT_HEADER_LEN];
-    let (total_field, status_field) = header.split_at_mut(4);
-    total_field.copy_from_slice(&total32.to_le_bytes());
-    status_field.copy_from_slice(&status.to_le_bytes());
-    // SAFETY: `block` holds `total >= RESULT_HEADER_LEN` writable bytes and `header` is a distinct local array.
-    unsafe { ptr::copy_nonoverlapping(header.as_ptr(), block, RESULT_HEADER_LEN) };
-    let tail = block.wrapping_add(RESULT_HEADER_LEN);
-    // SAFETY: `block` holds `total` bytes, so the payload fits after the header and cannot overlap the Rust-owned slice.
-    unsafe { ptr::copy_nonoverlapping(payload.as_ptr(), tail, payload.len()) };
-    block
-}
-
-fn finish(outcome: Outcome<Vec<u8>>) -> *mut u8 {
+fn finish(outcome: Outcome<Writer>) -> *mut u8 {
     match outcome {
-        Ok(payload) => publish(STATUS_OK, &payload),
-        Err(failure) => publish(u32::from(failure.code), failure.reason.as_bytes()),
+        Ok(writer) => writer.publish(STATUS_OK),
+        Err(failure) => {
+            let mut writer = Writer::with_capacity(failure.reason.len());
+            writer.bytes(failure.reason.as_bytes());
+            writer.publish(u32::from(failure.code))
+        }
     }
 }
 
@@ -588,16 +657,21 @@ mod tests {
                 reader.align();
                 let strings = reader.take(text_len);
                 reader.align();
+                let units: Vec<u16> = std::str::from_utf8(strings)
+                    .unwrap()
+                    .encode_utf16()
+                    .collect();
+                assert_eq!(offsets.last().copied(), Some(units.len()));
                 let items = rects
                     .iter()
                     .enumerate()
                     .map(|(index, (rect, font_size))| TextItem {
                         rect: *rect,
                         font_size: *font_size,
-                        text: String::from_utf8_lossy(
-                            &strings[offsets[index]..offsets[index.saturating_add(1)]],
+                        text: String::from_utf16(
+                            &units[offsets[index]..offsets[index.saturating_add(1)]],
                         )
-                        .into_owned(),
+                        .unwrap(),
                     })
                     .collect();
                 PageText { page_index, items }
@@ -650,7 +724,7 @@ mod tests {
                         TextItem {
                             rect: [5.0, 6.0, 7.0, 8.0],
                             font_size: 9.5,
-                            text: "mundo — ação".to_owned(),
+                            text: "mundo — ação 𝄞".to_owned(),
                         },
                         TextItem {
                             rect: [0.0; 4],
@@ -670,26 +744,28 @@ mod tests {
     #[test]
     fn round_trips_every_section() {
         let inspection = sample();
-        let payload = encode(&inspection).unwrap_or_default();
+        let payload = encode(&inspection).map(Writer::payload).unwrap_or_default();
         assert_eq!(decode(&payload), inspection);
     }
 
     #[test]
     fn empty_inspection_is_header_only() {
-        let payload = encode(&Inspection::default()).unwrap_or_default();
+        let payload = encode(&Inspection::default())
+            .map(Writer::payload)
+            .unwrap_or_default();
         assert_eq!(payload.len(), HEADER_LEN);
         assert_eq!(decode(&payload), Inspection::default());
     }
 
     #[test]
     fn payload_length_is_eight_byte_aligned() {
-        let payload = encode(&sample()).unwrap_or_default();
+        let payload = encode(&sample()).map(Writer::payload).unwrap_or_default();
         assert_eq!(payload.len() % 8, 0);
     }
 
     #[test]
     fn float_sections_are_aligned_inside_the_payload() {
-        let payload = encode(&sample()).unwrap_or_default();
+        let payload = encode(&sample()).map(Writer::payload).unwrap_or_default();
         let mut reader = Reader {
             data: &payload,
             at: 0,
@@ -965,7 +1041,7 @@ mod tests {
 
     #[test]
     fn empty_tables_payload_is_header_only() {
-        let payload = encode_tables(&[]).unwrap();
+        let payload = encode_tables(&[]).unwrap().payload();
         assert_eq!(payload.len(), TABLES_HEADER_LEN);
         assert_eq!(payload.len() % 8, 0);
     }
