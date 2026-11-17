@@ -23,6 +23,7 @@ import {
   PdfSigningRequestSchema,
   PdfVerificationResultSchema,
 } from "../src/config";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const fakeByteRange = "/ByteRange [0 0 0 0]";
 const fakeStreamContents = `/Type /Sig ${fakeByteRange} /Contents <00>`;
@@ -65,6 +66,7 @@ const createRawSignaturePdf = (
     `[${String(first).padStart(10, "0")} ${String(second).padStart(10, "0")} ${String(third).padStart(10, "0")} ${String(fourth).padStart(10, "0")}]`,
   fieldBody = "<< /FT /Sig /V 8 0 R >>",
   unindexedObjects: ReadonlyArray<readonly [number, string]> = [],
+  contentsHex = "00",
 ): RawSignaturePdf => {
   const marker = formatByteRange([0, 0, 0, 0]);
   const streamContents = "binary\nendstream fake\nstream payload";
@@ -78,7 +80,7 @@ const createRawSignaturePdf = (
       [4, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 7 0 R >>"],
       [6, fieldBody],
       [7, `<< /Length 5 0 R >>\nstream\n${streamContents}\nendstream`],
-      [8, `<< /Type /${type} /ByteRange ${byteRangeText} /Contents <00> >>`],
+      [8, `<< /Type /${type} /ByteRange ${byteRangeText} /Contents <${contentsHex}> >>`],
       [5, String(encodeAscii(streamContents).byteLength)],
     ];
     let source = "%PDF-1.7\n";
@@ -106,7 +108,7 @@ const createRawSignaturePdf = (
   const template = render(marker);
   const contentsStart =
     indexOfBytes(encodeAscii(template.source), encodeAscii("/Contents <")) + "/Contents ".length;
-  const contentsEnd = contentsStart + 4;
+  const contentsEnd = contentsStart + contentsHex.length + 2;
   const byteRangeText = formatByteRange([
     0,
     contentsStart,
@@ -454,23 +456,27 @@ const createPdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
 });
 
 describe("PDF signature dictionary parsing", () => {
-  it("ignores ByteRange-like syntax in comments, strings, and streams", () => {
-    expect(hasPdfByteRange(fakeSignatureSyntax())).toBe(false);
-  });
+  it.effect("ignores ByteRange-like syntax in comments, strings, and streams", () =>
+    Effect.gen(function* () {
+      expect(yield* hasPdfByteRange(fakeSignatureSyntax())).toBe(false);
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
 
-  it("detects typed signature dictionaries even when their ByteRange is absent", () => {
-    const signature = encodeAscii(
-      "%PDF-1.7\n1 0 obj\n<< /Type /Sig /Contents <00> >>\nendobj\n%%EOF",
-    );
-    const timestamp = encodeAscii(
-      "%PDF-1.7\n1 0 obj\n<< /Type /DocTimeStamp /Contents <00> >>\nendobj\n%%EOF",
-    );
+  it.effect("detects typed signature dictionaries even when their ByteRange is absent", () =>
+    Effect.gen(function* () {
+      const signature = encodeAscii(
+        "%PDF-1.7\n1 0 obj\n<< /Type /Sig /Contents <00> >>\nendobj\n%%EOF",
+      );
+      const timestamp = encodeAscii(
+        "%PDF-1.7\n1 0 obj\n<< /Type /DocTimeStamp /Contents <00> >>\nendobj\n%%EOF",
+      );
 
-    expect(hasPdfSignatureDictionary(signature)).toBe(true);
-    expect(hasPdfSignatureDictionary(timestamp)).toBe(true);
-    expect(hasPdfByteRange(signature)).toBe(false);
-    expect(hasPdfByteRange(timestamp)).toBe(false);
-  });
+      expect(yield* hasPdfSignatureDictionary(signature)).toBe(true);
+      expect(yield* hasPdfSignatureDictionary(timestamp)).toBe(true);
+      expect(yield* hasPdfByteRange(signature)).toBe(false);
+      expect(yield* hasPdfByteRange(timestamp)).toBe(false);
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
 
   it.effect("discovers untyped signature dictionaries and preserves DocTimeStamp candidates", () =>
     Effect.gen(function* () {
@@ -487,19 +493,19 @@ describe("PDF signature dictionary parsing", () => {
       const timestampVerification = yield* Effect.result(verifyPdf({ pdf: timestamp }));
       const malformedResult = yield* Effect.result(verifyPdf({ pdf: malformed }));
 
-      expect(hasPdfSignatureDictionary(untyped)).toBe(true);
-      expect(hasPdfByteRange(untyped)).toBe(true);
+      expect(yield* hasPdfSignatureDictionary(untyped)).toBe(true);
+      expect(yield* hasPdfByteRange(untyped)).toBe(true);
       expect(yield* findPdfByteRangeOffsets(untyped)).toHaveLength(1);
-      expect(hasPdfSignatureDictionary(timestamp)).toBe(true);
-      expect(hasPdfByteRange(timestamp)).toBe(true);
+      expect(yield* hasPdfSignatureDictionary(timestamp)).toBe(true);
+      expect(yield* hasPdfByteRange(timestamp)).toBe(true);
       expect(Result.isFailure(timestampOffsets)).toBe(true);
       expect(Result.isFailure(timestampVerification)).toBe(true);
       if (Result.isFailure(timestampVerification)) {
         expect(timestampVerification.failure.code).toBe("pdf.PLACEHOLDER_NOT_FOUND");
       }
-      expect(hasPdfByteRange(malformed)).toBe(true);
+      expect(yield* hasPdfByteRange(malformed)).toBe(true);
       expect(Result.isFailure(malformedResult)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("finds only ByteRanges owned by signature dictionaries", () =>
@@ -516,7 +522,7 @@ describe("PDF signature dictionary parsing", () => {
       const offsets = yield* findPdfByteRangeOffsets(pdf);
 
       expect(offsets).toEqual([expected]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -526,11 +532,24 @@ describe("PDF signature dictionary parsing", () => {
         const pdf = createRawSignaturePdf();
         const signatures = yield* extractPdfSignatures(pdf.pdf);
 
-        expect(hasPdfByteRange(pdf.pdf)).toBe(true);
-        expect(hasPdfSignatureDictionary(pdf.pdf)).toBe(true);
+        expect(yield* hasPdfByteRange(pdf.pdf)).toBe(true);
+        expect(yield* hasPdfSignatureDictionary(pdf.pdf)).toBe(true);
         expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(true);
         expect(signatures).toHaveLength(1);
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
+  it.effect("keeps the end-of-contents octets of an indefinite-length BER signature", () =>
+    Effect.gen(function* () {
+      const ber = "308006092a864886f70d010702a08002010500000000";
+      const padded = createRawSignaturePdf(undefined, undefined, undefined, [], `${ber}000000`);
+      const [signature] = yield* extractPdfSignatures(padded.pdf);
+      expect(Buffer.from(signature?.signature ?? []).toString("hex")).toBe(ber);
+
+      const tampered = createRawSignaturePdf(undefined, undefined, undefined, [], `${ber}0001`);
+      const result = yield* Effect.result(extractPdfSignatures(tampered.pdf));
+      expect(result._tag).toBe("Failure");
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("binds reachable signature objects through xref-stream entries", () =>
@@ -540,7 +559,7 @@ describe("PDF signature dictionary parsing", () => {
 
       expect(signatures).toHaveLength(1);
       expect(yield* isCompletePdfRevision(pdf, pdf.byteLength)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("resolves a compressed signature field from its effective object stream entry", () =>
@@ -549,7 +568,7 @@ describe("PDF signature dictionary parsing", () => {
       const signatures = yield* extractPdfSignatures(pdf);
 
       expect(signatures).toHaveLength(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a compressed entry whose object-stream index is malformed", () =>
@@ -558,7 +577,7 @@ describe("PDF signature dictionary parsing", () => {
       const result = yield* Effect.result(extractPdfSignatures(pdf));
 
       expect(Result.isFailure(result)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("accepts scalar, array, and predictor Flate xref streams", () =>
@@ -581,7 +600,7 @@ describe("PDF signature dictionary parsing", () => {
       );
 
       expect(signatures.map((value) => value.length)).toEqual([1, 1, 1]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects unsupported and malformed xref stream filters", () =>
@@ -602,7 +621,7 @@ describe("PDF signature dictionary parsing", () => {
       );
 
       expect(results.every(Result.isFailure)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("merges a hybrid supplemental xref stream below table entries", () =>
@@ -611,7 +630,7 @@ describe("PDF signature dictionary parsing", () => {
       const signatures = yield* extractPdfSignatures(pdf);
 
       expect(signatures).toHaveLength(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a hybrid trailer that points outside its supplemental xref stream", () =>
@@ -619,7 +638,7 @@ describe("PDF signature dictionary parsing", () => {
       const result = yield* Effect.result(extractPdfSignatures(createHybridXrefSignaturePdf(true)));
 
       expect(Result.isFailure(result)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails closed when incremental revisions exceed the parser budget", () =>
@@ -628,7 +647,7 @@ describe("PDF signature dictionary parsing", () => {
       const result = yield* Effect.result(extractPdfSignatures(pdf));
 
       expect(Result.isFailure(result)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("uses each revision's effective indirect length values", () =>
@@ -639,7 +658,7 @@ describe("PDF signature dictionary parsing", () => {
 
       expect(signatures).toHaveLength(1);
       expect(yield* isCompletePdfRevision(revised, first.pdf.byteLength)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("accepts comments and signed integer lexemes in parsed ByteRange arrays", () =>
@@ -653,7 +672,7 @@ describe("PDF signature dictionary parsing", () => {
 
       expect(signatures).toHaveLength(1);
       expect(signatures[0]?.startsAtZero).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("excludes an unindexed duplicate signature object from verification extraction", () =>
@@ -662,7 +681,7 @@ describe("PDF signature dictionary parsing", () => {
       const signatures = yield* extractPdfSignatures(duplicate);
 
       expect(signatures).toHaveLength(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("excludes an unindexed duplicate signature field from reachability", () =>
@@ -674,7 +693,7 @@ describe("PDF signature dictionary parsing", () => {
 
       expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(true);
       expect(Result.isFailure(extraction)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("does not infer signatures from explicit non-signature dictionary types", () =>
@@ -684,7 +703,7 @@ describe("PDF signature dictionary parsing", () => {
 
       expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(false);
       expect(Result.isFailure(extraction)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -698,7 +717,7 @@ describe("PDF signature dictionary parsing", () => {
         if (Result.isFailure(extraction)) {
           expect(extraction.failure.code).toBe("pdf.VERIFY_FAILED");
         }
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects malformed runtime verification requests with a typed schema error", () =>
@@ -714,7 +733,7 @@ describe("PDF signature dictionary parsing", () => {
           expect(result.failure.schemaName).toBe("PdfVerificationRequest");
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("treats a ByteRange-like appended comment as unsigned tampering", () =>
@@ -736,7 +755,7 @@ describe("PDF signature dictionary parsing", () => {
         expect(result.success.signatureCount).toBe(1);
         expect(result.success.valid).toBe(false);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("prepares the Contents sibling of the selected ByteRange", () =>
@@ -752,7 +771,7 @@ describe("PDF signature dictionary parsing", () => {
       expect(prepared.contentsStart).toBe(expectedContentsStart);
       expect(prepared.placeholderLength).toBe(contentsHex.length);
       expect(prepared.byteRange[1]).toBe(expectedContentsStart);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("recognizes parsed signature dictionaries for incremental signing", () =>
@@ -766,10 +785,10 @@ describe("PDF signature dictionary parsing", () => {
       );
       const verification = yield* verifyPdf({ pdf: second });
 
-      expect(hasPdfByteRange(first)).toBe(true);
+      expect(yield* hasPdfByteRange(first)).toBe(true);
       expect(verification.signatureCount).toBe(2);
       expect(verification.valid).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("applies revision completeness to every extracted signature", () =>
     Effect.gen(function* () {
@@ -790,7 +809,7 @@ describe("PDF signature dictionary parsing", () => {
       expect(calls).toBe(2);
       expect(verification.signatureCount).toBe(2);
       expect(verification.valid).toBe(false);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -813,7 +832,7 @@ describe("PDF signature dictionary parsing", () => {
         expect(firstRevision).toBe(true);
         expect(secondRevision).toBe(true);
         expect(fakeRevision).toBe(false);
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("requires configured signature capacity to be positive whole bytes", () =>
@@ -838,7 +857,7 @@ describe("PDF signature dictionary parsing", () => {
       expect(valid.signatureLength).toBe(64);
       expect(Result.isFailure(fractional)).toBe(true);
       expect(Result.isFailure(zero)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("enforces safe non-negative PDF byte-range contracts", () =>
     Effect.gen(function* () {
@@ -911,6 +930,6 @@ describe("PDF signature dictionary parsing", () => {
           expect(Result.isFailure(result)).toBe(true);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

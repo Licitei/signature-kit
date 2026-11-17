@@ -18,6 +18,7 @@ import { encodeAscii, indexOfByte, indexOfBytes, replaceRange } from "../src/byt
 import { stampPdfRubric } from "../src/stamp";
 import { PdfSigningRequestSchema } from "../src/config";
 import type { PdfCoordinateTuple, PdfSignatureAnchor } from "../src/config";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const PASSWORD = Redacted.make("changeit");
 const SIGNATURE_POLICY_OID_DER = Uint8Array.of(
@@ -331,7 +332,7 @@ describe("PDF signatures", () => {
       expect(verification.signatureCount).toBe(1);
       expect(verification.byteRange[0]).toBe(0);
       expect(tampered.valid).toBe(false);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("signs one PDF with two A1 certificates in sequence", () =>
@@ -382,7 +383,7 @@ describe("PDF signatures", () => {
         personSigned.byteLength,
       ]);
       expect(details[1]?.signerSerialNumber).toBe(verification.signerSerialNumber);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects content appended after the signed range (signature-exclusion forgery)", () =>
@@ -405,7 +406,7 @@ describe("PDF signatures", () => {
 
       expect(untouched.valid).toBe(true);
       expect(verification.valid).toBe(false);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("stamps a rubric on every page, then signs once over the whole document", () =>
@@ -434,7 +435,7 @@ describe("PDF signatures", () => {
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
       expect(verification.byteRange[0]).toBe(0);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("prepares the newest ByteRange placeholder when older ranges already exist", () =>
@@ -453,7 +454,7 @@ ${"x".repeat(1000)}
       expect(text).toContain("/ByteRange [0 0 0 0]");
       expect(prepared.byteRange[1]).toBeGreaterThan(1000);
       expect(indexOfBytes(prepared.signedData, encodeAscii("/**********"))).toBe(-1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("reads /ByteRange tokens regardless of spacing style", () =>
     Effect.gen(function* () {
@@ -467,7 +468,7 @@ ${"x".repeat(1000)}
         expect(extracted.byteRange[0]).toBe(0);
         expect(extracted.signature).toEqual(expectedSignature);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("accepts /Contents hex containing a newline", () =>
@@ -479,7 +480,7 @@ ${"x".repeat(1000)}
       );
 
       expect(extracted.signature).toEqual(Uint8Array.of(0x30, 0x03, 0x02, 0x01, 0x00));
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("accepts odd-length /Contents hex and trims the final padding nibble", () =>
@@ -491,7 +492,7 @@ ${"x".repeat(1000)}
       );
 
       expect(extracted.signature).toEqual(Uint8Array.of(0x30, 0x03, 0x02, 0x01, 0x00));
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("preserves short-form DER signatures followed by zero-byte padding", () =>
@@ -502,7 +503,7 @@ ${"x".repeat(1000)}
       );
 
       expect(extracted.signature).toEqual(Uint8Array.of(0x30, 0x03, 0x02, 0x01, 0x00));
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("supports long-form DER length prefixes when trimming padded /Contents bytes", () =>
@@ -514,7 +515,7 @@ ${"x".repeat(1000)}
       );
 
       expect(extracted.signature).toEqual(longFormSignatureDer);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects /Contents placeholders with non-zero padding bytes", () =>
@@ -528,7 +529,7 @@ ${"x".repeat(1000)}
       if (Result.isFailure(extracted)) {
         expect(extracted.failure.code).toBe("pdf.PLACEHOLDER_NOT_FOUND");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("omits prohibited CMS signingTime for PAdES ADES and keeps PDF M", () =>
@@ -549,7 +550,7 @@ ${"x".repeat(1000)}
       expect(verification.valid).toBe(true);
       expect(indexOfBytes(extracted.signature, SIGNING_TIME_OID_DER)).toBe(-1);
       expect(text).toContain("/M (D:20260102030405Z)");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("embeds ICP-Brasil policy attributes when requested", () =>
@@ -580,7 +581,7 @@ ${"x".repeat(1000)}
       ).toBeGreaterThanOrEqual(0);
       expect(indexOfBytes(extracted.signature, SIGNATURE_POLICY_OID_DER)).toBeGreaterThanOrEqual(0);
       expect(text).toContain("/M (D:20260102030405Z)");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("validates PDF signing request schemas and rejects invalid catalogs", () =>
@@ -649,7 +650,7 @@ ${"x".repeat(1000)}
         expect(decodedPlacement.anchor).toBe("bottom-right");
       }
       expect(Result.isFailure(invalidPlacement)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("detects tampering in an earlier revision after adding a second signature", () =>
@@ -689,7 +690,7 @@ ${"x".repeat(1000)}
       const details = yield* verifyPdfSignatures({ pdf: tampered });
       expect(details.every((detail) => !detail.valid && !detail.cryptographicValid)).toBe(true);
       expect(details.every((detail) => detail.coverageValid)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("signs PDFs with legacy SHA-1 and embeds signature dictionary metadata", () =>
@@ -734,7 +735,7 @@ ${"x".repeat(1000)}
       });
       expect(text).toContain("/SubFilter /adbe.pkcs7.detached");
       expect(text).toContain("/ByteRange");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("automatically places a visible signature on the last page without colliding", () =>
@@ -775,7 +776,7 @@ ${"x".repeat(1000)}
         expect(signatureRect[3]).toBeLessThanOrEqual(160);
         expect(rectanglesOverlap(signatureRect, OCCUPIED_SIGNATURE_RECT)).toBe(false);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("uses existing declaration signature slots selected by auto anchors", () =>
@@ -817,7 +818,7 @@ ${"x".repeat(1000)}
         expect(signedRects).toHaveLength(1);
         expect(signedRects[0]).toEqual(placementCase.expectedRect);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps invalid PDF and out-of-range page errors typed", () =>
@@ -853,6 +854,6 @@ ${"x".repeat(1000)}
         expect(impossiblePlacement.failure.code).toBe("pdf.SIGNATURE_PLACEMENT_FAILED");
         expect(impossiblePlacement.failure.operation).toBe("pdf.placeholder");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

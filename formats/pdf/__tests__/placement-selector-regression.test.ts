@@ -16,6 +16,10 @@ import type {
 } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { resolveSignatureWidgetPlacement } from "../src/placement";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
+
+const saveDocument = (document: PDFDocument): Effect.Effect<Uint8Array> =>
+  Effect.promise(() => document.save({ useObjectStreams: false, updateFieldAppearances: false }));
 
 const autoPlacement = {
   kind: "auto",
@@ -54,7 +58,7 @@ describe("PDF signature appearance page selectors", () => {
         }
 
         const runtimeResult = yield* Effect.result(
-          resolveSignatureWidgetPlacement(pdfDoc, appearance),
+          resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), appearance),
         );
         expect(Result.isFailure(runtimeResult)).toBe(true);
         if (Result.isFailure(runtimeResult)) {
@@ -62,7 +66,7 @@ describe("PDF signature appearance page selectors", () => {
           expect(runtimeResult.failure.operation).toBe(PdfOperationValue.placeholder);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects a legacy widget rect combined with every placement mode", () =>
     Effect.gen(function* () {
@@ -99,7 +103,7 @@ describe("PDF signature appearance page selectors", () => {
         }
 
         const runtimeResult = yield* Effect.result(
-          resolveSignatureWidgetPlacement(pdfDoc, appearance),
+          resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), appearance),
         );
         expect(Result.isFailure(runtimeResult)).toBe(true);
         if (Result.isFailure(runtimeResult)) {
@@ -107,7 +111,7 @@ describe("PDF signature appearance page selectors", () => {
           expect(runtimeResult.failure.operation).toBe(PdfOperationValue.placeholder);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("accepts exactly one selector and resolves its intended page", () =>
@@ -128,10 +132,13 @@ describe("PDF signature appearance page selectors", () => {
         const decoded = yield* Schema.decodeUnknownEffect(PdfSignatureAppearanceSchema)(
           placementCase.appearance,
         );
-        const resolved = yield* resolveSignatureWidgetPlacement(pdfDoc, decoded);
+        const resolved = yield* resolveSignatureWidgetPlacement(
+          yield* saveDocument(pdfDoc),
+          decoded,
+        );
         expect(resolved.pageIndex).toBe(placementCase.expectedPageIndex);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects invalid page indexes at placement schema boundaries", () =>
     Effect.gen(function* () {
@@ -178,6 +185,6 @@ describe("PDF signature appearance page selectors", () => {
         pageIndex: 0,
       });
       expect(decoded.pageIndex).toBe(0);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

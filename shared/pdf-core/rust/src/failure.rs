@@ -5,6 +5,7 @@ use core::error::Error;
 pub(crate) enum FailureCode {
     EncryptedPdf,
     InvalidPdf,
+    InvalidRequest,
     LimitExceeded,
     UnsupportedFeature,
 }
@@ -17,6 +18,7 @@ impl From<FailureCode> for u32 {
             FailureCode::EncryptedPdf => 2,
             FailureCode::LimitExceeded => 3,
             FailureCode::UnsupportedFeature => 4,
+            FailureCode::InvalidRequest => 5,
         }
     }
 }
@@ -51,6 +53,13 @@ impl Failure {
             reason: reason.into(),
         }
     }
+
+    pub(crate) fn request<R>(reason: R) -> Self
+    where
+        R: Into<String>,
+    {
+        Self::new(FailureCode::InvalidRequest, reason)
+    }
 }
 
 impl fmt::Display for Failure {
@@ -60,6 +69,7 @@ impl fmt::Display for Failure {
             FailureCode::EncryptedPdf => "encrypted_pdf",
             FailureCode::LimitExceeded => "limit_exceeded",
             FailureCode::UnsupportedFeature => "unsupported_feature",
+            FailureCode::InvalidRequest => "invalid_request",
         };
         write!(f, "{label}: {}", self.reason)
     }

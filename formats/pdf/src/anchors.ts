@@ -385,11 +385,13 @@ export function findPdfTextAnchors(
 export const removePdfLinkAnchors = (
   pdf: Uint8Array,
   matchers: ReadonlyArray<PdfTextAnchorMatcher>,
-): Effect.Effect<Uint8Array, PdfError> => {
+): Effect.Effect<Uint8Array, PdfError, PdfCore> => {
   const uris = linkAnchorUris(matchers);
-  if (uris.size === 0 || hasPdfByteRange(pdf)) return Effect.succeed(pdf);
-  return loadLinkAnchorDocument(pdf).pipe(
+  if (uris.size === 0) return Effect.succeed(pdf);
+  return hasPdfByteRange(pdf).pipe(
+    Effect.flatMap((signed) => (signed ? Effect.succeed(undefined) : loadLinkAnchorDocument(pdf))),
     Effect.flatMap((document) => {
+      if (document === undefined) return Effect.succeed(pdf);
       const anchors = pdfLinkAnchors(document, uris);
       if (anchors.length === 0) return Effect.succeed(pdf);
       return Effect.tryPromise({

@@ -174,7 +174,7 @@ if (typeof document === "undefined") {
           expect(text).toContain("/ByteRange");
           expect(text).toContain("/SubFilter /adbe.pkcs7.detached");
           expect(reason).toBe("Chromium browser A1 test");
-        }),
+        }).pipe(Effect.provide(pdfCoreBrowserLayer)),
       ));
 
     it("finds text anchors with the in-house pdf core in Chromium", async () => {
@@ -259,8 +259,9 @@ if (typeof document === "undefined") {
     });
 
     it("resolves normal placement and rejects non-advancing automatic grids", async () => {
-      const pdf = await PDFDocument.create();
-      pdf.addPage([320, 180]);
+      const document = await PDFDocument.create();
+      document.addPage([320, 180]);
+      const pdf = await document.save({ useObjectStreams: false });
       const normal = await Effect.runPromise(
         resolveSignatureWidgetPlacement(pdf, {
           placement: {
@@ -272,7 +273,7 @@ if (typeof document === "undefined") {
             gap: 8,
             anchor: "bottom-right",
           },
-        }),
+        }).pipe(Effect.provide(pdfCoreBrowserLayer)),
       );
       expect(normal.widgetRect).toEqual([180, 20, 300, 60]);
 
@@ -288,7 +289,7 @@ if (typeof document === "undefined") {
               gap: 0,
             },
           }),
-        ),
+        ).pipe(Effect.provide(pdfCoreBrowserLayer)),
       );
 
       expect(Result.isFailure(result)).toBe(true);
@@ -308,7 +309,7 @@ if (typeof document === "undefined") {
               gap: 0,
             },
           }),
-        ),
+        ).pipe(Effect.provide(pdfCoreBrowserLayer)),
       );
       expect(Result.isFailure(denseGridResult)).toBe(true);
       if (Result.isFailure(denseGridResult)) {

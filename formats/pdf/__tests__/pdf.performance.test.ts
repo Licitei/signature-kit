@@ -7,6 +7,7 @@ import { signPdf } from "../src/sign";
 import { stampPdfRubric } from "../src/stamp";
 import { verifyPdf } from "../src/verify";
 import type { PdfCoordinateTuple } from "../src/config";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const PASSWORD = Redacted.make("changeit");
 const RUBRIC_RECT: PdfCoordinateTuple = [24, 24, 172, 68];
@@ -55,6 +56,6 @@ describe("PDF workflow performance", () => {
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
       expect(elapsedMillis).toBeLessThan(8_000);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

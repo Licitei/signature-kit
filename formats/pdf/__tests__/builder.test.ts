@@ -26,6 +26,7 @@ import {
 import type { PdfSignatureTemplate, PdfSignatureTemplateInput } from "../src/config";
 import { signaturesLayer } from "@signature-kit/signatures";
 import type { SignerAdapter } from "@signature-kit/signatures";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const stubSigner: SignerAdapter = {
   id: "stub",
@@ -107,7 +108,7 @@ describe("PDF signature builder", () => {
 
       expect(withField.fields).toHaveLength(1);
       expect(appearance).toEqual({ pageIndex: 0, widgetRect: [72, 72, 216, 108] });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("creates a validated builder state from template input", () =>
@@ -138,7 +139,7 @@ describe("PDF signature builder", () => {
 
       expect(state.selectedFieldId).toBe("signature-1");
       expect(state.draft?.id).toBe("signature-2");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("validates PDF signing options with timestamping", () =>
@@ -175,7 +176,7 @@ describe("PDF signature builder", () => {
 
       expect(decoded.policy).toBe("pades-icp-brasil");
       expect(decoded.timestamp?.tsaUrl).toBe("https://tsa.example.test");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("centers and clamps pointer placement against the target page", () =>
@@ -204,7 +205,7 @@ describe("PDF signature builder", () => {
         width: 144,
         height: 36,
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -290,7 +291,7 @@ describe("PDF signature builder", () => {
             expect(result.failure.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
           }
         }
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects fields outside the declared page", () =>
@@ -303,7 +304,7 @@ describe("PDF signature builder", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.fieldOutOfBounds);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects non-signature field types", () =>
@@ -313,7 +314,7 @@ describe("PDF signature builder", () => {
       );
 
       expect(Result.isFailure(result)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("loads uploaded PDFs into builder page geometry", () =>
@@ -389,7 +390,7 @@ describe("PDF signature builder", () => {
         source: { type: "uploaded", bytes },
       });
       expect(explicitDocument.source.bytes?.byteLength).toBe(pdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("auto-places PDF builder signatures", () =>
@@ -444,7 +445,7 @@ describe("PDF signature builder", () => {
       if (Result.isFailure(ambiguous)) {
         expect(ambiguous.failure.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("signs a batch of PDFs sequentially and captures per-item failures", () =>
@@ -482,6 +483,6 @@ describe("PDF signature builder", () => {
           expect(result.error.code).toBe(PdfErrorCodeValue.unknownField);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

@@ -6,6 +6,7 @@ import {
   validatePdfSignatureTemplate,
 } from "../src/builder";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 describe("stacked PDF signature auto-placement", () => {
   it.effect("fails typed instead of recursing when a tiny horizontal step cannot advance", () =>
@@ -59,7 +60,7 @@ describe("stacked PDF signature auto-placement", () => {
         expect(result.failure.operation).toBe(PdfOperationValue.autoPlaceField);
       }
       expect(performance.now() - startedAt).toBeLessThan(1000);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects duplicate page indexes within one document", () =>
@@ -89,6 +90,6 @@ describe("stacked PDF signature auto-placement", () => {
         expect(result.failure.code).toBe(PdfErrorCodeValue.duplicateId);
         expect(result.failure.operation).toBe(PdfOperationValue.validateTemplate);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

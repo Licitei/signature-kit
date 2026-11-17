@@ -1,4 +1,6 @@
-import { Effect } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
+import { Effect, Layer } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { rubricPageIndexesExcludingSignature, rubricRectForPage } from "@signature-kit/pdf/stamp";
@@ -166,7 +168,7 @@ describe("signAll + rubricEveryPage", () => {
           name: "Maria A. Costa",
           location: "Vitest",
         },
-      }),
+      }).pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer)))),
     );
     const elapsed = performance.now() - start;
 

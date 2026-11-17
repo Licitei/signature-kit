@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue, PdfSigningRequestSchema } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const createPdf = (): Effect.Effect<Uint8Array> =>
   Effect.promise(async () => {
@@ -32,7 +33,7 @@ describe("PDF signing time boundaries", () => {
         expect(result.failure.retryable).toBe(false);
         expect(result.failure.operation).toBe(PdfOperationValue.placeholder);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("accepts a valid signing time", () =>
@@ -47,6 +48,6 @@ describe("PDF signing time boundaries", () => {
 
       expect(decoded.signingTime).toBe(signingTime);
       expect(placeholder.byteLength).toBeGreaterThan(pdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

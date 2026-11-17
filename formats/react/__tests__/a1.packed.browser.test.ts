@@ -1,3 +1,4 @@
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { Effect, Fiber, Schema } from "effect";
@@ -106,7 +107,9 @@ it("loads packed workers, retries a bad password, and signs a PDF", async () => 
         const signed = yield* Fiber.join(signing);
         if (signed.action !== "signed") return yield* Effect.die("Expected signed receipt");
         expect(signed.pdf).toBeInstanceOf(Uint8Array);
-        const verified = yield* verifyPdfSignatures({ pdf: signed.pdf });
+        const verified = yield* verifyPdfSignatures({ pdf: signed.pdf }).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(verified.map((item) => item.cryptographicValid)).toEqual([true]);
         expect(verified.map((item) => item.coverageValid)).toEqual([true]);
         const requests = yield* Effect.promise(async () => {

@@ -50,7 +50,9 @@ it("signs with the current generation and rejects disposed and replaced sessions
           generation: first.generation,
           input,
         });
-        const verified = yield* verifyPdfSignatures({ pdf: signed });
+        const verified = yield* verifyPdfSignatures({ pdf: signed }).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(verified.map((item) => item.cryptographicValid)).toEqual([true]);
         const second = yield* client.Initialize({ pfx, password: "changeit" });
         expect(second.generation).toBeGreaterThan(first.generation);

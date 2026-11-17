@@ -33,7 +33,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
         expect(result.failure.operation).toBe(PdfOperationValue.mergeDocuments);
         expect(result.failure.schemaName).toBe(PdfSchemaNameValue.pdfMergeDocuments);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("does not synthesize a page when valid documents contain no pages", () =>
     Effect.gen(function* () {
@@ -47,7 +47,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
       );
 
       expect(pageCount).toBe(0);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects non-finite and non-positive text-anchor stamp sizes", () =>
     Effect.gen(function* () {
@@ -82,7 +82,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
           expect(result.failure.schemaName).toBe(PdfSchemaNameValue.pdfTextAnchorSearchInput);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects non-finite anchor boxes and offsets while allowing a negative offset", () =>
     Effect.gen(function* () {
@@ -131,7 +131,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
 
       const anchors = yield* findPdfTextAnchors({ ...validInput, offset: -4 });
       expect(anchors).toStrictEqual([{ pageIndex: 0, x: 12, y: 20, width: 80, height: 20 }]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect(
     "uses visible non-square CropBox dimensions for 90 and 270 degree direct PDF anchors",
@@ -150,7 +150,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
 
           expect(anchors).toStrictEqual([{ pageIndex: 0, x: 20, y: 180, width: 80, height: 20 }]);
         }
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("merges valid documents in page order", () =>
     Effect.gen(function* () {
@@ -172,7 +172,7 @@ describe("PDF merge and text-anchor input boundaries", () => {
         [300, 150],
         [400, 200],
       ]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("finds a valid text anchor with a usable stamp rectangle", () =>
     Effect.gen(function* () {
@@ -186,6 +186,6 @@ describe("PDF merge and text-anchor input boundaries", () => {
       });
 
       expect(anchors).toStrictEqual([{ pageIndex: 0, x: 12, y: 24, width: 80, height: 20 }]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

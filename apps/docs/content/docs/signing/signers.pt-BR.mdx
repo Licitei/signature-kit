@@ -123,8 +123,12 @@ Para os formatos, o A1 oferece um atalho: `a1SignaturesLayer(options)` retorna u
 import { signXml } from "@signature-kit/xml/sign"
 import { xmlRuntimeLayer } from "@signature-kit/xml/runtime"
 import { signPdf } from "@signature-kit/pdf/sign"
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file"
+import * as NodeServices from "@effect/platform-node/NodeServices"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
-import { Effect, Redacted } from "effect"
+import { Effect, Layer, Redacted } from "effect"
+
+const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
 
 // a1SignaturesLayer(options) -> Layer<Signatures, SignatureKitError>
 const layer = a1SignaturesLayer({ pfx, password: Redacted.make(pwd) })
@@ -135,7 +139,7 @@ export const program = Effect.gen(function* () {
     .pipe(Effect.provide(layer), Effect.provide(xmlRuntimeLayer))
 
   const signedPdf = yield* signPdf({ pdf, policy: "pades-icp-brasil" })
-    .pipe(Effect.provide(layer))
+    .pipe(Effect.provide(layer), Effect.provide(pdfCoreLayer))
 
   return { signedXml, signedPdf }
 })
@@ -156,13 +160,16 @@ Como a costura é uma porta de formato fixo, trocar de onde vem o poder de assin
 import { signPdf } from "@signature-kit/pdf/sign"
 import { signaturesLayer } from "@signature-kit/signatures"
 import type { SignerAdapter } from "@signature-kit/signatures"
-import { Effect } from "effect"
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core"
+import { Effect, Layer } from "effect"
 
 // The seam is just a port: any SignerAdapter works, as long as it has an id.
 declare const a1Signer: SignerAdapter   // from loadA1SignerAdapter (id "a1")
 declare const hsmSigner: SignerAdapter  // another backend that satisfies the contract
 
-const job = signPdf({ pdf, policy: "pades-ades" })
+declare const pdfCoreLayer: Layer.Layer<PdfCore>
+
+const job = signPdf({ pdf, policy: "pades-ades" }).pipe(Effect.provide(pdfCoreLayer))
 
 const program = Effect.gen(function* () {
   // Same job, two backends — nothing about the PDF changes.

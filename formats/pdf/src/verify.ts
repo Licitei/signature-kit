@@ -1,5 +1,6 @@
 import type { CmsError } from "@signature-kit/cms/config";
 import { verifyDetachedSignedData } from "@signature-kit/cms/verify";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Schema } from "effect";
 import { forEachPdfSignature, isCompletePdfRevision } from "./byte-range.js";
 import {
@@ -17,7 +18,7 @@ import type {
 
 export const verifyPdfSignatures = (
   input: PdfVerificationRequest,
-): Effect.Effect<readonly PdfSignatureVerificationResult[], PdfError | CmsError> =>
+): Effect.Effect<readonly PdfSignatureVerificationResult[], PdfError | CmsError, PdfCore> =>
   Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(PdfVerificationRequestSchema)(input).pipe(
       Effect.mapError(
@@ -68,7 +69,7 @@ export const verifyPdfSignatures = (
 
 export const verifyPdf = Effect.fn(function* (
   input: PdfVerificationRequest,
-): Effect.fn.Return<PdfVerificationResult, PdfError | CmsError> {
+): Effect.fn.Return<PdfVerificationResult, PdfError | CmsError, PdfCore> {
   const results = yield* verifyPdfSignatures(input);
   const newest = results.at(-1);
   if (newest === undefined) {

@@ -1,6 +1,6 @@
 # @signature-kit/pdf-core
 
-In-house PDF engine compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text without any third-party PDF parser. The Rust crate lives in `rust/` and has zero external dependencies; TypeScript talks to it through a tiny C ABI (no wasm-bindgen).
+In-house PDF engine compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text, analyzes signature revisions, and writes PDFs (incremental updates, full rewrites, page merges) without any third-party PDF library. The Rust crate lives in `rust/` and has zero external dependencies; TypeScript talks to it through a tiny C ABI (no wasm-bindgen).
 
 ## Install
 
@@ -16,7 +16,7 @@ bun add @signature-kit/pdf-core effect
 - `@signature-kit/pdf-core/file` — `pdfCoreFileLayer`: reads `pdf-core.wasm` through the Effect `FileSystem` and `Path` services. The caller provides the Node or Bun platform layer.
 - `@signature-kit/pdf-core/pdf-core.wasm` — the compiled module for bundlers and custom loaders.
 
-`WebAssembly`, `fetch`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
+`WebAssembly`, `fetch`, `TextEncoder`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
 
 ## Example
 
@@ -65,21 +65,64 @@ Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully o
 
 `inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-16 code unit offsets into `text`, so item `n` is `text.slice(offsets[n], offsets[n + 1])`). Results are decoded straight from wasm memory, and the typed arrays copied out, before the wasm buffers are released.
 
+## Signatures and revisions
+
+`signatures(pdf, analysis)` reports the signature dictionaries of a PDF. Every dictionary carries its kind (`signature` or `documentTimestamp`), its object number and start offset, the exact byte spans of its `/ByteRange` and `/Contents` entries, the parsed byte-range values when they are four non-negative safe integers, and whether it is an unsigned placeholder (`[0 /********** /********** /**********]` with a zero-filled `/Contents`).
+
+- `"scan"` scans every indirect object once. `parseFailed`, `streamFailed`, and `streamUncertain` report syntax the scanner could not bound; callers treat them as fail-closed.
+- `"dictionaries"` resolves forward indirect stream lengths from each revision's own number objects before rescanning, and reports `failure: "streamEnd"` when a stream still cannot be bounded.
+- `"verification"` additionally reads every revision (classic tables, xref streams with Flate and PNG/TIFF predictors, hybrid `/XRefStm` sections, object streams), binds each dictionary to the revision whose `%%EOF` ends its byte range, and keeps only dictionaries reachable from that revision's AcroForm signature fields.
+
+Work is bounded: 128 revisions, 1,024 signature dictionaries, 200,000 indirect number values, 500,000 cross-reference entries, 16 MiB per xref or object stream, 64 MiB of decompressed object streams, and 200,000 reachability steps. Exceeding a bound reports a `failure` instead of a partial answer.
+
+`revisionComplete(pdf, end)` is `true` when `pdf.subarray(0, end)` is a complete revision: it ends at `%%EOF` (trailing whitespace allowed), its cross-reference chain is intact, and the prefix opens as a document.
+
+## Writing
+
+`document(pdf, options)` describes what an edit needs: `nextObjectNumber`, every page (`ref`, boxes, rotation, annotation count), whether the catalog has an AcroForm, the annotations of `annotationPages` (reference, widget flag, `/T` presence, `/Rect`, and the signature slot analysis of empty signature widgets), and with `fieldNamePrefix` the first unused `<prefix><n>` field name (or why the field tree could not be read within its depth, node, and name-length budgets).
+
+`edit(pdf, operations, options)` applies typed operations and serializes the result. Values are PDF syntax (`"<< /Fields [] >>"`, `"12 0 R"`, `"(text)"`); new objects use numbers from `nextObjectNumber` upward. Operations:
+
+| `op`             | Effect                                                                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `setObject`      | Replaces or adds an indirect object.                                                                                                |
+| `setStream`      | Replaces or adds a stream object; `compress` Flate-encodes the data with the in-house zlib encoder.                                 |
+| `set` / `remove` | Sets or removes a dictionary key at a target. Targets start at the catalog, a page, or an object and follow a path of keys/indexes. |
+| `append`         | Appends to an array entry (indirect arrays are edited in place; a missing entry becomes a new array).                               |
+| `removeItem`     | Removes every equal item from an array entry (for example an annotation reference).                                                 |
+| `setFlags`       | ORs bits into an integer entry such as `/F` or `/SigFlags`.                                                                         |
+| `appendContent`  | Adds a content stream to a page; with `wrapRef` the existing content is wrapped in `q`/`Q` first.                                   |
+| `addResource`    | Adds a named resource (`Font`, `XObject`, `ExtGState`, …) to a page, materializing inherited resources.                             |
+| `image`          | Adds an 8-bit gray or RGB image XObject; with `alpha` the alpha channel becomes an `/SMask` object.                                 |
+| `standardFont`   | Adds a standard-14 Type 1 font (`WinAnsiEncoding` except Symbol and ZapfDingbats).                                                  |
+| `signature`      | Adds a signature dictionary with a `/ByteRange` placeholder and a zero-filled `/Contents` of `contentsLength` bytes.                |
+| `repairCatalog`  | Sets `/Type /Catalog` on the document catalog.                                                                                      |
+
+`mode` chooses the serialization. `"incremental"` appends the changed objects after the untouched original bytes with a new cross-reference section linked by `/Prev` (a classic table, or an xref stream when the previous section is one), so earlier signatures stay valid; it fails when the cross-reference chain had to be repaired. `"rewrite"` copies the reachable object graph into a new file with renumbered objects, dropping unreachable ones; `objectStreams: true` packs non-stream objects into Flate object streams. `"auto"` (default) is incremental when possible and a rewrite otherwise.
+
+`merge(sources, options)` copies pages into a new document: each source may select `pageIndexes`; inherited boxes, rotation, and resources are materialized, references to pages that are not copied become `null`, and `dropWidgets` removes widget annotations. `deflate(bytes)` returns a zlib stream.
+
 ## Errors
 
-Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.INVALID_PDF`, `pdfCore.ENCRYPTED_PDF`, `pdfCore.LIMIT_EXCEEDED`, `pdfCore.UNSUPPORTED_FEATURE`, and `pdfCore.INVALID_OPTIONS`. `pdfCoreErrorMessages` carries `en-US` and `pt-BR` copy.
+Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.INVALID_PDF`, `pdfCore.ENCRYPTED_PDF`, `pdfCore.LIMIT_EXCEEDED`, `pdfCore.UNSUPPORTED_FEATURE`, and `pdfCore.INVALID_OPTIONS`. Invalid edit operations (malformed PDF syntax, missing targets, impossible incremental updates) fail with `pdfCore.INVALID_OPTIONS`. `pdfCoreErrorMessages` carries `en-US` and `pt-BR` copy.
 
 ## Wasm ABI
 
-The module exports `memory` and five functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
+The module exports `memory` and eleven functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
 
-| Export                                                                          | Contract                                                                              |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `pdf_core_alloc(len) -> ptr`                                                    | 8-byte aligned block of `len` bytes, or `0` when out of memory.                       |
-| `pdf_core_free(ptr, len)`                                                       | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
-| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr` | Returns a result block, or `0` when out of memory.                                    |
-| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`    | Returns a text result block, or `0` when out of memory.                               |
-| `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`  | Returns a tables result block, or `0` when out of memory.                             |
+| Export                                                                                                   | Contract                                                                              |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `pdf_core_alloc(len) -> ptr`                                                                             | 8-byte aligned block of `len` bytes, or `0` when out of memory.                       |
+| `pdf_core_free(ptr, len)`                                                                                | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
+| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                          | Returns a result block, or `0` when out of memory.                                    |
+| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                             | Returns a text result block, or `0` when out of memory.                               |
+| `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                           | Returns a tables result block, or `0` when out of memory.                             |
+| `pdf_core_signatures(pdf_ptr, pdf_len, mode) -> result_ptr`                                              | Signature analysis; `mode` `0` scan, `1` dictionaries, `2` verification.              |
+| `pdf_core_revision_complete(pdf_ptr, pdf_len, end) -> u32`                                               | `1` when the first `end` bytes are a complete revision, else `0`.                     |
+| `pdf_core_document(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, prefix_ptr, prefix_len) -> result_ptr` | Document description; `flags` bit 2 selects annotation pages.                         |
+| `pdf_core_edit(pdf_ptr, pdf_len, ops_ptr, ops_len) -> result_ptr`                                        | Applies an edit payload; the result payload is the new PDF.                           |
+| `pdf_core_merge(payload_ptr, payload_len, flags) -> result_ptr`                                          | Merges sources; `flags` bit 0 drops widgets, bit 1 packs object streams.              |
+| `pdf_core_deflate(data_ptr, data_len) -> result_ptr`                                                     | The result payload is a zlib stream.                                                  |
 
 `flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
 
@@ -87,11 +130,11 @@ The module exports `memory` and five functions. There is no global mutable state
 
 All integers are little-endian. The block is 8-byte aligned and `total_len` is the length to pass to `pdf_core_free`.
 
-| Offset | Type  | Field                                                                                  |
-| ------ | ----- | -------------------------------------------------------------------------------------- |
-| 0      | `u32` | `total_len` — header plus payload                                                      |
-| 4      | `u32` | `status` — `0` ok, `1` invalid PDF, `2` encrypted, `3` limit exceeded, `4` unsupported |
-| 8      | bytes | payload (UTF-8 reason when `status != 0`)                                              |
+| Offset | Type  | Field                                                                                                       |
+| ------ | ----- | ----------------------------------------------------------------------------------------------------------- |
+| 0      | `u32` | `total_len` — header plus payload                                                                           |
+| 4      | `u32` | `status` — `0` ok, `1` invalid PDF, `2` encrypted, `3` limit exceeded, `4` unsupported, `5` invalid request |
+| 8      | bytes | payload (UTF-8 reason when `status != 0`)                                                                   |
 
 ### Payload (version 2)
 
@@ -112,6 +155,22 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 ### Tables payload (version 1)
 
 `pdf_core_tables` uses the same result block and status codes; only `flags` bit 2 applies. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`1`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 48-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`) and `bbox` (4 × `f64`) — followed by its cells in row-major order, 56 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob). The UTF-8 text blob follows the last record and is padded to 8.
+
+### Signatures payload (version 1)
+
+Header of 24 bytes, all `u32`: `magic` (`0x47534450`, "PDSG"), `version` (`1`), `failure` (`0` none, then `1`–`10` in the order `streamEnd`, `revisionLengths`, `indirectLengths`, `lengthBudget`, `dictionaryParse`, `revisionStructure`, `crossReferenceStream`, `objectStream`, `traversalBudget`, `invalidByteRange`), `flags` (bit 0 parse failed, bit 1 stream failed, bit 2 stream uncertain, bit 3 limit exceeded), `count`, padding. Then `count` records of 72 bytes: `object_number`, `generation`, `object_start`, `flags` (bit 0 document timestamp, bit 1 has `/ByteRange`, bit 2 has `/Contents`, bit 3 byte-range values valid, bit 4 unsigned placeholder), the `/ByteRange` span and the `/Contents` span (`key_start`, `value_start`, `value_end` each, all `u32`), and the four byte-range values as `f64`.
+
+### Document payload (version 1)
+
+Header of 32 bytes, all `u32`: `magic` (`0x49444450`, "PDDI"), `version` (`1`), `page_count`, `annotation_count`, `next_object_number`, `flags` (bit 0 AcroForm, bit 1 field name available, bit 2 field name failed), `field_failure` (`1`–`6`: depth, node budget, cyclic, name length, qualified name length, character budget), `field_name_len`. Pages are 80-byte records: `media_box` and `crop_box` (4 × `f64` each), `rotate` (`i32`), `ref_number`, `ref_generation` (`0` when the page is not indirect), `annotation_count`. Annotations are 64-byte records: `page_index`, `index`, `ref_number`, `ref_generation`, `flags` (bit 0 widget, bit 1 has rect, bit 2 has `/T`), `slot` (`0` none, `1` open on the widget, `2` open on the referenced field, `3` open on the widget's direct `/Parent`, `4` malformed), `slot_a` (field object number, or `1` cyclic, `2` invalid parent, `3` depth), `slot_b` (field generation), then `rect` (4 × `f64`). The UTF-8 field name follows, padded to 8.
+
+### Edit payload (version 1)
+
+Little-endian and unaligned: `magic` (`0x44455044`, "PDED"), `version` (`1`), `flags` (bits 0–1 mode: `0` auto, `1` incremental, `2` rewrite; bit 2 object streams), `count`, then `count` operations. Each operation starts with its opcode (`1` setObject … `13` repairCatalog, in the order of the table above). Byte strings are a `u32` length followed by the bytes; references are `number`, `generation`; optional references use number `0` for none; targets are `kind` (`0` catalog, `1` page, `2` object), two `u32` arguments (page index, or number and generation), a step count, and steps (`0` + key bytes, or `1` + `u32` index).
+
+### Merge payload
+
+`count`, then per source `pdf_len` and `page_count` (`0xFFFFFFFF` for every page) followed by that many page indexes, then the PDFs back to back.
 
 ## Development
 

@@ -9,6 +9,7 @@ import { signatures } from "@signature-kit/signatures";
 import { Effect, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { readA1Fixture } from "../../testing/fixtures";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const PASSWORD = Redacted.make("changeit");
 const textEncoder = new TextEncoder();
@@ -72,6 +73,6 @@ describe("SignatureKit server integration", () => {
       const pdfVerification = yield* verifyPdf({ pdf: signedPdf });
       expect(pdfVerification.valid).toBe(true);
       expect(pdfVerification.signatureCount).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

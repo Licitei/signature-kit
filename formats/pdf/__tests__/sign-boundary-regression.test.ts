@@ -1,11 +1,13 @@
 import { PDFDocument } from "@cantoo/pdf-lib";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Redacted, Result } from "effect";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { Effect, Layer, Redacted, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import type { PdfSigningRequest } from "../src/config";
 import { signPdf } from "../src/sign";
 import type { Signatures } from "@signature-kit/signatures";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 
 const createPdf = (): Effect.Effect<Uint8Array> =>
@@ -17,10 +19,14 @@ const createPdf = (): Effect.Effect<Uint8Array> =>
 
 const PASSWORD = Redacted.make("changeit");
 
-const withTestSignatures = <A, E>(effect: Effect.Effect<A, E, Signatures>) =>
+const withTestSignatures = <A, E>(effect: Effect.Effect<A, E, Signatures | PdfCore>) =>
   readA1Fixture("ecnpj").pipe(
     Effect.flatMap((pfx) =>
-      effect.pipe(Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD }))),
+      effect.pipe(
+        Effect.provide(
+          Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), pdfCoreTestLayer),
+        ),
+      ),
     ),
   );
 

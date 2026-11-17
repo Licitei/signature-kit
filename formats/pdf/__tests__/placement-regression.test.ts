@@ -14,6 +14,10 @@ import { PdfCoordinateTupleSchema, PdfErrorCodeValue, PdfOperationValue } from "
 import type { PdfCoordinateTuple, PdfSignatureAppearance } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
 import { resolveSignatureWidgetPlacement } from "../src/placement";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
+
+const saveDocument = (document: PDFDocument): Effect.Effect<Uint8Array> =>
+  Effect.promise(() => document.save({ useObjectStreams: false, updateFieldAppearances: false }));
 
 const coordinateArray = (
   pdfDoc: PDFDocument,
@@ -217,7 +221,7 @@ describe("PDF auto-placement geometry", () => {
         page.setCropBox(100, 100, 200, 160);
         page.setRotation(degrees(placementCase.rotation));
 
-        const empty = yield* resolveSignatureWidgetPlacement(pdfDoc, {
+        const empty = yield* resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), {
           placement: {
             kind: "auto",
             pageIndex: 0,
@@ -231,7 +235,7 @@ describe("PDF auto-placement geometry", () => {
         expect(empty.widgetRect).toEqual(placementCase.empty);
 
         addObstacle(pdfDoc, page, placementCase.empty);
-        const blocked = yield* resolveSignatureWidgetPlacement(pdfDoc, {
+        const blocked = yield* resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), {
           placement: {
             kind: "auto",
             pageIndex: 0,
@@ -244,7 +248,7 @@ describe("PDF auto-placement geometry", () => {
         });
         expect(blocked.widgetRect).toEqual(placementCase.blocked);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("skips blank signature widgets outside the rotated CropBox", () =>
     Effect.gen(function* () {
@@ -263,7 +267,7 @@ describe("PDF auto-placement geometry", () => {
       annotations.push(pdfDoc.context.register(widget));
       page.node.set(PDFName.of("Annots"), annotations);
 
-      const resolved = yield* resolveSignatureWidgetPlacement(pdfDoc, {
+      const resolved = yield* resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), {
         placement: {
           kind: "auto",
           pageIndex: 0,
@@ -277,7 +281,7 @@ describe("PDF auto-placement geometry", () => {
 
       expect(resolved.widgetRect).toEqual([260, 210, 290, 250]);
       expect(resolved.existingWidgetObject).toBeUndefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("preserves manual widget rectangles in raw PDF coordinates", () =>
     Effect.gen(function* () {
@@ -286,19 +290,18 @@ describe("PDF auto-placement geometry", () => {
       page.setCropBox(100, 100, 200, 160);
       page.setRotation(degrees(90));
 
-      const resolved = yield* resolveSignatureWidgetPlacement(pdfDoc, {
+      const resolved = yield* resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), {
         placement: { kind: "manual", pageIndex: 0, widgetRect: [10, 10, 80, 50] },
       });
 
       expect(resolved.widgetRect).toEqual([10, 10, 80, 50]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("binds hierarchical signature widgets through their selected parent field", () =>
     Effect.gen(function* () {
       const source = yield* createHierarchicalSignatureSlots;
-      const sourceDocument = yield* Effect.promise(() => PDFDocument.load(source));
-      const resolved = yield* resolveSignatureWidgetPlacement(sourceDocument, hierarchyPlacement);
+      const resolved = yield* resolveSignatureWidgetPlacement(source, hierarchyPlacement);
       expect(resolved.widgetRect).toEqual([180, 20, 300, 60]);
       expect(resolved.existingWidgetObject).not.toBeUndefined();
       expect(resolved.existingSignatureFieldObject).not.toBeUndefined();
@@ -332,14 +335,14 @@ describe("PDF auto-placement geometry", () => {
       expect(secondWidget?.get(PDFName.of("T"))).toBeUndefined();
       expect(secondWidget?.lookupMaybe(PDFName.of("F"), PDFNumber)?.asNumber()).toBe(5);
       expect(secondWidget?.get(PDFName.of("Parent"))?.toString()).toBe(fields?.get(1)?.toString());
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("binds an inherited signature type to its terminal child field", () =>
     Effect.gen(function* () {
       const source = yield* createInheritedSignatureSlot;
       const sourceDocument = yield* Effect.promise(() => PDFDocument.load(source));
-      const resolved = yield* resolveSignatureWidgetPlacement(sourceDocument, hierarchyPlacement);
+      const resolved = yield* resolveSignatureWidgetPlacement(source, hierarchyPlacement);
       const sourceAcroForm = sourceDocument.catalog.lookupMaybe(PDFName.of("AcroForm"), PDFDict);
       const sourceFields = sourceAcroForm?.lookupMaybe(PDFName.of("Fields"), PDFArray);
       const sourceRoot =
@@ -349,9 +352,13 @@ describe("PDF auto-placement geometry", () => {
       const sourceRootKids = sourceRoot?.lookupMaybe(PDFName.of("Kids"), PDFArray);
 
       expect(resolved.widgetRect).toEqual([180, 20, 300, 60]);
-      expect(resolved.existingSignatureFieldObject?.toString()).toBe(
-        sourceRootKids?.get(0)?.toString(),
-      );
+      const [terminalNumber, terminalGeneration] = (sourceRootKids?.get(0)?.toString() ?? "")
+        .split(" ")
+        .map(Number);
+      expect(resolved.existingSignatureFieldObject).toEqual({
+        kind: "object",
+        ref: { number: terminalNumber, generation: terminalGeneration },
+      });
 
       const prepared = yield* addSignaturePlaceholder({
         pdf: source,
@@ -379,22 +386,21 @@ describe("PDF auto-placement geometry", () => {
       expect(root?.get(PDFName.of("V"))).toBeUndefined();
       expect(terminal?.get(PDFName.of("V"))).not.toBeUndefined();
       expect(widget?.get(PDFName.of("V"))).toBeUndefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails typed when the selected signature hierarchy is cyclic", () =>
     Effect.gen(function* () {
       const source = yield* createCyclicSignatureSlot;
-      const sourceDocument = yield* Effect.promise(() => PDFDocument.load(source));
       const result = yield* Effect.result(
-        resolveSignatureWidgetPlacement(sourceDocument, hierarchyPlacement),
+        resolveSignatureWidgetPlacement(source, hierarchyPlacement),
       );
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe("pdf.SIGNATURE_PLACEMENT_FAILED");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps a merged signature widget as its own value owner", () =>
@@ -421,7 +427,7 @@ describe("PDF auto-placement geometry", () => {
       expect(root?.get(PDFName.of("V"))).toBeUndefined();
       expect(firstWidget?.get(PDFName.of("V"))).toBeUndefined();
       expect(secondWidget?.get(PDFName.of("V"))).not.toBeUndefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects non-finite, zero-area, and inverted widget rectangles", () =>
@@ -457,7 +463,7 @@ describe("PDF auto-placement geometry", () => {
           expect(result.failure.operation).toBe("pdf.placeholder");
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("bounds auto-placement comparisons without rejecting the exact budget boundary", () =>
@@ -480,7 +486,7 @@ describe("PDF auto-placement geometry", () => {
         }
         page.node.set(PDFName.of("Annots"), annotations);
         const result = yield* Effect.result(
-          resolveSignatureWidgetPlacement(pdfDoc, {
+          resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), {
             placement: {
               kind: "auto",
               pageIndex: 0,
@@ -505,7 +511,7 @@ describe("PDF auto-placement geometry", () => {
           expect(result.success.widgetRect).toEqual([999, 0, 1000, 1]);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects annotation arrays over the obstacle cap before materializing obstacles", () =>
     Effect.gen(function* () {
@@ -517,7 +523,7 @@ describe("PDF auto-placement geometry", () => {
       page.node.set(PDFName.of("Annots"), annotations);
 
       const result = yield* Effect.result(
-        resolveSignatureWidgetPlacement(pdfDoc, {
+        resolveSignatureWidgetPlacement(yield* saveDocument(pdfDoc), {
           placement: {
             kind: "auto",
             pageIndex: 0,
@@ -539,6 +545,6 @@ describe("PDF auto-placement geometry", () => {
           "Automatic signature placement scan exceeds the supported comparison budget.",
         );
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

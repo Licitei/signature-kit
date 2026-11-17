@@ -152,6 +152,10 @@ impl<'data> Document<'data> {
         }
     }
 
+    pub(crate) const fn bytes(&self) -> &'data [u8] {
+        self.bytes
+    }
+
     pub(crate) fn catalog(&self) -> Outcome<Option<Rc<Object>>> {
         let root = self.trailer.borrow().get(b"Root").cloned();
         let Some(root_next) = root else {
@@ -390,6 +394,10 @@ impl<'data> Document<'data> {
         self.limits
             .max_objects
             .min(self.bytes.len().saturating_mul(8).saturating_add(4096))
+    }
+
+    pub(crate) fn object_count(&self) -> usize {
+        self.table.borrow().len()
     }
 
     fn object_stream(&self, number: u32) -> Outcome<Rc<ObjectStream>> {
@@ -922,6 +930,18 @@ impl<'data> Document<'data> {
         scan
     }
 
+    pub(crate) const fn shift(&self) -> usize {
+        self.shift.get()
+    }
+
+    pub(crate) fn startxref(&self) -> Option<usize> {
+        find_startxref(self.bytes)
+    }
+
+    pub(crate) fn trailer(&self) -> Dict {
+        self.trailer.borrow().clone()
+    }
+
     fn walk_pages(&self) -> Outcome<Vec<Page>> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
@@ -1000,7 +1020,6 @@ impl<'data> Document<'data> {
         Ok(pages)
     }
 
-    #[cfg(test)]
     pub(crate) const fn was_repaired(&self) -> bool {
         self.repaired.get()
     }

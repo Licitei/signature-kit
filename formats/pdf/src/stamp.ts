@@ -11,6 +11,7 @@ import {
   rgb,
 } from "@cantoo/pdf-lib";
 import type { PDFFont, PDFPage, PDFImage, RGB } from "@cantoo/pdf-lib";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import qrcode from "qrcode-generator";
 import { Effect, Match, Schema } from "effect";
 import { inflateZlibBounded, hasPdfByteRange } from "./byte-range.js";
@@ -1403,6 +1404,22 @@ export const pdfCoordinateTupleFromTopLeftRect = (
   );
 };
 
+export const pdfCoordinateTupleFromPdfPageGeometry = (
+  rect: PdfSignatureRect,
+  geometry: PdfPageGeometry,
+): PdfCoordinateTuple => {
+  const coordinateSystem = geometryCoordinateSystem(geometry);
+  return pdfCoordinateTupleFromVisibleBottomLeftRect(
+    {
+      x: rect.x,
+      y: coordinateSystem.height - rect.y - rect.height,
+      width: rect.width,
+      height: rect.height,
+    },
+    coordinateSystem,
+  );
+};
+
 const topLeftRectInCoordinateSystem = (
   [left, bottom, right, top]: PdfCoordinateTuple,
   coordinateSystem: PdfVisiblePageCoordinateSystem,
@@ -2046,7 +2063,18 @@ const stampPdfRubricTargets = (
 export const stampPdfRubric = (
   pdf: Uint8Array,
   stamp: PdfRubricStamp,
-  forIncrementalUpdate = hasPdfByteRange(pdf),
+  forIncrementalUpdate?: boolean,
+): Effect.Effect<Uint8Array, PdfError, PdfCore> =>
+  forIncrementalUpdate === undefined
+    ? hasPdfByteRange(pdf).pipe(
+        Effect.flatMap((signed) => stampPdfRubricWithUpdateMode(pdf, stamp, signed)),
+      )
+    : stampPdfRubricWithUpdateMode(pdf, stamp, forIncrementalUpdate);
+
+const stampPdfRubricWithUpdateMode = (
+  pdf: Uint8Array,
+  stamp: PdfRubricStamp,
+  forIncrementalUpdate: boolean,
 ): Effect.Effect<Uint8Array, PdfError> =>
   Schema.decodeUnknownEffect(PdfRubricStampSchema)(stamp).pipe(
     Effect.mapError(
@@ -2342,23 +2370,37 @@ export const stampPdfVisibleSignatures = (
 
 export const stampPdfVisibleSignature = (
   input: PdfVisibleStampInput,
-): Effect.Effect<Uint8Array, PdfError> =>
-  stampPdfVisibleSignatures(
-    {
-      pdf: input.pdf,
-      stamps: [{ pageIndex: input.pageIndex, rect: input.rect }],
-      ...(input.lines === undefined ? {} : { lines: input.lines }),
-      ...(input.badge === undefined ? {} : { badge: input.badge }),
-      ...(input.inkPng === undefined ? {} : { inkPng: input.inkPng }),
-      ...(input.border === undefined ? {} : { border: input.border }),
-      ...(input.qr === undefined ? {} : { qr: input.qr }),
-    },
-    hasPdfByteRange(input.pdf),
+): Effect.Effect<Uint8Array, PdfError, PdfCore> =>
+  hasPdfByteRange(input.pdf).pipe(
+    Effect.flatMap((signed) =>
+      stampPdfVisibleSignatures(
+        {
+          pdf: input.pdf,
+          stamps: [{ pageIndex: input.pageIndex, rect: input.rect }],
+          ...(input.lines === undefined ? {} : { lines: input.lines }),
+          ...(input.badge === undefined ? {} : { badge: input.badge }),
+          ...(input.inkPng === undefined ? {} : { inkPng: input.inkPng }),
+          ...(input.border === undefined ? {} : { border: input.border }),
+          ...(input.qr === undefined ? {} : { qr: input.qr }),
+        },
+        signed,
+      ),
+    ),
   );
 
 export const stampPdfRubricOnPages = (
   input: PdfRubricPageStampInput,
-  forIncrementalUpdate = hasPdfByteRange(input.pdf),
+  forIncrementalUpdate?: boolean,
+): Effect.Effect<Uint8Array, PdfError, PdfCore> =>
+  forIncrementalUpdate === undefined
+    ? hasPdfByteRange(input.pdf).pipe(
+        Effect.flatMap((signed) => stampPdfRubricOnPagesWithUpdateMode(input, signed)),
+      )
+    : stampPdfRubricOnPagesWithUpdateMode(input, forIncrementalUpdate);
+
+const stampPdfRubricOnPagesWithUpdateMode = (
+  input: PdfRubricPageStampInput,
+  forIncrementalUpdate: boolean,
 ): Effect.Effect<Uint8Array, PdfError> =>
   Schema.decodeUnknownEffect(PdfRubricPageStampInputSchema)(input).pipe(
     Effect.mapError(
@@ -2446,12 +2488,19 @@ export const createPdfStampPreview = (
           document.addPage([valid.width + 4, valid.height + 4]);
           return new Uint8Array(await document.save());
         });
-        return yield* stampPdfVisibleSignature({
-          pdf,
-          badge: valid.badge,
-          pageIndex: 0,
-          rect: { pageIndex: 0, x: 2, y: 2, width: valid.width, height: valid.height },
-        });
+        return yield* stampPdfVisibleSignatures(
+          {
+            pdf,
+            stamps: [
+              {
+                pageIndex: 0,
+                rect: { pageIndex: 0, x: 2, y: 2, width: valid.width, height: valid.height },
+              },
+            ],
+            badge: valid.badge,
+          },
+          false,
+        );
       }),
     ),
   );

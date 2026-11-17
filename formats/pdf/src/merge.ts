@@ -1,5 +1,6 @@
 import { PDFArray, PDFDict, PDFDocument, PDFName } from "@cantoo/pdf-lib";
 import type { PDFPage } from "@cantoo/pdf-lib";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Schema } from "effect";
 import {
   PdfError,
@@ -37,7 +38,7 @@ const rewriteCopiedAnnotationPageReferences = (document: PDFDocument, page: PDFP
 
 export const mergePdfs = (
   documents: ReadonlyArray<Uint8Array>,
-): Effect.Effect<Uint8Array, PdfError> =>
+): Effect.Effect<Uint8Array, PdfError, PdfCore> =>
   Schema.decodeUnknownEffect(PdfMergeDocumentsSchema)(documents).pipe(
     Effect.mapError(
       (issue) =>

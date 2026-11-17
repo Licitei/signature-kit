@@ -9,11 +9,16 @@ use core::mem;
 use core::ptr;
 use core::slice;
 
+use crate::deflate::zlib_compress;
 use crate::document;
+use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
-use crate::inspection::{InspectOptions, Inspection};
+use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
+use crate::num::widen;
+use crate::revision::{Analysis, Report, analyze, revision_complete};
 use crate::table::Table;
+use crate::write::{Packing, merge};
 
 const MAGIC: u32 = 0x4346_4450;
 const VERSION: u32 = 2;
@@ -35,6 +40,18 @@ const TABLES_HEADER_LEN: usize = 16;
 const TABLE_RECORD_LEN: usize = 48;
 const CELL_RECORD_LEN: usize = 56;
 const ALIGNMENT: usize = 8;
+const SIGNATURES_MAGIC: u32 = 0x4753_4450;
+const SIGNATURES_VERSION: u32 = 1;
+const SIGNATURE_RECORD_LEN: usize = 72;
+const DOCUMENT_MAGIC: u32 = 0x4944_4450;
+const DOCUMENT_VERSION: u32 = 1;
+const DOCUMENT_PAGE_RECORD_LEN: usize = 80;
+const DOCUMENT_ANNOTATION_RECORD_LEN: usize = 64;
+const MERGE_DROP_WIDGETS: u32 = 1;
+const MERGE_OBJECT_STREAMS: u32 = 2;
+const ALL_PAGES: u32 = u32::MAX;
+
+type MergeRequest<'data> = (Vec<&'data [u8]>, Vec<Option<Vec<u32>>>);
 
 struct Writer {
     capacity: usize,
@@ -547,12 +564,294 @@ pub(crate) unsafe extern "C" fn pdf_core_tables(
     }))
 }
 
+fn bytes_result(bytes: &[u8]) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(bytes.len());
+    out.bytes(bytes);
+    out.done()
+}
+
+fn encode_document(info: &DocumentInfo) -> Outcome<Writer> {
+    let (name_flags, failure, name): (u32, u32, &[u8]) = match &info.field_name {
+        None => (0, 0, &[]),
+        Some(Ok(found)) => (2, 0, found.as_bytes()),
+        Some(Err(code)) => (4, *code, &[]),
+    };
+    let mut out = Writer::with_capacity(
+        HEADER_LEN
+            .saturating_add(info.pages.len().saturating_mul(DOCUMENT_PAGE_RECORD_LEN))
+            .saturating_add(
+                info.annotations
+                    .len()
+                    .saturating_mul(DOCUMENT_ANNOTATION_RECORD_LEN),
+            )
+            .saturating_add(name.len())
+            .saturating_add(ALIGNMENT),
+    );
+    out.u32(DOCUMENT_MAGIC);
+    out.u32(DOCUMENT_VERSION);
+    out.u32(len32(info.pages.len())?);
+    out.u32(len32(info.annotations.len())?);
+    out.u32(info.next_object_number);
+    out.u32(u32::from(info.acro_form) | name_flags);
+    out.u32(failure);
+    out.u32(len32(name.len())?);
+    for page in &info.pages {
+        out.boxed(&page.info.media_box);
+        out.boxed(&page.info.crop_box);
+        out.i32(page.info.rotate);
+        out.u32(page.reference.map_or(0, |found| found.number));
+        out.u32(
+            page.reference
+                .map_or(0, |found| u32::from(found.generation)),
+        );
+        out.u32(page.annotation_count);
+    }
+    for annotation in &info.annotations {
+        let (slot, first, second) = match annotation.slot {
+            Slot::None => (0, 0, 0),
+            Slot::Open(FieldTarget::Widget) => (1, 0, 0),
+            Slot::Open(FieldTarget::Ref(found)) => (2, found.number, u32::from(found.generation)),
+            Slot::Open(FieldTarget::WidgetParent) => (3, 0, 0),
+            Slot::Malformed(code) => (4, code, 0),
+        };
+        out.u32(annotation.page_index);
+        out.u32(annotation.index);
+        out.u32(annotation.reference.map_or(0, |found| found.number));
+        out.u32(
+            annotation
+                .reference
+                .map_or(0, |found| u32::from(found.generation)),
+        );
+        out.u32(
+            u32::from(annotation.widget)
+                | (u32::from(annotation.rect.is_some()) << 1_i32)
+                | (u32::from(annotation.titled) << 2_i32),
+        );
+        out.u32(slot);
+        out.u32(first);
+        out.u32(second);
+        out.boxed(&annotation.rect.unwrap_or_default());
+    }
+    out.bytes(name);
+    out.align();
+    out.done()
+}
+
+fn encode_signatures(report: &Report) -> Outcome<Writer> {
+    let flags = u32::from(report.flags.parse_failed)
+        | (u32::from(report.flags.stream_failed) << 1_i32)
+        | (u32::from(report.flags.stream_uncertain) << 2_i32)
+        | (u32::from(report.flags.limit) << 3_i32);
+    let mut out = Writer::with_capacity(
+        24_usize.saturating_add(
+            report
+                .dictionaries
+                .len()
+                .saturating_mul(SIGNATURE_RECORD_LEN),
+        ),
+    );
+    out.u32(SIGNATURES_MAGIC);
+    out.u32(SIGNATURES_VERSION);
+    out.u32(report.failure.map_or(0, u32::from));
+    out.u32(flags);
+    out.u32(len32(report.dictionaries.len())?);
+    out.u32(0);
+    let saturate = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+    for dictionary in &report.dictionaries {
+        let byte_range = dictionary.byte_range;
+        let contents = dictionary.contents;
+        let record_flags = u32::from(dictionary.timestamp)
+            | (u32::from(byte_range.is_some()) << 1_i32)
+            | (u32::from(contents.is_some()) << 2_i32)
+            | (u32::from(dictionary.byte_range_values.is_some()) << 3_i32)
+            | (u32::from(dictionary.unsigned_placeholder) << 4_i32);
+        out.u32(u32::try_from(dictionary.number).unwrap_or(u32::MAX));
+        out.u32(u32::try_from(dictionary.generation).unwrap_or(u32::MAX));
+        out.u32(saturate(dictionary.object_start));
+        out.u32(record_flags);
+        for span in [byte_range, contents] {
+            out.u32(span.map_or(0, |found| saturate(found.key_start)));
+            out.u32(span.map_or(0, |found| saturate(found.value_start)));
+            out.u32(span.map_or(0, |found| saturate(found.value_end)));
+        }
+        out.boxed(&dictionary.byte_range_values.unwrap_or_default());
+    }
+    out.done()
+}
+
+fn merge_request(payload: &[u8]) -> Outcome<MergeRequest<'_>> {
+    let mut cursor = 0_usize;
+    let next = |position: &mut usize| -> Outcome<u32> {
+        let end = position.saturating_add(4);
+        let raw = payload
+            .get(*position..end)
+            .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
+            .ok_or_else(|| Failure::request("merge payload is truncated"))?;
+        *position = end;
+        Ok(u32::from_le_bytes(raw))
+    };
+    let count = next(&mut cursor)?;
+    let mut lengths: Vec<usize> = Vec::new();
+    let mut selections: Vec<Option<Vec<u32>>> = Vec::new();
+    for _ in 0..count {
+        lengths.push(widen(next(&mut cursor)?));
+        let pages = next(&mut cursor)?;
+        if pages == ALL_PAGES {
+            selections.push(None);
+            continue;
+        }
+        let mut chosen = Vec::new();
+        for _ in 0..pages {
+            chosen.push(next(&mut cursor)?);
+        }
+        selections.push(Some(chosen));
+    }
+    let mut sources: Vec<&[u8]> = Vec::with_capacity(lengths.len());
+    for length in lengths {
+        let end = cursor
+            .checked_add(length)
+            .ok_or_else(|| Failure::request("merge payload overflow"))?;
+        sources.push(
+            payload
+                .get(cursor..end)
+                .ok_or_else(|| Failure::request("merge payload is truncated"))?,
+        );
+        cursor = end;
+    }
+    if cursor != payload.len() {
+        return Err(Failure::request("merge payload has trailing bytes"));
+    }
+    Ok((sources, selections))
+}
+
+/// # Safety
+///
+/// `data_ptr` must satisfy [`view`] for `data_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_deflate(data_ptr: *const u8, data_len: usize) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let data = unsafe { view(data_ptr, data_len) };
+    finish(data.and_then(|bytes| bytes_result(&zlib_compress(bytes))))
+}
+
+/// # Safety
+///
+/// `pdf_ptr`, `pages_ptr` and `prefix_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_document(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+    prefix_ptr: *const u8,
+    prefix_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    // SAFETY: forwarded from this function's contract.
+    let prefix = unsafe { view(prefix_ptr, prefix_len) };
+    finish(request.and_then(|inner_request| {
+        let info = document_info(
+            inner_request.pdf,
+            inner_request.pages,
+            prefix?,
+            &Limits::default(),
+        )?;
+        encode_document(&info)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` and `ops_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_edit(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    ops_ptr: *const u8,
+    ops_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    // SAFETY: forwarded from this function's contract.
+    let ops = unsafe { view(ops_ptr, ops_len) };
+    finish(pdf.and_then(|document| {
+        let output = edit(document, ops?, &Limits::default())?;
+        bytes_result(&output)
+    }))
+}
+
+/// # Safety
+///
+/// `payload_ptr` must satisfy [`view`] for `payload_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_merge(
+    payload_ptr: *const u8,
+    payload_len: usize,
+    flags: u32,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let payload = unsafe { view(payload_ptr, payload_len) };
+    finish(payload.and_then(|bytes| {
+        let (sources, selections) = merge_request(bytes)?;
+        let layout = if flags & MERGE_OBJECT_STREAMS == 0 {
+            Packing::Classic
+        } else {
+            Packing::ObjectStreams
+        };
+        let output = merge(
+            &sources,
+            &selections,
+            flags & MERGE_DROP_WIDGETS != 0,
+            layout,
+            &Limits::default(),
+        )?;
+        bytes_result(&output)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` must satisfy [`view`] for `pdf_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_revision_complete(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    end: usize,
+) -> u32 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    pdf.map_or(0, |bytes| u32::from(revision_complete(bytes, end)))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` must satisfy [`view`] for `pdf_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_signatures(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    mode: u32,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    finish(pdf.and_then(|bytes| {
+        let analysis = match mode {
+            0 => Analysis::Scan,
+            1 => Analysis::Dictionaries,
+            2 => Analysis::Verification,
+            _ => return Err(Failure::request("unknown signature analysis mode")),
+        };
+        encode_signatures(&analyze(bytes, analysis))
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::failure::FailureCode;
     use crate::inspection::{LinkInfo, PageInfo, PageText, TextItem};
-    use crate::num::widen;
     use crate::test_pdf::assert_exact;
     use crate::test_pdf::document;
     use crate::test_pdf::page;

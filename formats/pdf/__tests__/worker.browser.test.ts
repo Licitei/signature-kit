@@ -1,5 +1,6 @@
 import { PDFDocument } from "@cantoo/pdf-lib";
-import { Effect, Exit, Redacted, Result } from "effect";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
+import { Effect, Exit, Layer, Redacted, Result } from "effect";
 import { expect, it } from "vitest";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { PdfWorker } from "@signature-kit/pdf/worker";
@@ -77,7 +78,7 @@ it("prepares a real PDF in a worker, preserves caller bytes, and signs the resul
         const verified = yield* verifyPdfSignatures({ pdf: success.signedPdf });
         expect(verified.map((result) => result.cryptographicValid)).toEqual([true]);
       }
-    }).pipe(Effect.provide(pdfWorkerBrowserLayer())),
+    }).pipe(Effect.provide(Layer.merge(pdfWorkerBrowserLayer(), pdfCoreBrowserLayer))),
   );
 });
 

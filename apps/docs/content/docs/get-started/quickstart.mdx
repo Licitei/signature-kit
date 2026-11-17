@@ -24,8 +24,9 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
     ```ts title="quickstart.ts"
     import { a1SignaturesLayer } from "@signature-kit/a1/signer"
     import { signatures } from "@signature-kit/signatures"
-    import { Effect, Redacted } from "effect"
+    import { Effect, Layer, Redacted } from "effect"
 
+    const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
     const layer = a1SignaturesLayer({
       pfx,                                          // Uint8Array — bytes of the .pfx/.p12
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
@@ -64,12 +65,14 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
   </Step>
 
   <Step title="Sign XML and PDF">
-    Both formats consume the same boundary via `Effect.provide`; the `layer` line is identical to the previous step. XML also needs `xmlRuntimeLayer`; `verifyXml` / `verifyPdf` read the public key from the document and do not require the boundary.
+    Both formats consume the same boundary via `Effect.provide`; the `layer` line is identical to the previous step. XML also needs `xmlRuntimeLayer` and PDF needs the `PdfCore` engine layer (`pdfCoreFileLayer` on Node/Bun, `pdfCoreBrowserLayer` in browsers); `verifyXml` / `verifyPdf` read the public key from the document and do not require the boundary.
 
     ```ts title="documents.ts"
     import { signXml } from "@signature-kit/xml/sign"
     import { xmlRuntimeLayer } from "@signature-kit/xml/runtime"
     import { signPdf } from "@signature-kit/pdf/sign"
+    import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file"
+    import * as NodeServices from "@effect/platform-node/NodeServices"
     import { a1SignaturesLayer } from "@signature-kit/a1/signer"
     import { Effect, Redacted } from "effect"
 
@@ -82,7 +85,7 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
       .pipe(Effect.provide(layer), Effect.provide(xmlRuntimeLayer))
 
     const signedPdf = signPdf({ pdf, policy: "pades-icp-brasil" })
-      .pipe(Effect.provide(layer))
+      .pipe(Effect.provide(layer), Effect.provide(pdfCoreLayer))
     ```
   </Step>
 </Steps>

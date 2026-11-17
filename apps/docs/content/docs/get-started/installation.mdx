@@ -56,19 +56,22 @@ description: "Install the core and the A1 signer, provide the Signatures layer, 
   </Step>
 
   <Step title="Add XML and PDF">
-    PDF reuses the same boundary via `Effect.provide(layer)`. XML also declares `xmlRuntimeLayer`, an explicit runtime dependency.
+    PDF reuses the same boundary via `Effect.provide(layer)` and also needs the `PdfCore` engine layer (`pdfCoreFileLayer` on Node/Bun, `pdfCoreBrowserLayer` in browsers). XML also declares `xmlRuntimeLayer`, an explicit runtime dependency.
 
     ```package-install
-    @signature-kit/xml @signature-kit/pdf
+    @signature-kit/xml @signature-kit/pdf @signature-kit/pdf-core
     ```
 
     ```ts title="documents.ts"
     import { signXml } from "@signature-kit/xml/sign"
     import { xmlRuntimeLayer } from "@signature-kit/xml/runtime"
     import { signPdf } from "@signature-kit/pdf/sign"
+    import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file"
+    import * as NodeServices from "@effect/platform-node/NodeServices"
     import { a1SignaturesLayer } from "@signature-kit/a1/signer"
-    import { Effect, Redacted } from "effect"
+    import { Effect, Layer, Redacted } from "effect"
 
+    const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
     const layer = a1SignaturesLayer({
       pfx,                                          // Uint8Array — bytes of the .pfx/.p12
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
@@ -78,7 +81,7 @@ description: "Install the core and the A1 signer, provide the Signatures layer, 
       .pipe(Effect.provide(layer), Effect.provide(xmlRuntimeLayer))
 
     const signedPdf = signPdf({ pdf, policy: "pades-icp-brasil" })
-      .pipe(Effect.provide(layer))
+      .pipe(Effect.provide(layer), Effect.provide(pdfCoreLayer))
     ```
   </Step>
 </Steps>

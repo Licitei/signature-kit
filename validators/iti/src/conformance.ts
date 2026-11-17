@@ -15,6 +15,7 @@ import {
   isCompletePdfRevision,
 } from "@signature-kit/pdf/byte-range";
 import { PdfErrorCodeValue } from "@signature-kit/pdf/config";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { loadPdfSignatureDocument } from "@signature-kit/pdf/workflow";
 import * as asn1js from "asn1js";
 import { Effect, Schema } from "effect";
@@ -363,7 +364,7 @@ const validateCmsAttributes = (
 
 export const validatePdfConformance = (
   input: ItiConformanceInput,
-): Effect.Effect<ItiConformanceReport, SignatureKitError> =>
+): Effect.Effect<ItiConformanceReport, SignatureKitError, PdfCore> =>
   Effect.gen(function* () {
     const valid = yield* Schema.decodeUnknownEffect(ItiConformanceInputSchema)(input).pipe(
       Effect.mapError(
@@ -397,7 +398,18 @@ export const validatePdfConformance = (
       ),
     );
 
-    const hasSignatureDictionary = hasPdfSignatureDictionary(valid.pdf);
+    const hasSignatureDictionary = yield* hasPdfSignatureDictionary(valid.pdf).pipe(
+      Effect.mapError(
+        (error) =>
+          new SignatureKitError({
+            code: SignatureKitErrorCodeValue.verifyFailed,
+            retryable: false,
+            provider: ITI_PROVIDER,
+            operation: ItiOperation.conformance,
+            reason: error.reason ?? error.message,
+          }),
+      ),
+    );
     const signatures = yield* extractPdfSignatures(valid.pdf).pipe(
       Effect.catch((error) =>
         !hasSignatureDictionary && error.code === PdfErrorCodeValue.placeholderNotFound

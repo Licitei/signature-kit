@@ -191,7 +191,9 @@ it("signs a selected PDF after a wrong password and revokes its download on unmo
         expect(rectangle?.lookup(1, PDFNumber).asNumber()).toBeCloseTo(272 - expectedY, 2);
         expect(rectangle?.lookup(2, PDFNumber).asNumber()).toBeCloseTo(expectedX + 320, 2);
         expect(rectangle?.lookup(3, PDFNumber).asNumber()).toBeCloseTo(400 - expectedY, 2);
-        const signatures = yield* verifyPdfSignatures({ pdf: signed });
+        const signatures = yield* verifyPdfSignatures({ pdf: signed }).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(signatures.length).toBeGreaterThan(0);
         expect(signatures.at(-1)?.cryptographicValid).toBe(true);
         expect(signatures.at(-1)?.coverageValid).toBe(true);
@@ -403,7 +405,9 @@ it("cancels and retries a real signing flow and disposes during another active f
         const signed = yield* Effect.promise(
           async () => new Uint8Array(await (await fetch(link.href)).arrayBuffer()),
         );
-        const signatures = yield* verifyPdfSignatures({ pdf: signed });
+        const signatures = yield* verifyPdfSignatures({ pdf: signed }).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(signatures.at(-1)?.cryptographicValid).toBe(true);
         expect(signatures.at(-1)?.coverageValid).toBe(true);
         const result = yield* Effect.promise(() => PDFDocument.load(signed));
@@ -819,7 +823,9 @@ it("maps a click on a cropped and rotated page to the signed PDF widget", async 
         expect(rect?.lookup(1, PDFNumber).asNumber()).toBeCloseTo(100, 2);
         expect(rect?.lookup(2, PDFNumber).asNumber()).toBeCloseTo(178 + expectedY, 2);
         expect(rect?.lookup(3, PDFNumber).asNumber()).toBeCloseTo(400, 2);
-        const signatures = yield* verifyPdfSignatures({ pdf: signed });
+        const signatures = yield* verifyPdfSignatures({ pdf: signed }).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(signatures.at(-1)?.cryptographicValid).toBe(true);
         expect(signatures.at(-1)?.coverageValid).toBe(true);
         const rendered = yield* renderPdfPagesBrowser(signed, 1).pipe(

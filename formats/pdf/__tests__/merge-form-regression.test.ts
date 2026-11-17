@@ -7,6 +7,7 @@ import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import { mergePdfs } from "../src/merge";
 import { signPdf } from "../src/sign";
 import { verifyPdf } from "../src/verify";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const PASSWORD = Redacted.make("changeit");
 
@@ -156,7 +157,7 @@ describe("PDF merge signed and AcroForm boundaries", () => {
         expect(result.failure.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
         expect(result.failure.operation).toBe(PdfOperationValue.mergeDocuments);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a document-timestamp source before merge", () =>
@@ -169,7 +170,7 @@ describe("PDF merge signed and AcroForm boundaries", () => {
         expect(result.failure.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
         expect(result.failure.operation).toBe(PdfOperationValue.mergeDocuments);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("merges an unsigned PDF with a forward indirect stream length", () =>
@@ -185,7 +186,7 @@ describe("PDF merge signed and AcroForm boundaries", () => {
 
       expect(sourcePageCount).toBe(1);
       expect(mergedPageCount).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("drops unsigned AcroForm widgets while preserving other annotations", () =>
@@ -197,7 +198,7 @@ describe("PDF merge signed and AcroForm boundaries", () => {
       expect(state.annotationSubtypes).toStrictEqual(["/Link"]);
       expect(state.hasAcroForm).toBe(false);
       expect(state.hasSignatureObject).toBe(false);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -244,6 +245,6 @@ describe("PDF merge signed and AcroForm boundaries", () => {
         expect(action?.lookupMaybe(PDFName.of("URI"), PDFString)?.decodeText()).toBe(
           "https://example.com",
         );
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

@@ -2,10 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { readFile } from "node:fs/promises";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Layer, Result, Schema } from "effect";
 import { vi } from "vitest";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { ItiRemoteValidationReportSchema, validatePdfWithIti } from "../src/remote";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const ITI_ENDPOINT = "https://validar.iti.gov.br/arquivo";
 
@@ -44,7 +45,7 @@ const validateWithItiResponse = (status: number, body: unknown) =>
     }));
     yield* installItiFetchRedirect(local.baseUrl);
     return yield* validatePdfWithIti({ source: { pdf } }).pipe(
-      Effect.provide(signatureHttpClientLive),
+      Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
     );
   }).pipe(Effect.ensuring(restoreFetch));
 
@@ -67,7 +68,7 @@ describe("ITI remote hardening", () => {
       expect(rejected.outcome).toBe("rejected");
       expect(negated.approved).toBe(false);
       expect(negated.outcome).toBe("unknown");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails closed for remote prototype-key statuses", () =>
@@ -83,7 +84,7 @@ describe("ITI remote hardening", () => {
         expect(typeof report.outcome).toBe("string");
         expect(decoded).toEqual(report);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("preserves the ITI 206 partial report while failing closed", () =>
@@ -104,7 +105,7 @@ describe("ITI remote hardening", () => {
       expect(report.rawVerifierReport).toEqual(partialPayload.json);
       expect(report.rawResponse).toEqual(partialPayload);
       expect(report.localConformance.approved).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects invalid ITI 206 signature counts at the response boundary", () =>
     Effect.gen(function* () {
@@ -126,7 +127,7 @@ describe("ITI remote hardening", () => {
           expect(result.failure.status).toBe(206);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects partial reports whose counts violate processed<=total", () =>
@@ -141,7 +142,7 @@ describe("ITI remote hardening", () => {
       );
 
       expect(Result.isFailure(result)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("uses explicit timeouts for both remote GET and POST requests", () =>
@@ -161,7 +162,7 @@ describe("ITI remote hardening", () => {
       });
       yield* installItiFetchRedirect(local.baseUrl, observedRequests);
       yield* validatePdfWithIti({ source: { url: `${local.baseUrl}/source.pdf` } }).pipe(
-        Effect.provide(signatureHttpClientLive),
+        Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
       );
       const timeoutCalls = timeoutSpy.mock.calls;
       timeoutSpy.mockRestore();
@@ -184,7 +185,7 @@ describe("ITI remote hardening", () => {
           expect(result.failure.status).toBe(status);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("validates malformed PDFs before submitting them to ITI", () =>
@@ -198,7 +199,7 @@ describe("ITI remote hardening", () => {
       const result = yield* Effect.result(
         validatePdfWithIti({
           source: { pdf: new Uint8Array([0x6e, 0x6f, 0x74, 0x2d, 0x70, 0x64, 0x66]) },
-        }).pipe(Effect.provide(signatureHttpClientLive)),
+        }).pipe(Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer))),
       );
 
       expect(Result.isFailure(result)).toBe(true);
