@@ -64,7 +64,15 @@ const tables = yield * core.tables(pdf, { pageIndexes: [0] });
 
 Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully outside a Form XObject `/BBox` are skipped, and text render modes 4-7 (clip) still extract text, in `text`, `markdown` and `tables`.
 
-`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-16 code unit offsets into `text`, so item `n` is `text.slice(offsets[n], offsets[n + 1])`). Results are decoded straight from wasm memory, and the typed arrays copied out, before the wasm buffers are released.
+`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), `offsets` (a `Uint32Array` of `items + 1` UTF-16 code unit offsets into `text`, so item `n` is `text.slice(offsets[n], offsets[n + 1])`), and `styles` (a `Uint8Array` with one byte per item: bit 0 bold, bit 1 italic).
+
+By default an item is a run of text that continues on one baseline, so `17/06/2026 15:39:26    MENSAGEM` (two columns drawn by separate text operators) is one item. With `runs: true` an item also ends wherever the text is repositioned away from the previous glyph (`Td`, `Tm`, a new `BT`) or its bold/italic style changes, which keeps table columns and bold labels apart; a piece positioned exactly where the previous glyph ended (a symbol drawn by another font) stays in the same item:
+
+```ts
+const inspection = yield * core.inspect(pdf, { text: true, links: false, runs: true });
+```
+
+A style bit is set when every glyph of the item carries it. It comes from the embedded font program, the font name (`Helvetica-Bold`), the font descriptor, and fill-and-stroke rendering. Without `runs` an item can mix styles (its bits then cover only the style shared by all its glyphs), and embedded TrueType fonts are not probed for their weight, so read `styles` with `runs: true`. Results are decoded straight from wasm memory, and the typed arrays copied out, before the wasm buffers are released.
 
 ## Signatures and revisions
 
@@ -157,7 +165,7 @@ The module exports `memory` and fourteen functions. There is no global mutable s
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
 | `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`).
 
 ### Result block
 
@@ -169,17 +177,17 @@ All integers are little-endian. The block is 8-byte aligned and `total_len` is t
 | 4      | `u32` | `status` — `0` ok, `1` invalid PDF, `2` encrypted, `3` limit exceeded, `4` unsupported, `5` invalid request |
 | 8      | bytes | payload (UTF-8 reason when `status != 0`)                                                                   |
 
-### Payload (version 2)
+### Payload (version 3)
 
 Payload offsets are relative to the payload start, so every float section stays 8-byte aligned in memory and can be viewed as a `Float64Array` without copying. Every section is padded with zero bytes to a multiple of 8.
 
-Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`2`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
+Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`3`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
 
 Pages — `page_count` records of 72 bytes: `media_box` (4 × `f64`), `crop_box` (4 × `f64`), `rotate` (`i32`), 4 bytes padding.
 
 Links — `link_count` records of 48 bytes: `rect` (4 × `f64`), `page_index` (`u32`), `uri_offset` (`u32`), `uri_len` (`u32`), 4 bytes padding; then one UTF-8 blob holding every URI (`uri_offset` is relative to the blob start), padded to 8.
 
-Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` UTF-16 code unit offsets into the decoded text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8. Version 1 used UTF-8 byte offsets.
+Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` UTF-16 code unit offsets into the decoded text blob, padded to 8; `item_count` style bytes (bit 0 bold, bit 1 italic), padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8. Version 2 had no style bytes; version 1 used UTF-8 byte offsets.
 
 ### Text payload (version 1)
 
