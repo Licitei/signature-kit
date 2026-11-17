@@ -28,7 +28,7 @@ bun add @signature-kit/a1
 - `@signature-kit/pdf/builder-store` — external builder store and placement queue helpers.
 - `@signature-kit/pdf/byte-range` — placeholder preparation and signature extraction helpers built on `PdfCore.signatures`; `hasPdfByteRange`, `hasPdfSignatureDictionary`, and `isCompletePdfRevision` are Effects that require `PdfCore`.
 - `@signature-kit/pdf/merge` — `mergePdfs`; it copies pages only and intentionally drops source AcroForms, outlines, metadata, and attachments.
-- `@signature-kit/pdf/liteparse-browser` — browser-only page-image rendering (`renderPdfPagesBrowser`), plus a handwriting service with an explicitly supplied browser font.
+- `@signature-kit/pdf/render-browser` — browser-only page thumbnails: `renderPdfPagesBrowser(pdf, { pageIndexes?, scale? })` renders pages through the `PdfCore` service and the `@signature-kit/pdf-core/canvas` painter and returns one PNG `Blob` per page (`pageIndex`, `width`, `height`, `image`; default scale 150 DPI). Provide `pdfCoreBrowserLayer`. The module also exports a handwriting service with an explicitly supplied browser font.
 
 `signatureLength` is CMS byte capacity: a value of `n` reserves exactly `n` bytes, represented by `2n` hexadecimal digits in `/Contents`.
 
@@ -83,7 +83,7 @@ const program = Effect.gen(function* () {
 
 ## Preview a visible signature
 
-`preparePdfVisualPreview` from `@signature-kit/pdf/workflow` accepts the same input as `prepareAndSignPdf` and returns the stamped PDF before signing. It uses the same badge, placement, and rubric preparation as signing, including excluding signature pages from repeated rubrics. Provide `PdfCore` (`pdfCoreBrowserLayer` in browsers, `pdfCoreFileLayer` on Node/Bun) when running it. In a browser, `renderPdfPagesBrowser` (which still needs `liteParseWorkerBrowserLayer`) renders the resulting PDF to PNG page images. `PdfHandwriting` renders text to PNG using `pdfHandwritingBrowserLayer(font)`; load the chosen font at the application boundary before rendering.
+`preparePdfVisualPreview` from `@signature-kit/pdf/workflow` accepts the same input as `prepareAndSignPdf` and returns the stamped PDF before signing. It uses the same badge, placement, and rubric preparation as signing, including excluding signature pages from repeated rubrics. Provide `PdfCore` (`pdfCoreBrowserLayer` in browsers, `pdfCoreFileLayer` on Node/Bun) when running it. In a browser, `renderPdfPagesBrowser` (same `PdfCore` requirement) renders the resulting PDF to PNG page images. `PdfHandwriting` renders text to PNG using `pdfHandwritingBrowserLayer(font)`; load the chosen font at the application boundary before rendering.
 
 ## Inspect each PDF signature
 

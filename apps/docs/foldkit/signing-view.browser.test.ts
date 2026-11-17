@@ -5,17 +5,22 @@ import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { preparePdfVisualPreview } from "@signature-kit/pdf/workflow";
 import {
-  liteParseWorkerBrowserLayer,
   PdfHandwriting,
   pdfHandwritingBrowserLayer,
   renderPdfPagesBrowser,
-} from "@signature-kit/pdf/liteparse-browser";
+} from "@signature-kit/pdf/render-browser";
+import type { PdfPageImage } from "@signature-kit/pdf/render-browser";
 import { Effect, Layer, Result } from "effect";
 import { Runtime } from "foldkit";
 import * as Server from "foldkit/experimental/server";
 import { expect, it } from "vitest";
 import { Flags, Model, init, update, view } from "./main";
 import { lastAnnotationRect, pdfPages, textPdf, titledPdf } from "../__tests__/helpers/text-pdf";
+
+const pageBytes = (pages: ReadonlyArray<PdfPageImage>) =>
+  Effect.promise(() =>
+    Promise.all(pages.map(async (page) => new Uint8Array(await page.image.arrayBuffer()))),
+  );
 
 const application = Effect.gen(function* () {
   const host = yield* Effect.acquireRelease(
@@ -407,11 +412,12 @@ it("cancels and retries a real signing flow and disposes during another active f
         expect(signatures.at(-1)?.coverageValid).toBe(true);
         expect(new TextDecoder("latin1").decode(signed)).toMatch(/\/Title\s*\(Retry document\)/u);
         expect(yield* pdfPages(signed).pipe(Effect.provide(pdfCoreBrowserLayer))).toBe(2);
-        const signedPages = yield* renderPdfPagesBrowser(signed, 2).pipe(
-          Effect.provide(liteParseWorkerBrowserLayer),
+        const signedPages = yield* renderPdfPagesBrowser(signed).pipe(
+          Effect.flatMap(pageBytes),
+          Effect.provide(pdfCoreBrowserLayer),
         );
-        expect(new Uint8Array(signedPages[0]?.imageBytes ?? [])).toEqual(previewPages[0]);
-        expect(new Uint8Array(signedPages[1]?.imageBytes ?? [])).toEqual(previewPages[1]);
+        expect(signedPages[0]).toEqual(previewPages[0]);
+        expect(signedPages[1]).toEqual(previewPages[1]);
         yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 3000)));
         expect(app.host.querySelectorAll("[data-downloads] a")).toHaveLength(1);
         expect(app.host.querySelector<HTMLAnchorElement>("[data-downloads] a")?.href).toBe(
@@ -813,10 +819,11 @@ it("maps a click on a cropped and rotated page to the signed PDF widget", async 
         );
         expect(signatures.at(-1)?.cryptographicValid).toBe(true);
         expect(signatures.at(-1)?.coverageValid).toBe(true);
-        const rendered = yield* renderPdfPagesBrowser(signed, 1).pipe(
-          Effect.provide(liteParseWorkerBrowserLayer),
+        const rendered = yield* renderPdfPagesBrowser(signed, { pageIndexes: [0] }).pipe(
+          Effect.flatMap(pageBytes),
+          Effect.provide(pdfCoreBrowserLayer),
         );
-        expect(new Uint8Array(rendered[0]?.imageBytes ?? [])).toEqual(previewBytes);
+        expect(rendered[0]).toEqual(previewBytes);
         const previewUrl = previewImage.src;
         const effectContext = yield* Effect.context<never>();
         app.dispose();
@@ -859,17 +866,18 @@ it("previews rubrics only on pages other than the main signature page", async ()
           ...input,
           rubric: { imagePng: ink, border: false },
         });
-        const plainPages = yield* renderPdfPagesBrowser(plain, count);
-        const rubricPages = yield* renderPdfPagesBrowser(withRubric, count);
+        const plainPages = yield* renderPdfPagesBrowser(plain).pipe(Effect.flatMap(pageBytes));
+        const rubricPages = yield* renderPdfPagesBrowser(withRubric).pipe(
+          Effect.flatMap(pageBytes),
+        );
         expect(rubricPages).toHaveLength(count);
         expect(plainPages).toHaveLength(count);
-        expect(rubricPages[count - 1]?.imageBytes).toEqual(plainPages[count - 1]?.imageBytes);
-        if (count === 2) expect(rubricPages[0]?.imageBytes).not.toEqual(plainPages[0]?.imageBytes);
+        expect(rubricPages[count - 1]).toEqual(plainPages[count - 1]);
+        if (count === 2) expect(rubricPages[0]).not.toEqual(plainPages[0]);
       }
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
-          liteParseWorkerBrowserLayer,
           pdfCoreBrowserLayer,
           pdfHandwritingBrowserLayer("600 64px 'Caveat Variable'"),
         ),

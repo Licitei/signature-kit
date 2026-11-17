@@ -16,7 +16,6 @@ export default defineConfig({
       "@aws-sdk/credential-providers",
       "@distilled.cloud/aws",
       "alchemy",
-      "@llamaindex/liteparse-wasm",
     ],
   },
   resolve: {

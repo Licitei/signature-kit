@@ -143,7 +143,6 @@
       "version": "0.5.1",
       "dependencies": {
         "@effect/platform-browser": "4.1.0",
-        "@llamaindex/liteparse-wasm": "^2.16.0",
         "@signature-kit/cms": "^0.2.1",
         "@signature-kit/i18n": "^0.1.0",
         "@signature-kit/pdf-core": "^0.1.0",
@@ -153,6 +152,7 @@
       },
       "devDependencies": {
         "@signature-kit/a1": "^0.4.0",
+        "pdfjs-dist": "6.3.289",
       },
     },
     "formats/react": {
@@ -233,7 +233,6 @@
         "effect": "4.1.0",
       },
       "devDependencies": {
-        "@llamaindex/liteparse-wasm": "^2.16.0",
         "@react-pdf/renderer": "4.9.0",
         "pdfjs-dist": "6.3.289",
         "react": "19.3.1",
@@ -667,8 +666,6 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@konsistent/convention": ["@konsistent/convention@1.0.0-beta.12", "", { "dependencies": { "citty": "^0.2", "jiti": "^2" }, "peerDependencies": { "zod": "^4" }, "bin": { "konsistent-convention": "./dist/cli.js" } }, "sha512-pb5GHUVWgEmqaS4EVIbD9E6+JOrYbtWJ+c4/xydvRj1lsvGwrJ3MgMVOuWCyhP7jFnsTUxJVASgB9ZRNYNy/0w=="],
-
-    "@llamaindex/liteparse-wasm": ["@llamaindex/liteparse-wasm@2.16.0", "", {}, "sha512-SwlTDv0qyeQ9Pof7s0H2q+Mnpd7cqssx9HhxbuaZjDwQOuSv+/sPk+eNyCQYdc1zno6LkmtnvUJD34kEs4cTzA=="],
 
     "@mermaid-js/parser": ["@mermaid-js/parser@2.0.1", "", { "dependencies": { "@chevrotain/types": "~13.2.0" } }, "sha512-j37dj/h6p6pots1L7pLPPNuABEEu9WP4OYg9pW1g+nYG331j0+3canE9OagtYdytYvdSAMG+2fKU5cxep6LgjA=="],
 

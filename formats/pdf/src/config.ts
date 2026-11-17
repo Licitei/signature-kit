@@ -139,6 +139,7 @@ export const PdfOperationSchema = Schema.Literals([
   "pdf.builder.create-template-from-bytes",
   "pdf.builder.create-state-from-bytes",
   "pdf.sign.field",
+  "pdf.page.render",
 ]);
 export type PdfOperation = (typeof PdfOperationSchema)["Type"];
 
@@ -165,6 +166,7 @@ export const PdfOperationValue = {
   createTemplateFromBytes: "pdf.builder.create-template-from-bytes",
   createBuilderStateFromBytes: "pdf.builder.create-state-from-bytes",
   signField: "pdf.sign.field",
+  renderPages: "pdf.page.render",
 } satisfies Record<string, PdfOperation>;
 
 export const PdfSchemaNameSchema = Schema.Literals([
@@ -189,6 +191,7 @@ export const PdfSchemaNameSchema = Schema.Literals([
   "PdfVerificationRequest",
   "PdfMergeDocuments",
   "PdfIllustrativeDocumentInput",
+  "PdfPageRenderOptions",
 ]);
 export type PdfSchemaName = (typeof PdfSchemaNameSchema)["Type"];
 export const PdfSchemaNameValue = {
@@ -213,6 +216,7 @@ export const PdfSchemaNameValue = {
   pdfVerificationRequest: "PdfVerificationRequest",
   pdfMergeDocuments: "PdfMergeDocuments",
   pdfIllustrativeDocumentInput: "PdfIllustrativeDocumentInput",
+  pdfPageRenderOptions: "PdfPageRenderOptions",
 } satisfies Record<string, PdfSchemaName>;
 
 export class PdfError extends Schema.TaggedError<PdfError, { readonly brand: unique symbol }>()(
@@ -1027,3 +1031,14 @@ export const PdfStampPreviewInputSchema = Schema.Struct({
   height: positiveFiniteNumber,
 });
 export type PdfStampPreviewInput = (typeof PdfStampPreviewInputSchema)["Type"];
+
+export const MAX_PDF_RENDER_SCALE = 8;
+export const PdfPageRenderOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(
+    Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 0xffff_ffff }))),
+  ),
+  scale: Schema.optional(
+    positiveFiniteNumber.check(Schema.isLessThanOrEqualTo(MAX_PDF_RENDER_SCALE)),
+  ),
+});
+export type PdfPageRenderOptions = (typeof PdfPageRenderOptionsSchema)["Type"];
