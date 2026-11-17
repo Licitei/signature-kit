@@ -86,11 +86,14 @@ export const collectPdfCoreAbiDiagnostics = (
   }
 
   const readme = readFileSync(join(rootDirectory, readmePath), "utf8");
-  const sections = new Map<string, string>();
+  const sections = new Map<
+    string,
+    { readonly version: string | undefined; readonly body: string }
+  >();
   for (const section of readme.split(/^(?=### )/m).filter((part) => part.startsWith("### "))) {
     const heading = /^### (.*payload)(?: \(version (\d+)\))?$/im.exec(section);
     if (heading !== null) {
-      sections.set(heading[1] ?? "", section);
+      sections.set(heading[1] ?? "", { version: heading[2], body: section });
     }
   }
   for (const [constant, title] of Object.entries(payloadSections)) {
@@ -103,8 +106,8 @@ export const collectPdfCoreAbiDiagnostics = (
       section === undefined
         ? []
         : [
-            /\(version (\d+)\)/.exec(section)?.[1],
-            ...[...section.matchAll(/`version` \(`(\d+)`\)/g)].map((match) => match[1]),
+            section.version,
+            ...[...section.body.matchAll(/`version` \(`(\d+)`\)/g)].map((match) => match[1]),
           ];
     if (versions.length === 0 || versions.some((version) => Number(version) !== expected)) {
       diagnostics.push({

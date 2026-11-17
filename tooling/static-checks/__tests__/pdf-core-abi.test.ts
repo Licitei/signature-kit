@@ -67,9 +67,13 @@ describe("pdf-core ABI lockstep", () => {
     expect(collectPdfCoreAbiDiagnostics(root)).toEqual([]);
   });
 
+  it("accepts a Rust flag written as a shift", async () => {
+    const root = await writeWorkspace({ abi: abi.replace("= 32;", "= 1 << 5;"), decoder, readme });
+    expect(collectPdfCoreAbiDiagnostics(root)).toEqual([]);
+  });
+
   it.each([
     ["a decoder value that differs", { decoder: decoder.replace("VERSION = 3", "VERSION = 2") }],
-    ["a Rust value written as a shift", { abi: abi.replace("= 32;", "= 1 << 6;") }],
     ["a renamed Rust constant", { abi: abi.replace("FLAG_RUNS", "FLAG_SPLIT_RUNS") }],
     [
       "a constant read from edit.rs",
@@ -79,7 +83,15 @@ describe("pdf-core ABI lockstep", () => {
       "a README version that differs",
       { readme: readme.replace("`version` (`3`)", "`version` (`2`)") },
     ],
-    ["a README section without its version", { readme: readme.replace(" (version 1)", "") }],
+    [
+      "a README section without its version",
+      {
+        readme: readme.replace(
+          "### Edit payload (version 1)\n",
+          "### Edit payload\n\nSee (version 1).\n",
+        ),
+      },
+    ],
     ["an undocumented flag", { readme: readme.replace(", bit 5 = split runs", "") }],
     [
       "a documented bit without a flag",
