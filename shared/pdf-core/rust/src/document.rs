@@ -2,7 +2,6 @@ use crate::num::widen;
 use crate::num::{f64_to_i64, f64_to_usize};
 use crate::syntax::is_whitespace;
 use crate::text::Session;
-use crate::text::extract_runs;
 use crate::text::{Capture, Reposition, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
@@ -1284,16 +1283,16 @@ pub(crate) fn inspect(
             let Some(page) = pages.get(position) else {
                 continue;
             };
-            let content = if options.runs {
-                let capture = Capture {
-                    reposition: Reposition::SplitGapped,
-                    split_style: true,
-                    structure: false,
-                };
-                extract_content(&document, page, limits, capture, &mut session)?
-            } else {
-                extract_runs(&document, page, limits, false, &mut session)?
+            let capture = Capture {
+                reposition: if options.runs {
+                    Reposition::SplitGapped
+                } else {
+                    Reposition::Join
+                },
+                split_style: options.runs,
+                structure: false,
             };
+            let content = extract_content(&document, page, limits, capture, &mut session)?;
             let items = content.items();
             let styles = content.styles();
             if items.len() > limits.max_items_per_page {
@@ -1534,6 +1533,33 @@ mod tests {
             ]
         );
         assert_eq!(styles, [1, 0, 0, 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn inspect_runs_keep_kerning_split_same_pen_words_and_bold_stroked_text() {
+        use crate::test_pdf::{document, page};
+        let content = [
+            "BT /F1 9 Tf 1 0 0 1 28 700 Tm [(Ka) -400 (Kb)] TJ ET\n",
+            "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Rua ) Tj 1 0 0 1 47.008 680 Tm (Principal) Tj ET\n",
+            "BT /F1 9 Tf 2 Tr 1 0 0 1 28 660 Tm (Forte) Tj ET\n",
+        ]
+        .concat();
+        let bytes = document(&[page(content)], &[]);
+        let inspection = inspect(
+            &bytes,
+            &InspectOptions {
+                runs: true,
+                text: true,
+                links: false,
+                page_indexes: None,
+            },
+            &Limits::default(),
+        )
+        .unwrap();
+        let page = inspection.text.into_iter().next().unwrap();
+        let texts: Vec<&str> = page.items.iter().map(|item| item.text.as_str()).collect();
+        assert_eq!(texts, ["Ka Kb", "Rua", "Principal", "Forte"]);
+        assert_eq!(page.styles, [0, 0, 0, 1]);
     }
 
     #[test]

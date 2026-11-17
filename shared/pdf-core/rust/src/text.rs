@@ -1670,25 +1670,6 @@ fn is_italic_name(name: &[u8]) -> bool {
     .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
 }
 
-pub(crate) fn extract_runs(
-    document: &Document<'_>,
-    page: &Page,
-    limits: &Limits,
-    split_repositioned: bool,
-    session: &mut Session,
-) -> Outcome<PageContent> {
-    let capture = Capture {
-        reposition: if split_repositioned {
-            Reposition::Split
-        } else {
-            Reposition::Join
-        },
-        structure: false,
-        split_style: false,
-    };
-    extract_content(document, page, limits, capture, session)
-}
-
 pub(crate) fn extract_content(
     document: &Document<'_>,
     page: &Page,
@@ -2014,6 +1995,25 @@ mod tests {
             content,
             &[(5, HELVETICA.to_owned())],
         )
+    }
+
+    fn extract_runs(
+        document: &Document<'_>,
+        page: &Page,
+        limits: &Limits,
+        split_repositioned: bool,
+        session: &mut Session,
+    ) -> Outcome<PageContent> {
+        let capture = Capture {
+            reposition: if split_repositioned {
+                Reposition::Split
+            } else {
+                Reposition::Join
+            },
+            structure: false,
+            split_style: false,
+        };
+        extract_content(document, page, limits, capture, session)
     }
 
     fn extract_with(bytes: &[u8], limits: &Limits) -> Outcome<Vec<TextItem>> {

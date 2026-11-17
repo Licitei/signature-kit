@@ -88,6 +88,7 @@ const styledFixture = (): Uint8Array => {
       "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Marca: ) Tj /F2 9 Tf (ACME) Tj ET",
       "BT /F3 9 Tf 1 0 0 1 28 660 Tm (Nota) Tj ET",
     ].join("\n"),
+    "",
     [
       "BT /F2 12 Tf 1 0 0 1 272 700 Tm (LOTE ) Tj ET",
       "BT /F2 12 Tf 1 0 0 1 307.6 700 Tm (50) Tj ET",
@@ -97,7 +98,7 @@ const styledFixture = (): Uint8Array => {
   ];
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>",
+    "<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>",
@@ -261,6 +262,7 @@ describe("PdfCore", () => {
           { text: "ACME", style: 1 },
           { text: "Nota", style: 2 },
         ],
+        [],
         [
           { text: "LOTE", style: 1 },
           { text: "50", style: 1 },

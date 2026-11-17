@@ -340,6 +340,9 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
             out.u32(cursor);
         }
         out.align();
+        if page.styles.len() != page.items.len() {
+            return Err(Failure::invalid("page text styles do not match its items"));
+        }
         out.bytes(&page.styles);
         out.align();
         for item in &page.items {
@@ -1256,6 +1259,15 @@ mod tests {
         let inspection = sample();
         let payload = encode(&inspection).map(Writer::payload).unwrap_or_default();
         assert_eq!(decode(&payload), inspection);
+    }
+
+    #[test]
+    fn rejects_styles_that_do_not_match_items() {
+        let mut inspection = sample();
+        if let Some(page) = inspection.text.first_mut() {
+            let _: Option<u8> = page.styles.pop();
+        }
+        assert!(encode(&inspection).is_err());
     }
 
     #[test]
