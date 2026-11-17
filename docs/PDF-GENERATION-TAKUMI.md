@@ -1,6 +1,6 @@
 # PDF generation: react-pdf → takumi-pdf
 
-Licitei builds printable PDFs with `@react-pdf/renderer` in the legacy app. New SignatureKit registry guidance and the pdf-core regression corpus use [`takumi-pdf`](https://www.npmjs.com/package/takumi-pdf) **0.20.0** (Chromium layout engine, vector PDF, subset fonts, tagged PDF by default). Parsing, anchor search, and signing stay on `@signature-kit/pdf-core` / `@signature-kit/pdf`.
+SignatureKit registry guidance and the pdf-core regression corpus use [`takumi-pdf`](https://www.npmjs.com/package/takumi-pdf) **0.20.0** (Chromium-derived text layout, vector PDF, subset fonts, tagged PDF by default). Parsing, anchor search, and signing stay on `@signature-kit/pdf-core` / `@signature-kit/pdf`.
 
 ## Runtime
 
@@ -12,6 +12,41 @@ Licitei builds printable PDFs with `@react-pdf/renderer` in the legacy app. New 
 | Docs (FumaPress) | client islands only | wasm fetched at runtime | never render PDFs during SSG |
 
 `render(jsx, options)` returns `Promise<Uint8Array>`. Reuse one warm wasm init when batching documents.
+
+## Repeating headers, footers, and page numbers
+
+Pass the repeated content through the `header` and `footer` options of `render`. This replaces the running elements marked `fixed` inside a react-pdf page. The body flows across pages between these bands. The default automatic margins can grow to fit the bands. If you set explicit margins, verify that there is room for both bands on multi-page output.
+
+```tsx
+import { render } from "takumi-pdf";
+import { PageNumber, TotalPages } from "takumi-pdf/primitives";
+
+export const renderReport = (paragraphs: readonly string[], fontBytes: Uint8Array) =>
+  render(
+    <main tw="font-[Report] text-[11px]">
+      {paragraphs.map((text, index) => <p key={index}>{text}</p>)}
+    </main>,
+    {
+      size: "a4",
+      fonts: [{ name: "Report", data: fontBytes }],
+      header: <div tw="font-[Report] text-[10px]">Activity report</div>,
+      footer: (
+        <div tw="text-center font-[Report] text-[9px]">
+          Page{" "}<PageNumber />{" of "}<TotalPages />
+        </div>
+      ),
+    },
+  );
+```
+
+`PageNumber` resolves to the current page (starting at 1) and `TotalPages` resolves to the document's final page count. Pass the bytes of a font that covers the document's text, including the header and footer.
+
+## Migration order
+
+1. Inventory generation entry points and their dependencies: templates, font registrations, shared running headers and footers, rich-text conversion, and signature markers. Keep the PDF viewer separate from the generator.
+2. Start with an isolated template. Replace react-pdf primitives and styles with HTML elements and CSS or Tailwind, replace `Font.register` with font bytes in `fonts`, and pass the resulting `Uint8Array` to the existing download or response boundary.
+3. Port shared templates and the rich-text renderer before switching the documents that depend on them. Check page breaks, repeated bands and counters, glyph coverage, and long content with a multi-page fixture.
+4. Migrate signature markers in each signing template. Find the markers in the rendered bytes, verify their page and position, and run the existing signing flow against the new output. Remove the old generator dependency once all generation entry points have switched.
 
 ## SignatureKit anchors
 
