@@ -95,6 +95,7 @@ const signatureReport = (
       (error) =>
         new PdfError({
           code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.encryptedPdf, () => PdfErrorCodeValue.encryptedPdf),
             Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
             Match.orElse(() => PdfErrorCodeValue.pdfLoadFailed),
           ),

@@ -1,3 +1,4 @@
+import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Schema } from "effect";
 import {
@@ -50,12 +51,15 @@ export const mergePdfs = (
               ),
             ),
             Effect.mapError(
-              () =>
+              (error) =>
                 new PdfError({
-                  code: PdfErrorCodeValue.invalidPdf,
+                  code:
+                    error.code === PdfCoreErrorCodeValue.encryptedPdf
+                      ? PdfErrorCodeValue.encryptedPdf
+                      : PdfErrorCodeValue.invalidPdf,
                   retryable: false,
                   operation: PdfOperationValue.mergeDocuments,
-                  reason: "Failed to merge PDF documents.",
+                  reason: error.reason ?? "Failed to merge PDF documents.",
                 }),
             ),
           ),

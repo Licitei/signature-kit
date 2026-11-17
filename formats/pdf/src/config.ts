@@ -25,6 +25,7 @@ const positiveFiniteNumber = Schema.Number.check(Schema.isFinite(), Schema.isGre
 
 export const PdfErrorCodeSchema = Schema.Literals([
   "pdf.INVALID_PDF",
+  "pdf.ENCRYPTED_PDF",
   "pdf.INVALID_BUILDER_INPUT",
   "pdf.PLACEHOLDER_NOT_FOUND",
   "pdf.SIGNATURE_PLACEMENT_FAILED",
@@ -48,6 +49,7 @@ export type PdfErrorCode = (typeof PdfErrorCodeSchema)["Type"];
 
 export const PdfErrorCodeValue = {
   invalidPdf: "pdf.INVALID_PDF",
+  encryptedPdf: "pdf.ENCRYPTED_PDF",
   invalidBuilderInput: "pdf.INVALID_BUILDER_INPUT",
   placeholderNotFound: "pdf.PLACEHOLDER_NOT_FOUND",
   signaturePlacementFailed: "pdf.SIGNATURE_PLACEMENT_FAILED",
@@ -78,6 +80,7 @@ export type PdfErrorMessages = (typeof PdfErrorMessagesSchema)["Type"];
 export const pdfErrorMessages = {
   "en-US": {
     "pdf.INVALID_PDF": "Invalid PDF document.",
+    "pdf.ENCRYPTED_PDF": "The PDF is encrypted. Remove its password protection and try again.",
     "pdf.INVALID_BUILDER_INPUT": "Invalid PDF signature builder input.",
     "pdf.PLACEHOLDER_NOT_FOUND": "PDF signature placeholder was not found.",
     "pdf.SIGNATURE_PLACEMENT_FAILED": "PDF signature placement failed.",
@@ -99,6 +102,7 @@ export const pdfErrorMessages = {
   },
   "pt-BR": {
     "pdf.INVALID_PDF": "Documento PDF inválido.",
+    "pdf.ENCRYPTED_PDF": "O PDF está criptografado. Remova a proteção por senha e tente novamente.",
     "pdf.INVALID_BUILDER_INPUT": "Entrada inválida para o builder de assinatura PDF.",
     "pdf.PLACEHOLDER_NOT_FOUND": "Placeholder de assinatura PDF não encontrado.",
     "pdf.SIGNATURE_PLACEMENT_FAILED": "Não foi possível posicionar a assinatura PDF.",
