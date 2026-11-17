@@ -9,7 +9,7 @@ use crate::font::{Font, Glyph, embedded_style};
 use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
-use crate::syntax::{ContentLexer, ContentToken};
+use crate::syntax::{ContentLexer, ContentToken, Operand};
 
 type Matrix = [f64; 6];
 
@@ -122,11 +122,27 @@ fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
     ]
 }
 
-fn tail_numbers<const N: usize>(operands: &[Object]) -> Option<[f64; N]> {
+trait Numeric {
+    fn number(&self) -> Option<f64>;
+}
+
+impl Numeric for Object {
+    fn number(&self) -> Option<f64> {
+        self.as_number()
+    }
+}
+
+impl Numeric for Operand<'_> {
+    fn number(&self) -> Option<f64> {
+        self.as_number()
+    }
+}
+
+fn tail_numbers<const N: usize, T: Numeric>(operands: &[T]) -> Option<[f64; N]> {
     let start = operands.len().checked_sub(N)?;
     let mut out = [0.0; N];
     for (slot, object) in out.iter_mut().zip(operands.get(start..)?) {
-        *slot = object.as_number()?;
+        *slot = object.number()?;
     }
     Some(out)
 }
@@ -136,7 +152,7 @@ fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
     if items.len() != 6 {
         return None;
     }
-    tail_numbers::<6>(items)
+    tail_numbers::<6, _>(items)
 }
 
 fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
@@ -261,7 +277,7 @@ fn decode_utf16(bytes: &[u8], read: fn([u8; 2]) -> u16) -> String {
         .collect()
 }
 
-fn actual_text(operands: &[Object]) -> Option<String> {
+fn actual_text(operands: &[Operand<'_>]) -> Option<String> {
     let properties = operands.last()?.as_dict()?;
     let Object::String(bytes) = properties.get(b"ActualText")? else {
         return None;
@@ -431,6 +447,12 @@ impl Scope {
             Lazy::Missing | Lazy::Unset => None,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct ShowContext<'o, 'a> {
+    operands: &'o [Operand<'a>],
+    depth: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -635,18 +657,22 @@ impl Interpreter<'_, '_> {
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
         let mut overflow = 0_usize;
-        let mut operands: Vec<Object> = Vec::new();
+        let mut operands: Vec<Operand<'_>> = Vec::new();
         let mut path = PathBuilder::default();
         let mut marked: Vec<bool> = Vec::new();
-        for token in ContentLexer::new(data) {
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut lexer = ContentLexer::new(data);
+        while let Some(token) = lexer.next() {
             let name = match token {
                 Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
                 Err(_) => break,
-                Ok(ContentToken::Operand(object)) => {
+                Ok(ContentToken::Operand(operand)) => {
                     if operands.len() >= MAX_OPERANDS {
-                        operands.clear();
+                        while let Some(stale) = operands.pop() {
+                            lexer.recycle(stale);
+                        }
                     }
-                    operands.push(object);
+                    operands.push(operand);
                     continue;
                 }
                 Ok(ContentToken::Operator(name)) => name,
@@ -674,11 +700,17 @@ impl Interpreter<'_, '_> {
                     if !self.state_operator(code, &operands, scope, state, matrices)
                         && !self.path_operator(code, &operands, state, &mut path)
                     {
-                        self.show_operator(code, &operands, scope, state, matrices, depth)?;
+                        let shown = ShowContext {
+                            operands: &operands,
+                            depth,
+                        };
+                        self.show_operator(code, shown, scope, state, matrices, &mut scratch)?;
                     }
                 }
             }
-            operands.clear();
+            while let Some(used) = operands.pop() {
+                lexer.recycle(used);
+            }
         }
         if marked.contains(&true) {
             self.actual = None;
@@ -689,7 +721,7 @@ impl Interpreter<'_, '_> {
     fn marked_content(
         &mut self,
         code: u32,
-        operands: &[Object],
+        operands: &[Operand<'_>],
         marked: &mut Vec<bool>,
         max_stack: usize,
     ) {
@@ -720,14 +752,14 @@ impl Interpreter<'_, '_> {
     fn state_operator(
         &mut self,
         code: u32,
-        operands: &[Object],
+        operands: &[Operand<'_>],
         scope: &mut Scope,
         state: &mut GState,
         matrices: &mut TextMatrices,
     ) -> bool {
         match code {
             OP_CM => {
-                if let Some(matrix) = tail_numbers::<6>(operands) {
+                if let Some(matrix) = tail_numbers::<6, _>(operands) {
                     state.ctm = multiply(&matrix, &state.ctm);
                 }
             }
@@ -737,53 +769,61 @@ impl Interpreter<'_, '_> {
                 matrices.tlm = IDENTITY;
             }
             OP_TC => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.char_space = value;
                 }
             }
             OP_TW => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.word_space = value;
                 }
             }
             OP_TZ => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.scale = value / 100.0;
                 }
             }
             OP_TL => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.leading = value;
                 }
             }
             OP_TS => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.rise = value;
                 }
             }
             OP_TR => {
-                if let Some([value]) = tail_numbers::<1>(operands) {
+                if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.stroked_fill = (value - 2.0).abs() < 0.5;
                 }
             }
-            OP_TF => self.set_font(operands, scope, state),
+            OP_TF => {
+                let name = operands
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|index| operands.get(index))
+                    .and_then(Operand::as_name);
+                let size = operands.last().and_then(Operand::as_number);
+                self.set_font(name, size, scope, state);
+            }
             OP_GS => self.apply_ext_gstate(operands, scope, state),
             OP_TD => {
                 self.repositioned = true;
-                if let Some([tx, ty]) = tail_numbers::<2>(operands) {
+                if let Some([tx, ty]) = tail_numbers::<2, _>(operands) {
                     matrices.line_move(tx, ty);
                 }
             }
             OP_TD_LEADING => {
                 self.repositioned = true;
-                if let Some([tx, ty]) = tail_numbers::<2>(operands) {
+                if let Some([tx, ty]) = tail_numbers::<2, _>(operands) {
                     state.leading = -ty;
                     matrices.line_move(tx, ty);
                 }
             }
             OP_TM => {
                 self.repositioned = true;
-                if let Some(matrix) = tail_numbers::<6>(operands) {
+                if let Some(matrix) = tail_numbers::<6, _>(operands) {
                     matrices.tm = matrix;
                     matrices.tlm = matrix;
                 }
@@ -793,7 +833,7 @@ impl Interpreter<'_, '_> {
                 matrices.line_move(0.0, -state.leading);
             }
             OP_LINE_WIDTH => {
-                if let Some([width]) = tail_numbers::<1>(operands) {
+                if let Some([width]) = tail_numbers::<1, _>(operands) {
                     state.line_width = width;
                 }
             }
@@ -805,22 +845,23 @@ impl Interpreter<'_, '_> {
     fn show_operator(
         &mut self,
         code: u32,
-        operands: &[Object],
+        shown: ShowContext<'_, '_>,
         scope: &mut Scope,
         state: &mut GState,
         matrices: &mut TextMatrices,
-        depth: usize,
+        scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
+        let ShowContext { operands, depth } = shown;
         match code {
             OP_TJ => {
-                if let Some(Object::String(bytes)) = operands.last() {
+                if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
                     self.show(state, matrices, bytes)?;
                 }
             }
             OP_QUOTE => {
                 self.repositioned = true;
                 matrices.line_move(0.0, -state.leading);
-                if let Some(Object::String(bytes)) = operands.last() {
+                if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
                     self.show(state, matrices, bytes)?;
                 }
             }
@@ -830,23 +871,23 @@ impl Interpreter<'_, '_> {
                     .len()
                     .checked_sub(3)
                     .and_then(|start| operands.get(start..start.saturating_add(2)))
-                    .and_then(tail_numbers::<2>)
+                    .and_then(tail_numbers::<2, _>)
                 {
                     state.word_space = word;
                     state.char_space = character;
                 }
                 matrices.line_move(0.0, -state.leading);
-                if let Some(Object::String(bytes)) = operands.last() {
+                if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
                     self.show(state, matrices, bytes)?;
                 }
             }
             OP_TJ_ARRAY => {
-                if let Some(Object::Array(items)) = operands.last() {
-                    self.show_array(state, matrices, items)?;
+                if let Some(Operand::Array(items)) = operands.last() {
+                    self.show_array(state, matrices, items, scratch)?;
                 }
             }
             OP_DO => {
-                if let Some(Object::Name(xobject)) = operands.last() {
+                if let Some(xobject) = operands.last().and_then(Operand::as_name) {
                     self.do_xobject(xobject, scope, state, matrices, depth)?;
                 }
             }
@@ -858,7 +899,7 @@ impl Interpreter<'_, '_> {
     fn path_operator(
         &mut self,
         code: u32,
-        operands: &[Object],
+        operands: &[Operand<'_>],
         state: &GState,
         path: &mut PathBuilder,
     ) -> bool {
@@ -867,22 +908,22 @@ impl Interpreter<'_, '_> {
         }
         match code {
             OP_MOVE => {
-                if let Some([x, y]) = tail_numbers::<2>(operands) {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
                     path.move_to(apply(&state.ctm, x, y));
                 }
             }
             OP_LINE => {
-                if let Some([x, y]) = tail_numbers::<2>(operands) {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
                     path.line_to(apply(&state.ctm, x, y), self.ruling_cap);
                 }
             }
             OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
-                if let Some([x, y]) = tail_numbers::<2>(operands) {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
                     path.move_current(apply(&state.ctm, x, y));
                 }
             }
             OP_RECT => {
-                if let Some([x, y, width, height]) = tail_numbers::<4>(operands) {
+                if let Some([x, y, width, height]) = tail_numbers::<4, _>(operands) {
                     path.rect(&state.ctm, [x, y, width, height], self.ruling_cap);
                 }
             }
@@ -969,22 +1010,27 @@ impl Interpreter<'_, '_> {
         }
     }
 
-    fn set_font(&mut self, operands: &[Object], scope: &mut Scope, state: &mut GState) {
-        let Some(size) = operands.last().and_then(Object::as_number) else {
+    fn set_font(
+        &mut self,
+        name: Option<&[u8]>,
+        size: Option<f64>,
+        scope: &mut Scope,
+        state: &mut GState,
+    ) {
+        let (Some(name), Some(size)) = (name, size) else {
             return;
         };
-        let name = operands
-            .len()
-            .checked_sub(2)
-            .and_then(|index| operands.get(index))
-            .and_then(Object::as_name);
-        let Some(name) = name else { return };
         state.size = size;
         state.font = self.lookup_font(scope, name);
     }
 
-    fn apply_ext_gstate(&mut self, operands: &[Object], scope: &mut Scope, state: &mut GState) {
-        let Some(Object::Name(key)) = operands.last() else {
+    fn apply_ext_gstate(
+        &mut self,
+        operands: &[Operand<'_>],
+        scope: &mut Scope,
+        state: &mut GState,
+    ) {
+        let Some(key) = operands.last().and_then(Operand::as_name) else {
             return;
         };
         let Some(ext) = scope.category(self.document, b"ExtGState") else {
@@ -1003,9 +1049,13 @@ impl Interpreter<'_, '_> {
             return;
         };
         if let Some(Object::Array(items)) = gs.get(b"Font") {
-            let mut temp = Vec::new();
-            temp.extend(items.iter().cloned());
-            self.set_font(&temp, scope, state);
+            let name = items
+                .len()
+                .checked_sub(2)
+                .and_then(|index| items.get(index))
+                .and_then(Object::as_name);
+            let size = items.last().and_then(Object::as_number);
+            self.set_font(name, size, scope, state);
         }
     }
 
@@ -1164,14 +1214,15 @@ impl Interpreter<'_, '_> {
         &mut self,
         state: &GState,
         matrices: &mut TextMatrices,
-        items: &[Object],
+        items: &[Operand<'_>],
+        scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
         let vertical = state
             .font
             .as_ref()
             .is_some_and(|entry| entry.font.is_vertical());
         for item in items {
-            if let Object::String(bytes) = item {
+            if let Some(bytes) = item.string(scratch) {
                 self.show(state, matrices, bytes)?;
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1000.0 * state.size;
@@ -1502,7 +1553,7 @@ impl Interpreter<'_, '_> {
                 .get(b"BBox")
                 .and_then(Object::as_array)
                 .filter(|items| items.len() == 4)
-                .and_then(tail_numbers::<4>)
+                .and_then(tail_numbers::<4, _>)
                 .map(|[x0, y0, x1, y1]| [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
                 .filter(|[x0, y0, x1, y1]| x1 - x0 > 0.0 && y1 - y0 > 0.0)
         {

@@ -1,4 +1,5 @@
 use crate::num::u64_to_f64;
+use std::borrow::Cow;
 use std::ops::Range;
 
 use crate::failure::{Failure, Outcome};
@@ -348,24 +349,17 @@ impl<'a> Parser<'a> {
     }
 
     fn hex_string(&mut self) -> Vec<u8> {
-        self.pos = self.pos.saturating_add(1);
+        let start = self.pos.saturating_add(1);
+        let rest = self.data.get(start..).unwrap_or_default();
+        let length = rest.iter().position(|&byte| byte == b'>');
+        let end = start.saturating_add(length.unwrap_or(rest.len()));
+        self.pos = if length.is_some() {
+            end.saturating_add(1)
+        } else {
+            end
+        };
         let mut out = Vec::new();
-        let mut high: Option<u8> = None;
-        while let Some(byte) = self.peek() {
-            self.pos = self.pos.saturating_add(1);
-            if byte == b'>' {
-                break;
-            }
-            if let Some(nibble) = hex_value(byte) {
-                match high.take() {
-                    Some(upper) => out.push(upper << 4 | nibble),
-                    None => high = Some(nibble),
-                }
-            }
-        }
-        if let Some(upper) = high {
-            out.push(upper << 4);
-        }
+        decode_hex(self.slice(start, end), &mut out);
         out
     }
 
@@ -648,20 +642,232 @@ fn inline_image_end(data: &[u8], start: usize, length: Option<usize>) -> usize {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Operand<'a> {
+    Integer(i64),
+    Real(f64),
+    Bool(bool),
+    Null,
+    Name(Cow<'a, [u8]>),
+    Literal(Cow<'a, [u8]>),
+    Hex(&'a [u8]),
+    Array(Vec<Self>),
+    Object(Object),
+}
+
+impl Operand<'_> {
+    pub(crate) const fn as_number(&self) -> Option<f64> {
+        match self {
+            Self::Integer(value) => Some(crate::num::i64_to_f64(*value)),
+            Self::Real(value) => Some(*value),
+            Self::Bool(_)
+            | Self::Null
+            | Self::Name(_)
+            | Self::Literal(_)
+            | Self::Hex(_)
+            | Self::Array(_)
+            | Self::Object(_) => None,
+        }
+    }
+
+    pub(crate) fn as_name(&self) -> Option<&[u8]> {
+        if let Self::Name(name) = self {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn as_dict(&self) -> Option<&Dict> {
+        if let Self::Object(object) = self {
+            object.as_dict()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn string<'s>(&'s self, scratch: &'s mut Vec<u8>) -> Option<&'s [u8]> {
+        match self {
+            Self::Literal(bytes) => Some(bytes),
+            Self::Hex(raw) => {
+                scratch.clear();
+                decode_hex(raw, scratch);
+                Some(scratch)
+            }
+            Self::Integer(_)
+            | Self::Real(_)
+            | Self::Bool(_)
+            | Self::Null
+            | Self::Name(_)
+            | Self::Array(_)
+            | Self::Object(_) => None,
+        }
+    }
+}
+
+fn decode_hex(raw: &[u8], out: &mut Vec<u8>) {
+    let mut high: Option<u8> = None;
+    for &byte in raw {
+        if let Some(nibble) = hex_value(byte) {
+            match high.take() {
+                Some(upper) => out.push(upper << 4 | nibble),
+                None => high = Some(nibble),
+            }
+        }
+    }
+    if let Some(upper) = high {
+        out.push(upper << 4);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ContentToken<'a> {
-    Operand(Object),
+    Operand(Operand<'a>),
     Operator(&'a [u8]),
 }
 
+const SPARE_ARRAYS: usize = 8;
+
 pub(crate) struct ContentLexer<'a> {
     parser: Parser<'a>,
+    spare: Vec<Vec<Operand<'a>>>,
 }
 
 impl<'a> ContentLexer<'a> {
     pub(crate) const fn new(data: &'a [u8]) -> Self {
         Self {
             parser: Parser::new(data, 0, CONTENT_NESTING, false),
+            spare: Vec::new(),
         }
+    }
+
+    pub(crate) fn recycle(&mut self, operand: Operand<'a>) {
+        if let Operand::Array(mut items) = operand
+            && self.spare.len() < SPARE_ARRAYS
+        {
+            items.clear();
+            self.spare.push(items);
+        }
+    }
+
+    fn name(&mut self) -> Cow<'a, [u8]> {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let mut end = start;
+        while let Some(&byte) = parser.data.get(end) {
+            if !is_regular(byte) {
+                break;
+            }
+            if byte == b'#' {
+                return Cow::Owned(parser.name());
+            }
+            end = end.saturating_add(1);
+        }
+        parser.pos = end;
+        Cow::Borrowed(parser.slice(start, end))
+    }
+
+    fn literal(&mut self) -> Cow<'a, [u8]> {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let mut end = start;
+        while let Some(&byte) = parser.data.get(end) {
+            match byte {
+                b')' => {
+                    parser.pos = end.saturating_add(1);
+                    return Cow::Borrowed(parser.slice(start, end));
+                }
+                b'(' | b'\\' | b'\r' => break,
+                _ => end = end.saturating_add(1),
+            }
+        }
+        Cow::Owned(parser.literal_string())
+    }
+
+    fn hex(&mut self) -> &'a [u8] {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let rest = parser.data.get(start..).unwrap_or_default();
+        let length = rest.iter().position(|&byte| byte == b'>');
+        let end = start.saturating_add(length.unwrap_or(rest.len()));
+        parser.pos = if length.is_some() {
+            end.saturating_add(1)
+        } else {
+            end
+        };
+        parser.slice(start, end)
+    }
+
+    fn number(&mut self) -> Operand<'a> {
+        match self.parser.number() {
+            Object::Real(value) => Operand::Real(value),
+            Object::Integer(value) => Operand::Integer(value),
+            Object::Null
+            | Object::Bool(_)
+            | Object::Name(_)
+            | Object::String(_)
+            | Object::Array(_)
+            | Object::Dict(_)
+            | Object::Stream(_)
+            | Object::Ref(_) => Operand::Null,
+        }
+    }
+
+    fn value(&mut self, depth: usize) -> Parsed<Operand<'a>> {
+        self.parser.skip_whitespace();
+        let Some(byte) = self.parser.peek() else {
+            return Err(Reject::Garbage);
+        };
+        match byte {
+            b'/' => Ok(Operand::Name(self.name())),
+            b'(' => Ok(Operand::Literal(self.literal())),
+            b'<' if self.parser.peek_at(1) == Some(b'<') => {
+                self.parser.dictionary(depth).map(Operand::Object)
+            }
+            b'<' => Ok(Operand::Hex(self.hex())),
+            b'[' => self.array(depth),
+            b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
+            b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
+                self.parser.pos = self.parser.pos.saturating_add(1);
+                Err(Reject::Garbage)
+            }
+            _ => match self.parser.regular_run() {
+                b"true" => Ok(Operand::Bool(true)),
+                b"false" => Ok(Operand::Bool(false)),
+                b"null" => Ok(Operand::Null),
+                _ => Err(Reject::Garbage),
+            },
+        }
+    }
+
+    fn array(&mut self, depth: usize) -> Parsed<Operand<'a>> {
+        if depth >= self.parser.max_depth {
+            self.parser.pos = self.parser.pos.saturating_add(1);
+            return Err(Reject::TooDeep);
+        }
+        self.parser.pos = self.parser.pos.saturating_add(1);
+        let mut items = self.spare.pop().unwrap_or_default();
+        loop {
+            self.parser.skip_whitespace();
+            match self.parser.peek() {
+                None => break,
+                Some(b']') => {
+                    self.parser.pos = self.parser.pos.saturating_add(1);
+                    break;
+                }
+                Some(_) => {}
+            }
+            match self.parser.garbage_keyword() {
+                Some(true) => break,
+                Some(false) => continue,
+                None => {}
+            }
+            match self.value(depth.saturating_add(1)) {
+                Ok(item) => items.push(item),
+                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
+                Err(Reject::Garbage) => {}
+            }
+        }
+        Ok(Operand::Array(items))
     }
 }
 
@@ -669,28 +875,29 @@ impl<'a> Iterator for ContentLexer<'a> {
     type Item = Outcome<ContentToken<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let parser = &mut self.parser;
-        parser.skip_whitespace();
-        let byte = parser.peek()?;
+        self.parser.skip_whitespace();
+        let byte = self.parser.peek()?;
         let token = match byte {
-            b'0'..=b'9' | b'+' | b'-' | b'.' => ContentToken::Operand(parser.number()),
-            b'/' => ContentToken::Operand(Object::Name(parser.name())),
-            b'(' => ContentToken::Operand(Object::String(parser.literal_string())),
-            b'<' | b'[' => match parser.value(0) {
-                Ok(object) => ContentToken::Operand(object),
+            b'0'..=b'9' | b'+' | b'-' | b'.' => ContentToken::Operand(self.number()),
+            b'/' => ContentToken::Operand(Operand::Name(self.name())),
+            b'(' => ContentToken::Operand(Operand::Literal(self.literal())),
+            b'<' | b'[' => match self.value(0) {
+                Ok(operand) => ContentToken::Operand(operand),
                 Err(reject) => return Some(Err(reject.into_failure())),
             },
             b')' | b']' | b'>' | b'{' | b'}' | b'%' => {
+                let parser = &mut self.parser;
                 let start = parser.pos;
                 parser.pos = parser.pos.saturating_add(1);
                 ContentToken::Operator(parser.slice(start, parser.pos))
             }
             _ => {
+                let parser = &mut self.parser;
                 let run = parser.regular_run();
                 match run {
-                    b"true" => ContentToken::Operand(Object::Bool(true)),
-                    b"false" => ContentToken::Operand(Object::Bool(false)),
-                    b"null" => ContentToken::Operand(Object::Null),
+                    b"true" => ContentToken::Operand(Operand::Bool(true)),
+                    b"false" => ContentToken::Operand(Operand::Bool(false)),
+                    b"null" => ContentToken::Operand(Operand::Null),
                     b"BI" => return Some(parser.inline_image()),
                     _ => ContentToken::Operator(run),
                 }
@@ -1196,18 +1403,18 @@ mod tests {
             tokens,
             vec![
                 op(b"BT"),
-                ContentToken::Operand(name("F1")),
-                ContentToken::Operand(Object::Integer(12)),
+                ContentToken::Operand(Operand::Name(Cow::Borrowed(b"F1"))),
+                ContentToken::Operand(Operand::Integer(12)),
                 op(b"Tf"),
-                ContentToken::Operand(Object::Integer(72)),
-                ContentToken::Operand(Object::Integer(720)),
+                ContentToken::Operand(Operand::Integer(72)),
+                ContentToken::Operand(Operand::Integer(720)),
                 op(b"Td"),
-                ContentToken::Operand(Object::String(b"Hello".to_vec())),
+                ContentToken::Operand(Operand::Literal(Cow::Borrowed(b"Hello"))),
                 op(b"Tj"),
-                ContentToken::Operand(Object::Array(vec![
-                    Object::String(b"A".to_vec()),
-                    Object::Integer(-120),
-                    Object::String(b"B".to_vec())
+                ContentToken::Operand(Operand::Array(vec![
+                    Operand::Literal(Cow::Borrowed(b"A")),
+                    Operand::Integer(-120),
+                    Operand::Literal(Cow::Borrowed(b"B"))
                 ])),
                 op(b"TJ"),
                 op(b"ET"),
@@ -1216,12 +1423,61 @@ mod tests {
     }
 
     #[test]
+    fn content_lexer_borrows_plain_operands_and_owns_escaped_ones() {
+        let tokens = lex(b"/A#20B /Plain (esc\\)aped) (nest(ed)) (plain) <48 65 6>");
+        assert_eq!(
+            tokens,
+            vec![
+                ContentToken::Operand(Operand::Name(Cow::Owned(b"A B".to_vec()))),
+                ContentToken::Operand(Operand::Name(Cow::Borrowed(b"Plain"))),
+                ContentToken::Operand(Operand::Literal(Cow::Owned(b"esc)aped".to_vec()))),
+                ContentToken::Operand(Operand::Literal(Cow::Owned(b"nest(ed)".to_vec()))),
+                ContentToken::Operand(Operand::Literal(Cow::Borrowed(b"plain"))),
+                ContentToken::Operand(Operand::Hex(b"48 65 6")),
+            ]
+        );
+        let mut scratch = Vec::new();
+        let Some(ContentToken::Operand(hex)) = tokens.last() else {
+            panic!("hex operand expected");
+        };
+        assert_eq!(hex.string(&mut scratch), Some(&b"He`"[..]));
+        assert_eq!(
+            lex(b"<41"),
+            vec![ContentToken::Operand(Operand::Hex(b"41"))]
+        );
+    }
+
+    #[test]
+    fn content_lexer_recycles_array_buffers() {
+        let data = b"[(a) 1] TJ [(b)] TJ";
+        let mut lexer = ContentLexer::new(data);
+        let Some(Ok(ContentToken::Operand(first))) = lexer.next() else {
+            panic!("array expected");
+        };
+        let Operand::Array(items) = &first else {
+            panic!("array expected, got {first:?}");
+        };
+        let capacity = items.capacity();
+        lexer.recycle(first);
+        assert_eq!(lexer.next(), Some(Ok(op(b"TJ"))));
+        let Some(Ok(ContentToken::Operand(Operand::Array(second)))) = lexer.next() else {
+            panic!("array expected");
+        };
+        assert_eq!(second.capacity(), capacity);
+        assert_eq!(second, vec![Operand::Literal(Cow::Borrowed(b"b"))]);
+    }
+
+    #[test]
     fn content_lexer_handles_tight_syntax_and_quotes() {
         let tokens = lex(b"BT/F1 1 Tf(A)'(B)\" 1 0 0 1 0 0 Tm<41>Tj");
         assert!(tokens.contains(&op(b"'")));
         assert!(tokens.contains(&op(b"\"")));
         assert!(tokens.contains(&op(b"Tm")));
-        assert!(tokens.contains(&ContentToken::Operand(Object::String(b"A".to_vec()))));
+        assert!(
+            tokens.contains(&ContentToken::Operand(Operand::Literal(Cow::Borrowed(
+                b"A"
+            ))))
+        );
     }
 
     #[test]
@@ -1230,8 +1486,8 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operand(Object::Integer(1)),
-                ContentToken::Operand(Object::Integer(0)),
+                ContentToken::Operand(Operand::Integer(1)),
+                ContentToken::Operand(Operand::Integer(0)),
                 op(b"R"),
             ]
         );
@@ -1243,7 +1499,7 @@ mod tests {
         assert_eq!(tokens.len(), 4);
         assert!(matches!(
             tokens.get(1),
-            Some(ContentToken::Operand(Object::Dict(_)))
+            Some(ContentToken::Operand(Operand::Object(Object::Dict(_))))
         ));
         assert_eq!(tokens.get(2), Some(&op(b"BDC")));
     }
@@ -1285,15 +1541,15 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operand(Object::Integer(1)),
-                ContentToken::Operand(Object::Integer(2)),
+                ContentToken::Operand(Operand::Integer(1)),
+                ContentToken::Operand(Operand::Integer(2)),
                 op(b")"),
                 op(b"]"),
                 op(b">"),
                 op(b"}"),
                 op(b"{"),
                 op(b"foo"),
-                ContentToken::Operand(Object::Integer(3)),
+                ContentToken::Operand(Operand::Integer(3)),
                 op(b"bar"),
             ]
         );
@@ -1324,9 +1580,9 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operand(Object::Bool(true)),
-                ContentToken::Operand(Object::Bool(false)),
-                ContentToken::Operand(Object::Null),
+                ContentToken::Operand(Operand::Bool(true)),
+                ContentToken::Operand(Operand::Bool(false)),
+                ContentToken::Operand(Operand::Null),
             ]
         );
     }
