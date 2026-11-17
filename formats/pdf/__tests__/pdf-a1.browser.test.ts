@@ -16,9 +16,16 @@ import {
   objectSource,
   pdfStringEntry,
 } from "./pdf-fixtures";
-import { renderPdfPagesBrowser } from "../src/render-browser";
+import {
+  pdfPageRendererLayer,
+  pdfPageRendererWorkerLayer,
+  renderPdfPagesBrowser,
+} from "@signature-kit/pdf/render-browser";
+import type { PdfPageRenderer } from "@signature-kit/pdf/render-browser";
+import type { PdfError } from "@signature-kit/pdf/config";
+import type { PdfCoreError } from "@signature-kit/pdf-core/config";
 import { resolveSignatureWidgetPlacement } from "../src/placement";
-import { Effect, Redacted, Result } from "effect";
+import { Effect, Layer, Redacted, Result } from "effect";
 
 const PASSWORD = Redacted.make("changeit");
 const latin1 = new TextDecoder("latin1");
@@ -112,10 +119,10 @@ if (typeof document === "undefined") {
       expect(anchors[0]?.x).toBeCloseTo(32, 0);
     }, 20_000);
 
-    it("renders every page to PNG thumbnails with the in-house pdf core", async () => {
+    it("renders every page to PNG thumbnails in the render worker", async () => {
       const pdf = await Effect.runPromise(createPdf);
       const pages = await Effect.runPromise(
-        renderPdfPagesBrowser(pdf).pipe(Effect.provide(pdfCoreBrowserLayer)),
+        renderPdfPagesBrowser(pdf).pipe(Effect.provide(pdfPageRendererWorkerLayer())),
       );
       expect(pages).toHaveLength(1);
       expect(pages[0]?.pageIndex).toBe(0);
@@ -135,41 +142,84 @@ if (typeof document === "undefined") {
       expect(dark).toBeGreaterThan(200);
       const scaled = await Effect.runPromise(
         renderPdfPagesBrowser(pdf, { pageIndexes: [0], scale: 1 }).pipe(
-          Effect.provide(pdfCoreBrowserLayer),
+          Effect.provide(pdfPageRendererLayer.pipe(Layer.provide(pdfCoreBrowserLayer))),
         ),
       );
       expect(scaled[0]?.width).toBe(320);
     }, 20_000);
 
     it("rejects invalid render options and unreadable PDFs with typed errors", async () => {
-      for (const options of [{ scale: 0 }, { scale: 9 }, { pageIndexes: [-1] }]) {
-        const result = await Effect.runPromise(
-          Effect.result(
-            renderPdfPagesBrowser(new Uint8Array([1]), options).pipe(
-              Effect.provide(pdfCoreBrowserLayer),
+      const layers: ReadonlyArray<Layer.Layer<PdfPageRenderer, PdfError | PdfCoreError>> = [
+        pdfPageRendererWorkerLayer(),
+        pdfPageRendererLayer.pipe(Layer.provide(pdfCoreBrowserLayer)),
+      ];
+      for (const layer of layers) {
+        for (const options of [{ scale: 0 }, { scale: 9 }, { pageIndexes: [-1] }]) {
+          const result = await Effect.runPromise(
+            Effect.result(
+              renderPdfPagesBrowser(new Uint8Array([1]), options).pipe(Effect.provide(layer)),
             ),
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.code).toBe("pdf.INVALID_PDF");
+            expect(result.failure.operation).toBe("pdf.page.render");
+            expect(result.failure.schemaName).toBe("PdfPageRenderOptions");
+          }
+        }
+        const unreadable = await Effect.runPromise(
+          Effect.result(
+            renderPdfPagesBrowser(new Uint8Array([1, 2, 3])).pipe(Effect.provide(layer)),
           ),
         );
-        expect(Result.isFailure(result)).toBe(true);
-        if (Result.isFailure(result)) {
-          expect(result.failure.code).toBe("pdf.INVALID_PDF");
-          expect(result.failure.operation).toBe("pdf.page.render");
-          expect(result.failure.schemaName).toBe("PdfPageRenderOptions");
+        expect(Result.isFailure(unreadable)).toBe(true);
+        if (Result.isFailure(unreadable)) {
+          expect(unreadable.failure.code).toBe("pdf.INVALID_PDF");
+          expect(unreadable.failure.operation).toBe("pdf.page.render");
         }
       }
-      const unreadable = await Effect.runPromise(
-        Effect.result(
-          renderPdfPagesBrowser(new Uint8Array([1, 2, 3])).pipe(
-            Effect.provide(pdfCoreBrowserLayer),
+    }, 20_000);
+
+    it("stops a render worker that exceeds the time limit and replaces it", async () => {
+      const pdf = await Effect.runPromise(createPdf);
+      const stalled = URL.createObjectURL(
+        new Blob(["self.onmessage = () => { for (;;) {} };"], { type: "text/javascript" }),
+      );
+      const created: Array<string> = [];
+      const layer = pdfPageRendererWorkerLayer({ timeoutMillis: 1500 }, () => {
+        const kind = created.length === 0 ? "stalled" : "real";
+        created.push(kind);
+        return kind === "stalled"
+          ? new Worker(stalled)
+          : new Worker(new URL("../dist/render.worker.js", import.meta.url), { type: "module" });
+      });
+      const outcome = await Effect.runPromise(
+        Effect.gen(function* () {
+          const started = performance.now();
+          const timedOut = yield* Effect.flip(renderPdfPagesBrowser(pdf, { pageIndexes: [0] }));
+          const elapsed = performance.now() - started;
+          const recovered = yield* renderPdfPagesBrowser(pdf, { pageIndexes: [0], scale: 1 });
+          return { timedOut, elapsed, recovered };
+        }).pipe(Effect.provide(layer)),
+      );
+      URL.revokeObjectURL(stalled);
+      expect(outcome.timedOut.code).toBe("pdf.RENDER_TIMEOUT");
+      expect(outcome.timedOut.operation).toBe("pdf.page.render");
+      expect(outcome.elapsed).toBeLessThan(10_000);
+      expect(created).toEqual(["stalled", "real"]);
+      expect(outcome.recovered[0]?.width).toBe(320);
+    }, 30_000);
+
+    it("rejects invalid render worker options", async () => {
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          renderPdfPagesBrowser(new Uint8Array([1])).pipe(
+            Effect.provide(pdfPageRendererWorkerLayer({ timeoutMillis: 0 })),
           ),
         ),
       );
-      expect(Result.isFailure(unreadable)).toBe(true);
-      if (Result.isFailure(unreadable)) {
-        expect(unreadable.failure.code).toBe("pdf.INVALID_PDF");
-        expect(unreadable.failure.operation).toBe("pdf.page.render");
-      }
-    }, 20_000);
+      expect(failure.schemaName).toBe("PdfPageRendererWorkerOptions");
+    });
 
     it("resolves normal placement and rejects non-advancing automatic grids", async () => {
       const pdf = await Effect.runPromise(

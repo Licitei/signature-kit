@@ -41,6 +41,12 @@ export const allowedEffectProvideSites: Record<string, readonly string[]> = {
     "RpcServer.layerProtocolWorkerRunner",
     "BrowserWorkerRunner.layer",
   ],
+  "formats/pdf/src/render-browser.ts": ["pdfPageRendererLayer", "BrowserWorker.layer"],
+  "formats/pdf/src/render.worker.ts": [
+    "pdfPageRendererHandlersLayer",
+    "RpcServer.layerProtocolWorkerRunner",
+    "BrowserWorkerRunner.layer",
+  ],
   "signers/assinafy/src/index.ts": [
     "assinafySignatureRequestProvider",
     "assinafyCredentialsLayer(options)",

@@ -7,6 +7,7 @@ import { preparePdfVisualPreview } from "@signature-kit/pdf/workflow";
 import {
   PdfHandwriting,
   pdfHandwritingBrowserLayer,
+  pdfPageRendererLayer,
   renderPdfPagesBrowser,
 } from "@signature-kit/pdf/render-browser";
 import type { PdfPageImage } from "@signature-kit/pdf/render-browser";
@@ -16,6 +17,8 @@ import * as Server from "foldkit/experimental/server";
 import { expect, it } from "vitest";
 import { Flags, Model, init, update, view } from "./main";
 import { lastAnnotationRect, pdfPages, textPdf, titledPdf } from "../__tests__/helpers/text-pdf";
+
+const pageRendererLayer = pdfPageRendererLayer.pipe(Layer.provide(pdfCoreBrowserLayer));
 
 const pageBytes = (pages: ReadonlyArray<PdfPageImage>) =>
   Effect.promise(() =>
@@ -414,7 +417,7 @@ it("cancels and retries a real signing flow and disposes during another active f
         expect(yield* pdfPages(signed).pipe(Effect.provide(pdfCoreBrowserLayer))).toBe(2);
         const signedPages = yield* renderPdfPagesBrowser(signed).pipe(
           Effect.flatMap(pageBytes),
-          Effect.provide(pdfCoreBrowserLayer),
+          Effect.provide(pageRendererLayer),
         );
         expect(signedPages[0]).toEqual(previewPages[0]);
         expect(signedPages[1]).toEqual(previewPages[1]);
@@ -821,7 +824,7 @@ it("maps a click on a cropped and rotated page to the signed PDF widget", async 
         expect(signatures.at(-1)?.coverageValid).toBe(true);
         const rendered = yield* renderPdfPagesBrowser(signed, { pageIndexes: [0] }).pipe(
           Effect.flatMap(pageBytes),
-          Effect.provide(pdfCoreBrowserLayer),
+          Effect.provide(pageRendererLayer),
         );
         expect(rendered[0]).toEqual(previewBytes);
         const previewUrl = previewImage.src;
@@ -879,6 +882,7 @@ it("previews rubrics only on pages other than the main signature page", async ()
       Effect.provide(
         Layer.mergeAll(
           pdfCoreBrowserLayer,
+          pageRendererLayer,
           pdfHandwritingBrowserLayer("600 64px 'Caveat Variable'"),
         ),
       ),

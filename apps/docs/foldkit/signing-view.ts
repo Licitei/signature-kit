@@ -19,6 +19,7 @@ import {
 import {
   pdfHandwritingBrowserLayer,
   PdfHandwriting,
+  pdfPageRendererWorkerLayer,
   renderPdfPagesBrowser,
 } from "@signature-kit/pdf/render-browser";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
@@ -46,6 +47,11 @@ import { captureDocsEvent } from "../lib/posthog/client";
 import { makeSigningBatch, makeSigningWorkerSession } from "./signing-runtime";
 
 export const SigningMounted = Schema.TaggedStruct("SigningMounted", {});
+const pageRendererLayer = () =>
+  pdfPageRendererWorkerLayer(
+    {},
+    () => new Worker(new URL("./render.worker.ts", import.meta.url), { type: "module" }),
+  );
 const cleanups = new Set<() => void>();
 if (import.meta.hot !== undefined)
   import.meta.hot.dispose(() => {
@@ -338,7 +344,7 @@ const SigningMount = Mount.define("SigningMount", {
                       );
                       return { file, document, images };
                     }),
-                  ).pipe(Effect.provide(pdfCoreBrowserLayer));
+                  ).pipe(Effect.provide(Layer.merge(pdfCoreBrowserLayer, pageRendererLayer())));
                   yield* Effect.sync(() => {
                     if (closed || generation !== previewGeneration) return;
                     entries = loaded.map((item) => ({
@@ -684,9 +690,10 @@ const SigningMount = Mount.define("SigningMount", {
                   });
                 }).pipe(
                   Effect.provide(
-                    Layer.merge(
+                    Layer.mergeAll(
                       pdfHandwritingBrowserLayer("600 64px 'Caveat Variable'"),
                       pdfCoreBrowserLayer,
+                      pageRendererLayer(),
                     ),
                   ),
                 ),
