@@ -115,12 +115,12 @@ fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
     let [a1, b1, c1, d1, e1, f1] = *first;
     let [a2, b2, c2, d2, e2, f2] = *second;
     [
-        f64::mul_add(b1, c2, a1 * a2),
-        f64::mul_add(b1, d2, a1 * b2),
-        f64::mul_add(d1, c2, c1 * a2),
-        f64::mul_add(d1, d2, c1 * b2),
-        f64::mul_add(f1, c2, e1 * a2) + e2,
-        f64::mul_add(f1, d2, e1 * b2) + f2,
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
     ]
 }
 
@@ -169,8 +169,8 @@ fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f
         f64::NEG_INFINITY,
     ];
     for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
-        let px = f64::mul_add(y, c, x * a) + e;
-        let py = f64::mul_add(y, d, x * b) + f;
+        let px = x * a + y * c + e;
+        let py = x * b + y * d + f;
         bounds[0] = bounds[0].min(px);
         bounds[1] = bounds[1].min(py);
         bounds[2] = bounds[2].max(px);
@@ -189,7 +189,7 @@ const ITALIC_ANGLE: f64 = 4.0;
 
 fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
     let [a, b, c, d, e, f] = *matrix;
-    (y.mul_add(c, x * a) + e, y.mul_add(d, x * b) + f)
+    (x * a + y * c + e, x * b + y * d + f)
 }
 
 fn axis_aligned(matrix: &Matrix) -> bool {
@@ -369,14 +369,7 @@ impl TextMatrices {
 
     fn translate(&mut self, tx: f64, ty: f64) {
         let [a, b, c, d, e, f] = self.tm;
-        self.tm = [
-            a,
-            b,
-            c,
-            d,
-            ty.mul_add(c, tx.mul_add(a, e)),
-            ty.mul_add(d, tx.mul_add(b, f)),
-        ];
+        self.tm = [a, b, c, d, e + tx * a + ty * c, f + tx * b + ty * d];
     }
 }
 
@@ -1014,7 +1007,7 @@ impl Interpreter<'_, '_> {
 
     fn paint(&mut self, path: &mut PathBuilder, state: &GState, stroke: bool) {
         let [a, b, c, d, _, _] = state.ctm;
-        let width = state.line_width.abs() * f64::mul_add(b, -c, a * d).abs().sqrt();
+        let width = state.line_width.abs() * (a * d - b * c).abs().sqrt();
         let (page_width, page_height) = self.page_extent;
         for rect in &path.rects {
             let [x0, y0, x1, y1] = *rect;
@@ -1370,8 +1363,8 @@ impl Interpreter<'_, '_> {
                 let metrics = entry.font.vertical_metrics(glyph.code);
                 let span = metrics.advance * size;
                 let em = size.abs() * scale;
-                x0 = metrics.origin_x.mul_add(-em, pen_x);
-                x1 = f64::mul_add(glyph.advance, em, x0);
+                x0 = pen_x - metrics.origin_x * em;
+                x1 = x0 + glyph.advance * em;
                 y1 = pen_y + state.rise;
                 y0 = y1 - span;
                 step_x = 0.0;
@@ -1380,9 +1373,9 @@ impl Interpreter<'_, '_> {
                 let width = glyph.advance * size * scale;
                 x0 = pen_x;
                 x1 = pen_x + width;
-                y0 = entry.descent.mul_add(-size, state.rise);
-                y1 = entry.ascent.mul_add(size, state.rise);
-                step_x = spacing.mul_add(scale, width);
+                y0 = state.rise - entry.descent * size;
+                y1 = state.rise + entry.ascent * size;
+                step_x = width + spacing * scale;
                 step_y = 0.0;
             }
             let clipped = usable
@@ -1396,12 +1389,12 @@ impl Interpreter<'_, '_> {
             if usable && !clipped {
                 let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
                 let origin = (
-                    (pen_y + state.rise).mul_add(c, pen_x * a) + e,
-                    (pen_y + state.rise).mul_add(d, pen_x * b) + f,
+                    pen_x * a + (pen_y + state.rise) * c + e,
+                    pen_x * b + (pen_y + state.rise) * d + f,
                 );
                 let end = (
-                    (pen_y + step_y + state.rise).mul_add(c, (pen_x + step_x) * a) + e,
-                    (pen_y + step_y + state.rise).mul_add(d, (pen_x + step_x) * b) + f,
+                    (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
+                    (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
                 );
                 let mut join = self.join(origin, direction, effective_size);
                 if self.capture.split_repositioned
@@ -1451,9 +1444,9 @@ impl Interpreter<'_, '_> {
         let dx = origin.0 - self.pending.end.0;
         let dy = origin.1 - self.pending.end.1;
         let (ux, uy) = self.pending.dir;
-        let along = dy.mul_add(uy, dx * ux);
-        let across = dx.mul_add(-uy, dy * ux);
-        let aligned = direction.1.mul_add(uy, direction.0 * ux) > DIRECTION_COSINE;
+        let along = dx * ux + dy * uy;
+        let across = dy * ux - dx * uy;
+        let aligned = direction.0 * ux + direction.1 * uy > DIRECTION_COSINE;
         let similar =
             (size - self.pending.size).abs() <= SIZE_TOLERANCE * self.pending.size.max(size);
         let on_line = across.abs() <= BASELINE_TOLERANCE * size;
@@ -1788,9 +1781,9 @@ mod tests {
             item,
             [
                 100.0,
-                DEFAULT_DESCENT.mul_add(-12.0, 700.0),
-                HELLO_WIDTH.mul_add(12.0, 100.0),
-                DEFAULT_ASCENT.mul_add(12.0, 700.0),
+                700.0 - DEFAULT_DESCENT * 12.0,
+                100.0 + HELLO_WIDTH * 12.0,
+                700.0 + DEFAULT_ASCENT * 12.0,
             ],
         );
         assert!(close(item.font_size, 12.0));
@@ -1811,7 +1804,7 @@ mod tests {
         ));
         assert_eq!(texts(&items), ["Hello World"]);
         let item = items.first().unwrap();
-        let expected_right = f64::mul_add(2.278 + 0.4 - 0.03 + 2.611, 12.0, 100.0);
+        let expected_right = 100.0 + (2.278 + 0.4 - 0.03 + 2.611) * 12.0;
         assert!(close(item.rect[2], expected_right), "{:?}", item.rect);
     }
 
@@ -1829,7 +1822,7 @@ mod tests {
         assert_eq!(texts(&items), ["a b"]);
         assert!(close(
             items[0].rect[2],
-            f64::mul_add(0.556 + 0.278 + 0.556, 10.0, 5.0)
+            (0.556 + 0.278 + 0.556) * 10.0 + 5.0
         ));
     }
 
@@ -1851,10 +1844,7 @@ mod tests {
     #[test]
     fn rise_shifts_vertically() {
         let items = extract(&simple_pdf("BT /F1 10 Tf 0 700 Td 4 Ts (Hi) Tj ET"));
-        assert!(close(
-            items[0].rect[1],
-            DEFAULT_DESCENT.mul_add(-10.0, 704.0)
-        ));
+        assert!(close(items[0].rect[1], 704.0 - DEFAULT_DESCENT * 10.0));
     }
 
     #[test]
@@ -1869,7 +1859,7 @@ mod tests {
             item.rect[2] - item.rect[0],
             (DEFAULT_ASCENT + DEFAULT_DESCENT) * 10.0
         ));
-        assert!(close(item.rect[0], DEFAULT_ASCENT.mul_add(-10.0, 300.0)));
+        assert!(close(item.rect[0], 300.0 - DEFAULT_ASCENT * 10.0));
         assert!(close(item.rect[1], 400.0));
     }
 
@@ -1881,11 +1871,8 @@ mod tests {
         let item = &items[0];
         assert!(close(item.rect[0], 20.0));
         assert!(close(item.font_size, 20.0));
-        assert!(close(item.rect[1], DEFAULT_DESCENT.mul_add(-20.0, 30.0)));
-        assert!(close(
-            item.rect[2],
-            0.222_f64.mul_add(20.0, 0.722_f64.mul_add(20.0, 20.0))
-        ));
+        assert!(close(item.rect[1], 30.0 - DEFAULT_DESCENT * 20.0));
+        assert!(close(item.rect[2], 20.0 + 0.722 * 20.0 + 0.222 * 20.0));
     }
 
     #[test]
@@ -1900,22 +1887,10 @@ mod tests {
             "BT /F1 10 Tf 14 TL 50 700 Td (one) Tj T* (two) Tj (x) ' 1 2 (y) \" 0 -30 TD (z) Tj ET",
         ));
         assert_eq!(texts(&items), ["one", "two", "x", "y", "z"]);
-        assert!(close(
-            items[1].rect[1],
-            DEFAULT_DESCENT.mul_add(-10.0, 686.0)
-        ));
-        assert!(close(
-            items[2].rect[1],
-            DEFAULT_DESCENT.mul_add(-10.0, 672.0)
-        ));
-        assert!(close(
-            items[3].rect[1],
-            DEFAULT_DESCENT.mul_add(-10.0, 658.0)
-        ));
-        assert!(close(
-            items[4].rect[1],
-            DEFAULT_DESCENT.mul_add(-10.0, 628.0)
-        ));
+        assert!(close(items[1].rect[1], 686.0 - DEFAULT_DESCENT * 10.0));
+        assert!(close(items[2].rect[1], 672.0 - DEFAULT_DESCENT * 10.0));
+        assert!(close(items[3].rect[1], 658.0 - DEFAULT_DESCENT * 10.0));
+        assert!(close(items[4].rect[1], 628.0 - DEFAULT_DESCENT * 10.0));
     }
 
     #[test]
@@ -1924,7 +1899,7 @@ mod tests {
         assert_eq!(texts(&items), ["a b"]);
         assert!(close(
             items[0].rect[2],
-            f64::mul_add(0.556 + 0.278 + 0.556, 10.0, 50.0) + 2.0 + 4.0
+            50.0 + (0.556 + 0.278 + 0.556) * 10.0 + 2.0 + 4.0
         ));
     }
 
@@ -1972,10 +1947,7 @@ mod tests {
         let items = extract(&bytes);
         assert_eq!(texts(&items), ["Outer", "Inside"]);
         assert!(close(items[1].rect[0], 60.0));
-        assert!(close(
-            items[1].rect[1],
-            DEFAULT_DESCENT.mul_add(-10.0, 70.0)
-        ));
+        assert!(close(items[1].rect[1], 70.0 - DEFAULT_DESCENT * 10.0));
     }
 
     #[test]
@@ -2478,7 +2450,7 @@ mod tests {
             [
                 20.0,
                 100.0 - 2.0,
-                f64::mul_add(0.6 + 0.5 + 0.7 + 0.6, 10.0, 20.0),
+                20.0 + (0.6 + 0.5 + 0.7 + 0.6) * 10.0,
                 100.0 + 8.0,
             ],
         );

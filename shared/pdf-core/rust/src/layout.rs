@@ -411,10 +411,8 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
                 block.segments.push(segment_index);
                 block.x0 = block.x0.min(segment.x0);
                 block.x1 = block.x1.max(segment.x1);
-                block.top = block.top.max(CORE_TOP.mul_add(-segment.size, segment.y1));
-                block.bottom = block
-                    .bottom
-                    .min(CORE_BOTTOM.mul_add(segment.size, segment.y0));
+                block.top = block.top.max(segment.y1 - CORE_TOP * segment.size);
+                block.bottom = block.bottom.min(segment.y0 + CORE_BOTTOM * segment.size);
                 block.last = segment_index;
                 block.last_x0 = segment.x0;
                 block.last_x1 = segment.x1;
@@ -427,8 +425,8 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
                     segments: vec![segment_index],
                     x0: segment.x0,
                     x1: segment.x1,
-                    top: CORE_TOP.mul_add(-segment.size, segment.y1),
-                    bottom: CORE_BOTTOM.mul_add(segment.size, segment.y0),
+                    top: segment.y1 - CORE_TOP * segment.size,
+                    bottom: segment.y0 + CORE_BOTTOM * segment.size,
                     last: segment_index,
                     last_x0: segment.x0,
                     last_x1: segment.x1,
@@ -1664,12 +1662,7 @@ mod tests {
             let start = segments.len();
             for word in 0..words {
                 let x = f64::from(word) * 300.0;
-                segments.push(segment(
-                    x,
-                    x + 250.0,
-                    f64::mul_add(f64::from(line), -12.0, 1000.0),
-                    SIZE,
-                ));
+                segments.push(segment(x, x + 250.0, 1000.0 - f64::from(line) * 12.0, SIZE));
             }
             ranges.push((start, segments.len()));
         }
@@ -1959,7 +1952,7 @@ mod structure_tests {
             .into_iter()
             .enumerate()
         {
-            let baseline = 20.0_f64.mul_add(-usize_to_f64(index), top - 12.0);
+            let baseline = top - 12.0 - 20.0 * usize_to_f64(index);
             out.push_str(&text(55.0, baseline, 10.0, left));
             out.push_str(&text(205.0, baseline, 10.0, right));
         }
@@ -2039,7 +2032,7 @@ mod structure_tests {
     fn borderless(rows: &[(&str, &str, &str)], top: f64) -> String {
         let mut out = String::new();
         for (index, (a, b, c)) in rows.iter().enumerate() {
-            let baseline = 14.0_f64.mul_add(-usize_to_f64(index), top);
+            let baseline = top - 14.0 * usize_to_f64(index);
             out.push_str(&text(50.0, baseline, 10.0, a));
             out.push_str(&text(200.0, baseline, 10.0, b));
             out.push_str(&text(350.0, baseline, 10.0, c));
@@ -2091,7 +2084,7 @@ mod structure_tests {
         .iter()
         .enumerate()
         {
-            let baseline = 14.0_f64.mul_add(-usize_to_f64(index), 700.0);
+            let baseline = 700.0 - 14.0 * usize_to_f64(index);
             content.push_str(&text(50.0, baseline, 10.0, marker));
             content.push_str(&text(120.0, baseline, 10.0, body));
         }
@@ -2283,7 +2276,7 @@ mod structure_tests {
     fn two_text_columns_are_not_mistaken_for_a_table() {
         let mut content = String::new();
         for index in 0..8 {
-            let baseline = 12.0_f64.mul_add(-f64::from(index), 700.0);
+            let baseline = 700.0 - 12.0 * f64::from(index);
             content.push_str(&text(
                 50.0,
                 baseline,
@@ -2307,12 +2300,7 @@ mod structure_tests {
         content.push_str(&text(50.0, 770.0, 9.0, header));
         content.push_str(&text(480.0, 770.0, 9.0, &format!("Pagina {index} de 4")));
         for (line, value) in body.iter().enumerate() {
-            content.push_str(&text(
-                50.0,
-                14.0_f64.mul_add(-usize_to_f64(line), 600.0),
-                10.0,
-                value,
-            ));
+            content.push_str(&text(50.0, 600.0 - 14.0 * usize_to_f64(line), 10.0, value));
         }
         content.push_str(&text(
             50.0,
@@ -2455,12 +2443,7 @@ mod structure_tests {
     fn page_limit_violations_propagate_instead_of_emptying_pages() {
         let mut content = String::new();
         for index in 0..20 {
-            content.push_str(&text(
-                50.0,
-                f64::mul_add(f64::from(index), -20.0, 700.0),
-                10.0,
-                "linha",
-            ));
+            content.push_str(&text(50.0, 700.0 - f64::from(index) * 20.0, 10.0, "linha"));
         }
         let bytes = document(&[page(text(50.0, 700.0, 10.0, "ok")), page(content)], &[]);
         let tight = Limits {

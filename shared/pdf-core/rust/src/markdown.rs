@@ -338,7 +338,7 @@ fn x_after(line: &MdLine, chars: usize) -> f64 {
         if remaining < count {
             let share = f64::from(u32::try_from(remaining).unwrap_or(u32::MAX))
                 / f64::from(u32::try_from(count.max(1)).unwrap_or(u32::MAX));
-            return f64::mul_add(run.x1 - run.x0, share, run.x0);
+            return run.x0 + (run.x1 - run.x0) * share;
         }
         remaining = remaining.saturating_sub(count);
     }
@@ -565,8 +565,7 @@ fn first_word_width(line: &Prepared<'_>) -> f64 {
 
 fn word_fits(previous: &Prepared<'_>, next: &Prepared<'_>, flow: Flow) -> bool {
     let size = next.line.size;
-    SPACE_EM.mul_add(size, previous.line.x1) + first_word_width(next)
-        <= FIT_SLACK.mul_add(-size, flow.right)
+    previous.line.x1 + SPACE_EM * size + first_word_width(next) <= flow.right - FIT_SLACK * size
 }
 
 fn near_size(first: f64, second: f64) -> bool {
@@ -717,7 +716,7 @@ fn breaks_within_flow(
     if let Some(found) = &next.lead {
         let evidence = ends_terminal(&previous.plain)
             || para.lead.is_some()
-            || below.x0 > INDENT_EM.mul_add(below.size, flow.left)
+            || below.x0 > flow.left + INDENT_EM * below.size
             || word_fits(previous, next, flow);
         if found.kind != LeadKind::Dash || evidence {
             return true;
@@ -739,8 +738,8 @@ fn breaks_within_flow(
         return true;
     }
     ends_terminal(&previous.plain)
-        && below.x0 > INDENT_EM.mul_add(below.size, above.x0)
-        && below.x0 > INDENT_EM.mul_add(below.size, flow.left)
+        && below.x0 > above.x0 + INDENT_EM * below.size
+        && below.x0 > flow.left + INDENT_EM * below.size
 }
 
 fn breaks_across_flows(previous: &Prepared<'_>, next: &Prepared<'_>) -> bool {
