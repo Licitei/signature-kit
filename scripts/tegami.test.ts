@@ -64,6 +64,37 @@ afterEach(async () => {
 });
 
 describe("Tegami release guards", () => {
+  it("rewrites an incompatible internal 0.x range and versions its dependent", async () => {
+    const root = await createTempWorkspace();
+    const dependencyDirectory = join(root, "packages", "dependency");
+    const dependentManifest = join(root, "packages", "fixture", "package.json");
+    await mkdir(dependencyDirectory);
+    await writeFile(
+      join(dependencyDirectory, "package.json"),
+      JSON.stringify({ name: "@fixture/dependency", version: "0.1.0" }),
+    );
+    await writeFile(
+      dependentManifest,
+      JSON.stringify({
+        name: "@fixture/package",
+        version: "1.0.0",
+        dependencies: { "@fixture/dependency": "^0.1.0" },
+      }),
+    );
+    await mkdir(join(root, ".tegami"));
+    await writeFile(
+      join(root, ".tegami", "dependency.md"),
+      '---\npackages:\n  "@fixture/dependency": minor\n---\n\n## Update dependency\n',
+    );
+
+    await (await createReleaseProject(root).draft()).apply();
+
+    expect(JSON.parse(await readFile(dependentManifest, "utf8"))).toMatchObject({
+      version: "1.0.1",
+      dependencies: { "@fixture/dependency": "^0.2.0" },
+    });
+  });
+
   it("rejects publishing when no lock exists", async () => {
     const root = await createTempWorkspace();
     const project = createReleaseProject(root);
