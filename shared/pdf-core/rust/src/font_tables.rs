@@ -1,7 +1,4 @@
 use core::cmp::Ordering;
-use std::sync::OnceLock;
-
-use crate::inflate::inflate;
 
 include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
 
@@ -103,64 +100,18 @@ impl Standard14Font {
     }
 }
 
-fn glyph_name_text() -> &'static str {
-    static DECODED: OnceLock<String> = OnceLock::new();
-    DECODED
-        .get_or_init(|| {
-            inflate(&GLYPH_NAME_TEXT_ZLIB, GLYPH_NAME_TEXT_LEN.saturating_add(1))
-                .ok()
-                .and_then(|bytes| {
-                    (bytes.len() == GLYPH_NAME_TEXT_LEN)
-                        .then(|| String::from_utf8(bytes).ok())
-                        .flatten()
-                })
-                .unwrap_or_default()
-        })
-        .as_str()
-}
-
-fn glyph_name_ends() -> &'static [u32] {
-    static ENDS: OnceLock<Vec<u32>> = OnceLock::new();
-    ENDS.get_or_init(|| {
-        let mut ends = Vec::with_capacity(GLYPH_NAME_COUNT);
-        let mut end = 0_u32;
-        for len in &GLYPH_NAME_LENS {
-            end = end.saturating_add(u32::from(*len));
-            ends.push(end);
-        }
-        ends
-    })
-    .as_slice()
-}
-
-fn agl_starts() -> &'static [u32] {
-    static STARTS: OnceLock<Vec<u32>> = OnceLock::new();
-    STARTS
-        .get_or_init(|| {
-            let mut starts = Vec::with_capacity(AGL_START_DELTAS.len());
-            let mut start = 0_u32;
-            for delta in &AGL_START_DELTAS {
-                start = start.saturating_add(u32::from(*delta));
-                starts.push(start);
-            }
-            starts
-        })
-        .as_slice()
-}
-
 fn name_at(index: usize) -> Option<&'static str> {
-    let ends = glyph_name_ends();
-    let end = usize::try_from(*ends.get(index)?).ok()?;
+    let end = usize::from(*GLYPH_NAME_ENDS.get(index)?);
     let start = index
         .checked_sub(1)
-        .and_then(|previous| ends.get(previous))
-        .map_or(Some(0), |start| usize::try_from(*start).ok())?;
-    glyph_name_text().get(start..end)
+        .and_then(|previous| GLYPH_NAME_ENDS.get(previous))
+        .map_or(0, |start| usize::from(*start));
+    GLYPH_NAME_TEXT.get(start..end)
 }
 
 fn name_index(name: &str) -> Option<usize> {
     let mut low = 0;
-    let mut high = GLYPH_NAME_COUNT;
+    let mut high = GLYPH_NAME_ENDS.len();
     while low < high {
         let middle = low.midpoint(high);
         match name_at(middle)?.cmp(name) {
@@ -195,9 +146,8 @@ pub(crate) fn win_ansi_unicode(code: u8) -> u16 {
 
 pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u16]> {
     let index = name_index(str::from_utf8(name).ok()?)?;
-    let starts = agl_starts();
-    let start = usize::try_from(*starts.get(index)?).ok()?;
-    let end = usize::try_from(*starts.get(index.checked_add(1)?)?).ok()?;
+    let start = usize::from(*AGL_STARTS.get(index)?);
+    let end = usize::from(*AGL_STARTS.get(index.checked_add(1)?)?);
     AGL_CODEPOINTS
         .get(start..end)
         .filter(|codepoints| !codepoints.is_empty())
@@ -209,8 +159,8 @@ mod tests {
 
     #[test]
     fn glyph_names_are_sorted_and_unique() {
-        let names: Vec<_> = (0..GLYPH_NAME_COUNT).filter_map(name_at).collect();
-        assert_eq!(names.len(), GLYPH_NAME_COUNT);
+        let names: Vec<_> = (0..GLYPH_NAME_ENDS.len()).filter_map(name_at).collect();
+        assert_eq!(names.len(), GLYPH_NAME_ENDS.len());
         assert!(names.windows(2).all(|pair| matches!(pair, [a, b] if a < b)));
     }
 
@@ -240,27 +190,4 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(debug_assertions)))]
-mod zlib_timing {
-    use super::{GLYPH_NAME_TEXT_LEN, GLYPH_NAME_TEXT_ZLIB, glyph_name_text};
-    use crate::inflate::inflate;
-    use std::time::Instant;
 
-    #[test]
-    fn glyph_zlib_inflates_under_one_millisecond() {
-        let start = Instant::now();
-        let bytes = inflate(&GLYPH_NAME_TEXT_ZLIB, GLYPH_NAME_TEXT_LEN.saturating_add(1)).unwrap();
-        let elapsed = start.elapsed();
-        assert_eq!(bytes.len(), GLYPH_NAME_TEXT_LEN);
-        eprintln!(
-            "glyph zlib inflate: {elapsed:?} ({} bytes -> {})",
-            GLYPH_NAME_TEXT_ZLIB.len(),
-            bytes.len()
-        );
-        assert!(
-            elapsed.as_secs_f64() < 0.001,
-            "inflate took {elapsed:?}, budget is 1ms"
-        );
-        let _ = glyph_name_text();
-    }
-}

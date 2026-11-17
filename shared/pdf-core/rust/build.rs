@@ -193,26 +193,18 @@ fn font_tables(
         .collect();
 
     let mut out = String::new();
-    let glyph_text = names.concat();
-    let glyph_zlib = zlib_compress_bytes(glyph_text.as_bytes())?;
     writeln!(
         out,
-        "pub(crate) const GLYPH_NAME_TEXT_LEN: usize = {};",
-        glyph_text.len()
+        "pub(crate) static GLYPH_NAME_TEXT: &str = {:?};",
+        names.concat()
     )?;
-    emit(&mut out, "GLYPH_NAME_TEXT_ZLIB", "u8", &glyph_zlib)?;
-    // Name lengths fit in u8 (Adobe Glyph List max is well under 64). Runtime
-    // rebuilds exclusive ends once; storing u16 ends would double this table.
-    let lens = names
-        .iter()
-        .map(|name| u8::try_from(name.len()))
-        .collect::<Result<Vec<_>, _>>()?;
-    emit(&mut out, "GLYPH_NAME_LENS", "u8", &lens)?;
-    writeln!(
-        out,
-        "pub(crate) const GLYPH_NAME_COUNT: usize = {};",
-        names.len()
-    )?;
+    let mut end = 0_usize;
+    let mut ends = Vec::with_capacity(names.len());
+    for name in &names {
+        end = end.saturating_add(name.len());
+        ends.push(u16::try_from(end)?);
+    }
+    emit(&mut out, "GLYPH_NAME_ENDS", "u16", &ends)?;
 
     let mut starts = Vec::with_capacity(names.len().saturating_add(1));
     let mut codepoints: Vec<u32> = Vec::new();
@@ -223,14 +215,7 @@ fn font_tables(
         }
     }
     starts.push(u16::try_from(codepoints.len())?);
-    // AGL start deltas are 0..=4; store u8 deltas and rebuild absolute starts.
-    let mut prev = 0_u16;
-    let mut start_deltas = Vec::with_capacity(starts.len());
-    for start in &starts {
-        start_deltas.push(u8::try_from(start.saturating_sub(prev))?);
-        prev = *start;
-    }
-    emit(&mut out, "AGL_START_DELTAS", "u8", &start_deltas)?;
+    emit(&mut out, "AGL_STARTS", "u16", &starts)?;
     let codepoints_u16 = codepoints
         .iter()
         .map(|code| u16::try_from(*code))
@@ -260,9 +245,6 @@ fn font_tables(
         return Err("missing section [WinAnsi]".into());
     }
 
-    // Emit each distinct width row once. Identical Standard 14 faces (Courier
-    // family, Helvetica/Oblique, Helvetica-Bold/BoldOblique) share one table;
-    // `Standard14Font::widths` points the aliases at the canonical symbol.
     let mut width_tables: Vec<(String, Vec<u16>)> = Vec::new();
     for (font, lines) in standard14 {
         let mut widths: BTreeMap<&str, u16> = BTreeMap::new();

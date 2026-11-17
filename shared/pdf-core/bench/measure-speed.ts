@@ -97,7 +97,7 @@ async function timeRender(
   let pages = 0;
   for (const file of files) {
     const bytes = new Uint8Array(readFileSync(file));
-    const pageCount = Math.min(pagesInName(basename(file)), 3);
+    const pageCount = Math.min(pagesInName(basename(file)), 8);
     const indexes = Array.from({ length: pageCount }, (_, i) => i);
     const t0 = performance.now();
     await Effect.runPromise(core.renderPages(bytes, { pageIndexes: indexes, scale: 1 }));
@@ -143,18 +143,17 @@ const largeEdital =
 const warmText = textFiles[0] ?? habilitacao;
 const warmRender = renderFiles[0] ?? warmText;
 
-const runs = quick ? 5 : 3;
+const runs = quick ? 5 : 5;
 const textRuns: number[] = [];
 const renderRuns: number[] = [];
 const habRuns: Awaited<ReturnType<typeof timeSignatures>>[] = [];
 const largeRuns: Awaited<ReturnType<typeof timeSignatures>>[] = [];
 
-// warmup: touch text + render paths twice so the first timed run is warm
-for (let warm = 0; warm < 2; warm += 1) {
+for (let warm = 0; warm < 3; warm += 1) {
   await Effect.runPromise(core.text(new Uint8Array(readFileSync(warmText))));
   await Effect.runPromise(
     core.renderPages(new Uint8Array(readFileSync(warmRender)), {
-      pageIndexes: [0],
+      pageIndexes: [0, 1, 2],
       scale: 1,
     }),
   );
