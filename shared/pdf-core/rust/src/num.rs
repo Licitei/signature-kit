@@ -15,6 +15,21 @@ where
 }
 
 /// Decimal digits for `value` without pulling in `core::fmt`.
+pub(crate) fn fold_char(ch: char) -> char {
+    if ch.is_ascii() {
+        return ch.to_ascii_lowercase();
+    }
+    let code = u32::from(ch);
+    match code {
+        0x00C0..=0x00D6 | 0x00D8..=0x00DE => char::from_u32(code.saturating_add(0x20)).unwrap_or(ch),
+        _ => ch,
+    }
+}
+
+pub(crate) fn fold_string(text: &str) -> String {
+    text.chars().map(fold_char).collect()
+}
+
 pub(crate) fn unsigned_decimal(value: u64) -> String {
     use core::str;
     let mut digits = [b'0'; 20];

@@ -1187,7 +1187,7 @@ fn running_key(text: &str) -> String {
             space = true;
             digits = false;
         } else {
-            key.extend(ch.to_lowercase());
+            key.push(crate::num::fold_char(ch));
             digits = false;
             space = false;
         }

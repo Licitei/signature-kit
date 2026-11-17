@@ -659,7 +659,9 @@ fn strong_continuation(previous: &str, next: &str) -> bool {
         || (hyphen_end(previous) && next_alnum)
         || previous.trim_end().ends_with(',')
         || (next_alnum
-            && FUNCTION_WORDS.contains(&left_word(previous.trim_end()).to_lowercase().as_str()))
+            && FUNCTION_WORDS.contains(
+                &crate::num::fold_string(left_word(previous.trim_end())).as_str(),
+            ))
 }
 
 fn first_word_width(line: &Prepared<'_>) -> f64 {
@@ -870,16 +872,17 @@ fn left_word(text: &str) -> &str {
 }
 
 fn right_word(text: &str) -> String {
-    text.trim_start()
-        .split(char::is_whitespace)
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(|ch: char| !ch.is_alphanumeric())
-        .to_lowercase()
+    crate::num::fold_string(
+        text.trim_start()
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(|ch: char| !ch.is_alphanumeric()),
+    )
 }
 
 fn keeps_hyphen(stem: &str, right: &str) -> bool {
-    let left = left_word(stem).to_lowercase();
+    let left = crate::num::fold_string(left_word(stem));
     let word = right_word(right);
     left.contains('-')
         || word.contains('-')
