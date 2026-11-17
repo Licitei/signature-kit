@@ -190,7 +190,11 @@ fn font_tables(
     }
     starts.push(u16::try_from(codepoints.len())?);
     emit(&mut out, "AGL_STARTS", "u16", &starts)?;
-    emit(&mut out, "AGL_CODEPOINTS", "u32", &codepoints)?;
+    let codepoints_u16 = codepoints
+        .iter()
+        .map(|code| u16::try_from(*code))
+        .collect::<Result<Vec<_>, _>>()?;
+    emit(&mut out, "AGL_CODEPOINTS", "u16", &codepoints_u16)?;
 
     let mut win_ansi: &[Option<&str>] = &[];
     for (name, table) in &tables {
@@ -215,6 +219,10 @@ fn font_tables(
         return Err("missing section [WinAnsi]".into());
     }
 
+    // Emit each distinct width row once. Identical Standard 14 faces (Courier
+    // family, Helvetica/Oblique, Helvetica-Bold/BoldOblique) share one table;
+    // `Standard14Font::widths` points the aliases at the canonical symbol.
+    let mut width_tables: Vec<(String, Vec<u16>)> = Vec::new();
     for (font, lines) in standard14 {
         let mut widths: BTreeMap<&str, u16> = BTreeMap::new();
         for line in lines {
@@ -233,12 +241,14 @@ fn font_tables(
                     .unwrap_or(0)
             })
             .collect();
-        emit(
-            &mut out,
-            &format!("STANDARD14_{}", screaming(font)),
-            "u16",
-            &row,
-        )?;
+        let symbol = format!("STANDARD14_{}", screaming(font));
+        if width_tables.iter().any(|(_, existing)| *existing == row) {
+            continue;
+        }
+        width_tables.push((symbol, row));
+    }
+    for (name, row) in &width_tables {
+        emit(&mut out, name, "u16", row)?;
     }
     Ok(out)
 }

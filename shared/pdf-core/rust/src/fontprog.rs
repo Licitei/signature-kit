@@ -1468,7 +1468,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 pub(crate) fn agl_components(name: &[u8]) -> Option<Vec<u32>> {
     let text = str::from_utf8(name).ok()?;
     if let Some(found) = lookup_agl(name) {
-        return Some(found.to_vec());
+        return Some(found.iter().map(|code| u32::from(*code)).collect());
     }
     let base = text.split('.').next().unwrap_or_default();
     if base.is_empty() {
@@ -1486,7 +1486,7 @@ pub(crate) fn agl_components(name: &[u8]) -> Option<Vec<u32>> {
 
 fn agl_component(part: &str, out: &mut Vec<u32>) -> Option<()> {
     if let Some(found) = lookup_agl(part.as_bytes()) {
-        out.extend_from_slice(found);
+        out.extend(found.iter().map(|code| u32::from(*code)));
         return Some(());
     }
     if let Some(digits) = part.strip_prefix("uni")

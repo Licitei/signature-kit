@@ -85,14 +85,12 @@ impl Standard14Font {
 
     pub(crate) const fn widths(self) -> &'static [u16; 256] {
         match self {
-            Self::Courier => &STANDARD14_COURIER,
-            Self::CourierBold => &STANDARD14_COURIER_BOLD,
-            Self::CourierBoldOblique => &STANDARD14_COURIER_BOLD_OBLIQUE,
-            Self::CourierOblique => &STANDARD14_COURIER_OBLIQUE,
-            Self::Helvetica => &STANDARD14_HELVETICA,
-            Self::HelveticaBold => &STANDARD14_HELVETICA_BOLD,
-            Self::HelveticaBoldOblique => &STANDARD14_HELVETICA_BOLD_OBLIQUE,
-            Self::HelveticaOblique => &STANDARD14_HELVETICA_OBLIQUE,
+            Self::Courier
+            | Self::CourierBold
+            | Self::CourierBoldOblique
+            | Self::CourierOblique => &STANDARD14_COURIER,
+            Self::Helvetica | Self::HelveticaOblique => &STANDARD14_HELVETICA,
+            Self::HelveticaBold | Self::HelveticaBoldOblique => &STANDARD14_HELVETICA_BOLD,
             Self::Symbol => &STANDARD14_SYMBOL,
             Self::TimesBold => &STANDARD14_TIMES_BOLD,
             Self::TimesBoldItalic => &STANDARD14_TIMES_BOLD_ITALIC,
@@ -143,11 +141,11 @@ pub(crate) fn win_ansi_unicode(code: u8) -> u16 {
     }
     lookup_agl(encoding_glyph_name(BuiltinEncoding::WinAnsi, code).as_bytes())
         .and_then(|codepoints| codepoints.first())
-        .and_then(|codepoint| u16::try_from(*codepoint).ok())
+        .copied()
         .unwrap_or(0)
 }
 
-pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u32]> {
+pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u16]> {
     let index = name_index(str::from_utf8(name).ok()?)?;
     let start = usize::from(*AGL_STARTS.get(index)?);
     let end = usize::from(*AGL_STARTS.get(index.checked_add(1)?)?);
@@ -169,9 +167,9 @@ mod tests {
 
     #[test]
     fn agl_lookup_resolves_known_names() {
-        assert_eq!(lookup_agl(b"A"), Some(&[0x41][..]));
-        assert_eq!(lookup_agl(b"Euro"), Some(&[0x20AC][..]));
-        assert_eq!(lookup_agl(b"fi"), Some(&[0xFB01][..]));
+        assert_eq!(lookup_agl(b"A"), Some(&[0x41_u16][..]));
+        assert_eq!(lookup_agl(b"Euro"), Some(&[0x20AC_u16][..]));
+        assert_eq!(lookup_agl(b"fi"), Some(&[0xFB01_u16][..]));
         assert_eq!(lookup_agl(b"nonexistentglyph"), None);
         assert_eq!(lookup_agl(&[0xFF, 0xFE]), None);
     }

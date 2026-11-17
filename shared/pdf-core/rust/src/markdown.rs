@@ -1147,7 +1147,12 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
         let marker = match inner_family {
             Family::Bullet => "-".to_owned(),
             Family::Ordered => found.label.clone(),
-            Family::Labeled => format!("- {}", found.label),
+            Family::Labeled => {
+                let mut marker = String::with_capacity(found.label.len().saturating_add(2));
+                marker.push_str("- ");
+                marker.push_str(&found.label);
+                marker
+            }
         };
         let shown = match inner_family {
             Family::Labeled => "-",

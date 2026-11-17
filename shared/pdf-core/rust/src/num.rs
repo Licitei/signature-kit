@@ -14,6 +14,27 @@ where
     value.into() as usize
 }
 
+/// Decimal digits for `value` without pulling in `core::fmt`.
+pub(crate) fn unsigned_decimal(value: u64) -> String {
+    let mut digits = [b'0'; 20];
+    let mut cursor = digits.len();
+    let mut remaining = value;
+    loop {
+        cursor = cursor.saturating_sub(1);
+        if let Some(slot) = digits.get_mut(cursor) {
+            *slot = b'0'.saturating_add(u8::try_from(remaining.rem_euclid(10)).unwrap_or(0));
+        }
+        remaining = remaining.checked_div(10).unwrap_or(0);
+        if remaining == 0 {
+            break;
+        }
+    }
+    match core::str::from_utf8(digits.get(cursor..).unwrap_or_default()) {
+        Ok(text) => String::from(text),
+        Err(_) => String::from("0"),
+    }
+}
+
 #[expect(
     clippy::as_conversions,
     clippy::cast_precision_loss,
