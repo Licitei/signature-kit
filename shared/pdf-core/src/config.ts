@@ -33,7 +33,7 @@ export const pdfCoreErrorMessages = {
   "en-US": {
     "pdfCore.WASM_LOAD_FAILED": "The PDF core WebAssembly module could not be loaded.",
     "pdfCore.INVALID_PDF": "Invalid PDF document.",
-    "pdfCore.ENCRYPTED_PDF": "Encrypted PDF documents are not supported.",
+    "pdfCore.ENCRYPTED_PDF": "The operation could not process this encrypted PDF.",
     "pdfCore.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
     "pdfCore.UNSUPPORTED_FEATURE": "The PDF document uses an unsupported feature.",
     "pdfCore.INVALID_OPTIONS": "Invalid PDF inspection options.",
@@ -42,7 +42,7 @@ export const pdfCoreErrorMessages = {
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
     "pdfCore.INVALID_PDF": "Documento PDF inválido.",
-    "pdfCore.ENCRYPTED_PDF": "Documentos PDF criptografados não são suportados.",
+    "pdfCore.ENCRYPTED_PDF": "A operação não pôde processar este PDF criptografado.",
     "pdfCore.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",
     "pdfCore.UNSUPPORTED_FEATURE": "O documento PDF usa um recurso não suportado.",
     "pdfCore.INVALID_OPTIONS": "Opções de inspeção de PDF inválidas.",

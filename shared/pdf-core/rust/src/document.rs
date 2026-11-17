@@ -7,6 +7,7 @@ use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
+use crate::encryption::Encryption;
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::filters;
 use crate::inspection::{InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText};
@@ -100,6 +101,7 @@ pub(crate) struct Document<'data> {
     bytes: &'data [u8],
     cache: RefCell<Vec<Option<Rc<Object>>>>,
     depth: Cell<u32>,
+    encryption: RefCell<Option<Encryption>>,
     limits: Limits,
     object_streams: RefCell<HashMap<u32, Rc<ObjectStream>>>,
     repaired: Cell<bool>,
@@ -167,21 +169,6 @@ impl<'data> Document<'data> {
         Ok(object.as_dict().is_some().then_some(object))
     }
 
-    fn check_encrypted(&self) -> Outcome<()> {
-        let encrypted = self
-            .trailer
-            .borrow()
-            .get(b"Encrypt")
-            .is_some_and(|value| !matches!(value, Object::Null));
-        if encrypted {
-            return Err(Failure::new(
-                FailureCode::EncryptedPdf,
-                "encrypted documents are not supported",
-            ));
-        }
-        Ok(())
-    }
-
     pub(crate) fn content(&self, page: &Page) -> Outcome<Vec<u8>> {
         let Some(contents) = page.dict.get(b"Contents") else {
             return Ok(Vec::new());
@@ -222,6 +209,22 @@ impl<'data> Document<'data> {
             append(&resolved)?;
         }
         Ok(out)
+    }
+
+    fn encryption_dictionary(&self, reference: ObjRef) -> Option<Dict> {
+        let entry = self.table.borrow().get(widen(reference.number)).copied()?;
+        let Entry::Offset(offset) = entry else {
+            return None;
+        };
+        let start = offset.saturating_add(self.shift.get());
+        let parsed =
+            parse_indirect_object(self.bytes, start, self.limits.max_nesting, |_| None).ok()?;
+        if parsed.obj_ref == reference
+            && let Object::Dict(dict) = parsed.object
+        {
+            return Some(dict);
+        }
+        None
     }
 
     pub(crate) fn follow(&self, object: &Object) -> Outcome<Rc<Object>> {
@@ -289,6 +292,11 @@ impl<'data> Document<'data> {
         *self.table.borrow_mut() = table;
         *self.trailer.borrow_mut() = trailer;
         self.object_streams.borrow_mut().clear();
+        *self.encryption.borrow_mut() = None;
+    }
+
+    pub(crate) fn is_encrypted(&self) -> bool {
+        self.encryption.borrow().is_some()
     }
 
     fn length_of(&self, reference: ObjRef) -> Option<i64> {
@@ -367,7 +375,12 @@ impl<'data> Document<'data> {
                 }
                 Ok(shared_object)
             }
-            Err(failure) if failure.code == FailureCode::LimitExceeded || self.repaired.get() => {
+            Err(failure)
+                if matches!(
+                    failure.code,
+                    FailureCode::LimitExceeded | FailureCode::EncryptedPdf
+                ) || self.repaired.get() =>
+            {
                 Err(failure)
             }
             Err(_) => {
@@ -379,11 +392,20 @@ impl<'data> Document<'data> {
 
     fn load_at(&self, number: u32, offset: usize) -> Outcome<Object> {
         let start = offset.saturating_add(self.shift.get());
-        let parsed = parse_indirect_object(self.bytes, start, self.limits.max_nesting, |length| {
-            self.length_of(length)
-        })?;
+        let mut parsed =
+            parse_indirect_object(self.bytes, start, self.limits.max_nesting, |length| {
+                self.length_of(length)
+            })?;
         if parsed.obj_ref.number != number {
             return Err(Failure::invalid("object number mismatch"));
+        }
+        if self.is_encrypted()
+            && let Object::Stream(stream) = &mut parsed.object
+        {
+            self.resolve_crypt_filter(&mut stream.dict)?;
+        }
+        if let Some(encryption) = self.encryption.borrow().as_ref() {
+            encryption.decrypt_object(&mut parsed.object, parsed.obj_ref, self.bytes)?;
         }
         Ok(parsed.object)
     }
@@ -497,15 +519,16 @@ impl<'data> Document<'data> {
             object_streams: RefCell::new(HashMap::new()),
             repaired: Cell::new(false),
             depth: Cell::new(0),
+            encryption: RefCell::new(None),
         };
         if document.read_xref_chain().is_err() {
             document.rebuild()?;
+        } else {
+            document.unlock()?;
         }
-        document.check_encrypted()?;
         if !document.root_valid() && !document.repaired.get() {
             document.rebuild()?;
         }
-        document.check_encrypted()?;
         if !document.root_valid() {
             return Err(Failure::invalid("missing document catalog"));
         }
@@ -804,14 +827,7 @@ impl<'data> Document<'data> {
         self.shift.set(0);
         let scan = self.scan_objects();
         self.install(scan.table, merged_trailer(&scan.trailers));
-        let encrypted = self
-            .trailer
-            .borrow()
-            .get(b"Encrypt")
-            .is_some_and(|value| !matches!(value, Object::Null));
-        if encrypted {
-            return Ok(());
-        }
+        self.unlock()?;
         let compressed = self.index_object_streams(scan.object_streams);
         if self.root_valid() {
             return Ok(());
@@ -841,6 +857,41 @@ impl<'data> Document<'data> {
         Ok(Some([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)]))
     }
 
+    fn resolve_crypt_filter(&self, dict: &mut Dict) -> Outcome<()> {
+        let Some(value) = dict.get(b"Filter") else {
+            return Ok(());
+        };
+        let first = value
+            .as_array()
+            .and_then(<[Object]>::first)
+            .unwrap_or(value);
+        if !first.is_ref() && first.as_name() != Some(b"Crypt") {
+            return Ok(());
+        }
+        if self.depth.get() >= MAX_LENGTH_DEPTH {
+            return Err(Failure::invalid("cyclic stream filter reference"));
+        }
+        self.depth.set(self.depth.get().saturating_add(1));
+        let resolved = self.resolve_filter_head(value);
+        self.depth.set(self.depth.get().saturating_sub(1));
+        let filter = resolved?;
+        let first_filter = filter
+            .as_array()
+            .and_then(<[Object]>::first)
+            .unwrap_or(&filter);
+        if first_filter.as_name() != Some(b"Crypt") {
+            return Ok(());
+        }
+        if let Some(parameters) = dict.get(b"DecodeParms").or_else(|| dict.get(b"DP")) {
+            self.depth.set(self.depth.get().saturating_add(1));
+            let resolved_parameters = self.resolve_filter_head(parameters);
+            self.depth.set(self.depth.get().saturating_sub(1));
+            dict.insert(b"DecodeParms", resolved_parameters?);
+        }
+        dict.insert(b"Filter", filter);
+        Ok(())
+    }
+
     fn resolve_deep(&self, object: &Object, depth: usize) -> Outcome<Object> {
         if depth > MAX_DEEP_RESOLVE {
             return Ok(Object::Null);
@@ -864,6 +915,18 @@ impl<'data> Document<'data> {
         } else {
             Ok((*resolved).clone())
         }
+    }
+
+    fn resolve_filter_head(&self, value: &Object) -> Outcome<Object> {
+        let resolved = self.follow(value)?;
+        let Object::Array(items) = &*resolved else {
+            return self.resolve_deep(&resolved, 0);
+        };
+        let mut filters = items.clone();
+        if let Some(first) = filters.first_mut() {
+            *first = self.resolve_deep(first, 0)?;
+        }
+        Ok(Object::Array(filters))
     }
 
     fn root_valid(&self) -> bool {
@@ -944,6 +1007,34 @@ impl<'data> Document<'data> {
 
     pub(crate) fn trailer(&self) -> Dict {
         self.trailer.borrow().clone()
+    }
+
+    fn unlock(&self) -> Outcome<()> {
+        let trailer = self.trailer.borrow();
+        let Some(setting) = trailer.get(b"Encrypt") else {
+            return Ok(());
+        };
+        let encryption = match setting {
+            Object::Null => return Ok(()),
+            Object::Dict(dict) => Encryption::authenticate(dict, &trailer, None),
+            Object::Ref(reference) => self
+                .encryption_dictionary(*reference)
+                .and_then(|dict| Encryption::authenticate(&dict, &trailer, Some(*reference))),
+            Object::Array(_)
+            | Object::Bool(_)
+            | Object::Integer(_)
+            | Object::Name(_)
+            | Object::Real(_)
+            | Object::Stream(_)
+            | Object::String(_) => None,
+        };
+        *self.encryption.borrow_mut() = Some(encryption.ok_or_else(|| {
+            Failure::new(
+                FailureCode::EncryptedPdf,
+                "cannot open encrypted PDF with an empty user password",
+            )
+        })?);
+        Ok(())
     }
 
     fn walk_pages(&self) -> Outcome<Vec<Page>> {
@@ -1045,10 +1136,7 @@ impl Resolver for Document<'_> {
 
 impl Document<'_> {
     fn decode_stream(&self, stream: &Stream, prefix: Option<usize>) -> Outcome<Vec<u8>> {
-        let raw = self
-            .bytes
-            .get(stream.data.clone())
-            .ok_or_else(|| Failure::invalid("stream data out of range"))?;
+        let raw = stream.encoded_bytes(self.bytes)?;
         let max = self.limits.max_decoded_stream_bytes;
         let Some(filter) = stream.dict.get(b"Filter") else {
             return filters::decode_stream(&stream.dict, raw, max, prefix);
@@ -1158,7 +1246,14 @@ pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
 fn lenient<T>(result: Outcome<T>) -> Outcome<Option<T>> {
     match result {
         Ok(value) => Ok(Some(value)),
-        Err(failure) if failure.code == FailureCode::LimitExceeded => Err(failure),
+        Err(failure)
+            if matches!(
+                failure.code,
+                FailureCode::LimitExceeded | FailureCode::EncryptedPdf
+            ) =>
+        {
+            Err(failure)
+        }
         Err(_) => Ok(None),
     }
 }

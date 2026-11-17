@@ -942,6 +942,7 @@ mod tests {
     fn postscript(program: &str, domain: &[f64], range: &[f64]) -> Function {
         let resolver = Bytes(program.as_bytes().to_vec());
         let object = Object::Stream(Stream {
+            decrypted: None,
             data: 0..program.len(),
             dict: dict(vec![
                 ("FunctionType", Object::Integer(4)),
@@ -1002,6 +1003,7 @@ mod tests {
         let data = vec![0_u8, 255, 0];
         let resolver = Bytes(data);
         let object = Object::Stream(Stream {
+            decrypted: None,
             data: 0..3,
             dict: dict(vec![
                 ("FunctionType", Object::Integer(0)),
@@ -1025,6 +1027,7 @@ mod tests {
         let data = [0_u8, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF];
         let resolver = Bytes(data.to_vec());
         let object = Object::Stream(Stream {
+            decrypted: None,
             data: 0..8,
             dict: dict(vec![
                 ("FunctionType", Object::Integer(0)),
@@ -1099,6 +1102,7 @@ mod tests {
         let deep = format!("{}{}", "{ ".repeat(64), "} ".repeat(64));
         let resolver = Bytes(deep.into_bytes());
         let object = Object::Stream(Stream {
+            decrypted: None,
             data: 0..resolver.0.len(),
             dict: dict(vec![("FunctionType", Object::Integer(4))]),
         });

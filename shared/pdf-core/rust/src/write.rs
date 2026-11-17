@@ -197,7 +197,11 @@ impl Written {
         );
         dict.insert(b"Filter", Object::Name(b"FlateDecode".to_vec()));
         let data = zlib_compress(&rows);
-        let stream = Object::Stream(Stream { data: 0..0, dict });
+        let stream = Object::Stream(Stream {
+            data: 0..0,
+            decrypted: None,
+            dict,
+        });
         self.indirect(number, 0, &stream, &data, &Object::Ref);
     }
 
@@ -455,6 +459,7 @@ impl Copier<'_, '_> {
             ),
             Object::Dict(dict) => Object::Dict(self.copy_dict(dict, output)?),
             Object::Stream(stream) => Object::Stream(Stream {
+                decrypted: None,
                 data: stream.data.clone(),
                 dict: self.copy_dict(&stream.dict, output)?,
             }),
@@ -482,13 +487,9 @@ impl Copier<'_, '_> {
             let loaded = self.document.load(reference)?;
             let copied = self.copy(&loaded, output)?;
             let data = match &*loaded {
-                Object::Stream(stream) => Some(
-                    self.document
-                        .bytes()
-                        .get(stream.data.clone())
-                        .ok_or_else(|| Failure::invalid("stream data out of range"))?
-                        .to_vec(),
-                ),
+                Object::Stream(stream) => {
+                    Some(stream.encoded_bytes(self.document.bytes())?.to_vec())
+                }
                 Object::Array(_)
                 | Object::Bool(_)
                 | Object::Dict(_)
@@ -961,7 +962,11 @@ where
         written.indirect(
             stream_number,
             0,
-            &Object::Stream(Stream { data: 0..0, dict }),
+            &Object::Stream(Stream {
+                data: 0..0,
+                decrypted: None,
+                dict,
+            }),
             &data,
             &Object::Ref,
         );
@@ -1159,10 +1164,7 @@ fn stream_bytes<'out>(document: &'out Document<'_>, body: &'out Body) -> Outcome
         return Ok(data);
     }
     match &body.object {
-        Object::Stream(stream) => document
-            .bytes()
-            .get(stream.data.clone())
-            .ok_or_else(|| Failure::invalid("stream data out of range")),
+        Object::Stream(stream) => stream.encoded_bytes(document.bytes()),
         Object::Array(_)
         | Object::Bool(_)
         | Object::Dict(_)

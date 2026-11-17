@@ -1,7 +1,7 @@
 use alloc::rc::Rc;
 use core::ops::Range;
 
-use crate::failure::Outcome;
+use crate::failure::{Failure, Outcome};
 use crate::num::i64_to_f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -36,7 +36,18 @@ pub(crate) struct Dict {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Stream {
     pub data: Range<usize>,
+    pub decrypted: Option<Rc<[u8]>>,
     pub dict: Dict,
+}
+
+impl Stream {
+    pub(crate) fn encoded_bytes<'data>(&'data self, pdf: &'data [u8]) -> Outcome<&'data [u8]> {
+        if let Some(bytes) = &self.decrypted {
+            return Ok(bytes);
+        }
+        pdf.get(self.data.clone())
+            .ok_or_else(|| Failure::invalid("stream data out of range"))
+    }
 }
 
 impl Dict {
