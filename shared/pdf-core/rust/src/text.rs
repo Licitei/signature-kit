@@ -531,19 +531,6 @@ pub(crate) struct Session {
     generation: u32,
 }
 
-pub(crate) fn extract_page(
-    document: &Document<'_>,
-    page: &Page,
-    limits: &Limits,
-) -> Outcome<Vec<TextItem>> {
-    Ok(
-        extract_runs(document, page, limits, false, &mut Session::default())?
-            .into_iter()
-            .map(|run| run.item)
-            .collect(),
-    )
-}
-
 pub(crate) fn extract_runs(
     document: &Document<'_>,
     page: &Page,
@@ -1624,7 +1611,14 @@ mod tests {
     fn extract_with(bytes: &[u8], limits: &Limits) -> Outcome<Vec<TextItem>> {
         let document = Document::open(bytes, limits)?;
         let pages = document.pages()?;
-        extract_page(&document, pages.first().unwrap(), limits)
+        extract_runs(
+            &document,
+            pages.first().unwrap(),
+            limits,
+            false,
+            &mut Session::default(),
+        )
+        .map(|runs| runs.into_iter().map(|run| run.item).collect())
     }
 
     fn extract(bytes: &[u8]) -> Vec<TextItem> {
