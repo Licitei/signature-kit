@@ -445,6 +445,14 @@ impl Edges<'_> {
     }
 }
 
+fn overlaps(column: (f64, f64), x0: f64, x1: f64) -> bool {
+    if x0 < x1 && column.0 < column.1 {
+        column.1 > x0 && column.0 < x1
+    } else {
+        column.1 >= x0 && column.0 <= x1
+    }
+}
+
 pub(crate) fn merge_row(columns: &[(f64, f64)], spans: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
     let mut next = columns.to_vec();
     let mut used: Vec<usize> = Vec::new();
@@ -452,7 +460,7 @@ pub(crate) fn merge_row(columns: &[(f64, f64)], spans: &[(f64, f64)]) -> Option<
         let hits: Vec<usize> = next
             .iter()
             .enumerate()
-            .filter(|(_, column)| column.1 > x0 && column.0 < x1)
+            .filter(|(_, column)| overlaps(**column, x0, x1))
             .map(|(index, _)| index)
             .collect();
         match hits.as_slice() {
@@ -486,7 +494,7 @@ pub(crate) fn column_of(columns: &[(f64, f64)], x0: f64, x1: f64) -> Option<usiz
     let mut hits = columns
         .iter()
         .enumerate()
-        .filter(|(_, column)| column.1 > x0 && column.0 < x1)
+        .filter(|(_, column)| overlaps(**column, x0, x1))
         .map(|(index, _)| index);
     match (hits.next(), hits.next()) {
         (Some(index), None) => Some(index),

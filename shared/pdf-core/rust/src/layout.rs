@@ -687,6 +687,87 @@ fn is_list(cells: &[Cell], columns: usize) -> bool {
     markers >= 2
 }
 
+fn truncate_unmappable<'s, F>(rows: &mut Vec<Vec<usize>>, columns: &[(f64, f64)], line_at: F)
+where
+    F: Fn(usize) -> Option<&'s [Segment]>,
+{
+    let mappable = |line: usize| {
+        line_at(line).is_some_and(|segments| {
+            segments
+                .iter()
+                .all(|segment| column_of(columns, segment.x0, segment.x1).is_some())
+        })
+    };
+    let Some((row_index, cut)) = rows.iter().enumerate().find_map(|(row_index, row)| {
+        row.iter()
+            .position(|&line| !mappable(line))
+            .map(|cut| (row_index, cut))
+    }) else {
+        return;
+    };
+    let keep = if cut == 0 {
+        row_index
+    } else {
+        row_index.saturating_add(1)
+    };
+    rows.truncate(keep);
+    if let Some(row) = rows.get_mut(row_index) {
+        row.truncate(cut);
+    }
+}
+
+fn aligned_cells<'s, F>(
+    frags: &[Frag<'_>],
+    rows: &[Vec<usize>],
+    columns: &[(f64, f64)],
+    line_at: F,
+) -> (Vec<Cell>, [f64; 4])
+where
+    F: Fn(usize) -> Option<&'s [Segment]>,
+{
+    let mut cells: Vec<Cell> = Vec::with_capacity(rows.len().saturating_mul(columns.len()));
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (row_index, lines) in rows.iter().enumerate() {
+        let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
+        for segment in lines.iter().filter_map(|&line| line_at(line)).flatten() {
+            top = top.max(segment.y1);
+            bottom = bottom.min(segment.y0);
+        }
+        let slot = cells.len();
+        for (column_index, &(left, right)) in columns.iter().enumerate() {
+            cells.push(Cell {
+                row: u32::try_from(row_index).unwrap_or(u32::MAX),
+                col: u32::try_from(column_index).unwrap_or(u32::MAX),
+                row_span: 1,
+                col_span: 1,
+                bbox: [left, bottom, right, top],
+                text: String::new(),
+            });
+        }
+        for segment in lines.iter().filter_map(|&line| line_at(line)).flatten() {
+            let Some(column) = column_of(columns, segment.x0, segment.x1) else {
+                continue;
+            };
+            if let Some(cell) = cells.get_mut(slot.saturating_add(column)) {
+                if !cell.text.is_empty() {
+                    cell.text.push('\n');
+                }
+                write_segment(frags, segment, &mut cell.text);
+            }
+        }
+        bounds[1] = bounds[1].min(bottom);
+        bounds[3] = bounds[3].max(top);
+    }
+    bounds[0] = columns.first().map_or(0.0, |column| column.0);
+    bounds[2] = columns.last().map_or(0.0, |column| column.1);
+    (cells, bounds)
+}
+
 fn aligned_tables(
     frags: &[Frag<'_>],
     segments: &[Segment],
@@ -737,7 +818,7 @@ fn aligned_tables(
                         if let Some(column) = column {
                             used.push(column);
                         }
-                        fresh && !segment.bold || row_bold
+                        fresh && (!segment.bold || row_bold)
                     });
                 if !wraps {
                     break;
@@ -749,51 +830,16 @@ fn aligned_tables(
             last = next;
             next = next.saturating_add(1);
         }
+        truncate_unmappable(&mut rows, &columns, line_at);
+        if let Some(&end) = rows.last().and_then(|row| row.last()) {
+            last = end;
+        }
         let accepted = rows.len() >= 3 || (rows.len() == 2 && columns.len() >= 3);
         if !accepted {
             index = index.saturating_add(1);
             continue;
         }
-        let mut cells: Vec<Cell> = Vec::with_capacity(rows.len().saturating_mul(columns.len()));
-        let mut bounds = [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ];
-        for (row_index, lines) in rows.iter().enumerate() {
-            let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
-            for segment in lines.iter().filter_map(|&line| line_at(line)).flatten() {
-                top = top.max(segment.y1);
-                bottom = bottom.min(segment.y0);
-            }
-            let slot = cells.len();
-            for (column_index, &(left, right)) in columns.iter().enumerate() {
-                cells.push(Cell {
-                    row: u32::try_from(row_index).unwrap_or(u32::MAX),
-                    col: u32::try_from(column_index).unwrap_or(u32::MAX),
-                    row_span: 1,
-                    col_span: 1,
-                    bbox: [left, bottom, right, top],
-                    text: String::new(),
-                });
-            }
-            for segment in lines.iter().filter_map(|&line| line_at(line)).flatten() {
-                let Some(column) = column_of(&columns, segment.x0, segment.x1) else {
-                    continue;
-                };
-                if let Some(cell) = cells.get_mut(slot.saturating_add(column)) {
-                    if !cell.text.is_empty() {
-                        cell.text.push('\n');
-                    }
-                    write_segment(frags, segment, &mut cell.text);
-                }
-            }
-            bounds[1] = bounds[1].min(bottom);
-            bounds[3] = bounds[3].max(top);
-        }
-        bounds[0] = columns.first().map_or(0.0, |column| column.0);
-        bounds[2] = columns.last().map_or(0.0, |column| column.1);
+        let (cells, bounds) = aligned_cells(frags, &rows, &columns, line_at);
         if is_list(&cells, columns.len()) {
             index = last.saturating_add(1);
             continue;
@@ -1598,6 +1644,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn zero_width_segment_maps_to_its_column() {
+        assert_eq!(
+            column_of(&[(10.0, 50.0), (100.0, 160.0)], 50.0, 50.0),
+            Some(0)
+        );
+        assert_eq!(
+            column_of(&[(10.0, 50.0), (100.0, 100.0)], 100.0, 120.0),
+            Some(1)
+        );
+        assert_eq!(
+            merge_row(&[(10.0, 50.0)], &[(50.0, 50.0)]),
+            Some(vec![(10.0, 50.0)])
+        );
+    }
+
+    #[test]
+    fn rows_are_truncated_before_an_unmappable_wrap_line() {
+        let columns = [(50.0, 100.0), (200.0, 260.0)];
+        let segments = [
+            segment(50.0, 90.0, 700.0, SIZE),
+            segment(200.0, 250.0, 700.0, SIZE),
+            segment(60.0, 230.0, 690.0, SIZE),
+            segment(50.0, 90.0, 700.0, SIZE),
+        ];
+        let ranges = [(0, 2), (2, 3), (3, 4)];
+        let line_at = |index: usize| {
+            let &(start, end) = ranges.get(index)?;
+            segments.get(start..end)
+        };
+        let mut wrapped = vec![vec![0, 1], vec![2]];
+        truncate_unmappable(&mut wrapped, &columns, line_at);
+        assert_eq!(wrapped, [vec![0]]);
+        let mut split = vec![vec![0], vec![1, 2]];
+        truncate_unmappable(&mut split, &columns, line_at);
+        assert_eq!(split, [vec![0]]);
+    }
+
     fn open_block(x0: f64, x1: f64, size: f64) -> Block {
         Block {
             table: None,
@@ -1894,6 +1978,10 @@ mod structure_tests {
         markdown: true,
         drop_running: false,
     };
+    const OPTIONS: TextOptions = TextOptions {
+        markdown: false,
+        drop_running: true,
+    };
 
     fn tables_of(bytes: &[u8]) -> Vec<Table> {
         document_tables(bytes, None, &text_limits()).unwrap()
@@ -2038,6 +2126,80 @@ mod structure_tests {
             out.push_str(&text(350.0, baseline, 10.0, c));
         }
         out
+    }
+
+    fn alphanumerics(page: &str) -> usize {
+        page.chars().filter(|ch| ch.is_alphanumeric()).count()
+    }
+
+    fn assert_no_markdown_loss(name: &str, bytes: &[u8]) {
+        let plain = pages_of(bytes, OPTIONS).concat();
+        let markdown = pages_of(bytes, MARKDOWN).concat();
+        assert!(
+            alphanumerics(&markdown) >= alphanumerics(&plain),
+            "{name}:\n{plain}\n---\n{markdown}"
+        );
+    }
+
+    #[test]
+    fn bold_row_wrap_spanning_columns_is_not_dropped() {
+        let mut content = String::new();
+        content.push_str(&bold(50.0, 700.0, 10.0, "Item"));
+        content.push_str(&bold(200.0, 700.0, 10.0, "Qtd"));
+        content.push_str(&bold(350.0, 700.0, 10.0, "Valor"));
+        content.push_str(&text(
+            50.0,
+            688.0,
+            10.0,
+            "TAILAH RICARDO BARBOSA assina o termo",
+        ));
+        content.push_str(&borderless(
+            &[
+                ("Cimento", "10", "125,00"),
+                ("Areia", "4", "32,00"),
+                ("Brita", "7", "91,00"),
+            ],
+            674.0,
+        ));
+        let bytes = document(&[page(content)], &[]);
+        let markdown = pages_of(&bytes, MARKDOWN);
+        assert!(
+            markdown[0].contains("TAILAH RICARDO BARBOSA"),
+            "{}",
+            markdown[0]
+        );
+        assert_no_markdown_loss("bold-row-wrap", &bytes);
+    }
+
+    #[test]
+    fn markdown_keeps_every_character_of_the_fixture_corpus() {
+        macro_rules! fixture {
+            ($name:literal) => {
+                (
+                    $name,
+                    include_bytes!(concat!("../../__tests__/fixtures/", $name, ".pdf")).as_slice(),
+                )
+            };
+        }
+        for (name, bytes) in [
+            fixture!("broken-xref"),
+            fixture!("habilitacao-150"),
+            fixture!("helvetica-winansi"),
+            fixture!("icp-signed"),
+            fixture!("incremental-update"),
+            fixture!("links"),
+            fixture!("object-streams"),
+            fixture!("react-pdf-declaration"),
+            fixture!("rotated-cropped"),
+            fixture!("markdown-basics"),
+            fixture!("markdown-headings-react"),
+            fixture!("markdown-hyphenation"),
+            fixture!("markdown-nested-lists"),
+            fixture!("markdown-page-continue"),
+            fixture!("markdown-two-column"),
+        ] {
+            assert_no_markdown_loss(name, bytes);
+        }
     }
 
     #[test]
