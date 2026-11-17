@@ -14,7 +14,7 @@ import {
   type CorpusFixtureName,
 } from "./corpus.ts";
 
-const MAX_WASM_BYTES = 1536 * 1024;
+const MAX_WASM_BYTES = 1056 * 1024;
 const wasmUrl = new URL("../dist/pdf-core.wasm", import.meta.url);
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 
