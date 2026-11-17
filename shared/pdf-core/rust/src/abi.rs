@@ -340,10 +340,9 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
             out.u32(cursor);
         }
         out.align();
-        if page.styles.len() != page.items.len() {
-            return Err(Failure::invalid("page text styles do not match its items"));
+        for item in &page.items {
+            out.bytes(&[item.style]);
         }
-        out.bytes(&page.styles);
         out.align();
         for item in &page.items {
             out.bytes(item.text.as_bytes());
@@ -1174,17 +1173,14 @@ mod tests {
                 .map(|(index, (rect, font_size))| TextItem {
                     rect: *rect,
                     font_size: *font_size,
+                    style: styles[index],
                     text: String::from_utf16(
                         &units[offsets[index]..offsets[index.saturating_add(1)]],
                     )
                     .unwrap(),
                 })
                 .collect();
-            PageText {
-                items,
-                page_index,
-                styles,
-            }
+            PageText { items, page_index }
         })
         .take(widen(text_count))
         .collect();
@@ -1226,21 +1222,23 @@ mod tests {
             text: vec![
                 PageText {
                     page_index: 0,
-                    styles: vec![1, 2, 0],
                     items: vec![
                         TextItem {
                             rect: [1.0, 2.0, 3.0, 4.0],
                             font_size: 11.0,
+                            style: 1,
                             text: "Hello".to_owned(),
                         },
                         TextItem {
                             rect: [5.0, 6.0, 7.0, 8.0],
                             font_size: 9.5,
+                            style: 2,
                             text: "mundo \u{2014} a\u{e7}\u{e3}o \u{1d11e}".to_owned(),
                         },
                         TextItem {
                             rect: [0.0; 4],
                             font_size: 0.0,
+                            style: 0,
                             text: String::new(),
                         },
                     ],
@@ -1248,7 +1246,6 @@ mod tests {
                 PageText {
                     page_index: 1,
                     items: Vec::new(),
-                    styles: Vec::new(),
                 },
             ],
         }
@@ -1259,15 +1256,6 @@ mod tests {
         let inspection = sample();
         let payload = encode(&inspection).map(Writer::payload).unwrap_or_default();
         assert_eq!(decode(&payload), inspection);
-    }
-
-    #[test]
-    fn rejects_styles_that_do_not_match_items() {
-        let mut inspection = sample();
-        if let Some(page) = inspection.text.first_mut() {
-            let _: Option<u8> = page.styles.pop();
-        }
-        assert!(encode(&inspection).is_err());
     }
 
     #[test]

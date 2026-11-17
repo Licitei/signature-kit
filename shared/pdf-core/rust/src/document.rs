@@ -1294,7 +1294,6 @@ pub(crate) fn inspect(
             };
             let content = extract_content(&document, page, limits, capture, &mut session)?;
             let items = content.items();
-            let styles = content.styles();
             if items.len() > limits.max_items_per_page {
                 return Err(Failure::limit("page text items exceed limit"));
             }
@@ -1313,7 +1312,6 @@ pub(crate) fn inspect(
                     .ok()
                     .ok_or_else(|| Failure::limit("page index out of range"))?,
                 items,
-                styles,
             });
         }
     }
@@ -1515,7 +1513,8 @@ mod tests {
                 .iter()
                 .map(|item| item.text.trim().to_owned())
                 .collect();
-            (texts, page.styles)
+            let styles: Vec<u8> = page.items.iter().map(|item| item.style).collect();
+            (texts, styles)
         };
         let (merged, _) = run(false);
         assert_eq!(merged.len(), 4);
@@ -1559,7 +1558,8 @@ mod tests {
         let page = inspection.text.into_iter().next().unwrap();
         let texts: Vec<&str> = page.items.iter().map(|item| item.text.as_str()).collect();
         assert_eq!(texts, ["Ka Kb", "Rua", "Principal", "Forte"]);
-        assert_eq!(page.styles, [0, 0, 0, 1]);
+        let styles: Vec<u8> = page.items.iter().map(|item| item.style).collect();
+        assert_eq!(styles, [0, 0, 0, 1]);
     }
 
     #[test]

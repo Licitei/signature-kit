@@ -55,6 +55,7 @@ pub(crate) struct LinkInfo {
 pub(crate) struct TextItem {
     pub font_size: f64,
     pub rect: [f64; 4],
+    pub style: u8,
     pub text: String,
 }
 
@@ -62,7 +63,6 @@ pub(crate) struct TextItem {
 pub(crate) struct PageText {
     pub items: Vec<TextItem>,
     pub page_index: u32,
-    pub styles: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

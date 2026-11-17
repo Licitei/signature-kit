@@ -466,15 +466,9 @@ impl PageContent {
             .map(|run| TextItem {
                 rect: run.rect,
                 font_size: run.font_size,
+                style: u8::from(run.bold) | (u8::from(run.italic) << 1_u8),
                 text: self.text_of(run).to_owned(),
             })
-            .collect()
-    }
-
-    pub(crate) fn styles(&self) -> Vec<u8> {
-        self.runs
-            .iter()
-            .map(|run| u8::from(run.bold) | (u8::from(run.italic) << 1_u8))
             .collect()
     }
 

@@ -1687,6 +1687,7 @@ mod tests {
             item: TextItem {
                 rect: [x, baseline - 2.24, x + width, baseline + 9.45],
                 font_size: SIZE,
+                style: 0,
                 text: text.to_owned(),
             },
             direction: (1.0, 0.0),
@@ -1700,6 +1701,7 @@ mod tests {
             item: TextItem {
                 rect,
                 font_size: SIZE,
+                style: 0,
                 text: text.to_owned(),
             },
             direction,
@@ -1989,6 +1991,7 @@ mod tests {
                 item: TextItem {
                     rect: [0.0_f64; 4],
                     font_size: 0.0,
+                    style: 0,
                     text: "x".to_owned(),
                 },
                 direction: (f64::NAN, 0.0_f64),
