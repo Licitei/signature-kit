@@ -309,6 +309,39 @@ fn is_italic_name(name: &[u8]) -> bool {
     .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
 }
 
+struct Placement {
+    linear: [f64; 4],
+    direction: (f64, f64),
+    effective_size: f64,
+    usable: bool,
+    vertical: bool,
+}
+
+impl Placement {
+    fn new(entry: &FontEntry, state: &GState, tm: &Matrix) -> Self {
+        let [a1, b1, c1, d1, _, _] = *tm;
+        let [a2, b2, c2, d2, _, _] = state.ctm;
+        let a = a1 * a2 + b1 * c2;
+        let b = a1 * b2 + b1 * d2;
+        let c = c1 * a2 + d1 * c2;
+        let d = c1 * b2 + d1 * d2;
+        let vertical = entry.font.is_vertical();
+        let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
+        let dir_length = (dir_x * dir_x + dir_y * dir_y).sqrt();
+        let effective_size = (state.size * (c * c + d * d).sqrt()).abs();
+        Self {
+            linear: [a, b, c, d],
+            direction: (dir_x / dir_length, dir_y / dir_length),
+            effective_size,
+            usable: dir_length > MIN_SCALE
+                && effective_size > MIN_SCALE
+                && dir_length.is_finite()
+                && effective_size.is_finite(),
+            vertical,
+        }
+    }
+}
+
 struct FontEntry {
     font: Font,
     ascent: f64,
@@ -1279,13 +1312,18 @@ impl Interpreter<'_, '_> {
         items: &[Operand<'_>],
         scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
-        let vertical = state
-            .font
+        let prepared = state.font.clone().map(|entry| {
+            let placement = Placement::new(&entry, state, &matrices.tm);
+            (entry, placement)
+        });
+        let vertical = prepared
             .as_ref()
-            .is_some_and(|entry| entry.font.is_vertical());
+            .is_some_and(|(_, placement)| placement.vertical);
         for item in items {
             if let Some(bytes) = item.string(scratch) {
-                self.show(state, matrices, bytes)?;
+                if let Some((entry, placement)) = &prepared {
+                    self.show_with(entry, placement, state, matrices, bytes)?;
+                }
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1000.0 * state.size;
                 if vertical {
@@ -1302,12 +1340,24 @@ impl Interpreter<'_, '_> {
         let Some(entry) = state.font.clone() else {
             return Ok(());
         };
+        let placement = Placement::new(&entry, state, &matrices.tm);
+        self.show_with(&entry, &placement, state, matrices, bytes)
+    }
+
+    fn show_with(
+        &mut self,
+        entry: &FontEntry,
+        placement: &Placement,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        bytes: &[u8],
+    ) -> Outcome<()> {
         let mut glyphs = std::mem::take(&mut self.glyphs);
         let mut decoded = std::mem::take(&mut self.decoded);
         glyphs.clear();
         decoded.clear();
         entry.font.decode(bytes, &mut glyphs, &mut decoded);
-        let result = self.place(&entry, state, matrices, &glyphs, &decoded);
+        let result = self.place(entry, placement, state, matrices, &glyphs, &decoded);
         self.glyphs = glyphs;
         self.decoded = decoded;
         result
@@ -1316,25 +1366,25 @@ impl Interpreter<'_, '_> {
     fn place(
         &mut self,
         entry: &FontEntry,
+        placement: &Placement,
         state: &GState,
         matrices: &mut TextMatrices,
         glyphs: &[Glyph],
         decoded: &str,
     ) -> Outcome<()> {
         let mut repositioned = std::mem::take(&mut self.repositioned);
-        let mapping = multiply(&matrices.tm, &state.ctm);
-        let [a, b, c, d, e, f] = mapping;
+        let [a, b, c, d] = placement.linear;
+        let [_, _, _, _, e1, f1] = matrices.tm;
+        let [a2, b2, c2, d2, e2, f2] = state.ctm;
+        let e = e1 * a2 + f1 * c2 + e2;
+        let f = e1 * b2 + f1 * d2 + f2;
+        let mapping = [a, b, c, d, e, f];
         let size = state.size;
         let scale = state.scale;
-        let vertical = entry.font.is_vertical();
-        let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
-        let dir_length = (dir_x * dir_x + dir_y * dir_y).sqrt();
-        let effective_size = (size * (c * c + d * d).sqrt()).abs();
-        let usable = dir_length > MIN_SCALE
-            && effective_size > MIN_SCALE
-            && dir_length.is_finite()
-            && effective_size.is_finite();
-        let direction = (dir_x / dir_length, dir_y / dir_length);
+        let vertical = placement.vertical;
+        let usable = placement.usable;
+        let direction = placement.direction;
+        let effective_size = placement.effective_size;
         let mut pen_x = 0.0;
         let mut pen_y = 0.0;
         let style = (entry.bold || state.stroked_fill, entry.italic);
