@@ -1,3 +1,5 @@
+use std::collections::BinaryHeap;
+
 use crate::inspection::Limits;
 use crate::syntax::{hex_value, is_regular, is_whitespace};
 
@@ -5,7 +7,6 @@ const MAX_ENTRIES: usize = 262_144;
 const MAX_HEX_BYTES: usize = 64;
 const MAX_ARRAY_ITEMS: usize = 65_536;
 const MAX_PARENT_DEPTH: usize = 4;
-const RANGE_SCAN: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Token<'a> {
@@ -195,6 +196,63 @@ pub(crate) fn text_usable(codepoints: &[u32]) -> bool {
         })
 }
 
+pub(crate) fn disjoint(spans: &[(u32, u32)]) -> Vec<(u32, u32, usize)> {
+    let start_of = |index: usize| spans.get(index).map_or(0, |span| u64::from(span.0));
+    let end_of = |index: usize| spans.get(index).map_or(0, |span| u64::from(span.1));
+    let mut order: Vec<usize> = (0..spans.len())
+        .filter(|&index| start_of(index) <= end_of(index))
+        .collect();
+    order.sort_by_key(|&index| start_of(index));
+    let mut active: BinaryHeap<usize> = BinaryHeap::new();
+    let mut out: Vec<(u32, u32, usize)> = Vec::new();
+    let mut next = 0_usize;
+    let mut cursor = 0_u64;
+    loop {
+        if active.is_empty() {
+            let Some(&first) = order.get(next) else {
+                break;
+            };
+            cursor = start_of(first);
+        }
+        while let Some(&index) = order.get(next)
+            && start_of(index) <= cursor
+        {
+            active.push(index);
+            next = next.saturating_add(1);
+        }
+        while let Some(&top) = active.peek()
+            && end_of(top) < cursor
+        {
+            active.pop();
+        }
+        let Some(&top) = active.peek() else {
+            continue;
+        };
+        let top_end = end_of(top);
+        let limit = order.get(next).map_or(top_end, |&index| {
+            top_end.min(start_of(index).saturating_sub(1))
+        });
+        let (Ok(low), Ok(high)) = (u32::try_from(cursor), u32::try_from(limit)) else {
+            break;
+        };
+        match out.last_mut() {
+            Some(last) if last.2 == top && u64::from(last.1).saturating_add(1) == cursor => {
+                last.1 = high;
+            }
+            _ => out.push((low, high, top)),
+        }
+        cursor = limit.saturating_add(1);
+    }
+    out
+}
+
+pub(crate) fn covering<T>(segments: &[(u32, u32, T)], code: u32) -> Option<&(u32, u32, T)> {
+    let upper = segments.partition_point(|segment| segment.0 <= code);
+    segments
+        .get(upper.checked_sub(1)?)
+        .filter(|segment| code <= segment.1)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum RangeDest {
     Incrementing(Box<[u32]>),
@@ -228,6 +286,7 @@ impl Lookup<'_> {
 pub(crate) struct UnicodeMap {
     chars: Vec<(u32, Box<[u32]>)>,
     ranges: Vec<UnicodeRange>,
+    segments: Vec<(u32, u32, usize)>,
     has_unusable: bool,
 }
 
@@ -250,29 +309,23 @@ impl UnicodeMap {
         {
             return Some(Lookup::Slice(dest));
         }
-        let upper = self.ranges.partition_point(|range| range.start <= code);
-        let candidates = self.ranges.get(..upper)?;
-        for range in candidates.iter().rev().take(RANGE_SCAN) {
-            if code > range.end {
-                continue;
-            }
-            let offset = code.saturating_sub(range.start);
-            return match &range.dest {
-                RangeDest::Incrementing(base) => match &**base {
-                    [] => None,
-                    [single] => Some(Lookup::One(single.saturating_add(offset))),
-                    [head @ .., last] => {
-                        let mut text = head.to_vec();
-                        text.push(last.saturating_add(offset));
-                        Some(Lookup::Owned(text))
-                    }
-                },
-                RangeDest::PerCode(items) => items
-                    .get(usize::try_from(offset).ok()?)
-                    .map(|item| Lookup::Slice(item)),
-            };
+        let &(_, _, index) = covering(&self.segments, code)?;
+        let range = self.ranges.get(index)?;
+        let offset = code.saturating_sub(range.start);
+        match &range.dest {
+            RangeDest::Incrementing(base) => match &**base {
+                [] => None,
+                [single] => Some(Lookup::One(single.saturating_add(offset))),
+                [head @ .., last] => {
+                    let mut text = head.to_vec();
+                    text.push(last.saturating_add(offset));
+                    Some(Lookup::Owned(text))
+                }
+            },
+            RangeDest::PerCode(items) => items
+                .get(usize::try_from(offset).ok()?)
+                .map(|item| Lookup::Slice(item)),
         }
-        None
     }
 
     pub(crate) fn code_for_char(&self, character: u32) -> Option<u32> {
@@ -320,7 +373,12 @@ impl UnicodeMap {
             }
         }
         self.chars = merged;
-        self.ranges.sort_by_key(|range| range.start);
+        let spans: Vec<(u32, u32)> = self
+            .ranges
+            .iter()
+            .map(|range| (range.start, range.end))
+            .collect();
+        self.segments = disjoint(&spans);
     }
 }
 
@@ -433,12 +491,8 @@ impl<'a> CMapParser<'a> {
             }
         }
         self.out.unicode.finish();
-        self.out
-            .cid_ranges
-            .sort_by_key(|range| (range.length, range.low));
-        self.out
-            .notdef
-            .sort_by_key(|range| (range.length, range.low));
+        self.out.cid_ranges = disjoint_cids(&self.out.cid_ranges);
+        self.out.notdef = disjoint_cids(&self.out.notdef);
         self.out
     }
 
@@ -789,14 +843,33 @@ impl CMap {
     }
 }
 
+fn disjoint_cids(ranges: &[CidRange]) -> Vec<CidRange> {
+    let mut out = Vec::with_capacity(ranges.len());
+    for length in 1..=4_u8 {
+        let group: Vec<&CidRange> = ranges
+            .iter()
+            .filter(|range| range.length == length)
+            .collect();
+        let spans: Vec<(u32, u32)> = group.iter().map(|range| (range.low, range.high)).collect();
+        for (low, high, index) in disjoint(&spans) {
+            if let Some(range) = group.get(index) {
+                out.push(CidRange {
+                    length,
+                    low,
+                    high,
+                    cid: range.cid.saturating_add(low.saturating_sub(range.low)),
+                });
+            }
+        }
+    }
+    out
+}
+
 fn find_range(ranges: &[CidRange], length: u8, code: u32) -> Option<&CidRange> {
     let upper = ranges.partition_point(|range| (range.length, range.low) <= (length, code));
     ranges
-        .get(..upper)?
-        .iter()
-        .rev()
-        .take(RANGE_SCAN)
-        .find(|range| range.length == length && code <= range.high)
+        .get(upper.checked_sub(1)?)
+        .filter(|range| range.length == length && code <= range.high)
 }
 
 fn be_value(bytes: &[u8]) -> u32 {
@@ -809,6 +882,7 @@ fn be_value(bytes: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use crate::num::widen;
+    use std::fmt::Write as _;
     use std::hint::black_box;
 
     fn limits() -> Limits {
@@ -879,6 +953,46 @@ mod tests {
         let map = UnicodeMap::parse(data, &limits());
         assert_eq!(found(&map, 0x10), Some(vec![0x900]));
         assert_eq!(found(&map, 0x11), Some(vec![0x111]));
+    }
+
+    #[test]
+    fn overlapping_ranges_resolve_to_the_latest_definition() {
+        let mut data = String::from("beginbfrange <0000> <00ff> <0100> ");
+        for code in 1..=40 {
+            write!(data, "<{code:04x}> <{code:04x}> <{:04x}> ", 0x1000 + code).unwrap();
+        }
+        data.push_str("<0020> <0023> <0041> endbfrange");
+        let map = UnicodeMap::parse(data.as_bytes(), &limits());
+        assert_eq!(found(&map, 0x05), Some(vec![0x1005]));
+        assert_eq!(found(&map, 0x21), Some(vec![0x42]));
+        assert_eq!(found(&map, 0x24), Some(vec![0x1024]));
+        assert_eq!(found(&map, 0x80), Some(vec![0x180]));
+        assert_eq!(found(&map, 0x100), None);
+    }
+
+    #[test]
+    fn disjoint_keeps_the_latest_span_and_merges_neighbours() {
+        assert_eq!(
+            disjoint(&[(0, 10), (5, 6), (3, 20), (30, 25), (21, 21)]),
+            [(0, 2, 0), (3, 20, 2), (21, 21, 4)]
+        );
+        assert_eq!(
+            disjoint(&[(0, u32::MAX), (u32::MAX, u32::MAX)]),
+            [(0, u32::MAX - 1, 0), (u32::MAX, u32::MAX, 1)]
+        );
+        assert_eq!(disjoint(&[(4, 9), (1, 2)]), [(1, 2, 1), (4, 9, 0)]);
+        assert_eq!(disjoint(&[]), []);
+    }
+
+    #[test]
+    fn overlapping_cid_ranges_resolve_to_the_latest_definition() {
+        let data = b"begincodespacerange <0000> <ffff> endcodespacerange begincidrange <0000> <00ff> 0 <0010> <0010> 500 endcidrange begincidrange <0040> <0050> 900 <0045> <0045> 7 endcidrange";
+        let cmap = CMap::parse(data, &limits()).cmap;
+        assert_eq!(cmap.cid(0x10, 2), Some(500));
+        assert_eq!(cmap.cid(0x11, 2), Some(0x11));
+        assert_eq!(cmap.cid(0x45, 2), Some(7));
+        assert_eq!(cmap.cid(0x46, 2), Some(906));
+        assert_eq!(cmap.cid(0x3f, 2), Some(0x3f));
     }
 
     #[test]

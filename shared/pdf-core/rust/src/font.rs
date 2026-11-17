@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use crate::cmap::{CMap, UnicodeMap};
+use crate::cmap::{CMap, UnicodeMap, covering, disjoint};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{BuiltinEncoding, Standard14Font, encoding_glyph_name};
 use crate::fontprog::{
@@ -16,7 +16,6 @@ use crate::object::{Dict, Object, Resolver};
 const MAX_METRIC_ENTRIES: usize = 262_144;
 const MAX_METRIC_ITEMS: usize = 1_048_576;
 const MAX_WIDTH_RANGE: u32 = 65_536;
-const RANGE_SCAN: usize = 16;
 const MAX_CMAP_DEPTH: usize = 4;
 const MAX_PROGRAM_CHECKS: usize = 4096;
 const LIGATURES: [&str; 14] = [
@@ -509,14 +508,18 @@ impl CompositeFont {
 }
 
 fn find_entry<T: Copy>(entries: &[(u32, u32, T)], cid: u32) -> Option<T> {
-    let upper = entries.partition_point(|(start, _, _)| *start <= cid);
-    entries
-        .get(..upper)?
+    covering(entries, cid).map(|(_, _, value)| *value)
+}
+
+fn resolve_entries<T: Copy>(entries: &[(u32, u32, T)]) -> Vec<(u32, u32, T)> {
+    let spans: Vec<(u32, u32)> = entries
         .iter()
-        .rev()
-        .take(RANGE_SCAN)
-        .find(|(_, end, _)| cid <= *end)
-        .map(|(_, _, value)| *value)
+        .map(|(start, end, _)| (*start, *end))
+        .collect();
+    disjoint(&spans)
+        .into_iter()
+        .filter_map(|(start, end, index)| entries.get(index).map(|entry| (start, end, entry.2)))
+        .collect()
 }
 
 impl CidWidths {
@@ -915,10 +918,9 @@ fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
             }
         }
     }
-    entries.sort_by_key(|(start, _, _)| *start);
     CidWidths {
         default_width,
-        entries,
+        entries: resolve_entries(&entries),
     }
 }
 
@@ -983,11 +985,10 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
             }
         }
     }
-    entries.sort_by_key(|(start, _, _)| *start);
     VerticalCidMetrics {
         origin_y,
         advance,
-        entries,
+        entries: resolve_entries(&entries),
     }
 }
 
@@ -2021,6 +2022,43 @@ mod tests {
         assert_exact(&[metrics.width(Some(15))], &[300.0]);
         assert_exact(&[metrics.width(Some(21))], &[700.0]);
         assert_exact(&[metrics.width(None)], &[700.0]);
+    }
+
+    #[test]
+    fn overlapping_width_entries_resolve_to_the_latest_definition() {
+        let mut items = vec![
+            Object::Integer(0),
+            Object::Integer(400),
+            Object::Integer(900),
+        ];
+        for cid in 1..=40 {
+            items.push(Object::Integer(cid * 10));
+            items.push(Object::Array(vec![Object::Integer(cid)]));
+        }
+        items.extend([
+            Object::Integer(1),
+            Object::Array(vec![Object::Integer(100), Object::Integer(200)]),
+            Object::Integer(2),
+            Object::Integer(5),
+            Object::Integer(300),
+        ]);
+        let descendant = dict(vec![
+            ("W", Object::Array(items)),
+            ("DW", Object::Integer(700)),
+        ]);
+        let metrics = load_cid_widths(&TestResolver::default(), &descendant);
+        let widths: Vec<f64> = [1, 2, 5, 6, 395, 401]
+            .into_iter()
+            .map(|cid| metrics.width(Some(cid)))
+            .collect();
+        assert_exact(&widths, &[100.0, 300.0, 300.0, 900.0, 900.0, 700.0]);
+        assert_exact(&[metrics.width(Some(30))], &[3.0]);
+        assert!(
+            metrics
+                .entries
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left.1 < right.0))
+        );
     }
 
     #[test]
