@@ -1204,6 +1204,62 @@ fn extend(para: &mut Para, line: &Prepared<'_>) {
     }
 }
 
+fn unspaced_marker_end(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let open = usize::from(bytes.first() == Some(&b'('));
+    let end = if bytes.get(open).is_some_and(u8::is_ascii_lowercase)
+        && bytes.get(open.saturating_add(1)) == Some(&b')')
+    {
+        open.saturating_add(2)
+    } else {
+        let mut index = 0_usize;
+        loop {
+            let start = index;
+            while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+                index = index.saturating_add(1);
+            }
+            if !(1..=3).contains(&index.saturating_sub(start)) {
+                return None;
+            }
+            match bytes.get(index) {
+                Some(b'.')
+                    if bytes
+                        .get(index.saturating_add(1))
+                        .is_some_and(u8::is_ascii_digit) =>
+                {
+                    index = index.saturating_add(1);
+                }
+                Some(b'.' | b')') => break index.saturating_add(1),
+                _ => return None,
+            }
+        }
+    };
+    text.get(end..)?
+        .chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+        .then_some(end)
+}
+
+fn space_unspaced_marker(spans: &mut [Span], plain: &mut String) -> bool {
+    let offset = plain.len().saturating_sub(plain.trim_start().len());
+    let Some(end) = plain.get(offset..).and_then(unspaced_marker_end) else {
+        return false;
+    };
+    let at = offset.saturating_add(end);
+    let mut start = 0_usize;
+    for span in spans {
+        let stop = start.saturating_add(span.text.len());
+        if at > start && at <= stop && span.text.is_char_boundary(at.saturating_sub(start)) {
+            span.text.insert(at.saturating_sub(start), ' ');
+            plain.insert(at, ' ');
+            return true;
+        }
+        start = stop;
+    }
+    false
+}
+
 fn prepare(item: &MdItem, metrics: Metrics) -> Option<Prepared<'_>> {
     let MdItem::Line(line) = item else {
         return None;
@@ -1215,15 +1271,17 @@ fn prepare(item: &MdItem, metrics: Metrics) -> Option<Prepared<'_>> {
             span.italic &= !metrics.italic_body;
         }
     }
-    let plain = concat(&spans);
+    let mut plain = concat(&spans);
     if plain.trim().is_empty() {
         return None;
     }
+    let spaced = space_unspaced_marker(&mut spans, &mut plain);
     let lead = lead(&plain);
     let skip = lead.as_ref().map_or(0, |found| {
         plain
             .get(..found.len)
             .map_or(0, |prefix| prefix.chars().count())
+            .saturating_sub(usize::from(spaced))
     });
     Some(Prepared {
         line,
@@ -1795,6 +1853,41 @@ mod tests {
             rendered,
             "[portal (oficial)](https://www.gov.br/pt-br/empreendedor)."
         );
+    }
+
+    #[test]
+    fn unspaced_markers_get_a_space() {
+        for (text, expected) in [
+            ("c)Informar o prazo", Some("c) Informar o prazo")),
+            ("(b)Prazo", Some("(b) Prazo")),
+            ("10.10.Os documentos", Some("10.10. Os documentos")),
+            ("2)Entrega", Some("2) Entrega")),
+            ("10.10.2026 data", None),
+            ("3.2.1.3.https://x.br", None),
+            ("a)b", None),
+            ("1234.Texto", None),
+            ("Texto 1.Ano", None),
+        ] {
+            let mut spans = vec![
+                Span {
+                    text: text.get(..2).unwrap().to_owned(),
+                    bold: true,
+                    italic: false,
+                    link: None,
+                },
+                Span {
+                    text: text.get(2..).unwrap().to_owned(),
+                    bold: false,
+                    italic: false,
+                    link: None,
+                },
+            ];
+            let mut plain = text.to_owned();
+            let spaced = space_unspaced_marker(&mut spans, &mut plain);
+            assert_eq!(spaced, expected.is_some(), "{text}");
+            assert_eq!(plain, expected.unwrap_or(text));
+            assert_eq!(concat(&spans), plain);
+        }
     }
 
     #[test]
