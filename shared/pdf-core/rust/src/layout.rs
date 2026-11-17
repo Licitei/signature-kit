@@ -954,7 +954,7 @@ fn ruled_tables<'data>(
                 col: u32::try_from(shape.col).unwrap_or(u32::MAX),
                 row_span: u32::try_from(shape.row_span).unwrap_or(1),
                 col_span: u32::try_from(shape.col_span).unwrap_or(1),
-                bbox: grid.cell_rect(shape),
+                bbox: grid.cell_rect(*shape),
                 text: cell_text(inside),
             })
             .collect();

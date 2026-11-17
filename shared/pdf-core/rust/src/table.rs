@@ -61,7 +61,7 @@ impl Grid {
         [left, bottom, right, top]
     }
 
-    pub(crate) fn cell_rect(&self, cell: &GridCell) -> [f64; 4] {
+    pub(crate) fn cell_rect(&self, cell: GridCell) -> [f64; 4] {
         let left = self.xs.get(cell.col).copied().unwrap_or(0.0_f64);
         let right = self
             .xs
