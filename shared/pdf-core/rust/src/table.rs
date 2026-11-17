@@ -206,6 +206,14 @@ impl Edges<'_> {
     }
 }
 
+fn sort_lines_by_major(lines: &mut [[f64; 3]]) {
+    lines.sort_unstable_by(|left, right| left[0].total_cmp(&right[0]));
+}
+
+fn sort_lines_by_minor(lines: &mut [[f64; 3]]) {
+    lines.sort_unstable_by(|left, right| left[1].total_cmp(&right[1]));
+}
+
 fn cluster(mut values: Vec<f64>) -> Vec<f64> {
     values.sort_unstable_by(f64::total_cmp);
     let mut levels: Vec<f64> = Vec::new();
@@ -244,7 +252,7 @@ fn nearest(levels: &[f64], value: f64) -> Option<usize> {
 }
 
 fn merge_collinear(mut lines: Vec<[f64; 3]>) -> Vec<[f64; 3]> {
-    lines.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
+    sort_lines_by_major(&mut lines);
     let mut merged: Vec<[f64; 3]> = Vec::with_capacity(lines.len());
     let mut start = 0_usize;
     while start < lines.len() {
@@ -262,7 +270,7 @@ fn merge_collinear(mut lines: Vec<[f64; 3]>) -> Vec<[f64; 3]> {
             end = end.saturating_add(1);
         }
         let group = lines.get_mut(start..end).unwrap_or_default();
-        group.sort_unstable_by(|a, b| a[1].total_cmp(&b[1]));
+        sort_lines_by_minor(group);
         let Some(&first) = group.first() else { break };
         let position =
             group.iter().map(|line| line[0]).sum::<f64>() / usize_to_f64(group.len().max(1));
@@ -322,7 +330,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
     {
         return Vec::new();
     }
-    vertical_next.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
+    sort_lines_by_major(&mut vertical_next);
     let total = horizontal_next.len().saturating_add(vertical_next.len());
     let mut parents: Vec<usize> = (0..total).collect();
     for (horizontal_index, line) in horizontal_next.iter().enumerate() {
