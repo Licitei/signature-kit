@@ -21,7 +21,9 @@ pub(crate) fn fold_char(ch: char) -> char {
     }
     let code = u32::from(ch);
     match code {
-        0x00C0..=0x00D6 | 0x00D8..=0x00DE => char::from_u32(code.saturating_add(0x20)).unwrap_or(ch),
+        0x00C0..=0x00D6 | 0x00D8..=0x00DE => {
+            char::from_u32(code.saturating_add(0x20)).unwrap_or(ch)
+        }
         _ => ch,
     }
 }

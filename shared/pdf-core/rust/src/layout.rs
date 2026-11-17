@@ -243,7 +243,6 @@ fn compare(left: f64, right: f64) -> Ordering {
     left.total_cmp(&right)
 }
 
-
 fn sort_frag_indices_by_center(order: &mut [usize], frags: &[Frag<'_>]) {
     order.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
         (Some(left), Some(right)) => {

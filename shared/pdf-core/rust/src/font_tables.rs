@@ -189,5 +189,3 @@ mod tests {
         assert_eq!(Standard14Font::Courier.widths()[usize::from(b'A')], 600);
     }
 }
-
-

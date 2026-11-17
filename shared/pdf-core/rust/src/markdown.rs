@@ -659,9 +659,8 @@ fn strong_continuation(previous: &str, next: &str) -> bool {
         || (hyphen_end(previous) && next_alnum)
         || previous.trim_end().ends_with(',')
         || (next_alnum
-            && FUNCTION_WORDS.contains(
-                &crate::num::fold_string(left_word(previous.trim_end())).as_str(),
-            ))
+            && FUNCTION_WORDS
+                .contains(&crate::num::fold_string(left_word(previous.trim_end())).as_str()))
 }
 
 fn first_word_width(line: &Prepared<'_>) -> f64 {
