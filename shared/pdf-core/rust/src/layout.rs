@@ -1,4 +1,4 @@
-use crate::num::{f64_to_i64, widen};
+use crate::num::{f64_to_i64, fold_char, widen};
 use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
@@ -1191,7 +1191,7 @@ fn running_key(text: &str) -> String {
             space = true;
             digits = false;
         } else {
-            key.push(crate::num::fold_char(ch));
+            key.push(fold_char(ch));
             digits = false;
             space = false;
         }

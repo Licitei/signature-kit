@@ -172,6 +172,10 @@ fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
     Ok(agl)
 }
 
+#[expect(
+    clippy::use_debug,
+    reason = "generated Rust uses Debug quoting for embeddable string literals"
+)]
 fn font_tables(
     glyphlist: &str,
     encodings: &Sections<'_>,

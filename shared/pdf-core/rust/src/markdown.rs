@@ -1,5 +1,6 @@
 use crate::inspection::LinkInfo;
 use crate::layout::Band;
+use crate::num::fold_string;
 
 const WORD_GAP: f64 = 0.12;
 const SPACE_EM: f64 = 0.28;
@@ -659,8 +660,7 @@ fn strong_continuation(previous: &str, next: &str) -> bool {
         || (hyphen_end(previous) && next_alnum)
         || previous.trim_end().ends_with(',')
         || (next_alnum
-            && FUNCTION_WORDS
-                .contains(&crate::num::fold_string(left_word(previous.trim_end())).as_str()))
+            && FUNCTION_WORDS.contains(&fold_string(left_word(previous.trim_end())).as_str()))
 }
 
 fn first_word_width(line: &Prepared<'_>) -> f64 {
@@ -871,7 +871,7 @@ fn left_word(text: &str) -> &str {
 }
 
 fn right_word(text: &str) -> String {
-    crate::num::fold_string(
+    fold_string(
         text.trim_start()
             .split(char::is_whitespace)
             .next()
@@ -881,7 +881,7 @@ fn right_word(text: &str) -> String {
 }
 
 fn keeps_hyphen(stem: &str, right: &str) -> bool {
-    let left = crate::num::fold_string(left_word(stem));
+    let left = fold_string(left_word(stem));
     let word = right_word(right);
     left.contains('-')
         || word.contains('-')
