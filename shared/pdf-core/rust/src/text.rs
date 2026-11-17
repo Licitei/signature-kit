@@ -631,6 +631,7 @@ impl Interpreter<'_, '_> {
         }
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
+        let mut overflow = 0_usize;
         let mut operands: Vec<Object> = Vec::new();
         let mut path = PathBuilder::default();
         let mut marked: Vec<bool> = Vec::new();
@@ -651,12 +652,15 @@ impl Interpreter<'_, '_> {
             match code {
                 OP_SAVE => {
                     if stack.len() >= max_stack {
-                        return Err(Failure::limit("graphics state nesting exceeds limit"));
+                        overflow = overflow.saturating_add(1);
+                    } else {
+                        stack.push(state.clone());
                     }
-                    stack.push(state.clone());
                 }
                 OP_RESTORE => {
-                    if let Some(previous) = stack.pop() {
+                    if overflow > 0 {
+                        overflow = overflow.saturating_sub(1);
+                    } else if let Some(previous) = stack.pop() {
                         *state = previous;
                     }
                 }
@@ -1812,10 +1816,21 @@ mod tests {
     }
 
     #[test]
-    fn graphics_state_depth_limit_is_enforced() {
-        let content = format!("{}BT /F1 10 Tf (a) Tj ET", "q ".repeat(1000));
-        let result = extract_with(&simple_pdf(&content), &Limits::default());
-        assert_eq!(result.unwrap_err().code, FailureCode::LimitExceeded);
+    fn graphics_state_pushes_past_the_cap_are_ignored() {
+        let content = format!(
+            "{}BT /F1 10 Tf 1 0 0 1 10 700 Tm (deep) Tj ET {}BT /F1 10 Tf 1 0 0 1 10 600 Tm (shallow) Tj ET",
+            "q 1 0 0 1 0 0 cm ".repeat(1000),
+            "Q ".repeat(1000)
+        );
+        let items = extract_with(&simple_pdf(&content), &Limits::default()).unwrap();
+        assert_eq!(texts(&items), ["deep", "shallow"]);
+        let shifted = format!(
+            "q 1 0 0 1 100 0 cm {}Q BT /F1 10 Tf 1 0 0 1 10 700 Tm (base) Tj ET",
+            "q ".repeat(1000) + &"Q ".repeat(1000)
+        );
+        let restored = extract_with(&simple_pdf(&shifted), &Limits::default()).unwrap();
+        assert_eq!(texts(&restored), ["base"]);
+        assert!(restored[0].rect[0] < 20.0);
     }
 
     #[test]
