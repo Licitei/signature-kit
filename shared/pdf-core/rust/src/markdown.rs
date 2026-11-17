@@ -765,6 +765,25 @@ fn glue(left: &str, right: &str) -> Glue {
     }
 }
 
+pub(crate) fn reflow_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
+    let mut out = String::new();
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match glue(&out, line) {
+            Glue::Direct => {}
+            Glue::Space => out.push(' '),
+            Glue::DropLast => {
+                out.pop();
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 fn append_spans(spans: &mut Vec<Span>, plain: &mut String, next: Vec<Span>, next_plain: &str) {
     match glue(plain, next_plain) {
         Glue::Direct => {}

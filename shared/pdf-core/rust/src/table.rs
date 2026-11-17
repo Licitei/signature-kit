@@ -1,3 +1,4 @@
+use crate::markdown::reflow_lines;
 use crate::num::usize_to_f64;
 use crate::num::widen;
 use std::collections::HashMap;
@@ -535,16 +536,11 @@ pub(crate) fn render_text(table: &Table) -> String {
 }
 
 fn push_markdown_cell(out: &mut String, text: &str) {
-    for (index, line) in text.lines().enumerate() {
-        if index > 0 {
-            out.push_str("<br>");
+    for ch in reflow_lines(text.lines()).chars() {
+        if ch == '|' {
+            out.push('\\');
         }
-        for ch in line.chars() {
-            if ch == '|' {
-                out.push('\\');
-            }
-            out.push(ch);
-        }
+        out.push(ch);
     }
 }
 
@@ -748,7 +744,7 @@ mod tests {
     fn markdown_escapes_pipes_and_joins_lines() {
         assert_eq!(
             render_markdown(&sample()),
-            "| Item | Valor \\| R$ |\n| --- | --- |\n| Linha<br>quebrada | 10 |"
+            "| Item | Valor \\| R$ |\n| --- | --- |\n| Linha quebrada | 10 |"
         );
     }
 
