@@ -2,7 +2,7 @@ use crate::num::widen;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::document::{Document, Page};
+use crate::document::{Document, Page, select_pages};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
@@ -1315,26 +1315,6 @@ pub(crate) fn text_limits() -> Limits {
     }
 }
 
-fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcome<Vec<usize>> {
-    match page_indexes {
-        Some(indexes) => {
-            let mut seen = HashSet::new();
-            let mut chosen = Vec::with_capacity(indexes.len());
-            for &index in indexes {
-                let position = usize::try_from(index)
-                    .ok()
-                    .filter(|position| *position < count)
-                    .ok_or_else(|| Failure::invalid(format!("page index {index} out of range")))?;
-                if seen.insert(position) {
-                    chosen.push(position);
-                }
-            }
-            Ok(chosen)
-        }
-        None => Ok((0..count).collect()),
-    }
-}
-
 fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkRect> {
     links
         .iter()
@@ -1389,11 +1369,14 @@ pub(crate) fn document_text(
         aligned: options.markdown,
         text: true,
     };
-    let all_links = if options.markdown {
-        document.links(&pages)?
-    } else {
-        Vec::new()
-    };
+    let mut all_links = Vec::new();
+    if options.markdown {
+        for &position in &selected {
+            if let (Some(page), Ok(page_index)) = (pages.get(position), u32::try_from(position)) {
+                document.page_links(page, page_index, &mut all_links)?;
+            }
+        }
+    }
     let mut session = Session::default();
     let mut layouts: Vec<PageLayout> = Vec::with_capacity(selected.len());
     for position in selected {
@@ -2515,6 +2498,49 @@ mod structure_tests {
         ]);
         let pages = pages_of(&broken, PLAIN);
         assert_eq!(pages, ["first", ""]);
+    }
+
+    #[test]
+    fn markdown_links_follow_the_selected_pages() {
+        let font = "/Resources << /Font << /F1 3 0 R >> >>";
+        let link = |uri: &str| {
+            format!(
+                "<< /Type /Annot /Subtype /Link /Rect [45 695 120 712] /A << /S /URI /URI ({uri}) >> >>"
+            )
+        };
+        let page = |contents: u32, annot: u32| {
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents {contents} 0 R /Annots [{annot} 0 R] {font} >>"
+            )
+        };
+        let bytes = crate::test_pdf::build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Kids [4 0 R 7 0 R] /Count 2 >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            ),
+            (4, page(5, 6)),
+            (
+                5,
+                crate::test_pdf::stream_object("", &text(50.0, 700.0, 10.0, "Site one")),
+            ),
+            (6, link("https://example.com/one")),
+            (7, page(8, 9)),
+            (
+                8,
+                crate::test_pdf::stream_object("", &text(50.0, 700.0, 10.0, "Site two")),
+            ),
+            (9, link("https://example.com/two")),
+        ]);
+        let all = pages_of(&bytes, MARKDOWN);
+        assert!(all[0].contains("(https://example.com/one)"), "{all:?}");
+        assert!(all[1].contains("(https://example.com/two)"), "{all:?}");
+        let second = document_text(&bytes, Some(&[1]), &text_limits(), MARKDOWN).unwrap();
+        assert_eq!(second, [all[1].clone()]);
     }
 
     #[test]

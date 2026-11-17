@@ -1079,60 +1079,70 @@ impl<'a> Document<'a> {
             let Ok(page_index) = u32::try_from(index) else {
                 break;
             };
-            let Some(annots) = page.dict.get(b"Annots") else {
-                continue;
-            };
-            let Some(annots) = lenient(self.follow(annots))? else {
-                continue;
-            };
-            let Some(items) = annots.as_array() else {
-                continue;
-            };
-            for item in items {
-                let Some(annotation) = lenient(self.follow(item))? else {
-                    continue;
-                };
-                let Some(dict) = annotation.as_dict() else {
-                    continue;
-                };
-                if !name_is(dict, b"Subtype", b"Link") {
-                    continue;
-                }
-                let Some(action) = dict.get(b"A") else {
-                    continue;
-                };
-                let Some(action) = lenient(self.follow(action))? else {
-                    continue;
-                };
-                let Some(action) = action.as_dict() else {
-                    continue;
-                };
-                if !name_is(action, b"S", b"URI") {
-                    continue;
-                }
-                let Some(uri) = action.get(b"URI") else {
-                    continue;
-                };
-                let Some(uri) = lenient(self.follow(uri))? else {
-                    continue;
-                };
-                let Some(uri) = uri_from_action(&uri) else {
-                    continue;
-                };
-                let Some(rect) = dict.get(b"Rect") else {
-                    continue;
-                };
-                let Some(rect) = self.rect(rect)? else {
-                    continue;
-                };
-                links.push(LinkInfo {
-                    page_index,
-                    rect,
-                    uri,
-                });
-            }
+            self.page_links(page, page_index, &mut links)?;
         }
         Ok(links)
+    }
+
+    pub(crate) fn page_links(
+        &self,
+        page: &Page,
+        page_index: u32,
+        links: &mut Vec<LinkInfo>,
+    ) -> Outcome<()> {
+        let Some(annots) = page.dict.get(b"Annots") else {
+            return Ok(());
+        };
+        let Some(annots) = lenient(self.follow(annots))? else {
+            return Ok(());
+        };
+        let Some(items) = annots.as_array() else {
+            return Ok(());
+        };
+        for item in items {
+            let Some(annotation) = lenient(self.follow(item))? else {
+                continue;
+            };
+            let Some(dict) = annotation.as_dict() else {
+                continue;
+            };
+            if !name_is(dict, b"Subtype", b"Link") {
+                continue;
+            }
+            let Some(action) = dict.get(b"A") else {
+                continue;
+            };
+            let Some(action) = lenient(self.follow(action))? else {
+                continue;
+            };
+            let Some(action) = action.as_dict() else {
+                continue;
+            };
+            if !name_is(action, b"S", b"URI") {
+                continue;
+            }
+            let Some(uri) = action.get(b"URI") else {
+                continue;
+            };
+            let Some(uri) = lenient(self.follow(uri))? else {
+                continue;
+            };
+            let Some(uri) = uri_from_action(&uri) else {
+                continue;
+            };
+            let Some(rect) = dict.get(b"Rect") else {
+                continue;
+            };
+            let Some(rect) = self.rect(rect)? else {
+                continue;
+            };
+            links.push(LinkInfo {
+                page_index,
+                rect,
+                uri,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1194,6 +1204,24 @@ impl Resolver for Document<'_> {
     }
 }
 
+pub(crate) fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcome<Vec<usize>> {
+    let Some(indexes) = page_indexes else {
+        return Ok((0..count).collect());
+    };
+    let mut seen = HashSet::new();
+    let mut chosen = Vec::with_capacity(indexes.len());
+    for &index in indexes {
+        let position = usize::try_from(index)
+            .ok()
+            .filter(|position| *position < count)
+            .ok_or_else(|| Failure::invalid(format!("page index {index} out of range")))?;
+        if seen.insert(position) {
+            chosen.push(position);
+        }
+    }
+    Ok(chosen)
+}
+
 pub(crate) fn inspect(
     bytes: &[u8],
     options: &InspectOptions,
@@ -1212,24 +1240,7 @@ pub(crate) fn inspect(
         inspection.links = document.links(&pages)?;
     }
     if options.text {
-        let mut selected: Vec<usize> = Vec::new();
-        match &options.page_indexes {
-            Some(indexes) => {
-                let mut seen = HashSet::new();
-                for &index in indexes {
-                    let position = usize::try_from(index)
-                        .ok()
-                        .filter(|position| *position < pages.len())
-                        .ok_or_else(|| {
-                            Failure::invalid(format!("page index {index} out of range"))
-                        })?;
-                    if seen.insert(position) {
-                        selected.push(position);
-                    }
-                }
-            }
-            None => selected.extend(0..pages.len()),
-        }
+        let selected = select_pages(pages.len(), options.page_indexes.as_deref())?;
         let mut total_items = 0_usize;
         let mut total_bytes = 0_usize;
         let mut session = crate::text::Session::default();
