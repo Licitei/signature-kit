@@ -106,6 +106,7 @@ pub(crate) struct AnnotationInfo {
     pub rect: Option<[f64; 4]>,
     pub reference: Option<ObjRef>,
     pub slot: Slot,
+    pub titled: bool,
     pub widget: bool,
 }
 
@@ -143,6 +144,14 @@ impl<'data> Reader<'data> {
             .ok_or_else(|| Failure::request("edit payload is truncated"))?;
         self.pos = end;
         Ok(slice)
+    }
+
+    fn optional_reference(&mut self) -> Outcome<Option<ObjRef>> {
+        let number = self.u32()?;
+        let generation = u16::try_from(self.u32()?)
+            .ok()
+            .ok_or_else(|| Failure::request("object generation out of range"))?;
+        Ok((number != 0).then_some(ObjRef { number, generation }))
     }
 
     fn reference(&mut self) -> Outcome<ObjRef> {
@@ -208,7 +217,7 @@ impl Store<'_, '_> {
     fn append_content(&mut self, reader: &mut Reader<'_>) -> Outcome<()> {
         let page = self.page_ref(reader.u32()?)?;
         let content = reader.reference()?;
-        let wrap = reader.u32()?;
+        let wrap = reader.optional_reference()?;
         let data = reader.bytes()?;
         let flags = reader.u32()?;
         let existing = self.peek_value(page, &[Step::Key(b"Contents".to_vec())])?;
@@ -222,11 +231,9 @@ impl Store<'_, '_> {
         };
         let compress = flags & CONTENT_COMPRESS != 0;
         let mut payload: Vec<u8> = Vec::with_capacity(data.len().saturating_add(4));
-        if wrap != 0 && !items.is_empty() {
-            let opener = ObjRef {
-                generation: 0,
-                number: wrap,
-            };
+        if let Some(opener) = wrap
+            && !items.is_empty()
+        {
             self.set_stream(opener, Dict::default(), b"q\n".to_vec(), false);
             items.insert(0, Object::Ref(opener));
             payload.extend_from_slice(b"\nQ\n");
@@ -372,7 +379,7 @@ impl Store<'_, '_> {
 
     fn image(&mut self, reader: &mut Reader<'_>) -> Outcome<()> {
         let reference = reader.reference()?;
-        let mask_number = reader.u32()?;
+        let mask_target = reader.optional_reference()?;
         let width = reader.u32()?;
         let height = reader.u32()?;
         let components = reader.u32()?;
@@ -405,15 +412,8 @@ impl Store<'_, '_> {
                 color.extend_from_slice(pixel.get(..color_width).unwrap_or_default());
                 mask.push(pixel.get(color_width).copied().unwrap_or(u8::MAX));
             }
-            if mask_number == 0 {
-                return Err(Failure::request(
-                    "alpha images need a soft-mask object number",
-                ));
-            }
-            let mask_ref = ObjRef {
-                generation: 0,
-                number: mask_number,
-            };
+            let mask_ref = mask_target
+                .ok_or_else(|| Failure::request("alpha images need a soft-mask object"))?;
             self.set_stream(
                 mask_ref,
                 image_dict(width, height, b"DeviceGray"),
@@ -964,6 +964,7 @@ fn page_annotations(
                 rect: None,
                 reference,
                 slot: Slot::None,
+                titled: false,
                 widget: false,
             });
             continue;
@@ -985,6 +986,7 @@ fn page_annotations(
             rect,
             reference,
             slot,
+            titled: dict.get(b"T").is_some(),
             widget,
         });
     }
@@ -1347,7 +1349,7 @@ mod tests {
         let updated = edit(&rewritten, &ops.finish(MODE_INCREMENTAL), &limits()).unwrap();
         assert!(updated.starts_with(&rewritten));
         let tail = &updated[rewritten.len()..];
-        assert!(tail.windows(10).any(|window| window == b"/Type/XRef"));
+        assert!(tail.windows(11).any(|window| window == b"/Type /XRef"));
         let opened = reopen(&updated);
         let catalog = opened.catalog().unwrap().unwrap();
         assert_eq!(
@@ -1396,6 +1398,7 @@ mod tests {
             .u32(next.saturating_add(1))
             .u32(0)
             .u32(next.saturating_add(2))
+            .u32(0)
             .bytes(b"1 0 0 1 0 0 cm BT /FSK 12 Tf 1 0 0 1 72 600 Tm (Stamped) Tj ET")
             .u32(CONTENT_COMPRESS);
         let updated = edit(&source, &ops.finish(0), &limits()).unwrap();
@@ -1434,6 +1437,7 @@ mod tests {
             .u32(next)
             .u32(0)
             .u32(next.saturating_add(1))
+            .u32(0)
             .u32(2)
             .u32(2)
             .u32(3)
@@ -1469,6 +1473,7 @@ mod tests {
         wrong
             .op(OP_IMAGE)
             .u32(next)
+            .u32(0)
             .u32(0)
             .u32(0)
             .u32(2)

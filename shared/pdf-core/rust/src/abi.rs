@@ -622,7 +622,11 @@ fn encode_document(info: &DocumentInfo) -> Outcome<Writer> {
                 .reference
                 .map_or(0, |found| u32::from(found.generation)),
         );
-        out.u32(u32::from(annotation.widget) | (u32::from(annotation.rect.is_some()) << 1_i32));
+        out.u32(
+            u32::from(annotation.widget)
+                | (u32::from(annotation.rect.is_some()) << 1_i32)
+                | (u32::from(annotation.titled) << 2_i32),
+        );
         out.u32(slot);
         out.u32(first);
         out.u32(second);

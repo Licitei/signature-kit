@@ -765,6 +765,7 @@ where
     out.extend_from_slice(b"<<");
     for (key, value) in &dict.entries {
         push_name(out, key);
+        out.push(b' ');
         serialize(out, value, map);
     }
     out.extend_from_slice(b">>");
