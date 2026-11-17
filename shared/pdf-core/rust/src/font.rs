@@ -71,6 +71,26 @@ struct CompositeFont {
     horizontal: CidWidths,
     vertical: VerticalCidMetrics,
     cache: RefCell<HashMap<u32, Box<[u32]>>>,
+    identity: RefCell<IdentityTable>,
+}
+
+#[derive(Clone, Copy)]
+struct IdentitySlot {
+    start: u32,
+    end: u32,
+    advance: f64,
+}
+
+const UNRESOLVED: IdentitySlot = IdentitySlot {
+    start: u32::MAX,
+    end: u32::MAX,
+    advance: 0.0,
+};
+
+#[derive(Default)]
+struct IdentityTable {
+    slots: Vec<IdentitySlot>,
+    text: String,
 }
 
 enum CidToGid {
@@ -395,6 +415,10 @@ fn shape_ligature(
 
 impl CompositeFont {
     fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
+        if self.cmap.is_identity() {
+            self.decode_identity(bytes, glyphs, text);
+            return;
+        }
         let mut offset = 0_usize;
         while let Some((code, consumed)) = self.cmap.read(bytes, offset) {
             offset = offset.saturating_add(consumed);
@@ -406,6 +430,44 @@ impl CompositeFont {
                 code: cid.unwrap_or(code),
                 advance,
                 is_word_space: consumed == 1 && code == 32,
+                text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
+            });
+        }
+    }
+
+    fn decode_identity(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
+        let mut table = self.identity.borrow_mut();
+        for pair in bytes.as_chunks::<2>().0 {
+            let short = u16::from_be_bytes(*pair);
+            let code = u32::from(short);
+            let index = usize::from(short);
+            if table.slots.len() <= index {
+                table.slots.resize(index.saturating_add(1), UNRESOLVED);
+            }
+            let mut slot = table.slots.get(index).copied().unwrap_or(UNRESOLVED);
+            if slot.start == u32::MAX {
+                let start = table.text.len();
+                self.push_text(code, Some(code), &mut table.text);
+                slot = IdentitySlot {
+                    start: u32::try_from(start).unwrap_or(u32::MAX),
+                    end: u32::try_from(table.text.len()).unwrap_or(u32::MAX),
+                    advance: self.horizontal.width(Some(code)) / 1000.0,
+                };
+                if let Some(stored) = table.slots.get_mut(index) {
+                    *stored = slot;
+                }
+            }
+            let text_start = u32::try_from(text.len()).unwrap_or(u32::MAX);
+            text.push_str(
+                table
+                    .text
+                    .get(widen(slot.start)..widen(slot.end))
+                    .unwrap_or_default(),
+            );
+            glyphs.push(Glyph {
+                code,
+                advance: slot.advance,
+                is_word_space: false,
                 text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
             });
         }
@@ -700,6 +762,7 @@ fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<
         horizontal,
         vertical,
         cache: RefCell::new(HashMap::new()),
+        identity: RefCell::new(IdentityTable::default()),
     })
 }
 
@@ -1727,6 +1790,54 @@ mod tests {
             ]),
         );
         assert_eq!(decode(&font, &[0, 1, 0, 2]).0, "Ati");
+    }
+
+    #[test]
+    fn identity_decode_table_matches_on_repeat_and_ignores_odd_tail() {
+        let mut resolver = TestResolver::default();
+        let tu = resolver.add_stream(
+            Dict::default(),
+            b"beginbfchar <0003> <0020> <0005> <0000> endbfchar beginbfrange <0010> <0012> <0041> <0100> <0100> <00660069> endbfrange",
+        );
+        let descendant = resolver.add(Object::Dict(dict(vec![
+            ("Subtype", name("CIDFontType2")),
+            ("DW", Object::Integer(500)),
+            (
+                "W",
+                Object::Array(vec![
+                    Object::Integer(16),
+                    Object::Array(vec![Object::Integer(250), Object::Integer(300)]),
+                ]),
+            ),
+        ])));
+        let font = load(
+            &resolver,
+            &dict(vec![
+                ("Subtype", name("Type0")),
+                ("Encoding", name("Identity-H")),
+                ("ToUnicode", tu),
+                ("DescendantFonts", Object::Array(vec![descendant])),
+            ]),
+        );
+        let bytes = [0, 0x10, 0, 3, 0, 0x11, 1, 0, 0, 5, 0, 0x12, 0x10];
+        let (first, first_glyphs) = decode(&font, &bytes);
+        let (second, second_glyphs) = decode(&font, &bytes);
+        assert_eq!(first, "A BfiC");
+        assert_eq!(first, second);
+        assert_eq!(first_glyphs, second_glyphs);
+        let codes: Vec<u32> = first_glyphs.iter().map(|glyph| glyph.code).collect();
+        assert_eq!(codes, [0x10, 3, 0x11, 0x100, 5, 0x12]);
+        let advances: Vec<f64> = first_glyphs.iter().map(|glyph| glyph.advance).collect();
+        assert_exact(&advances, &[0.25, 0.5, 0.3, 0.5, 0.5, 0.5]);
+        let spans: Vec<&str> = first_glyphs
+            .iter()
+            .map(|glyph| {
+                first
+                    .get(widen(glyph.text.start)..widen(glyph.text.end))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(spans, ["A", " ", "B", "fi", "", "C"]);
     }
 
     #[test]
