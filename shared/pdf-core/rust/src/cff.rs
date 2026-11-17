@@ -9,34 +9,6 @@ use core::mem;
 use std::sync::OnceLock;
 include!(concat!(env!("OUT_DIR"), "/cff_tables.rs"));
 
-fn cff_standard_string_text() -> &'static str {
-    static DECODED: OnceLock<String> = OnceLock::new();
-    DECODED
-        .get_or_init(|| {
-            inflate(
-                &CFF_STANDARD_STRING_TEXT_ZLIB,
-                CFF_STANDARD_STRING_TEXT_LEN.saturating_add(1),
-            )
-            .ok()
-            .and_then(|bytes| {
-                (bytes.len() == CFF_STANDARD_STRING_TEXT_LEN)
-                    .then(|| String::from_utf8(bytes).ok())
-                    .flatten()
-            })
-            .unwrap_or_default()
-        })
-        .as_str()
-}
-
-fn cff_standard_string(index: usize) -> Option<&'static str> {
-    let end = usize::from(*CFF_STANDARD_STRING_ENDS.get(index)?);
-    let start = index
-        .checked_sub(1)
-        .and_then(|previous| CFF_STANDARD_STRING_ENDS.get(previous))
-        .map_or(0, |value| usize::from(*value));
-    cff_standard_string_text().get(start..end)
-}
-
 const MAX_GLYPHS: usize = 0xFFFF;
 const MAX_DICT_ENTRIES: usize = 256;
 const MAX_OPERANDS: usize = 48;
@@ -769,6 +741,34 @@ impl Type2<'_> {
             let _: f64 = self.stack.remove(0);
         }
     }
+}
+
+fn cff_standard_string_text() -> &'static str {
+    static DECODED: OnceLock<String> = OnceLock::new();
+    DECODED
+        .get_or_init(|| {
+            inflate(
+                &CFF_STANDARD_STRING_TEXT_ZLIB,
+                CFF_STANDARD_STRING_TEXT_LEN.saturating_add(1),
+            )
+            .ok()
+            .and_then(|bytes| {
+                (bytes.len() == CFF_STANDARD_STRING_TEXT_LEN)
+                    .then(|| String::from_utf8(bytes).ok())
+                    .flatten()
+            })
+            .unwrap_or_default()
+        })
+        .as_str()
+}
+
+fn cff_standard_string(index: usize) -> Option<&'static str> {
+    let end = usize::from(*CFF_STANDARD_STRING_ENDS.get(index)?);
+    let start = index
+        .checked_sub(1)
+        .and_then(|previous| CFF_STANDARD_STRING_ENDS.get(previous))
+        .map_or(0, |value| usize::from(*value));
+    cff_standard_string_text().get(start..end)
 }
 
 fn read_charset(

@@ -16,6 +16,7 @@ where
 
 /// Decimal digits for `value` without pulling in `core::fmt`.
 pub(crate) fn unsigned_decimal(value: u64) -> String {
+    use core::str;
     let mut digits = [b'0'; 20];
     let mut cursor = digits.len();
     let mut remaining = value;
@@ -29,10 +30,8 @@ pub(crate) fn unsigned_decimal(value: u64) -> String {
             break;
         }
     }
-    match core::str::from_utf8(digits.get(cursor..).unwrap_or_default()) {
-        Ok(text) => String::from(text),
-        Err(_) => String::from("0"),
-    }
+    str::from_utf8(digits.get(cursor..).unwrap_or_default())
+        .map_or_else(|_| String::from("0"), String::from)
 }
 
 #[expect(

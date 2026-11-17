@@ -59,5 +59,4 @@ impl Failure {
     }
 }
 
-
 pub(crate) type Outcome<T> = Result<T, Failure>;

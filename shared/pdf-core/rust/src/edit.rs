@@ -868,7 +868,9 @@ fn first_unused_field_name(
             full_name = if parent.is_empty() {
                 name
             } else {
-                let mut joined = String::with_capacity(parent.len().saturating_add(name.len()).saturating_add(1));
+                let mut joined = String::with_capacity(
+                    parent.len().saturating_add(name.len()).saturating_add(1),
+                );
                 joined.push_str(&parent);
                 joined.push('.');
                 joined.push_str(&name);

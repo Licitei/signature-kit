@@ -123,7 +123,7 @@ where
 }
 
 fn zlib_compress_bytes(input: &[u8]) -> BuildResult<Vec<u8>> {
-    use std::io::Write;
+    use std::io::Write as _;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("python3")
@@ -135,13 +135,12 @@ fn zlib_compress_bytes(input: &[u8]) -> BuildResult<Vec<u8>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| String::from("python3 stdin unavailable"))?;
-        stdin.write_all(input)?;
-    }
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| String::from("python3 stdin unavailable"))?;
+    stdin.write_all(input)?;
+    drop(stdin);
     let output = child.wait_with_output()?;
     if !output.status.success() {
         return Err(format!(
@@ -173,10 +172,6 @@ fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
     Ok(agl)
 }
 
-#[expect(
-    clippy::use_debug,
-    reason = "generated Rust uses Debug quoting for embeddable string literals"
-)]
 fn font_tables(
     glyphlist: &str,
     encodings: &Sections<'_>,
@@ -299,10 +294,6 @@ fn font_tables(
     Ok(out)
 }
 
-#[expect(
-    clippy::use_debug,
-    reason = "generated Rust uses Debug formatting for static string slice tables"
-)]
 fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
     let strings = section(cff, "StandardStrings")?;
     let sid = |name: &str| -> BuildResult<u16> {
@@ -337,7 +328,12 @@ fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
         "pub(crate) const CFF_STANDARD_STRING_TEXT_LEN: usize = {};",
         string_text.len()
     )?;
-    emit(&mut out, "CFF_STANDARD_STRING_TEXT_ZLIB", "u8", &string_zlib)?;
+    emit(
+        &mut out,
+        "CFF_STANDARD_STRING_TEXT_ZLIB",
+        "u8",
+        &string_zlib,
+    )?;
     let mut end = 0_usize;
     let mut ends = Vec::with_capacity(strings.len());
     for name in strings {

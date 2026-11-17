@@ -7,51 +7,6 @@ include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
 
 const UNDEFINED_WIN_ANSI: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
 
-fn glyph_name_text() -> &'static str {
-    static DECODED: OnceLock<String> = OnceLock::new();
-    DECODED
-        .get_or_init(|| {
-            inflate(&GLYPH_NAME_TEXT_ZLIB, GLYPH_NAME_TEXT_LEN.saturating_add(1))
-                .ok()
-                .and_then(|bytes| {
-                    (bytes.len() == GLYPH_NAME_TEXT_LEN)
-                        .then(|| String::from_utf8(bytes).ok())
-                        .flatten()
-                })
-                .unwrap_or_default()
-        })
-        .as_str()
-}
-
-fn glyph_name_ends() -> &'static [u32] {
-    static ENDS: OnceLock<Vec<u32>> = OnceLock::new();
-    ENDS.get_or_init(|| {
-        let mut ends = Vec::with_capacity(GLYPH_NAME_COUNT);
-        let mut end = 0_u32;
-        for len in &GLYPH_NAME_LENS {
-            end = end.saturating_add(u32::from(*len));
-            ends.push(end);
-        }
-        ends
-    })
-    .as_slice()
-}
-
-fn agl_starts() -> &'static [u32] {
-    static STARTS: OnceLock<Vec<u32>> = OnceLock::new();
-    STARTS
-        .get_or_init(|| {
-            let mut starts = Vec::with_capacity(AGL_START_DELTAS.len());
-            let mut start = 0_u32;
-            for delta in &AGL_START_DELTAS {
-                start = start.saturating_add(u32::from(*delta));
-                starts.push(start);
-            }
-            starts
-        })
-        .as_slice()
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinEncoding {
     Custom,
@@ -133,10 +88,9 @@ impl Standard14Font {
 
     pub(crate) const fn widths(self) -> &'static [u16; 256] {
         match self {
-            Self::Courier
-            | Self::CourierBold
-            | Self::CourierBoldOblique
-            | Self::CourierOblique => &STANDARD14_COURIER,
+            Self::Courier | Self::CourierBold | Self::CourierBoldOblique | Self::CourierOblique => {
+                &STANDARD14_COURIER
+            }
             Self::Helvetica | Self::HelveticaOblique => &STANDARD14_HELVETICA,
             Self::HelveticaBold | Self::HelveticaBoldOblique => &STANDARD14_HELVETICA_BOLD,
             Self::Symbol => &STANDARD14_SYMBOL,
@@ -147,6 +101,51 @@ impl Standard14Font {
             Self::ZapfDingbats => &STANDARD14_ZAPF_DINGBATS,
         }
     }
+}
+
+fn glyph_name_text() -> &'static str {
+    static DECODED: OnceLock<String> = OnceLock::new();
+    DECODED
+        .get_or_init(|| {
+            inflate(&GLYPH_NAME_TEXT_ZLIB, GLYPH_NAME_TEXT_LEN.saturating_add(1))
+                .ok()
+                .and_then(|bytes| {
+                    (bytes.len() == GLYPH_NAME_TEXT_LEN)
+                        .then(|| String::from_utf8(bytes).ok())
+                        .flatten()
+                })
+                .unwrap_or_default()
+        })
+        .as_str()
+}
+
+fn glyph_name_ends() -> &'static [u32] {
+    static ENDS: OnceLock<Vec<u32>> = OnceLock::new();
+    ENDS.get_or_init(|| {
+        let mut ends = Vec::with_capacity(GLYPH_NAME_COUNT);
+        let mut end = 0_u32;
+        for len in &GLYPH_NAME_LENS {
+            end = end.saturating_add(u32::from(*len));
+            ends.push(end);
+        }
+        ends
+    })
+    .as_slice()
+}
+
+fn agl_starts() -> &'static [u32] {
+    static STARTS: OnceLock<Vec<u32>> = OnceLock::new();
+    STARTS
+        .get_or_init(|| {
+            let mut starts = Vec::with_capacity(AGL_START_DELTAS.len());
+            let mut start = 0_u32;
+            for delta in &AGL_START_DELTAS {
+                start = start.saturating_add(u32::from(*delta));
+                starts.push(start);
+            }
+            starts
+        })
+        .as_slice()
 }
 
 fn name_at(index: usize) -> Option<&'static str> {
