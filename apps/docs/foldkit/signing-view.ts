@@ -504,7 +504,10 @@ const SigningMount = Mount.define("SigningMount", {
               }).pipe(
                 Effect.map((bytes) => new Uint8Array(bytes)),
                 Effect.flatMap((bytes) =>
-                  isSafePdfStampPng(bytes).pipe(Effect.map((valid) => ({ bytes, valid }))),
+                  isSafePdfStampPng(bytes).pipe(
+                    Effect.map((valid) => ({ bytes, valid })),
+                    Effect.provide(pdfCoreBrowserLayer),
+                  ),
                 ),
                 Effect.tap(({ bytes, valid }) =>
                   Effect.sync(() => {

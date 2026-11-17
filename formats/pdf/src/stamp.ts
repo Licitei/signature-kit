@@ -7,7 +7,7 @@ import type {
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import qrcode from "qrcode-generator";
 import { Effect, Match, Schema } from "effect";
-import { inflateZlibBounded, hasPdfByteRange } from "./byte-range.js";
+import { hasPdfByteRange } from "./byte-range.js";
 import {
   pdfFillRects,
   pdfImage,
@@ -74,29 +74,12 @@ const QR_QUIET_ZONE_MODULES = 4;
 const QR_TEXT_GAP_PT = 6;
 const MAX_PNG_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_PNG_PIXELS = 16 * 1024 * 1024;
-const MAX_PNG_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
-const MAX_PNG_CHUNKS = 4096;
 type PngSignature = readonly [number, number, number, number, number, number, number, number];
 type PngChunkType = readonly [number, number, number, number];
-type PngAdam7Pass = readonly [startX: number, startY: number, stepX: number, stepY: number];
 
 const PNG_SIGNATURE: PngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 const PNG_IHDR_END = 33;
 const PNG_IHDR_TYPE: PngChunkType = [73, 72, 68, 82];
-const PNG_IDAT_TYPE: PngChunkType = [73, 68, 65, 84];
-const PNG_IEND_TYPE: PngChunkType = [73, 69, 78, 68];
-const PNG_ACTL_TYPE: PngChunkType = [97, 99, 84, 76];
-const PNG_FCTL_TYPE: PngChunkType = [102, 99, 84, 76];
-const PNG_FDAT_TYPE: PngChunkType = [102, 100, 65, 84];
-const PNG_ADAM7_PASSES: readonly PngAdam7Pass[] = [
-  [0, 0, 8, 8],
-  [4, 0, 8, 8],
-  [0, 4, 4, 8],
-  [2, 0, 4, 4],
-  [0, 2, 2, 4],
-  [1, 0, 2, 2],
-  [0, 1, 1, 2],
-];
 
 type QrMatrix = {
   readonly moduleCount: number;
@@ -1773,192 +1756,67 @@ const pngUint32At = (png: Uint8Array, offset: number): number =>
   (png[offset + 2] ?? 0) * 0x100 +
   (png[offset + 3] ?? 0);
 
-type PngPreflight = {
-  readonly idat: Uint8Array;
-  readonly inflatedByteLength: number;
-  readonly width: number;
-  readonly height: number;
-};
+const pngHasValidColor = (colorType: number | undefined, bitDepth: number | undefined): boolean =>
+  Match.value(colorType).pipe(
+    Match.when(0, () => [1, 2, 4, 8, 16].includes(bitDepth ?? 0)),
+    Match.when(3, () => [1, 2, 4, 8].includes(bitDepth ?? 0)),
+    Match.when(
+      (type) => type === 2 || type === 4 || type === 6,
+      () => bitDepth === 8 || bitDepth === 16,
+    ),
+    Match.orElse(() => false),
+  );
 
-const pngChunkTypeAt = (png: Uint8Array, offset: number, type: ReadonlyArray<number>): boolean =>
-  type.every((byte, index) => png[offset + index] === byte);
-
-const pngChannels = (colorType: number, bitDepth: number): number | undefined => {
-  switch (colorType) {
-    case 0:
-      return bitDepth === 1 || bitDepth === 2 || bitDepth === 4 || bitDepth === 8 || bitDepth === 16
-        ? 1
-        : undefined;
-    case 2:
-      return bitDepth === 8 || bitDepth === 16 ? 3 : undefined;
-    case 3:
-      return bitDepth === 1 || bitDepth === 2 || bitDepth === 4 || bitDepth === 8 ? 1 : undefined;
-    case 4:
-      return bitDepth === 8 || bitDepth === 16 ? 2 : undefined;
-    case 6:
-      return bitDepth === 8 || bitDepth === 16 ? 4 : undefined;
-    default:
-      return undefined;
-  }
-};
-
-const pngPassExtent = (length: number, start: number, step: number): number =>
-  length <= start ? 0 : Math.ceil((length - start) / step);
-
-const pngFilteredPassByteLength = (
-  width: number,
-  height: number,
-  bitsPerPixel: number,
-): number | undefined => {
-  if (width === 0 || height === 0) return 0;
-  const rowByteLength = Math.ceil((width * bitsPerPixel) / 8);
-  const byteLength = (rowByteLength + 1) * height;
-  return Number.isSafeInteger(byteLength) ? byteLength : undefined;
-};
-
-const pngExpectedInflatedByteLength = (
-  width: number,
-  height: number,
-  bitsPerPixel: number,
-  interlace: number,
-): number | undefined => {
-  if (interlace === 0) return pngFilteredPassByteLength(width, height, bitsPerPixel);
-  let total = 0;
-  for (const [startX, startY, stepX, stepY] of PNG_ADAM7_PASSES) {
-    const passByteLength = pngFilteredPassByteLength(
-      pngPassExtent(width, startX, stepX),
-      pngPassExtent(height, startY, stepY),
-      bitsPerPixel,
-    );
-    if (passByteLength === undefined || total > MAX_PNG_DECOMPRESSED_BYTES - passByteLength) {
-      return undefined;
-    }
-    total += passByteLength;
-  }
-  return total;
-};
-
-const pngIdatBytes = (
-  chunks: ReadonlyArray<Uint8Array>,
-  byteLength: number,
-): Uint8Array | undefined => {
-  const first = chunks[0];
-  if (first === undefined) return undefined;
-  if (chunks.length === 1) return first;
-  const idat = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    idat.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return idat;
-};
-
-const pngPreflight = (png: Uint8Array): PngPreflight | undefined => {
+const pngHeaderSize = (
+  png: Uint8Array,
+): { readonly width: number; readonly height: number } | undefined => {
   if (png.byteLength < PNG_IHDR_END || png.byteLength > MAX_PNG_INPUT_BYTES) return undefined;
   if (!PNG_SIGNATURE.every((byte, index) => png[index] === byte)) return undefined;
-  if (png[8] !== 0 || png[9] !== 0 || png[10] !== 0 || png[11] !== 13) return undefined;
-  if (!pngChunkTypeAt(png, 12, PNG_IHDR_TYPE)) return undefined;
+  if (pngUint32At(png, 8) !== 13) return undefined;
+  if (!PNG_IHDR_TYPE.every((byte, index) => png[12 + index] === byte)) return undefined;
   const width = pngUint32At(png, 16);
   const height = pngUint32At(png, 20);
-  const bitDepth = png[24];
-  const colorType = png[25];
-  const compression = png[26];
-  const filter = png[27];
-  const interlace = png[28];
-  const channels =
-    bitDepth === undefined || colorType === undefined
-      ? undefined
-      : pngChannels(colorType, bitDepth);
   if (
-    bitDepth === undefined ||
     width === 0 ||
     height === 0 ||
     width > Math.floor(MAX_PNG_PIXELS / height) ||
-    channels === undefined ||
-    compression !== 0 ||
-    filter !== 0 ||
-    (interlace !== 0 && interlace !== 1)
+    !pngHasValidColor(png[25], png[24]) ||
+    png[26] !== 0 ||
+    png[27] !== 0 ||
+    (png[28] !== 0 && png[28] !== 1)
   ) {
     return undefined;
   }
-  const inflatedByteLength = pngExpectedInflatedByteLength(
-    width,
-    height,
-    channels * bitDepth,
-    interlace,
-  );
-  if (inflatedByteLength === undefined || inflatedByteLength > MAX_PNG_DECOMPRESSED_BYTES) {
-    return undefined;
-  }
-  const chunks: Uint8Array[] = [];
-  let idatByteLength = 0;
-  let chunkCount = 0;
-  let offset = PNG_IHDR_END;
-  while (offset < png.byteLength) {
-    if (chunkCount >= MAX_PNG_CHUNKS || offset + 12 > png.byteLength) return undefined;
-    const byteLength = pngUint32At(png, offset);
-    const dataStart = offset + 8;
-    const nextOffset = dataStart + byteLength + 4;
-    if (nextOffset > png.byteLength) return undefined;
-    const chunkTypeOffset = offset + 4;
-    if (
-      pngChunkTypeAt(png, chunkTypeOffset, PNG_ACTL_TYPE) ||
-      pngChunkTypeAt(png, chunkTypeOffset, PNG_FCTL_TYPE) ||
-      pngChunkTypeAt(png, chunkTypeOffset, PNG_FDAT_TYPE)
-    ) {
-      return undefined;
-    }
-    if (pngChunkTypeAt(png, offset + 4, PNG_IDAT_TYPE)) {
-      if (chunks.length >= MAX_PNG_CHUNKS || byteLength > MAX_PNG_INPUT_BYTES - idatByteLength) {
-        return undefined;
-      }
-      idatByteLength += byteLength;
-      chunks.push(png.subarray(dataStart, dataStart + byteLength));
-    }
-    if (pngChunkTypeAt(png, offset + 4, PNG_IEND_TYPE)) {
-      if (byteLength !== 0 || nextOffset !== png.byteLength) return undefined;
-      const idat = pngIdatBytes(chunks, idatByteLength);
-      return idat === undefined ? undefined : { idat, inflatedByteLength, width, height };
-    }
-    chunkCount += 1;
-    offset = nextOffset;
-  }
-  return undefined;
+  return { width, height };
 };
 
-const safeStampPngSize = (
-  png: Uint8Array,
-): Effect.Effect<{ readonly width: number; readonly height: number } | undefined> => {
-  const preflight = pngPreflight(png);
-  if (preflight === undefined) return Effect.succeed(undefined);
-  return inflateZlibBounded(preflight.idat, preflight.inflatedByteLength).pipe(
-    Effect.map((inflated) =>
-      inflated.byteLength === preflight.inflatedByteLength
-        ? { width: preflight.width, height: preflight.height }
-        : undefined,
-    ),
-    Effect.orElseSucceed(() => undefined),
-  );
-};
-
-export const isSafePdfStampPng = (png: Uint8Array): Effect.Effect<boolean> =>
-  safeStampPngSize(png).pipe(Effect.map((size) => size !== undefined));
+export const isSafePdfStampPng = (png: Uint8Array): Effect.Effect<boolean, never, PdfCore> =>
+  pngHeaderSize(png) === undefined
+    ? Effect.succeed(false)
+    : PdfCore.pipe(
+        Effect.flatMap((core) => core.pngSize(png)),
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
 
 const stampImage = (
   name: string,
   png: Uint8Array | undefined,
   reason: string,
-): Effect.Effect<StampImage | undefined, PdfError> =>
-  png === undefined
-    ? Effect.succeed(undefined)
-    : safeStampPngSize(png).pipe(
-        Effect.flatMap((size) =>
-          size === undefined
-            ? Effect.fail(stampFailure(reason)())
-            : Effect.succeed({ name, png, width: size.width, height: size.height }),
-        ),
-      );
+): Effect.Effect<StampImage | undefined, PdfError> => {
+  if (png === undefined) return Effect.succeed(undefined);
+  const size = pngHeaderSize(png);
+  return size === undefined
+    ? Effect.fail(
+        new PdfError({
+          code: PdfErrorCodeValue.stampFailed,
+          retryable: false,
+          operation: PdfOperationValue.stamp,
+          reason,
+        }),
+      )
+    : Effect.succeed({ name, png, width: size.width, height: size.height });
+};
 
 const encodableStampText = (
   font: StampFont,

@@ -11,6 +11,7 @@ import { addSignaturePlaceholder } from "../src/placeholder";
 import { verifyPdf as verifyPdfFromSource } from "../src/verify";
 import { pdfTextWidth } from "../src/content";
 import {
+  isSafePdfStampPng,
   layoutPdfSignatureBadge,
   loadPdfStandardFont,
   pdfCoordinateTupleFromPdfPageGeometry,
@@ -772,6 +773,25 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
+  it.effect("validates stamp PNGs with the core decoder", () =>
+    Effect.gen(function* () {
+      const valid = INTERLACED_ONE_BY_ONE_PNG;
+      const trailing = new Uint8Array(valid.byteLength + 1);
+      trailing.set(valid);
+      const corrupt = valid.slice();
+      corrupt[41] = 0xff;
+      corrupt[42] = 0xff;
+
+      expect(yield* isSafePdfStampPng(valid)).toBe(true);
+      expect(yield* isSafePdfStampPng(trailing)).toBe(false);
+      expect(yield* isSafePdfStampPng(corrupt)).toBe(false);
+      expect(yield* isSafePdfStampPng(apngWithHugeFrame())).toBe(false);
+      expect(yield* isSafePdfStampPng(compressedPngExpansionBomb())).toBe(false);
+      expect(yield* isSafePdfStampPng(OVERSIZED_PNG_HEADER)).toBe(false);
+      expect(yield* isSafePdfStampPng(valid.subarray(0, 20))).toBe(false);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 

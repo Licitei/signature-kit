@@ -45,68 +45,6 @@ export const ExtractedPdfSignatureSchema = Schema.Struct({
 });
 export type ExtractedPdfSignature = (typeof ExtractedPdfSignatureSchema)["Type"];
 
-export const inflateZlibBounded = (
-  input: Uint8Array,
-  maxOutputBytes: number,
-): Effect.Effect<Uint8Array, PdfError> => {
-  if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 0) {
-    return Effect.fail(
-      new PdfError({
-        code: PdfErrorCodeValue.invalidPdf,
-        retryable: false,
-        reason: "Failed to decompress bounded zlib data.",
-        operation: PdfOperationValue.verify,
-      }),
-    );
-  }
-  return Effect.tryPromise({
-    try: async () => {
-      const copy = new Uint8Array(input.byteLength);
-      copy.set(input);
-      const decompression = new DecompressionStream("deflate");
-      const writer = decompression.writable.getWriter();
-      const writing = writer.write(copy).then(() => writer.close());
-      const reader = decompression.readable.getReader();
-      const reading = (async () => {
-        const chunks: Array<Uint8Array> = [];
-        let length = 0;
-        while (true) {
-          const next = await reader.read();
-          if (next.done) return concatBytes(chunks);
-          const chunk = next.value;
-          if (chunk === undefined) return undefined;
-          length += chunk.byteLength;
-          if (length > maxOutputBytes) {
-            await reader.cancel();
-            return undefined;
-          }
-          chunks.push(chunk);
-        }
-      })();
-      const [, output] = await Promise.all([writing, reading]);
-      return output;
-    },
-    catch: () =>
-      new PdfError({
-        code: PdfErrorCodeValue.invalidPdf,
-        retryable: false,
-        reason: "Failed to decompress bounded zlib data.",
-        operation: PdfOperationValue.verify,
-      }),
-  }).pipe(
-    Effect.filterOrFail(
-      (output) => output !== undefined,
-      () =>
-        new PdfError({
-          code: PdfErrorCodeValue.invalidPdf,
-          retryable: false,
-          reason: "Failed to decompress bounded zlib data.",
-          operation: PdfOperationValue.verify,
-        }),
-    ),
-  );
-};
-
 const isPdfWhitespaceByte = (byte: number | undefined): boolean =>
   byte === 0x00 ||
   byte === 0x09 ||
