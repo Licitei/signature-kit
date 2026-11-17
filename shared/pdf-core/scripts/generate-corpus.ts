@@ -680,24 +680,672 @@ const buildMarkdownHeadingsReact = async (): Promise<Uint8Array> => {
   return new Uint8Array(await renderToBuffer(body));
 };
 
+type RawObject = string | { readonly dict: string; readonly data: Uint8Array };
+
+const bytesOf = (text: string): Uint8Array => Uint8Array.from(text, (char) => char.charCodeAt(0));
+
+const concatBytes = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+};
+
+const rawPdf = (objects: ReadonlyArray<RawObject>): Uint8Array => {
+  const parts: Array<Uint8Array> = [bytesOf("%PDF-1.7\n%âãÏÓ\n")];
+  let length = parts[0]?.byteLength ?? 0;
+  const offsets: Array<number> = [];
+  const push = (part: Uint8Array): void => {
+    parts.push(part);
+    length += part.byteLength;
+  };
+  objects.forEach((object, index) => {
+    offsets.push(length);
+    push(bytesOf(`${index + 1} 0 obj\n`));
+    if (typeof object === "string") {
+      push(bytesOf(object));
+    } else {
+      push(bytesOf(`<< ${object.dict} /Length ${object.data.byteLength} >>\nstream\n`));
+      push(object.data);
+      push(bytesOf("\nendstream"));
+    }
+    push(bytesOf("\nendobj\n"));
+  });
+  const xref = length;
+  push(
+    bytesOf(
+      `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
+        .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+        .join(
+          "",
+        )}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`,
+    ),
+  );
+  return concatBytes(parts);
+};
+
+type RenderPage = {
+  readonly content: string;
+  readonly resources: string;
+  readonly rotate?: number;
+  readonly size?: readonly [number, number];
+};
+
+const renderPdf = (
+  pages: ReadonlyArray<RenderPage>,
+  extra: ReadonlyArray<RawObject>,
+  catalog = "",
+): Uint8Array => {
+  const first = 3 + extra.length;
+  const kids = pages.map((_, index) => `${first + index * 2} 0 R`).join(" ");
+  const objects: Array<RawObject> = [
+    `<< /Type /Catalog /Pages 2 0 R ${catalog} >>`,
+    `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`,
+    ...extra,
+  ];
+  pages.forEach((page, index) => {
+    const [width, height] = page.size ?? [200, 200];
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Rotate ${page.rotate ?? 0} /Resources ${page.resources} /Contents ${first + index * 2 + 1} 0 R >>`,
+    );
+    objects.push({ dict: "", data: bytesOf(page.content) });
+  });
+  return rawPdf(objects);
+};
+
+const seeded = (seed: number): (() => number) => {
+  let state = seed;
+  return () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state >>> 24;
+  };
+};
+
+const buildRenderImages = (): Uint8Array => {
+  const rgb = Uint8Array.from(
+    { length: 4 * 4 * 3 },
+    (_, index) => [255, 0, 0, 0, 160, 0, 0, 0, 255, 250, 200, 0][index % 12] ?? 0,
+  );
+  const gray = Uint8Array.from(
+    { length: 8 * 8 },
+    (_, index) => (index % 8) * 32 + (index >> 3) * 4,
+  );
+  const indexed = Uint8Array.from({ length: 2 * 4 }, (_, index) => [0x01, 0x23][index % 2] ?? 0);
+  return renderPdf(
+    [
+      {
+        resources: "<< /XObject << /Rgb 3 0 R /Gray 4 0 R /Pal 5 0 R >> >>",
+        content:
+          "q 80 0 0 80 10 110 cm /Rgb Do Q q 80 0 0 80 110 110 cm /Gray Do Q q 180 0 0 80 10 10 cm /Pal Do Q",
+      },
+    ],
+    [
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+        data: rgb,
+      },
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8",
+        data: gray,
+      },
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace [/Indexed /DeviceRGB 3 <ff000000ff000000ff202020>] /BitsPerComponent 4",
+        data: indexed,
+      },
+    ],
+  );
+};
+
+const buildRenderMasks = (): Uint8Array => {
+  const rgb = Uint8Array.from({ length: 8 * 8 * 3 }, (_, index) =>
+    index % 3 === 2 ? 200 : index % 3 === 0 ? 30 : 90,
+  );
+  const alpha = Uint8Array.from({ length: 8 * 8 }, (_, index) => Math.min(255, (index % 8) * 36));
+  const checker = Uint8Array.from({ length: 8 }, (_, row) => (row % 2 === 0 ? 0x55 : 0xaa));
+  const stencil = Uint8Array.from({ length: 16 * 2 }, (_, index) =>
+    Math.floor(index / 2) % 4 < 2 ? 0x0f : 0xf0,
+  );
+  return renderPdf(
+    [
+      {
+        resources:
+          "<< /XObject << /Soft 3 0 R /Hard 5 0 R /Stencil 7 0 R >> /ExtGState << /Half << /ca 0.5 >> >> >>",
+        content:
+          "0.9 0.9 0.2 rg 0 0 200 200 re f q 80 0 0 80 10 110 cm /Soft Do Q q 80 0 0 80 110 110 cm /Hard Do Q q /Half gs 0.8 0 0 rg 160 0 0 80 20 10 cm /Stencil Do Q",
+      },
+    ],
+    [
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 4 0 R",
+        data: rgb,
+      },
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8",
+        data: alpha,
+      },
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Mask 6 0 R",
+        data: rgb.map((value) => 255 - value),
+      },
+      { dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ImageMask true", data: checker },
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 16 /Height 16 /ImageMask true /BitsPerComponent 1",
+        data: stencil,
+      },
+    ],
+  );
+};
+
+const WHITE_CODES: ReadonlyArray<readonly [number, number]> = [
+  [8, 0x35],
+  [6, 0x07],
+  [4, 0x07],
+  [4, 0x08],
+  [4, 0x0b],
+  [4, 0x0c],
+  [4, 0x0e],
+  [4, 0x0f],
+  [5, 0x13],
+  [5, 0x14],
+  [5, 0x07],
+  [5, 0x08],
+  [6, 0x08],
+  [6, 0x03],
+  [6, 0x34],
+  [6, 0x35],
+  [6, 0x2a],
+  [6, 0x2b],
+  [7, 0x27],
+  [7, 0x0c],
+  [7, 0x08],
+  [7, 0x17],
+  [7, 0x03],
+  [7, 0x04],
+  [7, 0x28],
+  [7, 0x2b],
+  [7, 0x13],
+  [7, 0x24],
+  [7, 0x18],
+  [8, 0x02],
+  [8, 0x03],
+  [8, 0x1a],
+  [8, 0x1b],
+  [8, 0x12],
+  [8, 0x13],
+  [8, 0x14],
+  [8, 0x15],
+  [8, 0x16],
+  [8, 0x17],
+  [8, 0x28],
+  [8, 0x29],
+  [8, 0x2a],
+  [8, 0x2b],
+  [8, 0x2c],
+  [8, 0x2d],
+  [8, 0x04],
+  [8, 0x05],
+  [8, 0x0a],
+  [8, 0x0b],
+  [8, 0x52],
+  [8, 0x53],
+  [8, 0x54],
+  [8, 0x55],
+  [8, 0x24],
+  [8, 0x25],
+  [8, 0x58],
+  [8, 0x59],
+  [8, 0x5a],
+  [8, 0x5b],
+  [8, 0x4a],
+  [8, 0x4b],
+  [8, 0x32],
+  [8, 0x33],
+  [8, 0x34],
+];
+const BLACK_CODES: ReadonlyArray<readonly [number, number]> = [
+  [10, 0x37],
+  [3, 0x02],
+  [2, 0x03],
+  [2, 0x02],
+  [3, 0x03],
+  [4, 0x03],
+  [4, 0x02],
+  [5, 0x03],
+  [6, 0x05],
+  [6, 0x04],
+  [7, 0x04],
+  [7, 0x05],
+  [7, 0x07],
+  [8, 0x04],
+  [8, 0x07],
+  [9, 0x18],
+  [10, 0x17],
+  [10, 0x18],
+  [10, 0x08],
+  [11, 0x67],
+  [11, 0x68],
+  [11, 0x6c],
+  [11, 0x37],
+  [11, 0x28],
+  [11, 0x17],
+  [11, 0x18],
+  [12, 0xca],
+  [12, 0xcb],
+  [12, 0xcc],
+  [12, 0xcd],
+  [12, 0x68],
+  [12, 0x69],
+  [12, 0x6a],
+  [12, 0x6b],
+  [12, 0xd2],
+  [12, 0xd3],
+  [12, 0xd4],
+  [12, 0xd5],
+  [12, 0xd6],
+  [12, 0xd7],
+  [12, 0x6c],
+  [12, 0x6d],
+  [12, 0xda],
+  [12, 0xdb],
+  [12, 0x54],
+  [12, 0x55],
+  [12, 0x56],
+  [12, 0x57],
+  [12, 0x64],
+  [12, 0x65],
+  [12, 0x52],
+  [12, 0x53],
+  [12, 0x24],
+  [12, 0x37],
+  [12, 0x38],
+  [12, 0x27],
+  [12, 0x28],
+  [12, 0x58],
+  [12, 0x59],
+  [12, 0x2b],
+  [12, 0x2c],
+  [12, 0x5a],
+  [12, 0x66],
+  [12, 0x67],
+];
+
+const group4 = (rows: ReadonlyArray<ReadonlyArray<boolean>>): Uint8Array => {
+  const bits: Array<number> = [];
+  const write = ([length, code]: readonly [number, number]): void => {
+    for (let bit = length - 1; bit >= 0; bit -= 1) bits.push((code >> bit) & 1);
+  };
+  for (const row of rows) {
+    const runs: Array<number> = [];
+    let color = false;
+    let run = 0;
+    for (const black of row) {
+      if (black === color) {
+        run += 1;
+      } else {
+        runs.push(run);
+        color = black;
+        run = 1;
+      }
+    }
+    runs.push(run);
+    if (runs.length % 2 === 1) runs.push(0);
+    for (let index = 0; index < runs.length; index += 2) {
+      write([3, 0x01]);
+      write(WHITE_CODES[runs[index] ?? 0] ?? [8, 0x35]);
+      write(BLACK_CODES[runs[index + 1] ?? 0] ?? [10, 0x37]);
+    }
+  }
+  write([12, 0x001]);
+  write([12, 0x001]);
+  while (bits.length % 8 !== 0) bits.push(0);
+  return Uint8Array.from({ length: bits.length / 8 }, (_, byte) =>
+    bits.slice(byte * 8, byte * 8 + 8).reduce((value, bit) => (value << 1) | bit, 0),
+  );
+};
+
+const buildRenderCcitt = (): Uint8Array => {
+  const rows = Array.from({ length: 24 }, (_, y) =>
+    Array.from(
+      { length: 48 },
+      (_, x) => (Math.floor(x / 6) + Math.floor(y / 6)) % 2 === 0 || x === y,
+    ),
+  );
+  return renderPdf(
+    [
+      {
+        resources: "<< /XObject << /Fax 3 0 R >> >>",
+        content: "q 192 0 0 96 4 52 cm /Fax Do Q",
+      },
+    ],
+    [
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 48 /Height 24 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 48 /Rows 24 >>",
+        data: group4(rows),
+      },
+    ],
+  );
+};
+
+const buildRenderShadings = (): Uint8Array =>
+  renderPdf(
+    [
+      {
+        resources:
+          "<< /Shading << /Ax << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [10 0 190 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> /Extend [true true] >> /Rad << /ShadingType 3 /ColorSpace /DeviceRGB /Coords [100 50 0 100 50 45] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 1 0] /C1 [0 0.5 0] /N 1 >> /Extend [false true] >> >> /Pattern << /P0 << /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 150 0 190] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> /Extend [true true] >> >> >> >>",
+        content:
+          "q 10 110 180 30 re W n /Ax sh Q q 10 10 180 90 re W n /Rad sh Q /Pattern cs /P0 scn 10 150 180 40 re f",
+      },
+    ],
+    [],
+  );
+
+const buildRenderType3 = (): Uint8Array =>
+  renderPdf(
+    [
+      {
+        resources: "<< /Font << /T3 3 0 R >> >>",
+        content: "BT /T3 40 Tf 0 0 0.8 rg 10 120 Td (ABAB) Tj 0.8 0 0 rg 0 -80 Td (BBA) Tj ET",
+      },
+    ],
+    [
+      "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /box 4 0 R /tri 5 0 R >> /Encoding << /Type /Encoding /Differences [65 /box /tri] >> /FirstChar 65 /LastChar 66 /Widths [1000 1000] /Resources << >> >>",
+      { dict: "", data: bytesOf("1000 0 0 0 900 900 d1 50 50 800 800 re f") },
+      { dict: "", data: bytesOf("1000 0 0 0 900 900 d1 50 50 m 850 50 l 450 850 l f") },
+    ],
+  );
+
+const charstringNumber = (value: number): Array<number> => {
+  if (value >= -107 && value <= 107) return [value + 139];
+  if (value >= 108 && value <= 1131) {
+    const shifted = value - 108;
+    return [Math.floor(shifted / 256) + 247, shifted % 256];
+  }
+  const shifted = -value - 108;
+  return [Math.floor(shifted / 256) + 251, shifted % 256];
+};
+
+const charstring = (program: ReadonlyArray<CharstringItem>): Array<number> =>
+  program.flatMap((item) => (typeof item === "number" ? charstringNumber(item) : [item[0]]));
+
+const cffIndex = (items: ReadonlyArray<ReadonlyArray<number>>): Array<number> => {
+  if (items.length === 0) return [0, 0];
+  const out = [items.length >> 8, items.length & 0xff, 4];
+  let offset = 1;
+  const pushOffset = (value: number): void => {
+    out.push((value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff);
+  };
+  pushOffset(offset);
+  for (const item of items) {
+    offset += item.length;
+    pushOffset(offset);
+  }
+  for (const item of items) out.push(...item);
+  return out;
+};
+
+const dictInt = (value: number): Array<number> => [
+  29,
+  (value >>> 24) & 0xff,
+  (value >>> 16) & 0xff,
+  (value >>> 8) & 0xff,
+  value & 0xff,
+];
+
+type CharstringItem = number | readonly [number];
+
+const BOX_GLYPH: ReadonlyArray<CharstringItem> = [100, 0, [21], 500, [6], 700, [7], -500, [6]];
+const TRIANGLE_GLYPH: ReadonlyArray<CharstringItem> = [100, 0, [21], 500, 0, -250, 700, [5]];
+
+const buildCff = (): Uint8Array => {
+  const header = [1, 0, 4, 4];
+  const names = cffIndex([Array.from(bytesOf("TestCFF"))]);
+  const strings = cffIndex([]);
+  const globals = cffIndex([]);
+  const charstrings = cffIndex([
+    charstring([[14]]),
+    charstring([600, ...BOX_GLYPH, [14]]),
+    charstring([600, ...TRIANGLE_GLYPH, [14]]),
+  ]);
+  const privateDict = [...charstringNumber(0), 20, ...charstringNumber(0), 21];
+  const charset = [0, 0, 34, 0, 35];
+  const topDict = (charsetAt: number, charstringsAt: number, privateAt: number): Array<number> => [
+    ...dictInt(charsetAt),
+    15,
+    ...dictInt(charstringsAt),
+    17,
+    ...dictInt(privateDict.length),
+    ...dictInt(privateAt),
+    18,
+    ...charstringNumber(0),
+    ...charstringNumber(0),
+    ...charstringNumber(1000),
+    ...charstringNumber(1000),
+    5,
+  ];
+  const topIndexLength = cffIndex([topDict(0, 0, 0)]).length;
+  const charsetAt = header.length + names.length + topIndexLength + strings.length + globals.length;
+  const charstringsAt = charsetAt + charset.length;
+  const privateAt = charstringsAt + charstrings.length;
+  const top = topDict(charsetAt, charstringsAt, privateAt);
+  return Uint8Array.from([
+    ...header,
+    ...names,
+    ...cffIndex([top]),
+    ...strings,
+    ...globals,
+    ...charset,
+    ...charstrings,
+    ...privateDict,
+  ]);
+};
+
+const encrypt = (plain: Uint8Array, key: number): Uint8Array => {
+  let state = key;
+  return plain.map((byte) => {
+    const cipher = byte ^ (state >> 8);
+    state = ((cipher + state) * 52845 + 22719) & 0xffff;
+    return cipher;
+  });
+};
+
+const buildType1 = (): {
+  readonly data: Uint8Array;
+  readonly clear: number;
+  readonly binary: number;
+} => {
+  const glyph = (program: ReadonlyArray<CharstringItem>): Uint8Array =>
+    encrypt(Uint8Array.from([0, 0, 0, 0, ...charstring(program)]), 4330);
+  const notdef = glyph([0, 600, [13], [14]]);
+  const box = glyph([0, 600, [13], ...BOX_GLYPH, [9], [14]]);
+  const triangle = glyph([0, 600, [13], 100, 0, [21], 500, 0, [5], -250, 700, [5], [9], [14]]);
+  const clear = bytesOf(
+    "%!PS-AdobeFont-1.0: TestType1 001.000\n12 dict begin\n/FontName /TestType1 def\n/FontType 1 def\n/PaintType 0 def\n/FontMatrix [0.001 0 0 0.001 0 0] readonly def\n/FontBBox {0 0 1000 1000} readonly def\n/Encoding StandardEncoding def\ncurrentdict end\ncurrentfile eexec\n",
+  );
+  const entry = (name: string, data: Uint8Array): Uint8Array =>
+    concatBytes([bytesOf(`/${name} ${data.byteLength} RD `), data, bytesOf(" ND\n")]);
+  const priv = concatBytes([
+    Uint8Array.from([0, 0, 0, 0]),
+    bytesOf(
+      "dup /Private 8 dict dup begin\n/RD{string currentfile exch readstring pop}executeonly def\n/ND{noaccess def}executeonly def\n/NP{noaccess put}executeonly def\n/lenIV 4 def\n/BlueValues [] def\n/MinFeature {16 16} def\n/password 5839 def\n/Subrs 0 array\nND\n2 index /CharStrings 3 dict dup begin\n",
+    ),
+    entry(".notdef", notdef),
+    entry("A", box),
+    entry("B", triangle),
+    bytesOf(
+      "end\nend\nreadonly put\nnoaccess put\ndup /FontName get exch definefont pop\nmark currentfile closefile\n",
+    ),
+  ]);
+  const binary = encrypt(priv, 55665);
+  return { data: concatBytes([clear, binary]), clear: clear.byteLength, binary: binary.byteLength };
+};
+
+const buildRenderEmbeddedFonts = (): Uint8Array => {
+  const type1 = buildType1();
+  return renderPdf(
+    [
+      {
+        resources: "<< /Font << /C 3 0 R /T 6 0 R >> >>",
+        content:
+          "BT /C 60 Tf 0 0.3 0.6 rg 10 120 Td (ABBA) Tj ET BT /T 60 Tf 0.5 0 0.2 rg 10 30 Td (BAAB) Tj ET",
+      },
+    ],
+    [
+      "<< /Type /Font /Subtype /Type1 /BaseFont /AAAAAA+TestCFF /FirstChar 65 /LastChar 66 /Widths [600 600] /Encoding /WinAnsiEncoding /FontDescriptor 4 0 R >>",
+      "<< /Type /FontDescriptor /FontName /AAAAAA+TestCFF /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 1000 /Descent 0 /CapHeight 700 /StemV 80 /FontFile3 5 0 R >>",
+      { dict: "/Subtype /Type1C", data: buildCff() },
+      "<< /Type /Font /Subtype /Type1 /BaseFont /BBBBBB+TestType1 /FirstChar 65 /LastChar 66 /Widths [600 600] /Encoding /WinAnsiEncoding /FontDescriptor 7 0 R >>",
+      "<< /Type /FontDescriptor /FontName /BBBBBB+TestType1 /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 1000 /Descent 0 /CapHeight 700 /StemV 80 /FontFile 8 0 R >>",
+      {
+        dict: `/Length1 ${type1.clear} /Length2 ${type1.binary} /Length3 0`,
+        data: type1.data,
+      },
+    ],
+  );
+};
+
+const buildRenderQr = (): Uint8Array => {
+  const size = 21;
+  const next = seeded(7);
+  const corners: ReadonlyArray<readonly [number, number]> = [
+    [0, 0],
+    [14, 0],
+    [0, 14],
+  ];
+  const finder = (x: number, y: number): boolean | undefined => {
+    for (const [left, top] of corners) {
+      const dx = x - left;
+      const dy = y - top;
+      if (dx >= 0 && dx < 7 && dy >= 0 && dy < 7) {
+        const ring = Math.max(Math.abs(dx - 3), Math.abs(dy - 3));
+        return ring !== 2;
+      }
+    }
+    return undefined;
+  };
+  const rowBytes = Math.ceil(size / 8);
+  const data = new Uint8Array(rowBytes * size);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dark = finder(x, y) ?? next() % 2 === 0;
+      const at = y * rowBytes + (x >> 3);
+      if (!dark) data[at] = (data[at] ?? 0) | (0x80 >> (x & 7));
+    }
+  }
+  return renderPdf(
+    [
+      {
+        resources: "<< /XObject << /Qr 3 0 R >> >>",
+        content: "q 189 0 0 189 5.5 5.5 cm /Qr Do Q",
+      },
+    ],
+    [
+      {
+        dict: `/Type /XObject /Subtype /Image /Width ${size} /Height ${size} /ColorSpace /DeviceGray /BitsPerComponent 1`,
+        data,
+      },
+    ],
+  );
+};
+
+const ROTATED_CONTENT =
+  "0 0 0.7 rg 20 20 60 120 re f 0.8 0.2 0 RG 4 w 100 30 m 180 170 l S q 40 0 0 40 120 120 cm /Im Do Q";
+
+const buildRenderRotated = (): Uint8Array =>
+  renderPdf(
+    [90, 180, 270].map((rotate): RenderPage => ({
+      rotate,
+      size: [200, 160],
+      resources: "<< /XObject << /Im 3 0 R >> >>",
+      content: ROTATED_CONTENT,
+    })),
+    [
+      {
+        dict: "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+        data: Uint8Array.from([255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0]),
+      },
+    ],
+  );
+
+const buildRenderOptionalContent = (): Uint8Array =>
+  renderPdf(
+    [
+      {
+        resources: "<< /Properties << /Off 3 0 R /On 4 0 R >> /XObject << /Hidden 5 0 R >> >>",
+        content:
+          "/OC /Off BDC 1 0 0 rg 10 10 180 80 re f EMC /OC /On BDC 0 0.6 0 rg 10 110 180 80 re f EMC /Hidden Do",
+      },
+    ],
+    [
+      "<< /Type /OCG /Name (Off) >>",
+      "<< /Type /OCG /Name (On) >>",
+      {
+        dict: "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /OC 3 0 R",
+        data: bytesOf("0 0 1 rg 50 50 100 100 re f"),
+      },
+    ],
+    "/OCProperties << /OCGs [3 0 R 4 0 R] /D << /OFF [3 0 R] >> >>",
+  );
+
+const RENDER_FIXTURES: ReadonlyArray<readonly [string, () => Uint8Array]> = [
+  ["images.pdf", buildRenderImages],
+  ["masks.pdf", buildRenderMasks],
+  ["ccitt-g4.pdf", buildRenderCcitt],
+  ["shadings.pdf", buildRenderShadings],
+  ["type3.pdf", buildRenderType3],
+  ["embedded-fonts.pdf", buildRenderEmbeddedFonts],
+  ["qr-upscaled.pdf", buildRenderQr],
+  ["rotated.pdf", buildRenderRotated],
+  ["optional-content.pdf", buildRenderOptionalContent],
+];
+
+
+const corruptStartxref = (bytes: Uint8Array): Uint8Array => {
+  const needle = encoder.encode("startxref");
+  let at = -1;
+  outer: for (let index = bytes.byteLength - needle.byteLength; index >= 0; index -= 1) {
+    for (let offset = 0; offset < needle.byteLength; offset += 1) {
+      if (bytes[index + offset] !== needle[offset]) continue outer;
+    }
+    at = index;
+    break;
+  }
+  if (at < 0) return bytes;
+  let lineBreak = -1;
+  for (let index = at + needle.byteLength; index < bytes.byteLength; index += 1) {
+    if (bytes[index] === 0x0a) {
+      lineBreak = index;
+      break;
+    }
+  }
+  if (lineBreak < 0) return bytes;
+  let offsetEnd = lineBreak + 1;
+  while (offsetEnd < bytes.byteLength && bytes[offsetEnd] !== 0x0a) offsetEnd += 1;
+  const replacement = encoder.encode("999999999");
+  const out = new Uint8Array(
+    bytes.byteLength - (offsetEnd - (lineBreak + 1)) + replacement.byteLength,
+  );
+  out.set(bytes.subarray(0, lineBreak + 1));
+  out.set(replacement, lineBreak + 1);
+  out.set(bytes.subarray(offsetEnd), lineBreak + 1 + replacement.byteLength);
+  return out;
+};
+
 const buildBrokenXref = buildPdf([
   {
     draw: (painter) =>
       painter.text("PDF válido com startxref corrompido.", { x: 72, y: 700, size: 12 }),
   },
-]).pipe(
-  Effect.map((bytes) => {
-    const ascii = new TextDecoder("latin1").decode(bytes);
-    const startxrefIndex = ascii.lastIndexOf("startxref");
-    const lineBreak = startxrefIndex < 0 ? -1 : ascii.indexOf("\n", startxrefIndex);
-    if (lineBreak < 0) return bytes;
-    const corrupted = `${ascii.slice(0, lineBreak + 1)}999999999\n${ascii.slice(lineBreak + 1)}`;
-    return Uint8Array.from(corrupted, (character) => character.charCodeAt(0));
-  }),
-);
+]).pipe(Effect.map(corruptStartxref));
 
 const program = Effect.gen(function* () {
   mkdirSync(PDF_CORE_FIXTURES_DIR, { recursive: true });
+  mkdirSync(join(PDF_CORE_FIXTURES_DIR, "render"), { recursive: true });
+  for (const [name, build] of RENDER_FIXTURES) {
+    writeFixture(join("render", name), build());
+  }
   writeFixture("markdown-basics.pdf", yield* buildMarkdownBasics);
   writeFixture("markdown-hyphenation.pdf", yield* buildMarkdownHyphenation);
   writeFixture("markdown-page-continue.pdf", yield* buildMarkdownPageContinue);

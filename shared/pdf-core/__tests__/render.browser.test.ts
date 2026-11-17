@@ -220,9 +220,7 @@ describe("pdf-core page rendering", () => {
         }
       }
       await task.destroy();
-      if (path !== "./fixtures/broken-xref.pdf") {
-        expect(inked, `${path} has no page with ink`).toBeGreaterThan(0);
-      }
+      expect(inked, `${path} has no page with ink`).toBeGreaterThan(0);
     }, 120_000);
   }
 
