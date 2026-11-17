@@ -10,6 +10,7 @@ mod fontprog;
 mod inflate;
 mod inspection;
 mod layout;
+mod markdown;
 mod num;
 mod object;
 mod syntax;

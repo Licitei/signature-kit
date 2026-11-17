@@ -5,6 +5,11 @@ use std::collections::{HashMap, HashSet};
 use crate::document::{Document, Page};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
+use crate::inspection::LinkInfo;
+use crate::markdown::{
+    ParagraphFinish, finish_paragraph, median_body_size, merge_page_continuation, reflow_spans,
+    spans_from_runs, take_continuation_tail,
+};
 use crate::table::{
     Cell, Rule, Table, column_of, merge_row, render_markdown, render_text, ruled_grids,
 };
@@ -57,6 +62,7 @@ struct Frag<'a> {
     y1: f64,
     size: f64,
     bold: bool,
+    italic: bool,
     text: &'a str,
 }
 
@@ -86,6 +92,7 @@ struct Segment {
     center: f64,
     continuation: bool,
     bold: bool,
+    italic: bool,
 }
 
 struct Block {
@@ -233,6 +240,7 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
             segment.y1 = segment.y1.max(frag.y1);
             segment.size = segment.size.max(frag.size);
             segment.bold &= frag.bold;
+            segment.italic &= frag.italic;
             segment.center = line.center;
         } else {
             let continuation =
@@ -249,6 +257,7 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
                 center: line.center,
                 continuation,
                 bold: frag.bold,
+                italic: frag.italic,
             });
         }
         right_edge = right_edge.max(frag.x1);
@@ -703,7 +712,7 @@ fn cell_text(frags: &[Frag<'_>]) -> String {
         aligned: false,
         text: true,
     };
-    layout_pool(frags, &[], None, mode, &mut sink);
+    layout_pool(frags, &[], None, mode, &[], &mut sink);
     assemble(&sink.pieces, &HashMap::new(), 0).replace("\n\n", "\n")
 }
 
@@ -778,11 +787,76 @@ fn band_of(extent: Option<[f64; 4]>, bottom: f64, top: f64) -> Band {
     }
 }
 
+fn segment_members(
+    frags: &[Frag<'_>],
+    segment: &Segment,
+) -> Vec<(String, f64, f64, f64, bool, bool)> {
+    let mut ordered = segment.members.clone();
+    ordered.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
+        (Some(left), Some(right)) => compare(left.x0, right.x0),
+        _ => Ordering::Equal,
+    });
+    ordered
+        .into_iter()
+        .filter_map(|index| {
+            let frag = frags.get(index)?;
+            Some((
+                frag.text.to_owned(),
+                frag.x0,
+                frag.x1,
+                frag.size,
+                frag.bold,
+                frag.italic,
+            ))
+        })
+        .collect()
+}
+
+fn markdown_block_piece(
+    frags: &[Frag<'_>],
+    segments: &[Segment],
+    block: &Block,
+    margin: f64,
+    body: f64,
+    extent: Option<[f64; 4]>,
+    links: &[LinkInfo],
+) -> Option<Piece> {
+    let mut line_spans = Vec::with_capacity(block.segments.len());
+    let mut size = 0.0_f64;
+    let mut band = Band::Free;
+    for &segment_index in &block.segments {
+        let Some(segment) = segments.get(segment_index) else {
+            continue;
+        };
+        line_spans.push(spans_from_runs(&segment_members(frags, segment)));
+        size = size.max(segment.size);
+        band = band_of(extent, segment.center, segment.center);
+    }
+    let merged = reflow_spans(line_spans);
+    let indent = ((block.x0 - margin) / body.max(1e-3)).max(0.0);
+    let rendered = finish_paragraph(
+        &merged,
+        &ParagraphFinish {
+            size,
+            body_size: body,
+            indent_em: indent,
+            bbox: [block.x0, block.bottom, block.x1, block.top],
+            links,
+        },
+    );
+    (!rendered.is_empty()).then_some(Piece {
+        text: rendered,
+        lead: "",
+        band,
+    })
+}
+
 fn layout_pool(
     frags: &[Frag<'_>],
     rulings: &[Rule],
     extent: Option<[f64; 4]>,
     mode: Mode,
+    links: &[LinkInfo],
     out: &mut PoolOut,
 ) {
     if frags.is_empty() {
@@ -798,10 +872,14 @@ fn layout_pool(
         None => (None, Vec::new()),
     };
     let free: &[Frag<'_>] = owned.as_deref().unwrap_or(frags);
-    let lines = cluster_lines(free);
-    let mut segments: Vec<Segment> = Vec::with_capacity(lines.len());
-    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(lines.len());
-    for line in &lines {
+    let margin = free
+        .iter()
+        .map(|frag| frag.x0)
+        .fold(f64::INFINITY, f64::min);
+    let text_lines = cluster_lines(free);
+    let mut segments: Vec<Segment> = Vec::with_capacity(text_lines.len());
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(text_lines.len());
+    for line in &text_lines {
         let before = segments.len();
         split_segments(free, line, &mut segments);
         if segments.len() > before {
@@ -856,17 +934,27 @@ fn layout_pool(
                 continue;
             }
             let leading = previous.map_or("", |before| separator(&segments, before, block));
-            for (row, &segment_index) in block.segments.iter().enumerate() {
-                let Some(segment) = segments.get(segment_index) else {
-                    continue;
-                };
-                let mut text = String::new();
-                write_segment(free, segment, &mut text);
-                out.pieces.push(Piece {
-                    text,
-                    lead: if row == 0 { leading } else { "\n" },
-                    band: band_of(extent, segment.center, segment.center),
-                });
+            if mode.markdown {
+                let body = median_body_size(&segments.iter().map(|s| s.size).collect::<Vec<_>>());
+                if let Some(mut piece) =
+                    markdown_block_piece(free, &segments, block, margin, body, extent, links)
+                {
+                    piece.lead = leading;
+                    out.pieces.push(piece);
+                }
+            } else {
+                for (row, &segment_index) in block.segments.iter().enumerate() {
+                    let Some(segment) = segments.get(segment_index) else {
+                        continue;
+                    };
+                    let mut text = String::new();
+                    write_segment(free, segment, &mut text);
+                    out.pieces.push(Piece {
+                        text,
+                        lead: if row == 0 { leading } else { "\n" },
+                        band: band_of(extent, segment.center, segment.center),
+                    });
+                }
             }
             previous = Some(block);
         }
@@ -1010,6 +1098,7 @@ fn page_layout(
     rotate: i32,
     extent: Option<[f64; 4]>,
     mode: Mode,
+    links: &[LinkInfo],
 ) -> PageLayout {
     let page = page_quarter(rotate);
     let mut pools: [Vec<Frag<'_>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -1032,6 +1121,7 @@ fn page_layout(
             y1: ay.max(by),
             size: run.item.font_size.abs().max(1e-3),
             bold: run.bold,
+            italic: run.italic,
             text: &run.item.text,
         };
         if !(frag.x0.is_finite()
@@ -1063,7 +1153,7 @@ fn page_layout(
             continue;
         };
         let turns = (page.saturating_add(quarter)) % 4;
-        let lines: Vec<Rule> = rulings
+        let ruled_lines: Vec<Rule> = rulings
             .iter()
             .map(|ruling| {
                 let [x0, y0, x1, y1] =
@@ -1075,7 +1165,7 @@ fn page_layout(
             .filter(|_| rank == 0)
             .map(|rect| turn_rect(turns, rect));
         let mut sink = PoolOut::default();
-        layout_pool(pool, &lines, pool_extent, mode, &mut sink);
+        layout_pool(pool, &ruled_lines, pool_extent, mode, links, &mut sink);
         if !layout.pieces.is_empty()
             && let Some(first) = sink.pieces.first_mut()
         {
@@ -1101,7 +1191,7 @@ pub(crate) fn page_text(runs: &[Run], rotate: i32) -> String {
         aligned: false,
         text: true,
     };
-    let layout = page_layout(runs, &[], rotate, None, mode);
+    let layout = page_layout(runs, &[], rotate, None, mode, &[]);
     assemble(&layout.pieces, &HashMap::new(), 0)
 }
 
@@ -1134,9 +1224,19 @@ fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcome<Vec<usize
     }
 }
 
+fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkInfo> {
+    links
+        .iter()
+        .filter(|link| usize::try_from(link.page_index).ok() == Some(page_index))
+        .cloned()
+        .collect()
+}
+
 fn single_page(
     document: &Document<'_>,
     page: &Page,
+    page_index: usize,
+    links: &[LinkInfo],
     limits: &Limits,
     session: &mut Session,
     mode: Mode,
@@ -1145,6 +1245,7 @@ fn single_page(
         split_repositioned: true,
         structure: true,
     };
+    let scoped = page_links(links, page_index);
     match extract_content(document, page, limits, capture, session) {
         Ok(PageContent { runs, rulings }) => page_layout(
             &runs,
@@ -1152,6 +1253,7 @@ fn single_page(
             page.info.rotate,
             Some(page.info.crop_box),
             mode,
+            &scoped,
         ),
         Err(_) => PageLayout::default(),
     }
@@ -1174,28 +1276,78 @@ pub(crate) fn document_text(
         aligned: options.markdown,
         text: true,
     };
+    let all_links = document.links(&pages)?;
     let mut session = Session::default();
     let mut layouts: Vec<PageLayout> = Vec::with_capacity(selected.len());
     for position in selected {
         let Some(page) = pages.get(position) else {
             continue;
         };
-        layouts.push(single_page(&document, page, limits, &mut session, mode));
+        layouts.push(single_page(
+            &document,
+            page,
+            position,
+            &all_links,
+            limits,
+            &mut session,
+            mode,
+        ));
     }
     let dropped = if options.drop_running {
         running_keys(&layouts)
     } else {
         HashMap::new()
     };
-    let mut texts = Vec::with_capacity(layouts.len());
+    let mut texts: Vec<String> = Vec::with_capacity(layouts.len());
     let mut total_bytes = 0_usize;
+    let mut pending_tail: Option<String> = None;
     for (position, layout) in layouts.iter().enumerate() {
-        let text = assemble(&layout.pieces, &dropped, position);
+        let mut text = assemble(&layout.pieces, &dropped, position);
+        if options.markdown {
+            if let Some(tail) = pending_tail.take() {
+                if let Some((first, rest)) = text.split_once("\n\n") {
+                    if let Some(merged) = merge_page_continuation(&tail, first) {
+                        text = if rest.is_empty() {
+                            merged
+                        } else {
+                            format!("{merged}\n\n{rest}")
+                        };
+                    } else if let Some(last) = texts.last_mut() {
+                        last.push_str("\n\n");
+                        last.push_str(&tail);
+                    }
+                } else if let Some(merged) = merge_page_continuation(&tail, &text) {
+                    text = merged;
+                } else if let Some(last) = texts.last_mut() {
+                    last.push_str("\n\n");
+                    last.push_str(&tail);
+                }
+            }
+            if let Some((tail, prefix)) = take_continuation_tail(&text) {
+                if !prefix.is_empty() {
+                    total_bytes = total_bytes.saturating_add(prefix.len());
+                    if total_bytes > limits.max_text_bytes {
+                        return Err(Failure::limit("text bytes exceed limit"));
+                    }
+                    texts.push(prefix);
+                }
+                pending_tail = Some(tail);
+                continue;
+            }
+        }
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
         }
         texts.push(text);
+    }
+    if let Some(tail) = pending_tail {
+        if let Some(last) = texts.last_mut() {
+            last.push_str("\n\n");
+            last.push_str(&tail);
+        } else {
+            texts.push(tail);
+        }
     }
     Ok(texts)
 }
@@ -1223,7 +1375,7 @@ pub(crate) fn document_tables(
         let Some(page) = pages.get(position) else {
             continue;
         };
-        let layout = single_page(&document, page, limits, &mut session, mode);
+        let layout = single_page(&document, page, position, &[], limits, &mut session, mode);
         for mut table in layout.tables {
             table.page_index = u32::try_from(position).unwrap_or(u32::MAX);
             total_bytes = table
@@ -1260,6 +1412,7 @@ mod tests {
             },
             direction: (1.0, 0.0),
             bold: false,
+            italic: false,
         }
     }
 
@@ -1272,6 +1425,7 @@ mod tests {
             },
             direction,
             bold: false,
+            italic: false,
         }
     }
 
@@ -1402,6 +1556,7 @@ mod tests {
                 },
                 direction: (f64::NAN, 0.0),
                 bold: false,
+                italic: false,
             },
         ];
         assert_eq!(page_text(&runs, 0), "");
@@ -1695,7 +1850,7 @@ mod structure_tests {
         assert_eq!(tables[0].cells.len(), 9);
         assert_eq!(cell(&tables[0], 2, 0).text, "Areia");
         let markdown = pages_of(&bytes, MARKDOWN);
-        assert!(markdown[0].ends_with("| Areia | 4 | 32,00 |\n\nObservacoes"));
+        assert!(markdown[0].ends_with("| Areia | 4 | 32,00 |\n\n**Observacoes**"));
         let mut large = borderless(
             &[
                 ("Item", "Qtd", "Valor"),
@@ -1764,7 +1919,9 @@ mod structure_tests {
         let table = page_text.find("| Item | Valor |").unwrap();
         let outro = page_text.find("Os valores").unwrap();
         assert!(intro < table && table < outro, "{page_text}");
-        assert!(page_text.contains("Introducao ao termo de referencia desta compra.\nO quadro"));
+        assert!(page_text.contains(
+            "Introducao ao termo de referencia desta compra. O quadro abaixo lista os itens previstos."
+        ));
         assert!(page_text.contains("| Areia | 8,00 |\n\nOs valores incluem tributos."));
         let plain = pages_of(&bytes, PLAIN);
         assert!(plain[0].contains("Item Valor\nCimento 12,50\nAreia 8,00\n\nOs valores"));

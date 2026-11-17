@@ -256,6 +256,46 @@ const buildIncrementalUpdate = async (): Promise<Uint8Array> => {
   return updated.save();
 };
 
+const buildMarkdownBasics = async (): Promise<Uint8Array> => {
+  const document = await PDFDocument.create();
+  stampMetadata(document);
+  const regular = await document.embedFont(StandardFonts.Helvetica);
+  const bold = await document.embedFont(StandardFonts.HelveticaBold);
+  const oblique = await document.embedFont(StandardFonts.HelveticaOblique);
+  const page = document.addPage(PAGE_SIZE);
+  page.drawText("1. INFORMAÇÕES GERAIS", { x: 72, y: 720, size: 14, font: bold });
+  page.drawText("Texto de corpo com destaque ", { x: 72, y: 690, size: 11, font: regular });
+  page.drawText("CONCORRÊNCIA", { x: 248, y: 690, size: 11, font: bold });
+  page.drawText(" aberta.", { x: 356, y: 690, size: 11, font: regular });
+  page.drawText("• primeiro item", { x: 72, y: 660, size: 11, font: regular });
+  page.drawText("• segundo item", { x: 72, y: 642, size: 11, font: regular });
+  page.drawText("1.1. cláusula numerada permanece parágrafo.", {
+    x: 72,
+    y: 614,
+    size: 11,
+    font: oblique,
+  });
+  addLinkAnnotation(document, page, "https://signature-kit.dev/corpus/markdown-link", [
+    72,
+    520,
+    260,
+    540,
+  ]);
+  page.drawText("Link para documentação", { x: 72, y: 528, size: 11, font: regular });
+  for (let row = 0; row < 2; row += 1) {
+    for (let col = 0; col < 2; col += 1) {
+      const x = 72 + col * 160;
+      const y = 440 - row * 40;
+      page.drawRectangle({ x, y, width: 150, height: 28, borderWidth: 0.5 });
+    }
+  }
+  page.drawText("Item", { x: 78, y: 450, size: 10, font: bold });
+  page.drawText("Qtd", { x: 238, y: 450, size: 10, font: bold });
+  page.drawText("Areia", { x: 78, y: 410, size: 10, font: regular });
+  page.drawText("4", { x: 238, y: 410, size: 10, font: regular });
+  return document.save({ useObjectStreams: false });
+};
+
 const buildBrokenXref = async (): Promise<Uint8Array> => {
   const document = await PDFDocument.create();
   stampMetadata(document);
@@ -286,6 +326,7 @@ const main = async (): Promise<void> => {
   writeFixture("object-streams.pdf", await buildObjectStreams());
   writeFixture("incremental-update.pdf", await buildIncrementalUpdate());
   writeFixture("broken-xref.pdf", await buildBrokenXref());
+  writeFixture("markdown-basics.pdf", await buildMarkdownBasics());
   copyFileSync(icpSource, join(PDF_CORE_FIXTURES_DIR, "icp-signed.pdf"));
 };
 

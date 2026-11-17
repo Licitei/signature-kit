@@ -47,7 +47,7 @@ const pages = yield * core.text(pdf, { pageIndexes: [0, 1] });
 
 Text options:
 
-- `format`: `"text"` (default) or `"markdown"`. Markdown renders every detected table as a GFM table (`|` escaped, multi-line cells joined with `<br>`, merged cells left empty after their first slot); headings stay plain lines.
+- `format`: `"text"` (default) or `"markdown"`. Markdown reflows wrapped lines inside a block, joins end-of-line hyphenation, infers headings from size and numbering, emits bold and italic spans, structures bullet lists, maps link annotations to `[text](url)` when the rect overlaps the text, and renders every detected table as a GFM table (`|` escaped, multi-line cells joined with `<br>`, merged cells left empty after their first slot).
 - `dropRunningHeaders` (default `true`): lines repeated in the top or bottom 10% of at least half of the selected pages (digits normalised, so `Página 3 de 79` matches `Página 4 de 79`) are dropped, so sentences continue across page breaks. When the repeated line is identical on every page (a fixed address, say) the first page keeps one copy; when its digits change (page numbers) it is dropped everywhere. It needs at least two selected pages. `inspect` is never affected.
 
 Ruled tables (cell borders drawn as strokes or thin filled rectangles, with the CTM applied; clipping-only paths and page-sized frames are ignored) are laid out cell by cell in both formats, so a bordered form reads row by row and a heading below the table never merges into its last cell. Borderless tables are detected from column alignment of the text runs and are structured in `markdown` and `tables` only; `text` keeps the row-major block layout for them.

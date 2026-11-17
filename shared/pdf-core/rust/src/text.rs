@@ -271,11 +271,25 @@ fn is_bold_name(name: &[u8]) -> bool {
         .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
 }
 
+fn is_italic_name(name: &[u8]) -> bool {
+    [
+        &b"Italic"[..],
+        b"italic",
+        b"Oblique",
+        b"oblique",
+        b"Ital",
+        b"ITAL",
+    ]
+    .iter()
+    .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
+}
+
 struct FontEntry {
     font: Font,
     ascent: f64,
     descent: f64,
     bold: bool,
+    italic: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -421,6 +435,7 @@ struct PendingRun {
     dir: (f64, f64),
     end: (f64, f64),
     bold: bool,
+    italic: bool,
 }
 
 impl Default for PendingRun {
@@ -433,6 +448,7 @@ impl Default for PendingRun {
             dir: (1.0, 0.0),
             end: (0.0, 0.0),
             bold: false,
+            italic: false,
         }
     }
 }
@@ -466,6 +482,7 @@ pub(crate) struct Run {
     pub item: TextItem,
     pub direction: (f64, f64),
     pub bold: bool,
+    pub italic: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -999,11 +1016,16 @@ impl Interpreter<'_, '_> {
         let font = Font::load(self.document, dict, self.limits).ok()?;
         let (ascent, descent) = self.vertical_metrics(dict);
         let bold = self.weight_is_bold(dict);
+        let italic = dict
+            .get(b"BaseFont")
+            .and_then(Object::as_name)
+            .is_some_and(is_italic_name);
         Some(Rc::new(FontEntry {
             font,
             ascent,
             descent,
             bold,
+            italic,
         }))
     }
 
@@ -1213,6 +1235,7 @@ impl Interpreter<'_, '_> {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
                         self.merge_bounds(bounds);
                         self.pending.bold &= entry.bold;
+                        self.pending.italic &= entry.italic;
                     }
                     self.pending.end = end;
                 } else {
@@ -1221,14 +1244,7 @@ impl Interpreter<'_, '_> {
                     }
                     if visible {
                         let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.begin(
-                            glyph_text,
-                            bounds,
-                            effective_size,
-                            direction,
-                            end,
-                            entry.bold,
-                        );
+                        self.begin(glyph_text, bounds, effective_size, direction, end, entry);
                     }
                 }
             }
@@ -1271,10 +1287,11 @@ impl Interpreter<'_, '_> {
         size: f64,
         direction: (f64, f64),
         end: (f64, f64),
-        bold: bool,
+        entry: &FontEntry,
     ) {
         self.pending.open = true;
-        self.pending.bold = bold;
+        self.pending.bold = entry.bold;
+        self.pending.italic = entry.italic;
         self.pending.text.clear();
         self.pending.text.push_str(text);
         self.pending.bounds = bounds;
@@ -1335,6 +1352,7 @@ impl Interpreter<'_, '_> {
             },
             direction: self.pending.dir,
             bold: self.pending.bold,
+            italic: self.pending.italic,
         });
         Ok(())
     }
