@@ -63,6 +63,7 @@
       ],
       "dependencies": [
         "@signature-kit/pdf",
+        "@signature-kit/pdf-core",
         "effect@4.1.0",
         "lucide-react",
         "react-pdf@11.0.0"

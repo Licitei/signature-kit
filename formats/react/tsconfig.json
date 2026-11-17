@@ -12,6 +12,9 @@
       "path": "../../shared/cms"
     },
     {
+      "path": "../../shared/pdf-core"
+    },
+    {
       "path": "../../signers/a1"
     }
   ]

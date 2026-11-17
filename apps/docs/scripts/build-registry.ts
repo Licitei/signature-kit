@@ -85,6 +85,7 @@ export const registry = {
       registryDependencies: ["badge", "button"],
       dependencies: [
         "@signature-kit/pdf",
+        "@signature-kit/pdf-core",
         `effect@${docsPackage.dependencies.effect}`,
         "lucide-react",
         `react-pdf@${docsPackage.dependencies["react-pdf"]}`,

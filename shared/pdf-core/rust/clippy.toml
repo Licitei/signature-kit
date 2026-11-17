@@ -1,0 +1,13 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+msrv = "1.92"
+cognitive-complexity-threshold = 25
+too-many-lines-threshold = 120
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+large-error-threshold = 128
+trivial-copy-size-limit = 16
+pass-by-value-size-limit = 64
+single-char-binding-names-threshold = 8

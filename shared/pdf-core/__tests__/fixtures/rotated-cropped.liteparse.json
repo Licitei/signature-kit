@@ -1,0 +1,32 @@
+{
+  "pages": [
+    {
+      "pageNum": 1,
+      "width": 720,
+      "height": 540,
+      "textItems": [
+        {
+          "text": "Página com rotação 90°",
+          "x": 344.864,
+          "y": 48,
+          "width": 16.366,
+          "height": 149.562
+        }
+      ]
+    },
+    {
+      "pageNum": 2,
+      "width": 720,
+      "height": 540,
+      "textItems": [
+        {
+          "text": "Página com rotação 270°",
+          "x": 358.77,
+          "y": 334.654,
+          "width": 16.366,
+          "height": 157.346
+        }
+      ]
+    }
+  ]
+}

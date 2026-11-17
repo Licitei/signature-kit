@@ -3,6 +3,7 @@ import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.brow
 import { degrees, PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, rgb } from "@cantoo/pdf-lib";
 import { pdfErrorMessages, PdfErrorCodeValue } from "@signature-kit/pdf/config";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { preparePdfVisualPreview } from "@signature-kit/pdf/workflow";
 import {
   liteParseWorkerBrowserLayer,
@@ -878,8 +879,9 @@ it("previews rubrics only on pages other than the main signature page", async ()
       }
     }).pipe(
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
           liteParseWorkerBrowserLayer,
+          pdfCoreBrowserLayer,
           pdfHandwritingBrowserLayer("600 64px 'Caveat Variable'"),
         ),
       ),

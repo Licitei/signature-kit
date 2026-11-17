@@ -1,6 +1,11 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { checkedExtensions, skippedSegments, skippedSuffixes } from "./config";
+import {
+  checkedExtensions,
+  packageToolingPathPattern,
+  skippedSegments,
+  skippedSuffixes,
+} from "./config";
 
 export const hasCheckedExtension = (path: string): boolean => {
   const dot = path.lastIndexOf(".");
@@ -11,7 +16,8 @@ export const shouldSkip = (path: string): boolean => {
   const parts = path.split("/");
   return (
     parts.some((part) => skippedSegments[part] === true) ||
-    skippedSuffixes.some((suffix) => path.endsWith(suffix))
+    skippedSuffixes.some((suffix) => path.endsWith(suffix)) ||
+    packageToolingPathPattern.test(path)
   );
 };
 

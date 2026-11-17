@@ -37,16 +37,18 @@ See the package READMEs for the exact export maps. Several packages are subpath-
 ## Quick start: A1 + PDF + ICP-Brasil + ITI
 
 ```sh
-bun add @signature-kit/a1 @signature-kit/pdf @signature-kit/iti @signature-kit/http effect
+bun add @signature-kit/a1 @signature-kit/pdf @signature-kit/pdf-core @signature-kit/iti @signature-kit/http effect
 ```
 
 ```ts
+import { NodeServices } from "@effect/platform-node";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { validatePdfConformance } from "@signature-kit/iti/conformance";
 import { validatePdfWithIti } from "@signature-kit/iti/remote";
 import { prepareAndSignPdf } from "@signature-kit/pdf/workflow";
-import { Effect, Redacted } from "effect";
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
+import { Effect, Layer, Redacted } from "effect";
 
 declare const pdf: Uint8Array;
 declare const pfx: Uint8Array;
@@ -79,6 +81,7 @@ const result = await Effect.runPromise(
     return { signed, localConformance, remoteValidation };
   }).pipe(
     Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make("secret") })),
+    Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
     Effect.provide(signatureHttpClientLive),
   ),
 );

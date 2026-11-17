@@ -1,20 +1,11 @@
 import { Context, Duration, Effect, Layer, Schema } from "effect";
 
-import {
-  PdfError,
-  PdfErrorCodeValue,
-  hasBoundedPdfLiteParseResult,
-  PdfLiteParseResultSchemaForPageCount,
-  PdfOperationValue,
-  PdfSchemaNameValue,
-} from "./config.js";
-import type { PdfTextBox } from "./config.js";
+import { PdfError, PdfErrorCodeValue, PdfOperationValue } from "./config.js";
 import {
   LiteParseWorkerRequestSchema,
   LiteParseWorkerSuccessSchema,
 } from "./liteparse-browser-protocol.js";
 import type { LiteParseWorkerRequest } from "./liteparse-browser-protocol.js";
-import { textBoxesFromLiteParseResult } from "./stamp.js";
 
 const LITEPARSE_TIMEOUT_MILLIS = 5000;
 const liteParseTimeoutMillisSchema = Schema.Number.check(
@@ -151,97 +142,8 @@ const parseLiteParseWorker = (
         code: PdfErrorCodeValue.pdfLoadFailed,
         retryable: false,
         operation: PdfOperationValue.parse,
-        reason:
-          request.screenshots === true
-            ? "LiteParse worker failed while rendering PDF pages."
-            : "LiteParse worker failed while parsing PDF text boxes.",
+        reason: "LiteParse worker failed while rendering PDF pages.",
       }),
-  });
-
-export const parsePdfTextBoxesBrowser = (
-  pdf: Uint8Array,
-  pageCount: number,
-): Effect.Effect<ReadonlyArray<ReadonlyArray<PdfTextBox>>, PdfError, LiteParseWorkerFactory> =>
-  Effect.gen(function* () {
-    const request = yield* Schema.decodeUnknownEffect(LiteParseWorkerRequestSchema)({
-      pdf,
-      pageCount,
-    }).pipe(
-      Effect.mapError(
-        (issue) =>
-          new PdfError({
-            code: PdfErrorCodeValue.invalidPdf,
-            retryable: false,
-            operation: PdfOperationValue.parse,
-            reason:
-              "LiteParse page count must be a finite non-negative integer within the supported limit.",
-            issueMessage: String(issue),
-          }),
-      ),
-    );
-    const workerFactory = yield* LiteParseWorkerFactory;
-    const parsedUnknown = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const session = yield* Effect.acquireRelease(
-          workerFactory.create().pipe(Effect.map(workerSession)),
-          (current) => Effect.sync(() => current.terminate()),
-        );
-        const timeoutMillis = yield* Schema.decodeUnknownEffect(liteParseTimeoutMillisSchema)(
-          workerFactory.timeoutMillis,
-        ).pipe(
-          Effect.mapError(
-            (issue) =>
-              new PdfError({
-                code: PdfErrorCodeValue.invalidPdf,
-                retryable: false,
-                operation: PdfOperationValue.parse,
-                reason:
-                  "LiteParse worker timeout must be finite, positive, and no longer than 5000ms.",
-                issueMessage: String(issue),
-              }),
-          ),
-        );
-        return yield* parseLiteParseWorker(session, request).pipe(
-          Effect.timeoutOrElse({
-            duration: Duration.millis(timeoutMillis),
-            orElse: () =>
-              Effect.fail(
-                new PdfError({
-                  code: PdfErrorCodeValue.pdfLoadFailed,
-                  retryable: true,
-                  operation: PdfOperationValue.parse,
-                  reason: "LiteParse WASM timed out while parsing PDF text boxes.",
-                }),
-              ),
-          }),
-        );
-      }),
-    );
-    if (!hasBoundedPdfLiteParseResult(parsedUnknown, request.pageCount)) {
-      return yield* new PdfError({
-        code: PdfErrorCodeValue.invalidPdf,
-        retryable: false,
-        operation: PdfOperationValue.parse,
-        schemaName: PdfSchemaNameValue.pdfLiteParseResult,
-        reason: "LiteParse WASM returned an invalid text-box result.",
-      });
-    }
-    const parsed = yield* Schema.decodeUnknownEffect(
-      PdfLiteParseResultSchemaForPageCount(request.pageCount),
-    )(parsedUnknown).pipe(
-      Effect.mapError(
-        (issue) =>
-          new PdfError({
-            code: PdfErrorCodeValue.invalidPdf,
-            retryable: false,
-            operation: PdfOperationValue.parse,
-            schemaName: PdfSchemaNameValue.pdfLiteParseResult,
-            reason: "LiteParse WASM returned an invalid text-box result.",
-            issueMessage: String(issue),
-          }),
-      ),
-    );
-    return textBoxesFromLiteParseResult(parsed);
   });
 
 const PdfPageScreenshotsSchema = Schema.Struct({
@@ -263,7 +165,6 @@ export const renderPdfPagesBrowser = (
     const request = yield* Schema.decodeUnknownEffect(LiteParseWorkerRequestSchema)({
       pdf,
       pageCount,
-      screenshots: true,
     }).pipe(
       Effect.mapError(
         (issue) =>

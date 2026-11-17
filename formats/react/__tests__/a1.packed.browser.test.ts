@@ -117,7 +117,10 @@ it("loads packed workers, retries a bad password, and signs a PDF", async () => 
         });
         const paths = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.String))(requests);
         expect(paths.some((path) => path.includes("a1.browser.worker"))).toBe(true);
-        expect(paths.some((path) => path.includes("liteparse-browser.worker"))).toBe(true);
+        expect(paths.some((path) => path.includes("pdf-core") && path.endsWith(".wasm"))).toBe(
+          true,
+        );
+        expect(paths.some((path) => path.includes("liteparse"))).toBe(false);
         const disposing = yield* Effect.forkChild(wait("disposed"));
         yield* Effect.yieldNow;
         frame.contentWindow?.postMessage({ action: "dispose" }, origin);

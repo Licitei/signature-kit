@@ -8,11 +8,18 @@ import {
   PDFString,
 } from "@cantoo/pdf-lib";
 import type { PDFObject, PDFPage } from "@cantoo/pdf-lib";
-import { Effect, Schema } from "effect";
+import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
+import type { PdfCoreInspection } from "@signature-kit/pdf-core/config";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { Effect, Match, Schema } from "effect";
 import { hasPdfByteRange } from "./byte-range.js";
-import { parsePdfTextBoxesBrowser } from "./liteparse-browser.js";
-import type { LiteParseWorkerFactory } from "./liteparse-browser.js";
-import { clampCoordinate, topLeftRectFromPdfCoordinateTuple, visiblePdfPageSize } from "./stamp.js";
+import {
+  clampCoordinate,
+  topLeftRectFromPdfCoordinateTuple,
+  topLeftRectFromPdfPageGeometry,
+  visiblePdfPageSize,
+  visiblePdfPageSizeFromGeometry,
+} from "./stamp.js";
 import {
   PdfError,
   PdfErrorCodeValue,
@@ -146,26 +153,6 @@ const rectForAnchorBox = (
   };
 };
 
-const pdfPagesFromBytes = (
-  pdf: Uint8Array,
-): Effect.Effect<ReadonlyArray<PdfSignaturePage>, PdfError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const pdfDoc = await PDFDocument.load(pdf);
-      return pdfDoc.getPages().map((page, index) => {
-        const size = visiblePdfPageSize(page);
-        return { index, width: size.width, height: size.height };
-      });
-    },
-    catch: () =>
-      new PdfError({
-        code: PdfErrorCodeValue.invalidPdf,
-        retryable: false,
-        operation: PdfOperationValue.findTextAnchors,
-        reason: "Failed to load PDF pages for text-anchor placement.",
-      }),
-  });
-
 type ResolvedAnchorGeometry = {
   readonly pageTextBoxes: ReadonlyArray<{
     readonly page: PdfSignaturePage;
@@ -173,7 +160,12 @@ type ResolvedAnchorGeometry = {
   }>;
 };
 
-type PdfTextAnchorSearchWithTextBoxes = PdfTextAnchorSearchInput & {
+type PdfTextAnchorSearchWithGeometry = Omit<
+  PdfTextAnchorSearchInput,
+  "matchers" | "pages" | "textBoxes"
+> & {
+  readonly matchers: ReadonlyArray<PdfContentAnchorMatcher>;
+  readonly pages: ReadonlyArray<PdfSignaturePage>;
   readonly textBoxes: ReadonlyArray<ReadonlyArray<PdfTextBox>>;
 };
 
@@ -244,109 +236,156 @@ const resolvedAnchorGeometry = (
   return Effect.succeed({ pageTextBoxes });
 };
 
-const resolveAnchorGeometry = (
-  input: PdfTextAnchorSearchInput,
-): Effect.Effect<ResolvedAnchorGeometry, PdfError, LiteParseWorkerFactory> => {
-  const resolveTextBoxes = (
-    pages: ReadonlyArray<PdfSignaturePage>,
-  ): Effect.Effect<ResolvedAnchorGeometry, PdfError, LiteParseWorkerFactory> => {
-    if (input.textBoxes !== undefined) {
-      return resolvedAnchorGeometry(pages, input.textBoxes);
-    }
-    if (input.pdf !== undefined) {
-      return parsePdfTextBoxesBrowser(input.pdf, pages.length).pipe(
-        Effect.flatMap((textBoxes) => resolvedAnchorGeometry(pages, textBoxes)),
-      );
-    }
-    return Effect.fail(
-      new PdfError({
-        code: PdfErrorCodeValue.invalidBuilderInput,
-        retryable: false,
-        operation: PdfOperationValue.findTextAnchors,
-        reason:
-          "Text-anchor search requires either textBoxes or pdf bytes that LiteParse can read.",
-      }),
-    );
-  };
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
 
-  if (input.pages !== undefined) return resolveTextBoxes(input.pages);
-  if (input.pdf !== undefined)
-    return pdfPagesFromBytes(input.pdf).pipe(Effect.flatMap(resolveTextBoxes));
-  return Effect.fail(
-    new PdfError({
+const textBoxesFromInspection = (
+  inspection: PdfCoreInspection,
+  pageCount: number,
+): ReadonlyArray<ReadonlyArray<PdfTextBox>> => {
+  const textBoxes: Array<ReadonlyArray<PdfTextBox>> = Array.from({ length: pageCount }, () => []);
+  for (const textPage of inspection.text) {
+    const geometry = inspection.pages[textPage.pageIndex];
+    if (geometry === undefined || textPage.pageIndex >= pageCount) continue;
+    const bytes = utf8Encoder.encode(textPage.text);
+    const isAscii = bytes.length === textPage.text.length;
+    const boxes: Array<PdfTextBox> = [];
+    for (let item = 0; item + 1 < textPage.offsets.length; item += 1) {
+      const start = textPage.offsets[item] ?? 0;
+      const end = textPage.offsets[item + 1] ?? start;
+      const text = isAscii
+        ? textPage.text.slice(start, end)
+        : utf8Decoder.decode(bytes.subarray(start, end));
+      if (text.trim().length === 0) continue;
+      const at = item * 5;
+      const rect = topLeftRectFromPdfPageGeometry(
+        [
+          textPage.rects[at] ?? 0,
+          textPage.rects[at + 1] ?? 0,
+          textPage.rects[at + 2] ?? 0,
+          textPage.rects[at + 3] ?? 0,
+        ],
+        geometry,
+      );
+      boxes.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height, text });
+    }
+    textBoxes[textPage.pageIndex] = boxes;
+  }
+  return textBoxes;
+};
+
+const linkAnchorBoxes = (
+  inspection: PdfCoreInspection,
+  uris: ReadonlySet<string>,
+): ReadonlyArray<{ readonly page: PdfSignaturePage; readonly box: PdfTextBox }> =>
+  inspection.links.flatMap((link) => {
+    const geometry = inspection.pages[link.pageIndex];
+    if (geometry === undefined || !uris.has(link.uri)) return [];
+    const size = visiblePdfPageSizeFromGeometry(geometry);
+    return [
+      {
+        page: { index: link.pageIndex, width: size.width, height: size.height },
+        box: topLeftRectFromPdfPageGeometry(link.rect, geometry),
+      },
+    ];
+  });
+
+const emptyInspection: PdfCoreInspection = { pages: [], links: [], text: [] };
+
+const inspectPdfForAnchors = Effect.fn(function* (
+  pdf: Uint8Array | undefined,
+  options: { readonly text: boolean; readonly links: boolean },
+  needsPages: boolean,
+) {
+  if (pdf === undefined) {
+    return yield* new PdfError({
       code: PdfErrorCodeValue.invalidBuilderInput,
       retryable: false,
       operation: PdfOperationValue.findTextAnchors,
-      reason: "Text-anchor search requires either pages or pdf bytes.",
-    }),
-  );
-};
-
-const contentAnchorRects = (
-  input: PdfTextAnchorSearchInput,
-): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, LiteParseWorkerFactory> => {
-  const matchers = input.matchers.filter(isContentAnchorMatcher);
-  if (matchers.length === 0) return Effect.succeed([]);
-  return resolveAnchorGeometry(input).pipe(
-    Effect.map(({ pageTextBoxes }) =>
-      pageTextBoxes.flatMap(({ page, textBoxes }) =>
-        textBoxes.flatMap((box) =>
-          boxMatches(box, matchers) ? [rectForAnchorBox(page, box, input)] : [],
-        ),
-      ),
-    ),
-  );
-};
-
-const linkAnchorRects = (
-  input: PdfTextAnchorSearchInput,
-): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError> => {
-  const uris = linkAnchorUris(input.matchers);
-  if (uris.size === 0) return Effect.succeed([]);
-  if (input.pdf === undefined) {
-    return Effect.fail(
-      new PdfError({
-        code: PdfErrorCodeValue.invalidBuilderInput,
-        retryable: false,
-        operation: PdfOperationValue.findTextAnchors,
-        reason: "Link anchor search requires pdf bytes.",
-      }),
-    );
+      reason: options.links
+        ? "Link anchor search requires pdf bytes."
+        : needsPages
+          ? "Text-anchor search requires either pages or pdf bytes."
+          : "Text-anchor search requires either textBoxes or pdf bytes.",
+    });
   }
-  return loadLinkAnchorDocument(input.pdf).pipe(
-    Effect.map((document) =>
-      pdfLinkAnchors(document, uris).map(({ page, box }) => rectForAnchorBox(page, box, input)),
+  const core = yield* PdfCore;
+  return yield* core.inspect(pdf, options).pipe(
+    Effect.mapError(
+      (error) =>
+        new PdfError({
+          code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.wasmLoadFailed, () => PdfErrorCodeValue.pdfLoadFailed),
+            Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+          ),
+          retryable: false,
+          operation: PdfOperationValue.findTextAnchors,
+          reason: error.reason ?? "The PDF core could not inspect the document for text anchors.",
+        }),
     ),
   );
-};
+});
 
 export function findPdfTextAnchors(
-  input: PdfTextAnchorSearchWithTextBoxes,
+  input: PdfTextAnchorSearchWithGeometry,
 ): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError>;
 export function findPdfTextAnchors(
   input: PdfTextAnchorSearchInput,
-): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, LiteParseWorkerFactory>;
+): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, PdfCore>;
 export function findPdfTextAnchors(
   input: PdfTextAnchorSearchInput,
-): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, LiteParseWorkerFactory> {
-  return Schema.decodeUnknownEffect(PdfTextAnchorSearchInputSchema)(input).pipe(
-    Effect.mapError(
-      (issue) =>
-        new PdfError({
-          code: PdfErrorCodeValue.invalidBuilderInput,
-          retryable: false,
-          operation: PdfOperationValue.findTextAnchors,
-          schemaName: PdfSchemaNameValue.pdfTextAnchorSearchInput,
-          reason: "PDF text-anchor search input failed schema validation.",
-          issueMessage: String(issue),
-        }),
-    ),
-    Effect.flatMap((valid) =>
-      Effect.all([contentAnchorRects(valid), linkAnchorRects(valid)]).pipe(
-        Effect.map(([contentRects, linkRects]) => [...contentRects, ...linkRects]),
+): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, PdfCore> {
+  return Effect.gen(function* () {
+    const valid = yield* Schema.decodeUnknownEffect(PdfTextAnchorSearchInputSchema)(input).pipe(
+      Effect.mapError(
+        (issue) =>
+          new PdfError({
+            code: PdfErrorCodeValue.invalidBuilderInput,
+            retryable: false,
+            operation: PdfOperationValue.findTextAnchors,
+            schemaName: PdfSchemaNameValue.pdfTextAnchorSearchInput,
+            reason: "PDF text-anchor search input failed schema validation.",
+            issueMessage: String(issue),
+          }),
       ),
-    ),
-  );
+    );
+    const contentMatchers = valid.matchers.filter(isContentAnchorMatcher);
+    const linkUris = linkAnchorUris(valid.matchers);
+    const needsText = contentMatchers.length > 0 && valid.textBoxes === undefined;
+    const needsLinks = linkUris.size > 0;
+    const needsPages = contentMatchers.length > 0 && valid.pages === undefined;
+    const inspection =
+      needsText || needsLinks || needsPages
+        ? yield* inspectPdfForAnchors(valid.pdf, { text: needsText, links: needsLinks }, needsPages)
+        : emptyInspection;
+
+    const contentRects: Array<PdfSignatureRect> = [];
+    if (contentMatchers.length > 0) {
+      const pages =
+        valid.pages ??
+        inspection.pages.map((page, index) => ({
+          index,
+          ...visiblePdfPageSizeFromGeometry(page),
+        }));
+      const pageCount = pages.reduce((count, page) => Math.max(count, page.index + 1), 0);
+      const { pageTextBoxes } = yield* resolvedAnchorGeometry(
+        pages,
+        valid.textBoxes ?? textBoxesFromInspection(inspection, pageCount),
+      );
+      for (const { page, textBoxes } of pageTextBoxes) {
+        for (const box of textBoxes) {
+          if (boxMatches(box, contentMatchers))
+            contentRects.push(rectForAnchorBox(page, box, valid));
+        }
+      }
+    }
+    const linkRects = needsLinks
+      ? linkAnchorBoxes(inspection, linkUris).map(({ page, box }) =>
+          rectForAnchorBox(page, box, valid),
+        )
+      : [];
+    return [...contentRects, ...linkRects];
+  });
 }
 
 export const removePdfLinkAnchors = (

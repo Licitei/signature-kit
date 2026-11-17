@@ -1,0 +1,129 @@
+# @signature-kit/pdf-core
+
+In-house PDF engine compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text without any third-party PDF parser. The Rust crate lives in `rust/` and has zero external dependencies; TypeScript talks to it through a tiny C ABI (no wasm-bindgen).
+
+## Install
+
+```sh
+bun add @signature-kit/pdf-core effect
+```
+
+## Public surface
+
+- `@signature-kit/pdf-core/config` — `PdfCoreError`, `PdfCoreErrorCodeValue`, `pdfCoreErrorMessages`, and the option and inspection schemas.
+- `@signature-kit/pdf-core/pdf-core` — the `PdfCore` service, `makePdfCore(module)`, and `pdfCoreLayer(module)`.
+- `@signature-kit/pdf-core/browser` — `pdfCoreBrowserLayer`: fetches `pdf-core.wasm` next to the module, compiles it with `WebAssembly.compileStreaming`, and falls back to `WebAssembly.compile` when the response is not served as `application/wasm`.
+- `@signature-kit/pdf-core/file` — `pdfCoreFileLayer`: reads `pdf-core.wasm` through the Effect `FileSystem` and `Path` services. The caller provides the Node or Bun platform layer.
+- `@signature-kit/pdf-core/pdf-core.wasm` — the compiled module for bundlers and custom loaders.
+
+`WebAssembly`, `fetch`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
+
+## Example
+
+```ts
+import { NodeServices } from "@effect/platform-node";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
+import { Effect, Layer } from "effect";
+
+declare const pdf: Uint8Array;
+
+const program = Effect.gen(function* () {
+  const core = yield* PdfCore;
+  const inspection = yield* core.inspect(pdf, { text: true, links: true });
+  return inspection.pages.map((page) => page.mediaBox);
+});
+
+program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))));
+```
+
+`text` returns one reading-order plain-text string per page (pdftotext style). It clusters positioned runs into lines, splits lines into cells on wide gaps, groups cells into blocks, orders blocks with an XY-cut (columns are read column by column, table rows row by row), honours `/Rotate` and sideways text, and ignores content streams that cannot show text:
+
+```ts
+const pages = yield * core.text(pdf, { pageIndexes: [0, 1] });
+```
+
+`pageIndexes` is optional; omitted, every page is returned. Pages whose content cannot be decoded come back as empty strings instead of failing the document.
+
+Text options:
+
+- `format`: `"text"` (default) or `"markdown"`. Markdown renders every detected table as a GFM table (`|` escaped, multi-line cells joined with `<br>`, merged cells left empty after their first slot); headings stay plain lines.
+- `dropRunningHeaders` (default `true`): lines repeated in the top or bottom 10% of at least half of the selected pages (digits normalised, so `Página 3 de 79` matches `Página 4 de 79`) are dropped, so sentences continue across page breaks. When the repeated line is identical on every page (a fixed address, say) the first page keeps one copy; when its digits change (page numbers) it is dropped everywhere. It needs at least two selected pages. `inspect` is never affected.
+
+Ruled tables (cell borders drawn as strokes or thin filled rectangles, with the CTM applied; clipping-only paths and page-sized frames are ignored) are laid out cell by cell in both formats, so a bordered form reads row by row and a heading below the table never merges into its last cell. Borderless tables are detected from column alignment of the text runs and are structured in `markdown` and `tables` only; `text` keeps the row-major block layout for them.
+
+`tables` returns the structure of every table:
+
+```ts
+const tables = yield * core.tables(pdf, { pageIndexes: [0] });
+// [{ pageIndex, bbox, rows, cols, cells: [{ row, col, rowSpan, colSpan, bbox, text }] }]
+```
+
+`bbox` values are in page user space like `inspect` rects; `row`/`col` follow the visible reading orientation (top to bottom, left to right) even on rotated pages. Merged cells appear once with `rowSpan`/`colSpan` greater than 1.
+
+Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully outside a Form XObject `/BBox` are skipped, and text render modes 4-7 (clip) still extract text, in `text`, `markdown` and `tables`.
+
+`inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), and `offsets` (a `Uint32Array` of `items + 1` UTF-8 byte offsets into `text`). Results are copied out of wasm memory before the wasm buffers are released.
+
+## Errors
+
+Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.INVALID_PDF`, `pdfCore.ENCRYPTED_PDF`, `pdfCore.LIMIT_EXCEEDED`, `pdfCore.UNSUPPORTED_FEATURE`, and `pdfCore.INVALID_OPTIONS`. `pdfCoreErrorMessages` carries `en-US` and `pt-BR` copy.
+
+## Wasm ABI
+
+The module exports `memory` and five functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
+
+| Export                                                                          | Contract                                                                              |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `pdf_core_alloc(len) -> ptr`                                                    | 8-byte aligned block of `len` bytes, or `0` when out of memory.                       |
+| `pdf_core_free(ptr, len)`                                                       | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
+| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr` | Returns a result block, or `0` when out of memory.                                    |
+| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`    | Returns a text result block, or `0` when out of memory.                               |
+| `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`  | Returns a tables result block, or `0` when out of memory.                             |
+
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
+
+### Result block
+
+All integers are little-endian. The block is 8-byte aligned and `total_len` is the length to pass to `pdf_core_free`.
+
+| Offset | Type  | Field                                                                                  |
+| ------ | ----- | -------------------------------------------------------------------------------------- |
+| 0      | `u32` | `total_len` — header plus payload                                                      |
+| 4      | `u32` | `status` — `0` ok, `1` invalid PDF, `2` encrypted, `3` limit exceeded, `4` unsupported |
+| 8      | bytes | payload (UTF-8 reason when `status != 0`)                                              |
+
+### Payload (version 1)
+
+Payload offsets are relative to the payload start, so every float section stays 8-byte aligned in memory and can be viewed as a `Float64Array` without copying. Every section is padded with zero bytes to a multiple of 8.
+
+Header (32 bytes), all `u32`: `magic` (`0x43464450`, "PDFC"), `version` (`1`), `page_count`, `link_count`, `text_page_count`, `pages_offset`, `links_offset`, `text_offset`.
+
+Pages — `page_count` records of 72 bytes: `media_box` (4 × `f64`), `crop_box` (4 × `f64`), `rotate` (`i32`), 4 bytes padding.
+
+Links — `link_count` records of 48 bytes: `rect` (4 × `f64`), `page_index` (`u32`), `uri_offset` (`u32`), `uri_len` (`u32`), 4 bytes padding; then one UTF-8 blob holding every URI (`uri_offset` is relative to the blob start), padded to 8.
+
+Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`page_index`, `item_count`, `text_len` — all `u32` — and 4 bytes padding); `item_count` × 5 `f64` (`x0`, `y0`, `x1`, `y1`, `font_size`); `item_count + 1` `u32` offsets into the text blob, padded to 8; the UTF-8 text blob of `text_len` bytes, padded to 8.
+
+### Text payload (version 1)
+
+`pdf_core_text` uses the same result block and status codes. `flags` bits 2 (page indexes), 3 (markdown) and 4 (drop running headers) apply. The payload is little-endian and 8-byte aligned: `magic` (`0x58544450`, "PDTX"), `version` (`1`), `page_count`, `text_len` — all `u32`; then `page_count + 1` `u32` offsets into the blob, padded to 8; then the UTF-8 blob of `text_len` bytes, padded to 8. Page `n` is `blob[offsets[n]..offsets[n + 1]]`.
+
+### Tables payload (version 1)
+
+`pdf_core_tables` uses the same result block and status codes; only `flags` bit 2 applies. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`1`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 48-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`) and `bbox` (4 × `f64`) — followed by its cells in row-major order, 56 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob). The UTF-8 text blob follows the last record and is padded to 8.
+
+## Development
+
+```sh
+cd shared/pdf-core/rust
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target) and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1 MiB.
+
+## License
+
+MIT. See `LICENSE`.

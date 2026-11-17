@@ -1,0 +1,122 @@
+{
+  "name": "@signature-kit/pdf-core",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Licitei/signature-kit.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    },
+    "./pdf-core": {
+      "types": "./dist/pdf-core.d.ts",
+      "import": "./dist/pdf-core.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
+    "./file": {
+      "types": "./dist/file.d.ts",
+      "import": "./dist/file.js"
+    },
+    "./pdf-core.wasm": "./dist/pdf-core.wasm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "effect": "4.1.0"
+  },
+  "devDependencies": {
+    "@cantoo/pdf-lib": "2.11.1",
+    "@llamaindex/liteparse-wasm": "^2.16.0",
+    "@react-pdf/renderer": "4.9.0",
+    "react": "19.3.1"
+  },
+  "nx": {
+    "targets": {
+      "build-wasm": {
+        "executor": "nx:run-commands",
+        "cache": true,
+        "inputs": [
+          "{projectRoot}/rust/Cargo.toml",
+          "{projectRoot}/rust/Cargo.lock",
+          "{projectRoot}/rust/build.rs",
+          "{projectRoot}/rust/data/**/*",
+          "{projectRoot}/rust/src/**/*",
+          {
+            "runtime": "rustc --version"
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/dist/pdf-core.wasm"
+        ],
+        "options": {
+          "commands": [
+            "cargo build --release --target wasm32-unknown-unknown --manifest-path rust/Cargo.toml",
+            "mkdir -p dist",
+            "cp rust/target/wasm32-unknown-unknown/release/signature_kit_pdf_core.wasm dist/pdf-core.wasm"
+          ],
+          "parallel": false,
+          "cwd": "{projectRoot}"
+        }
+      },
+      "build": {
+        "dependsOn": [
+          "...",
+          "build-wasm"
+        ]
+      },
+      "rust-check": {
+        "executor": "nx:run-commands",
+        "cache": false,
+        "options": {
+          "commands": [
+            "cargo fmt --check",
+            "cargo clippy --all-targets --all-features -- -D warnings",
+            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps"
+          ],
+          "parallel": false,
+          "cwd": "{projectRoot}/rust"
+        }
+      },
+      "rust-test": {
+        "executor": "nx:run-commands",
+        "cache": false,
+        "options": {
+          "command": "cargo test",
+          "cwd": "{projectRoot}/rust"
+        }
+      },
+      "npm-pack": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "bun pm pack --dry-run",
+          "cwd": "{projectRoot}"
+        }
+      },
+      "npm-publish": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "npm publish --access public",
+          "cwd": "{projectRoot}"
+        }
+      }
+    }
+  }
+}

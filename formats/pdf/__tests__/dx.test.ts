@@ -9,10 +9,10 @@ import { signPdf } from "@signature-kit/pdf/sign";
 import { deriveSignerInitials, stampPdfRubric } from "@signature-kit/pdf/stamp";
 import { verifyPdf } from "@signature-kit/pdf/verify";
 import { prepareAndSignPdf } from "@signature-kit/pdf/workflow";
-import { liteParseWorkerBrowserLayer } from "../src/liteparse-browser";
 import { Effect, Layer, Redacted, Result } from "effect";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 import { extractPdfSignature } from "../src/byte-range";
 import { addSignaturePlaceholder } from "../src/placeholder";
 
@@ -236,10 +236,7 @@ describe("PDF DX helpers", () => {
             signing: { policy: "pades-icp-brasil", reason: "DX workflow re-sign" },
           }).pipe(
             Effect.provide(
-              Layer.merge(
-                a1SignaturesLayer({ pfx, password: PASSWORD }),
-                liteParseWorkerBrowserLayer,
-              ),
+              Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), pdfCoreTestLayer),
             ),
           ),
         );
@@ -279,7 +276,7 @@ describe("PDF DX helpers", () => {
         signing: { policy: "pades-icp-brasil", reason: "DX workflow" },
       }).pipe(
         Effect.provide(
-          Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), liteParseWorkerBrowserLayer),
+          Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), pdfCoreTestLayer),
         ),
       );
       const verification = yield* verifyPdf({ pdf: signed });
@@ -319,7 +316,7 @@ describe("PDF DX helpers", () => {
         signing: { policy: "pades-icp-brasil", reason: "DX workflow with rubrics" },
       }).pipe(
         Effect.provide(
-          Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), liteParseWorkerBrowserLayer),
+          Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), pdfCoreTestLayer),
         ),
       );
       const verification = yield* verifyPdf({ pdf: signed });

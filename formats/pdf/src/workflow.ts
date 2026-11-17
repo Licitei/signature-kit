@@ -1,9 +1,9 @@
 import { PDFDocument, type PDFPage } from "@cantoo/pdf-lib";
 import type { CmsError } from "@signature-kit/cms/config";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import type { SignatureKitError, Signatures } from "@signature-kit/signatures";
 import { signPdf as signPdfDocument } from "./sign.js";
 import { findPdfTextAnchors, removePdfLinkAnchors } from "./anchors.js";
-import type { LiteParseWorkerFactory } from "./liteparse-browser.js";
 import { Effect, Schema } from "effect";
 import {
   autoPlacePdfSignatureField,
@@ -772,7 +772,7 @@ const DEFAULT_PREPARE_AND_SIGN_STAMP_SIZE = { width: 180, height: 54 };
 const prepareAndSignStampRects = (
   input: PdfPrepareAndSignInput,
   pages: ReadonlyArray<PdfSignaturePage>,
-): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, LiteParseWorkerFactory> => {
+): Effect.Effect<ReadonlyArray<PdfSignatureRect>, PdfError, PdfCore> => {
   const stampRects = input.stampRects ?? [];
   if (stampRects.length > 0) {
     return validateSignatureRectsForLoadedPages(pages, stampRects);
@@ -975,16 +975,12 @@ const preparePdfVisibleDocument = (input: PdfPrepareAndSignInput) =>
 
 export const preparePdfVisualPreview = (
   input: PdfPrepareAndSignInput,
-): Effect.Effect<Uint8Array, PdfError, LiteParseWorkerFactory> =>
+): Effect.Effect<Uint8Array, PdfError, PdfCore> =>
   preparePdfVisibleDocument(input).pipe(Effect.map((prepared) => prepared.pdf));
 
 export const prepareAndSignPdf = (
   input: PdfPrepareAndSignInput,
-): Effect.Effect<
-  Uint8Array,
-  PdfError | CmsError | SignatureKitError,
-  Signatures | LiteParseWorkerFactory
-> =>
+): Effect.Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures | PdfCore> =>
   preparePdfVisibleDocument(input).pipe(
     Effect.flatMap(({ pdf, widgetRect, signatureRect, signing }) =>
       signPdfDocument({

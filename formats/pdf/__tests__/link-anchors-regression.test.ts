@@ -2,7 +2,7 @@ import { PDFDocument, PDFHexString, PDFString } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { findPdfTextAnchors, removePdfLinkAnchors } from "../src/anchors";
-import { liteParseWorkerBrowserLayer } from "../src/liteparse-browser";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const ANCHOR_URI = "https://example.com/#signature-anchor";
 const OTHER_URI = "https://example.com/other";
@@ -65,7 +65,7 @@ describe("PDF link anchors", () => {
       });
 
       expect(anchors).toStrictEqual([{ pageIndex: 1, x: 40, y: 100, width: 80, height: 20 }]);
-    }).pipe(Effect.provide(liteParseWorkerBrowserLayer)),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("matches hex-encoded URIs and indirect actions", () =>
@@ -90,7 +90,7 @@ describe("PDF link anchors", () => {
       });
 
       expect(anchors).toStrictEqual([{ pageIndex: 0, x: 40, y: 70, width: 80, height: 20 }]);
-    }).pipe(Effect.provide(liteParseWorkerBrowserLayer)),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("maps link rectangles through the visible crop box", () =>
@@ -114,7 +114,7 @@ describe("PDF link anchors", () => {
       });
 
       expect(anchors).toStrictEqual([{ pageIndex: 0, x: 40, y: 80, width: 80, height: 20 }]);
-    }).pipe(Effect.provide(liteParseWorkerBrowserLayer)),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("requires pdf bytes for link matchers", () =>
@@ -129,7 +129,7 @@ describe("PDF link anchors", () => {
       );
 
       expect(Result.isFailure(result)).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("removes only the matched link annotation", () =>
@@ -156,7 +156,7 @@ describe("PDF link anchors", () => {
       });
 
       expect(anchors).toStrictEqual([{ pageIndex: 0, x: 10, y: 50, width: 80, height: 20 }]);
-    }).pipe(Effect.provide(liteParseWorkerBrowserLayer)),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps the PDF untouched without link matchers", () =>

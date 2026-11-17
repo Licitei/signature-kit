@@ -50,6 +50,7 @@
         "@signature-kit/cms": "^0.2.1",
         "@signature-kit/i18n": "^0.1.0",
         "@signature-kit/pdf": "^0.5.0",
+        "@signature-kit/pdf-core": "^0.1.0",
         "@signature-kit/react": "^0.1.0",
         "@signature-kit/signatures": "^0.3.0",
         "@signature-kit/signing-domain": "0.0.1",
@@ -147,6 +148,7 @@
         "@llamaindex/liteparse-wasm": "^2.16.0",
         "@signature-kit/cms": "^0.2.1",
         "@signature-kit/i18n": "^0.1.0",
+        "@signature-kit/pdf-core": "^0.1.0",
         "@signature-kit/signatures": "^0.3.0",
         "effect": "4.1.0",
         "qrcode-generator": "^2.0.4",
@@ -163,6 +165,7 @@
         "@signature-kit/a1": "^0.4.0",
         "@signature-kit/cms": "^0.2.1",
         "@signature-kit/pdf": "^0.5.0",
+        "@signature-kit/pdf-core": "^0.1.0",
         "@signature-kit/signatures": "^0.3.0",
         "effect": "4.1.0",
       },
@@ -225,6 +228,19 @@
         "effect": "4.1.0",
       },
     },
+    "shared/pdf-core": {
+      "name": "@signature-kit/pdf-core",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "4.1.0",
+      },
+      "devDependencies": {
+        "@cantoo/pdf-lib": "2.11.1",
+        "@llamaindex/liteparse-wasm": "^2.16.0",
+        "@react-pdf/renderer": "4.9.0",
+        "react": "19.3.1",
+      },
+    },
     "signers/a1": {
       "name": "@signature-kit/a1",
       "version": "0.4.1",
@@ -242,7 +258,7 @@
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
-        "@signature-kit/signatures": "^0.2.0",
+        "@signature-kit/signatures": "^0.3.0",
         "alchemy": "2.0.0-beta.85",
         "effect": "4.1.0",
       },
@@ -253,7 +269,7 @@
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
-        "@signature-kit/signatures": "^0.2.0",
+        "@signature-kit/signatures": "^0.3.0",
         "alchemy": "2.0.0-beta.85",
         "effect": "4.1.0",
       },
@@ -264,7 +280,7 @@
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
-        "@signature-kit/signatures": "^0.2.0",
+        "@signature-kit/signatures": "^0.3.0",
         "alchemy": "2.0.0-beta.85",
         "effect": "4.1.0",
       },
@@ -275,7 +291,7 @@
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
-        "@signature-kit/signatures": "^0.2.0",
+        "@signature-kit/signatures": "^0.3.0",
         "alchemy": "2.0.0-beta.85",
         "effect": "4.1.0",
       },
@@ -286,7 +302,7 @@
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
-        "@signature-kit/signatures": "^0.2.0",
+        "@signature-kit/signatures": "^0.3.0",
         "alchemy": "2.0.0-beta.85",
         "effect": "4.1.0",
       },
@@ -1034,6 +1050,8 @@
     "@signature-kit/iti": ["@signature-kit/iti@workspace:validators/iti"],
 
     "@signature-kit/pdf": ["@signature-kit/pdf@workspace:formats/pdf"],
+
+    "@signature-kit/pdf-core": ["@signature-kit/pdf-core@workspace:shared/pdf-core"],
 
     "@signature-kit/react": ["@signature-kit/react@workspace:formats/react"],
 

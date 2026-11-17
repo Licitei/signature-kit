@@ -1,0 +1,161 @@
+use std::cmp::Ordering;
+
+include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuiltinEncoding {
+    WinAnsi,
+    Standard,
+    MacRoman,
+    MacExpert,
+    Symbol,
+    ZapfDingbats,
+    PdfDoc,
+    Custom,
+}
+
+impl BuiltinEncoding {
+    pub(crate) const COUNT: usize = 7;
+
+    pub(crate) const fn slot(self) -> Option<usize> {
+        match self {
+            Self::WinAnsi => Some(0),
+            Self::Standard => Some(1),
+            Self::MacRoman => Some(2),
+            Self::MacExpert => Some(3),
+            Self::Symbol => Some(4),
+            Self::ZapfDingbats => Some(5),
+            Self::PdfDoc => Some(6),
+            Self::Custom => None,
+        }
+    }
+
+    const fn table(self) -> Option<&'static [u16; 256]> {
+        match self {
+            Self::WinAnsi => Some(&ENCODING_WIN_ANSI),
+            Self::Standard => Some(&ENCODING_STANDARD),
+            Self::MacRoman => Some(&ENCODING_MAC_ROMAN),
+            Self::MacExpert => Some(&ENCODING_MAC_EXPERT),
+            Self::Symbol => Some(&ENCODING_SYMBOL),
+            Self::ZapfDingbats => Some(&ENCODING_ZAPF_DINGBATS),
+            Self::PdfDoc => Some(&ENCODING_PDF_DOC),
+            Self::Custom => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Standard14Font {
+    Courier,
+    CourierBold,
+    CourierBoldOblique,
+    CourierOblique,
+    Helvetica,
+    HelveticaBold,
+    HelveticaBoldOblique,
+    HelveticaOblique,
+    Symbol,
+    TimesBold,
+    TimesBoldItalic,
+    TimesItalic,
+    TimesRoman,
+    ZapfDingbats,
+}
+
+impl Standard14Font {
+    pub(crate) const fn widths(self) -> &'static [u16; 256] {
+        match self {
+            Self::Courier => &STANDARD14_COURIER,
+            Self::CourierBold => &STANDARD14_COURIER_BOLD,
+            Self::CourierBoldOblique => &STANDARD14_COURIER_BOLD_OBLIQUE,
+            Self::CourierOblique => &STANDARD14_COURIER_OBLIQUE,
+            Self::Helvetica => &STANDARD14_HELVETICA,
+            Self::HelveticaBold => &STANDARD14_HELVETICA_BOLD,
+            Self::HelveticaBoldOblique => &STANDARD14_HELVETICA_BOLD_OBLIQUE,
+            Self::HelveticaOblique => &STANDARD14_HELVETICA_OBLIQUE,
+            Self::Symbol => &STANDARD14_SYMBOL,
+            Self::TimesBold => &STANDARD14_TIMES_BOLD,
+            Self::TimesBoldItalic => &STANDARD14_TIMES_BOLD_ITALIC,
+            Self::TimesItalic => &STANDARD14_TIMES_ITALIC,
+            Self::TimesRoman => &STANDARD14_TIMES_ROMAN,
+            Self::ZapfDingbats => &STANDARD14_ZAPF_DINGBATS,
+        }
+    }
+}
+
+fn name_at(index: usize) -> Option<&'static str> {
+    let end = usize::from(*GLYPH_NAME_ENDS.get(index)?);
+    let start = index
+        .checked_sub(1)
+        .and_then(|previous| GLYPH_NAME_ENDS.get(previous))
+        .map_or(0, |start| usize::from(*start));
+    GLYPH_NAME_TEXT.get(start..end)
+}
+
+fn name_index(name: &str) -> Option<usize> {
+    let mut low = 0;
+    let mut high = GLYPH_NAME_ENDS.len();
+    while low < high {
+        let middle = low.midpoint(high);
+        match name_at(middle)?.cmp(name) {
+            Ordering::Equal => return Some(middle),
+            Ordering::Less => low = middle.checked_add(1)?,
+            Ordering::Greater => high = middle,
+        }
+    }
+    None
+}
+
+pub(crate) fn encoding_glyph_name(encoding: BuiltinEncoding, code: u8) -> &'static str {
+    encoding
+        .table()
+        .and_then(|table| table.get(usize::from(code)))
+        .and_then(|index| name_at(usize::from(*index)))
+        .unwrap_or_default()
+}
+
+pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u32]> {
+    let index = name_index(std::str::from_utf8(name).ok()?)?;
+    let start = usize::from(*AGL_STARTS.get(index)?);
+    let end = usize::from(*AGL_STARTS.get(index.checked_add(1)?)?);
+    AGL_CODEPOINTS
+        .get(start..end)
+        .filter(|codepoints| !codepoints.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glyph_names_are_sorted_and_unique() {
+        let names: Vec<_> = (0..GLYPH_NAME_ENDS.len()).filter_map(name_at).collect();
+        assert_eq!(names.len(), GLYPH_NAME_ENDS.len());
+        assert!(names.windows(2).all(|pair| matches!(pair, [a, b] if a < b)));
+    }
+
+    #[test]
+    fn agl_lookup_resolves_known_names() {
+        assert_eq!(lookup_agl(b"A"), Some(&[0x41][..]));
+        assert_eq!(lookup_agl(b"Euro"), Some(&[0x20AC][..]));
+        assert_eq!(lookup_agl(b"fi"), Some(&[0xFB01][..]));
+        assert_eq!(lookup_agl(b"nonexistentglyph"), None);
+        assert_eq!(lookup_agl(&[0xFF, 0xFE]), None);
+    }
+
+    #[test]
+    fn encodings_resolve_glyph_names() {
+        assert_eq!(encoding_glyph_name(BuiltinEncoding::WinAnsi, b'A'), "A");
+        assert_eq!(encoding_glyph_name(BuiltinEncoding::WinAnsi, 0x80), "Euro");
+        assert_eq!(encoding_glyph_name(BuiltinEncoding::Standard, 0xAE), "fi");
+        assert_eq!(encoding_glyph_name(BuiltinEncoding::WinAnsi, 0x00), "");
+        assert_eq!(encoding_glyph_name(BuiltinEncoding::Custom, b'A'), "");
+    }
+
+    #[test]
+    fn standard14_rows_follow_win_ansi_codes() {
+        assert_eq!(Standard14Font::Helvetica.widths()[usize::from(b'A')], 667);
+        assert_eq!(Standard14Font::TimesRoman.widths()[usize::from(b' ')], 250);
+        assert_eq!(Standard14Font::Courier.widths()[usize::from(b'A')], 600);
+    }
+}

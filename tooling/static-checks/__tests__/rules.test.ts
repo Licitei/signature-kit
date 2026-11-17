@@ -13,7 +13,7 @@ import { effectBoundaryChecks } from "../src/rules/effect-boundaries";
 import { observabilityCatalogChecks } from "../src/rules/observability-catalogs";
 import { configChecks } from "../src/rules/config";
 import { dependencyChecks } from "../src/rules/dependencies";
-import { hasCheckedExtension } from "../src/filesystem";
+import { hasCheckedExtension, shouldSkip } from "../src/filesystem";
 import {
   importDeclarationLineMap,
   runDeclarativeChecks,
@@ -713,6 +713,25 @@ export const ExampleProvider = () =>
         root,
       ),
     ).toBe(true);
+  });
+
+  it("skips package tooling directories but keeps library sources and tests", () => {
+    for (const path of [
+      "shared/pdf-core/scripts/generate-font-tables.ts",
+      "shared/pdf-core/scripts/generate-corpus.ts",
+      "formats/pdf/scripts/capture-liteparse-goldens.ts",
+      "/repo/formats/pdf/scripts/liteparse-node.ts",
+    ]) {
+      expect(shouldSkip(path)).toBe(true);
+    }
+    for (const path of [
+      "shared/pdf-core/src/pdf-core.ts",
+      "formats/pdf/__tests__/text-anchors-golden.test.ts",
+      "formats/pdf/src/scripts/anchors.ts",
+      "core/signatures/src/bench.ts",
+    ]) {
+      expect(shouldSkip(path)).toBe(false);
+    }
   });
 
   it("runs fixtures through the declarative entry point", async () => {

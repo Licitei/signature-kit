@@ -22,13 +22,13 @@ bun add @signature-kit/a1
 - `@signature-kit/pdf/sign` — `signPdf` for detached CMS/PAdES signing over a prepared placeholder.
 - `@signature-kit/pdf/verify` — `verifyPdf` for ByteRange, CMS, and optional trusted-root chain verification.
 - `@signature-kit/pdf/stamp` — badge layout, QR/link stamping, visible-signature stamping, initials/rubric helpers, and coordinate conversion.
-- `@signature-kit/pdf/anchors` — `findPdfTextAnchors` for text-anchor placement.
+- `@signature-kit/pdf/anchors` — `findPdfTextAnchors` for text, digit, and link anchor placement. It reads geometry, text, and link annotations through the `PdfCore` service from `@signature-kit/pdf-core`; calls that pass `pages` and `textBoxes` with only `text`/`digits` matchers need no service.
 - `@signature-kit/pdf/workflow` — high-level load/template/prepare/sign batch workflows.
 - `@signature-kit/pdf/builder` — pure signature-field builder operations.
 - `@signature-kit/pdf/builder-store` — external builder store and placement queue helpers.
 - `@signature-kit/pdf/byte-range` — placeholder preparation and signature extraction helpers.
 - `@signature-kit/pdf/merge` — `mergePdfs`; it copies pages only and intentionally drops source AcroForms, outlines, metadata, and attachments.
-- `@signature-kit/pdf/liteparse-browser` — browser-only text-box and page-image extraction, plus a handwriting service with an explicitly supplied browser font.
+- `@signature-kit/pdf/liteparse-browser` — browser-only page-image rendering (`renderPdfPagesBrowser`), plus a handwriting service with an explicitly supplied browser font.
 
 `signatureLength` is CMS byte capacity: a value of `n` reserves exactly `n` bytes, represented by `2n` hexadecimal digits in `/Contents`.
 
@@ -39,10 +39,12 @@ Rubrics never stamp the same page as the full visible signature block. `rubricPa
 ## Example
 
 ```ts
+import { NodeServices } from "@effect/platform-node";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
 import { prepareAndSignPdf } from "@signature-kit/pdf/workflow";
 import { verifyPdf } from "@signature-kit/pdf/verify";
-import { Effect, Redacted } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 
 declare const pdf: Uint8Array;
 declare const pfx: Uint8Array;
@@ -67,12 +69,19 @@ const program = Effect.gen(function* () {
 
   const verification = yield* verifyPdf({ pdf: signed, trustedRoots });
   return { signed, verification };
-}).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make("secret") })));
+}).pipe(
+  Effect.provide(
+    Layer.merge(
+      a1SignaturesLayer({ pfx, password: Redacted.make("secret") }),
+      pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer)),
+    ),
+  ),
+);
 ```
 
 ## Preview a visible signature
 
-`preparePdfVisualPreview` from `@signature-kit/pdf/workflow` accepts the same input as `prepareAndSignPdf` and returns the stamped PDF before signing. It uses the same badge, placement, and rubric preparation as signing, including excluding signature pages from repeated rubrics. Provide `LiteParseWorkerFactory` when running it. In a browser, `renderPdfPagesBrowser` renders the resulting PDF to PNG page images. `PdfHandwriting` renders text to PNG using `pdfHandwritingBrowserLayer(font)`; load the chosen font at the application boundary before rendering.
+`preparePdfVisualPreview` from `@signature-kit/pdf/workflow` accepts the same input as `prepareAndSignPdf` and returns the stamped PDF before signing. It uses the same badge, placement, and rubric preparation as signing, including excluding signature pages from repeated rubrics. Provide `PdfCore` (`pdfCoreBrowserLayer` in browsers, `pdfCoreFileLayer` on Node/Bun) when running it. In a browser, `renderPdfPagesBrowser` (which still needs `liteParseWorkerBrowserLayer`) renders the resulting PDF to PNG page images. `PdfHandwriting` renders text to PNG using `pdfHandwritingBrowserLayer(font)`; load the chosen font at the application boundary before rendering.
 
 ## Inspect each PDF signature
 

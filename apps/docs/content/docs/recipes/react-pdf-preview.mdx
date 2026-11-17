@@ -113,7 +113,7 @@ export function PdfPreview({ unsignedPdf, pages, sign }: PdfPreviewProps) {
 ```ts title="sign-from-preview.ts"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
 import { type PdfSignatureRect } from "@signature-kit/pdf/config"
-import { liteParseWorkerBrowserLayer } from "@signature-kit/pdf/liteparse-browser"
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser"
 import { prepareAndSignPdf } from "@signature-kit/pdf/workflow"
 import { Effect, Layer, Redacted } from "effect"
 
@@ -130,7 +130,7 @@ const sign = (rect: PdfSignatureRect): Promise<Uint8Array> =>
       Effect.provide(
         Layer.merge(
           a1SignaturesLayer({ pfx, password: Redacted.make(password) }),
-          liteParseWorkerBrowserLayer,
+          pdfCoreBrowserLayer,
         ),
       ),
     ),
