@@ -1164,12 +1164,8 @@ fn normalize_rotation(value: f64) -> i32 {
 }
 
 impl Resolver for Document<'_> {
-    fn resolve(&self, object: &Object) -> Outcome<Object> {
-        if object.is_ref() {
-            self.follow(object).map(|resolved| (*resolved).clone())
-        } else {
-            Ok(object.clone())
-        }
+    fn resolve(&self, object: &Object) -> Outcome<Rc<Object>> {
+        self.follow(object)
     }
 
     fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>> {
@@ -2031,23 +2027,23 @@ mod tests {
                 generation: 0,
             }))
             .unwrap();
-        assert_eq!(chained, Object::String(b"done".to_vec()));
+        assert_eq!(*chained, Object::String(b"done".to_vec()));
         let missing = document
             .resolve(&Object::Ref(ObjRef {
                 number: 50,
                 generation: 0,
             }))
             .unwrap();
-        assert_eq!(missing, Object::Null);
+        assert_eq!(*missing, Object::Null);
         let looped = document
             .resolve(&Object::Ref(ObjRef {
                 number: 8,
                 generation: 0,
             }))
             .unwrap();
-        assert_eq!(looped, Object::Null);
+        assert_eq!(*looped, Object::Null);
         assert_eq!(
-            document.resolve(&Object::Integer(3)).unwrap(),
+            *document.resolve(&Object::Integer(3)).unwrap(),
             Object::Integer(3)
         );
     }

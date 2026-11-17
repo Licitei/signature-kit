@@ -149,7 +149,10 @@ mod tests {
         let Some(fonts_value) = page.resources.get(b"Font") else {
             return Vec::new();
         };
-        let Ok(Object::Dict(font_table)) = document.resolve(fonts_value) else {
+        let Ok(resolved_table) = document.resolve(fonts_value) else {
+            return Vec::new();
+        };
+        let Object::Dict(font_table) = &*resolved_table else {
             return Vec::new();
         };
         let mut fonts = Vec::new();
@@ -157,10 +160,10 @@ mod tests {
             let Ok(resolved) = document.resolve(entry) else {
                 continue;
             };
-            let Object::Dict(font_dict) = resolved else {
+            let Object::Dict(font_dict) = &*resolved else {
                 continue;
             };
-            if let Ok(font) = Font::load(document, &font_dict, &Limits::default()) {
+            if let Ok(font) = Font::load(document, font_dict, &Limits::default()) {
                 fonts.push(font);
             }
         }

@@ -2,6 +2,7 @@ use crate::num::{f64_to_i64, widen};
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::cmap::{CMap, UnicodeMap, covering, disjoint};
@@ -624,24 +625,12 @@ impl CidWidths {
     }
 }
 
-fn deref(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Object> {
-    let value = value?;
-    if value.is_ref() {
-        resolver.resolve(value).ok()
-    } else {
-        Some(value.clone())
-    }
+fn deref(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Rc<Object>> {
+    resolver.resolve(value?).ok()
 }
 
 fn deref_dict(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Dict> {
-    let object = deref(resolver, value)?;
-    if let Object::Dict(dict) = object {
-        Some(dict)
-    } else if let Object::Stream(stream) = object {
-        Some(stream.dict)
-    } else {
-        None
-    }
+    deref(resolver, value)?.as_dict().cloned()
 }
 
 fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<SimpleFont> {
@@ -767,8 +756,8 @@ fn load_type0(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<
 }
 
 fn load_cid_to_gid(resolver: &dyn Resolver, descendant: &Dict, limits: &Limits) -> CidToGid {
-    match deref(resolver, descendant.get(b"CIDToGIDMap")) {
-        Some(Object::Stream(stream)) => match resolver.stream_data(&stream) {
+    match deref(resolver, descendant.get(b"CIDToGIDMap")).as_deref() {
+        Some(Object::Stream(stream)) => match resolver.stream_data(stream) {
             Ok(data) if data.len() <= limits.max_decoded_stream_bytes => CidToGid::Table(data),
             _ => CidToGid::Identity,
         },
@@ -785,10 +774,10 @@ fn load_cmap(
     let predefined = |name: &[u8]| {
         CMap::predefined(name).unwrap_or_else(|| CMap::identity(name.ends_with(b"-V")))
     };
-    match deref(resolver, encoding) {
-        Some(Object::Name(name)) => predefined(&name),
+    match deref(resolver, encoding).as_deref() {
+        Some(Object::Name(name)) => predefined(name),
         Some(Object::Stream(stream)) => {
-            let Ok(data) = resolver.stream_data(&stream) else {
+            let Ok(data) = resolver.stream_data(stream) else {
                 return CMap::identity(false);
             };
             if data.len() > limits.max_decoded_stream_bytes {
@@ -862,26 +851,29 @@ fn load_encoding(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Outco
         base_explicit: false,
         differences: Vec::new(),
     };
-    match deref(resolver, font.get(b"Encoding")) {
+    match deref(resolver, font.get(b"Encoding")).as_deref() {
         None => {}
         Some(Object::Name(name)) => {
-            state.builtin = builtin_from_name(&name);
+            state.builtin = builtin_from_name(name);
             state.base_explicit = true;
         }
         Some(Object::Stream(stream)) => {
-            let data = resolver.stream_data(&stream)?;
+            let data = resolver.stream_data(stream)?;
             if data.len() > limits.max_decoded_stream_bytes {
                 return Err(Failure::limit("encoding stream exceeds limit"));
             }
             state.builtin = BuiltinEncoding::Custom;
         }
         Some(Object::Dict(dict)) => {
-            if let Some(Object::Name(name)) = deref(resolver, dict.get(b"BaseEncoding")) {
-                state.builtin = builtin_from_name(&name);
+            if let Some(Object::Name(name)) = deref(resolver, dict.get(b"BaseEncoding")).as_deref()
+            {
+                state.builtin = builtin_from_name(name);
                 state.base_explicit = true;
             }
-            if let Some(Object::Array(entries)) = deref(resolver, dict.get(b"Differences")) {
-                load_differences(&entries, &mut state);
+            if let Some(Object::Array(entries)) =
+                deref(resolver, dict.get(b"Differences")).as_deref()
+            {
+                load_differences(entries, &mut state);
             }
         }
         Some(_) => {
@@ -911,10 +903,12 @@ fn resolved_items(
     value: Option<&Object>,
     limit: usize,
 ) -> Option<Vec<Object>> {
-    let Some(Object::Array(items)) = deref(resolver, value) else {
+    let array = deref(resolver, value)?;
+    let Object::Array(items) = &*array else {
         return None;
     };
-    let resolve_one = |item: &Object| deref(resolver, Some(item)).unwrap_or(Object::Null);
+    let resolve_one =
+        |item: &Object| deref(resolver, Some(item)).map_or(Object::Null, |found| (*found).clone());
     Some(
         items
             .iter()
@@ -948,7 +942,7 @@ fn load_widths(
     type3: bool,
 ) -> WidthState {
     let first_char = deref(resolver, font.get(b"FirstChar"))
-        .as_ref()
+        .as_deref()
         .and_then(Object::as_integer)
         .unwrap_or(0);
     let widths = resolved_items(resolver, font.get(b"Widths"), MAX_METRIC_ENTRIES)
@@ -1018,7 +1012,7 @@ fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
 }
 
 fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> VerticalCidMetrics {
-    let (origin_y, advance) = match deref(resolver, descendant.get(b"DW2")) {
+    let (origin_y, advance) = match deref(resolver, descendant.get(b"DW2")).as_deref() {
         Some(Object::Array(items)) => (
             items
                 .first()
@@ -1086,10 +1080,11 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
 }
 
 fn load_to_unicode(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> UnicodeMap {
-    let Some(Object::Stream(stream)) = deref(resolver, font.get(b"ToUnicode")) else {
+    let program = deref(resolver, font.get(b"ToUnicode"));
+    let Some(Object::Stream(stream)) = program.as_deref() else {
         return UnicodeMap::default();
     };
-    match resolver.stream_data(&stream) {
+    match resolver.stream_data(stream) {
         Ok(data) if data.len() <= limits.max_decoded_stream_bytes => {
             UnicodeMap::parse(&data, limits)
         }
@@ -1098,7 +1093,8 @@ fn load_to_unicode(font: &Dict, resolver: &dyn Resolver, limits: &Limits) -> Uni
 }
 
 fn resolve_descendant(resolver: &dyn Resolver, font: &Dict) -> Outcome<Dict> {
-    let Some(Object::Array(children)) = deref(resolver, font.get(b"DescendantFonts")) else {
+    let descendants = deref(resolver, font.get(b"DescendantFonts"));
+    let Some(Object::Array(children)) = descendants.as_deref() else {
         return Err(Failure::invalid("Type0 font missing DescendantFonts"));
     };
     let first = children
@@ -1109,7 +1105,8 @@ fn resolve_descendant(resolver: &dyn Resolver, font: &Dict) -> Outcome<Dict> {
 }
 
 fn read_font_matrix(resolver: &dyn Resolver, font: &Dict) -> Option<[f64; 6]> {
-    let Object::Array(items) = deref(resolver, font.get(b"FontMatrix"))? else {
+    let matrix_array = deref(resolver, font.get(b"FontMatrix"))?;
+    let Object::Array(items) = &*matrix_array else {
         return None;
     };
     let mut matrix = [0.0; 6];
@@ -1245,14 +1242,14 @@ mod tests {
     }
 
     impl Resolver for TestResolver {
-        fn resolve(&self, object: &Object) -> Outcome<Object> {
+        fn resolve(&self, object: &Object) -> Outcome<Rc<Object>> {
             if let Object::Ref(reference) = object {
                 self.objects
                     .get(&reference.number)
-                    .cloned()
+                    .map(|found| Rc::new(found.clone()))
                     .ok_or_else(|| Failure::invalid("missing object"))
             } else {
-                Ok(object.clone())
+                Ok(Rc::new(object.clone()))
             }
         }
 

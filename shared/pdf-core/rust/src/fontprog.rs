@@ -1453,10 +1453,10 @@ pub(crate) fn load_font_file_bytes(
         return Err(Failure::invalid("missing font program stream"));
     };
     let object = resolver.resolve(stream_obj)?;
-    let crate::object::Object::Stream(stream) = object else {
+    let crate::object::Object::Stream(stream) = &*object else {
         return Err(Failure::invalid("font program is not a stream"));
     };
-    let bytes = resolver.stream_data(&stream)?;
+    let bytes = resolver.stream_data(stream)?;
     if bytes.len() > limits.max_decoded_stream_bytes {
         return Err(Failure::limit("font program exceeds limit"));
     }

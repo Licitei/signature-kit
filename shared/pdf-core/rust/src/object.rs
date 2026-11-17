@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::failure::Outcome;
 use crate::num::i64_to_f64;
@@ -131,6 +132,6 @@ impl Object {
 }
 
 pub(crate) trait Resolver {
-    fn resolve(&self, object: &Object) -> Outcome<Object>;
+    fn resolve(&self, object: &Object) -> Outcome<Rc<Object>>;
     fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>>;
 }
