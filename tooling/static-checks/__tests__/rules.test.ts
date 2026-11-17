@@ -719,6 +719,7 @@ export const ExampleProvider = () =>
     for (const path of [
       "shared/pdf-core/scripts/generate-font-tables.ts",
       "shared/pdf-core/scripts/generate-corpus.ts",
+      "shared/pdf-core/bench/measure-speed.ts",
       "formats/pdf/scripts/capture-anchor-goldens.ts",
       "/repo/formats/pdf/scripts/render-corpus.ts",
     ]) {
