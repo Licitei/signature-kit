@@ -1,4 +1,3 @@
-import { PDFDict, PDFDocument, PDFName, PDFRef, StandardFonts } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
 import { readFile } from "node:fs/promises";
 import { a1SignaturesLayer, loadA1SignerAdapter } from "@signature-kit/a1/signer";
@@ -13,7 +12,9 @@ import * as asn1js from "asn1js";
 import { Effect, Redacted, Result } from "effect";
 import * as pkijs from "pkijs";
 import { validatePdfConformance } from "../src/conformance";
+import type { PdfCoreEditTarget } from "@signature-kit/pdf-core/config";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { appendIncrementalObjects, createTextPdf } from "./pdf-fixture";
 
 const PFX_PASSWORD = Redacted.make("changeit");
 const FIXED_DATE = new Date("2026-01-02T03:04:05Z");
@@ -36,15 +37,7 @@ const toBufferSource = (bytes: Uint8Array): Uint8Array<ArrayBuffer> => {
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => toBufferSource(bytes).buffer;
 
-const createPdf = Effect.promise(async () => {
-  const document = await PDFDocument.create();
-  const page = document.addPage([300, 200]);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  page.drawText("SignatureKit ITI hardening fixture", { x: 24, y: 140, size: 12, font });
-  document.setCreationDate(FIXED_DATE);
-  document.setModificationDate(FIXED_DATE);
-  return new Uint8Array(await document.save({ useObjectStreams: false }));
-});
+const createPdf = createTextPdf("SignatureKit ITI hardening fixture");
 
 const createSignedPades = () =>
   Effect.gen(function* () {
@@ -299,21 +292,23 @@ const setFirstByteRangeEnd = (pdf: Uint8Array, rangeEnd: number): Uint8Array => 
 };
 
 const appendFakeRevisionMarkerInsideStream = (pdf: Uint8Array) =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     const filler = "x".repeat(1024);
-    const document = await PDFDocument.load(pdf, {
-      forIncrementalUpdate: true,
-      updateMetadata: false,
-    });
-    document.context.register(document.context.stream(filler));
-    const revised = new Uint8Array(
-      await document.save({ useObjectStreams: false, updateFieldAppearances: false }),
-    );
+    const revised = yield* appendIncrementalObjects(pdf, (next) => [
+      {
+        op: "setStream",
+        ref: { number: next, generation: 0 },
+        dict: "<< >>",
+        data: new TextEncoder().encode(filler),
+      },
+    ]);
     const text = Buffer.from(revised).toString("latin1");
     const xrefOffset = text.lastIndexOf(filler);
-    if (xrefOffset === -1) throw new Error("Failed to locate appended raw PDF stream.");
+    if (xrefOffset === -1) return yield* Effect.die("Failed to locate appended raw PDF stream.");
     const marker = `xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 >>\nstartxref\n${xrefOffset}\n%%EOF`;
-    if (marker.length > filler.length) throw new Error("Fake revision marker exceeds raw stream.");
+    if (marker.length > filler.length) {
+      return yield* Effect.die("Fake revision marker exceeds raw stream.");
+    }
     return {
       pdf: new Uint8Array(
         Buffer.from(
@@ -345,34 +340,34 @@ const removeFirstSignatureFieldValue = (pdf: Uint8Array): Uint8Array => {
 };
 
 const restoreSignatureFieldValue = (pdf: Uint8Array) =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     const text = Buffer.from(pdf).toString("latin1");
     const value = /\/X\s+(\d+)\s+(\d+)\s+R/.exec(text);
     const objectNumber = value?.[1];
     const generationNumber = value?.[2];
-    if (objectNumber === undefined || generationNumber === undefined) {
-      throw new Error("Failed to locate an orphaned signature field reference.");
-    }
-    const reference = PDFRef.of(Number(objectNumber), Number(generationNumber));
-    const document = await PDFDocument.load(pdf, {
-      forIncrementalUpdate: true,
-      updateMetadata: false,
-    });
-    let field: PDFDict | undefined;
-    for (const [objectRef, object] of document.context.enumerateIndirectObjects()) {
-      if (!(object instanceof PDFDict)) continue;
-      const candidateField = document.context.lookup(objectRef, PDFDict);
-      const candidate = candidateField.get(PDFName.of("X"));
-      if (!(candidate instanceof PDFRef) || candidate.tag !== reference.tag) continue;
-      field = candidateField;
-      break;
-    }
-    if (field === undefined) throw new Error("Failed to locate the orphaned signature field.");
-    field.set(PDFName.of("V"), reference);
-    field.delete(PDFName.of("X"));
-    return new Uint8Array(
-      await document.save({ useObjectStreams: false, updateFieldAppearances: false }),
+    const objectKeyword = text.lastIndexOf(" obj", value?.index ?? 0);
+    const field = /(\d{1,10}) (\d{1,5})$/.exec(
+      text.slice(Math.max(0, objectKeyword - 20), objectKeyword),
     );
+    if (
+      value === null ||
+      objectNumber === undefined ||
+      generationNumber === undefined ||
+      field?.[1] === undefined ||
+      field[2] === undefined
+    ) {
+      return yield* Effect.die("Failed to locate the orphaned signature field.");
+    }
+    const target = {
+      base: {
+        kind: "object",
+        ref: { number: Number(field[1]), generation: Number(field[2]) },
+      },
+    } satisfies PdfCoreEditTarget;
+    return yield* appendIncrementalObjects(pdf, () => [
+      { op: "set", target, key: "V", value: `${objectNumber} ${generationNumber} R` },
+      { op: "remove", target, key: "X" },
+    ]);
   });
 
 describe("ITI local conformance hardening", () => {

@@ -43,7 +43,6 @@
     "pkijs": "3.4.3"
   },
   "devDependencies": {
-    "@cantoo/pdf-lib": "2.11.1",
     "@signature-kit/a1": "^0.4.0"
   },
   "nx": {

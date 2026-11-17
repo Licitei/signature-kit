@@ -59,7 +59,6 @@
     "yaml": "2.9.0"
   },
   "devDependencies": {
-    "@cantoo/pdf-lib": "2.11.1",
     "@foldkit/vite-plugin": "0.29.0",
     "@hono/node-server": "2.1.5",
     "@napi-rs/canvas": "1.0.13",

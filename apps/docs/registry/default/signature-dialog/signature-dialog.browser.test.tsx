@@ -1,6 +1,5 @@
 import { Effect } from "effect";
 import { readA1FixtureFromBrowser } from "../../../../../tooling/testing/fixtures.browser";
-import { PDFDocument } from "@cantoo/pdf-lib";
 import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { clearA1Certificate, clearA1Signer } from "@signature-kit/react/a1";
 
 import { SignatureDialog, type SignatureDialogProps } from "./signature-dialog";
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
+import { textPdf } from "../../../__tests__/helpers/text-pdf";
 
 type MountedDialog = {
   readonly cleanup: () => void;
@@ -33,12 +34,16 @@ async function waitFor(predicate: () => boolean, label: string, maxFrames = 240)
   expect(predicate(), label).toBe(true);
 }
 
-const makePdf = async (): Promise<Uint8Array> => {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([320, 180]);
-  page.drawText("SignatureKit dialog test", { x: 32, y: 118, size: 14 });
-  return pdf.save({ useObjectStreams: false });
-};
+const makePdf = (): Promise<Uint8Array> =>
+  Effect.runPromise(
+    textPdf([
+      {
+        width: 320,
+        height: 180,
+        runs: [{ text: "SignatureKit dialog test", x: 32, y: 118, size: 14 }],
+      },
+    ]).pipe(Effect.provide(pdfCoreBrowserLayer)),
+  );
 
 const buildDocuments = async () => [
   { id: "document-1", name: "document-1.pdf", pdf: await makePdf() },

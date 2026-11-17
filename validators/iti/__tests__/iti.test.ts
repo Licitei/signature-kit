@@ -1,5 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib";
 import { readFile } from "node:fs/promises";
 import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
@@ -13,6 +12,7 @@ import { localHttpServer } from "../../../tooling/testing/local-http";
 import { validatePdfConformance } from "../src/conformance";
 import { validatePdfWithIti } from "../src/remote";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { createTextPdf } from "./pdf-fixture";
 
 const ITI_ENDPOINT = "https://validar.iti.gov.br/arquivo";
 const POLICY_OID = "2.16.76.1.7.1.11.1.1";
@@ -157,13 +157,7 @@ const restoreFetch = Effect.sync(() => {
   vi.unstubAllGlobals();
 });
 
-const createPdf = Effect.promise(async () => {
-  const document = await PDFDocument.create();
-  const page = document.addPage([300, 200]);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  page.drawText("SignatureKit ITI validation fixture", { x: 24, y: 140, size: 12, font });
-  return new Uint8Array(await document.save());
-});
+const createPdf = createTextPdf("SignatureKit ITI validation fixture");
 
 const expectedAdRbPolicyOid = POLICY_OID;
 

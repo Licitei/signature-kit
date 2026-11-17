@@ -1,7 +1,6 @@
 import "./site.css";
 import "./home.css";
 import { Effect, Result, Schema } from "effect";
-import { PDFDocument } from "@cantoo/pdf-lib";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
@@ -13,6 +12,7 @@ import { commands, userEvent } from "vitest/browser";
 import { Flags, Model, init, update, view } from "./main";
 import posthog from "posthog-js";
 import { docsPostHogOptions } from "../lib/posthog/client";
+import { textPdf } from "../__tests__/helpers/text-pdf";
 
 const pdfTextOf = (bytes: Uint8Array) =>
   Effect.gen(function* () {
@@ -124,11 +124,9 @@ it("signs a PDF from the home and exposes a verifiable download", async () => {
           (runtime) => Effect.sync(() => runtime.dispose()),
         );
         const pfx = yield* readA1FixtureFromBrowser("ecpf");
-        const pdf = yield* Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          document.addPage([600, 400]).drawText("SignatureKit home signing", { x: 30, y: 100 });
-          return document.save();
-        });
+        const pdf = yield* textPdf([
+          { width: 600, height: 400, runs: [{ text: "SignatureKit home signing", x: 30, y: 100 }] },
+        ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
           expect.poll(() => host.querySelector("#auto-sign form")).not.toBeNull(),
         );
@@ -470,9 +468,13 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
           const bytes = yield* Effect.promise(
             async () => new Uint8Array(await (await fetch(link.href)).arrayBuffer()),
           );
-          const document = yield* Effect.promise(() => PDFDocument.load(bytes));
-          expect(document.getPageCount()).toBe(1);
-          expect(document.getForm().getFields()).toHaveLength(0);
+          const document = yield* PdfCore.pipe(
+            Effect.flatMap((core) => core.document(bytes, { annotationPages: [0] })),
+            Effect.provide(pdfCoreBrowserLayer),
+          );
+          expect(document.pages).toHaveLength(1);
+          expect(document.acroForm).toBe(false);
+          expect(document.annotations.filter((annotation) => annotation.widget)).toHaveLength(0);
           expect(link.download).toBe(`${names[index]}.pdf`);
           const text = yield* pdfTextOf(bytes);
           expect(text).toContain(names[index]);
@@ -669,11 +671,9 @@ it("keeps two real signer instances independent after one is disposed", async ()
           });
         const first = yield* create("signer-isolation-first");
         const second = yield* create("signer-isolation-second");
-        const pdf = yield* Effect.promise(async () => {
-          const document = await PDFDocument.create();
-          document.addPage([400, 300]).drawText("Independent signer", { x: 20, y: 100 });
-          return document.save();
-        });
+        const pdf = yield* textPdf([
+          { width: 400, height: 300, runs: [{ text: "Independent signer", x: 20, y: 100 }] },
+        ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
           expect.poll(() => first.host.querySelector("[name=pdf]")).not.toBeNull(),
         );

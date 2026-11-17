@@ -62,7 +62,7 @@ So Licitei asked the obvious question: what if the server isn't in the loop at a
   </Step>
 
   <Step title="Build the template and place the signature">
-    `createPdfSignatureBuilderStateFromBytes` loads the PDF's pages with pdf-lib and produces a validated template with
+    `createPdfSignatureBuilderStateFromBytes` reads the PDF's pages with the in-house `PdfCore` engine and produces a validated template with
     the signature field positioned — explicitly, or auto-placed. Its `template` is what the signer consumes.
 
     ```ts title="build.ts"
