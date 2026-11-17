@@ -416,16 +416,16 @@ const buildMarkdownPageContinue = async (): Promise<Uint8Array> => {
   const small = await document.embedFont(StandardFonts.HelveticaOblique);
   const bodies: ReadonlyArray<ReadonlyArray<ReadonlyArray<string>>> = [
     [
-      [
-        "O presente edital trata da contratação de serviços contínuos de",
-        "manutenção predial.",
-      ],
+      ["O presente edital trata da contratação de serviços contínuos de", "manutenção predial."],
       [
         "A proposta deve considerar a mão-de-obra, os encargos e os insumos",
         "necessários à execução dos serviços, sem interrup-",
       ],
     ],
-    [["ção contratual, durante toda a vigência do contrato."], ["Segundo parágrafo da página dois."]],
+    [
+      ["ção contratual, durante toda a vigência do contrato."],
+      ["Segundo parágrafo da página dois."],
+    ],
   ];
   for (const [index, paragraphs] of bodies.entries()) {
     const page = document.addPage(PAGE_SIZE);
