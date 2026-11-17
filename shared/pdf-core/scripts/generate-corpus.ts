@@ -1,4 +1,5 @@
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -84,9 +85,12 @@ const buildHelveticaWinansi = async (): Promise<Uint8Array> => {
   return document.save({ useObjectStreams: false });
 };
 
-const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
+const requireFromModule = createRequire(import.meta.url);
 
-const liberationFontPath = (): string => join(scriptsDirectory, "LiberationSans-Regular.ttf");
+const liberationFontPath = (): string => {
+  const pdfjsRoot = dirname(fileURLToPath(requireFromModule.resolve("pdfjs-dist/package.json")));
+  return join(pdfjsRoot, "standard_fonts", "LiberationSans-Regular.ttf");
+};
 
 const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
   Font.register({

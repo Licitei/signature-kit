@@ -10,7 +10,9 @@ use crate::table::{
 };
 use crate::text::{Capture, PageContent, Ruling, Run, Session, extract_content};
 
-const CELL_GAP: f64 = 1.5;
+const CELL_GAP: f64 = 1.75;
+const INTRA_WORD_SCALE: f64 = 4.0;
+const COMPACT_GAP_EM: f64 = 1.0;
 const WORD_GAP: f64 = 0.12;
 const LINE_PITCH: f64 = 1.5;
 const CELL_EM: f64 = 20.0;
@@ -142,6 +144,42 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
     lines
 }
 
+fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
+    let mut gaps: Vec<f64> = Vec::new();
+    let mut ordered = members.to_vec();
+    ordered.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
+        (Some(left), Some(right)) => compare(left.x0, right.x0),
+        _ => Ordering::Equal,
+    });
+    let mut previous: Option<&Frag<'_>> = None;
+    for index in ordered {
+        let Some(frag) = frags.get(index) else {
+            continue;
+        };
+        if let Some(left) = previous {
+            let gap = frag.x0 - left.x1;
+            if gap > 0.0 {
+                let em = left.size.max(frag.size);
+                if em > 0.0 {
+                    gaps.push(gap / em);
+                }
+            }
+        }
+        previous = Some(frag);
+    }
+    let mut compact: Vec<f64> = gaps
+        .into_iter()
+        .filter(|gap| *gap <= COMPACT_GAP_EM)
+        .collect();
+    if compact.is_empty() {
+        return CELL_GAP;
+    }
+    compact.sort_by(f64::total_cmp);
+    let bucket = usize::midpoint(0, compact.len());
+    let typical = compact.get(bucket).copied().unwrap_or(WORD_GAP);
+    CELL_GAP.max(typical * INTRA_WORD_SCALE)
+}
+
 fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
     if members.len() < 2 {
         return;
@@ -173,6 +211,7 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
         _ => Ordering::Equal,
     });
     drop_duplicates(frags, &mut members);
+    let split_em = line_cell_split_em(frags, &members);
     let mut current: Option<Segment> = None;
     let mut right_edge = f64::NEG_INFINITY;
     let mut right_size = 0.0_f64;
@@ -181,7 +220,8 @@ fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
             continue;
         };
         let gap = frag.x0 - right_edge;
-        let split = current.is_some() && gap > CELL_GAP * frag.size.max(right_size);
+        let em = frag.size.max(right_size);
+        let split = current.is_some() && gap > split_em * em;
         if split && let Some(done) = current.take() {
             out.push(done);
         }

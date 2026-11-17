@@ -88,7 +88,8 @@
         "options": {
           "commands": [
             "cargo fmt --check",
-            "cargo clippy --all-targets -- -D warnings"
+            "cargo clippy --all-targets --all-features -- -D warnings",
+            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps"
           ],
           "parallel": false,
           "cwd": "{projectRoot}/rust"
