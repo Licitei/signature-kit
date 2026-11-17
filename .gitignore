@@ -12,3 +12,4 @@ coverage/
 # vitest browser screenshot attachments
 .vitest-attachments/
 .vitest/
+shared/pdf-core/bench/results/

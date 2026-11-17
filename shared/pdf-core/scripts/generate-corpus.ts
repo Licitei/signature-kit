@@ -13,6 +13,7 @@ import { PdfCore, pdfCoreLayer } from "../src/pdf-core.ts";
 import { Effect } from "effect";
 
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
+import { renderTakumiDeclarationPdf } from "./takumi-declaration-document.ts";
 
 const { renderToBuffer, Document, Link, Page, Text, View, Font, StyleSheet } =
   await import("@react-pdf/renderer");
@@ -1353,6 +1354,7 @@ const program = Effect.gen(function* () {
   writeFixture("markdown-headings-react.pdf", yield* Effect.promise(buildMarkdownHeadingsReact));
   writeFixture("helvetica-winansi.pdf", yield* buildHelveticaWinansi);
   writeFixture("react-pdf-declaration.pdf", yield* Effect.promise(buildReactPdfDeclaration));
+  writeFixture("takumi-declaration.pdf", yield* Effect.promise(renderTakumiDeclarationPdf));
   writeFixture("rotated-cropped.pdf", yield* buildRotatedCropped);
   writeFixture("links.pdf", yield* buildLinks);
   writeFixture("habilitacao-150.pdf", yield* buildHabilitacao150);
