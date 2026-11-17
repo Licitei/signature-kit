@@ -124,7 +124,7 @@ struct Sweep {
 impl Sweep {
     fn new(spans: impl Iterator<Item = (usize, f64, f64)>) -> Self {
         let mut items: Vec<(usize, f64, f64)> = spans.collect();
-        items.sort_by(|left, right| left.1.total_cmp(&right.1));
+        items.sort_unstable_by(|left, right| left.1.total_cmp(&right.1));
         let mut reach = Vec::with_capacity(items.len());
         let mut furthest = f64::NEG_INFINITY;
         for item in &items {
@@ -243,14 +243,35 @@ fn compare(left: f64, right: f64) -> Ordering {
     left.total_cmp(&right)
 }
 
-fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
-    let mut order: Vec<usize> = (0..frags.len()).collect();
+
+fn sort_frag_indices_by_center(order: &mut [usize], frags: &[Frag<'_>]) {
     order.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
         (Some(left), Some(right)) => {
             compare(right.center(), left.center()).then_with(|| compare(left.x0, right.x0))
         }
         _ => Ordering::Equal,
     });
+}
+
+fn sort_frag_indices_by_x0(order: &mut [usize], frags: &[Frag<'_>]) {
+    order.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
+        (Some(left), Some(right)) => compare(left.x0, right.x0),
+        _ => Ordering::Equal,
+    });
+}
+
+fn sort_block_indices_reading(order: &mut [usize], blocks: &[Block]) {
+    order.sort_unstable_by(|&a, &b| match (blocks.get(a), blocks.get(b)) {
+        (Some(left), Some(right)) => {
+            compare(right.top, left.top).then_with(|| compare(left.x0, right.x0))
+        }
+        _ => Ordering::Equal,
+    });
+}
+
+fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
+    let mut order: Vec<usize> = (0..frags.len()).collect();
+    sort_frag_indices_by_center(&mut order, frags);
     let mut lines: Vec<Line> = Vec::new();
     for index in order {
         let Some(frag) = frags.get(index) else {
@@ -284,10 +305,7 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
 fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     let mut gaps: Vec<f64> = Vec::new();
     let mut ordered = members.to_vec();
-    ordered.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
-        (Some(left), Some(right)) => compare(left.x0, right.x0),
-        _ => Ordering::Equal,
-    });
+    sort_frag_indices_by_x0(&mut ordered, frags);
     let mut previous: Option<&Frag<'_>> = None;
     for index in ordered {
         let Some(frag) = frags.get(index) else {
@@ -311,7 +329,7 @@ fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     if compact.is_empty() {
         return CELL_GAP;
     }
-    compact.sort_by(f64::total_cmp);
+    compact.sort_unstable_by(f64::total_cmp);
     let bucket = usize::midpoint(0, compact.len());
     let typical = compact.get(bucket).copied().unwrap_or(WORD_GAP);
     CELL_GAP.max(typical * INTRA_WORD_SCALE)
@@ -343,10 +361,7 @@ fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
 
 fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
     let mut members = line.members.clone();
-    members.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
-        (Some(left), Some(right)) => compare(left.x0, right.x0),
-        _ => Ordering::Equal,
-    });
+    sort_frag_indices_by_x0(&mut members, frags);
     drop_duplicates(frags, &mut members);
     let split_em = line_cell_split_em(frags, &members);
     let mut current: Option<Segment> = None;
@@ -606,12 +621,7 @@ fn reading_order(
     if ids.len() <= 1 || depth >= MAX_CUT_DEPTH {
         if ids.len() > 1 {
             let mut sorted = ids;
-            sorted.sort_unstable_by(|&a, &b| match (blocks.get(a), blocks.get(b)) {
-                (Some(left), Some(right)) => {
-                    compare(right.top, left.top).then_with(|| compare(left.x0, right.x0))
-                }
-                _ => Ordering::Equal,
-            });
+            sort_block_indices_reading(&mut sorted, blocks);
             out.extend(sorted);
         } else {
             out.extend(ids);
@@ -634,12 +644,7 @@ fn reading_order(
     }
     if bands.len() < 2 {
         let mut sorted = ids;
-        sorted.sort_unstable_by(|&a, &b| match (blocks.get(a), blocks.get(b)) {
-            (Some(left), Some(right)) => {
-                compare(right.top, left.top).then_with(|| compare(left.x0, right.x0))
-            }
-            _ => Ordering::Equal,
-        });
+        sort_block_indices_reading(&mut sorted, blocks);
         out.extend(sorted);
         return;
     }
@@ -1316,7 +1321,7 @@ fn page_layout(
     let mut ranking: Vec<usize> = (0..4)
         .filter(|&quarter| weights.get(quarter).copied().unwrap_or(0) > 0)
         .collect();
-    ranking.sort_by(|&a, &b| {
+    ranking.sort_unstable_by(|&a, &b| {
         weights
             .get(b)
             .copied()

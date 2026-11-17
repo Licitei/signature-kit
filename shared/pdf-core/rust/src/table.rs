@@ -352,7 +352,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
         }
     }
     let mut ordered: Vec<(Vec<usize>, Vec<usize>)> = groups.into_values().collect();
-    ordered.sort_by(|a, b| {
+    ordered.sort_unstable_by(|a, b| {
         let key = |group: &(Vec<usize>, Vec<usize>)| {
             group.0.first().copied().unwrap_or(usize::MAX).min(
                 group.1.first().map_or(usize::MAX, |&vertical_index| {

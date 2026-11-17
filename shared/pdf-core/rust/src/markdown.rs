@@ -323,7 +323,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
             weighted.push((line.size, chars));
         }
     }
-    ratios.sort_by(f64::total_cmp);
+    ratios.sort_unstable_by(f64::total_cmp);
     let pitch = ratios
         .get(ratios.len().checked_div(4).unwrap_or(0))
         .copied()
@@ -340,7 +340,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
 }
 
 fn body_size(mut weighted: Vec<(f64, usize)>) -> f64 {
-    weighted.sort_by(|left, right| left.0.total_cmp(&right.0));
+    weighted.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
     let total = weighted
         .iter()
         .map(|entry| entry.1)
@@ -791,7 +791,7 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             }
             before = Some(line.line);
         }
-        gaps.sort_by(f64::total_cmp);
+        gaps.sort_unstable_by(f64::total_cmp);
         let pitch = if gaps.len() >= FLOW_SAMPLES {
             gaps.get(gaps.len().checked_div(4).unwrap_or(0))
                 .copied()
