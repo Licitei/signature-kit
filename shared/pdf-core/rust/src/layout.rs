@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::document::{Document, Page};
-use crate::failure::{Failure, Outcome};
+use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
 use crate::markdown::{
@@ -1278,7 +1278,7 @@ fn single_page(
     limits: &Limits,
     session: &mut Session,
     mode: Mode,
-) -> PageLayout {
+) -> Outcome<PageLayout> {
     let capture = Capture {
         split_repositioned: true,
         structure: true,
@@ -1286,15 +1286,16 @@ fn single_page(
     };
     let scoped = page_links(links, page_index);
     match extract_content(document, page, limits, capture, session) {
-        Ok(PageContent { runs, rulings }) => page_layout(
+        Ok(PageContent { runs, rulings }) => Ok(page_layout(
             &runs,
             &rulings,
             page.info.rotate,
             Some(page.info.crop_box),
             mode,
             &scoped,
-        ),
-        Err(_) => PageLayout::default(),
+        )),
+        Err(failure) if failure.code == FailureCode::LimitExceeded => Err(failure),
+        Err(_) => Ok(PageLayout::default()),
     }
 }
 
@@ -1334,7 +1335,7 @@ pub(crate) fn document_text(
             limits,
             &mut session,
             mode,
-        ));
+        )?);
     }
     if options.markdown {
         return markdown_pages(&layouts, &all_links, options, limits);
@@ -1442,7 +1443,7 @@ pub(crate) fn document_tables(
         let Some(page) = pages.get(position) else {
             continue;
         };
-        let layout = single_page(&document, page, position, &[], limits, &mut session, mode);
+        let layout = single_page(&document, page, position, &[], limits, &mut session, mode)?;
         for mut table in layout.tables {
             table.page_index = u32::try_from(position).unwrap_or(u32::MAX);
             total_bytes = table
@@ -1687,13 +1688,13 @@ mod tests {
     fn page_selection_validates_indexes() {
         let limits = text_limits();
         let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits, OPTIONS).unwrap_err();
-        assert_eq!(error.code, crate::failure::FailureCode::InvalidPdf);
+        assert_eq!(error.code, FailureCode::InvalidPdf);
         let oversized = Limits {
             max_pdf_bytes: 4,
             ..Limits::default()
         };
         let error_2 = document_text(b"%PDF-1.4\n", None, &oversized, OPTIONS).unwrap_err();
-        assert_eq!(error_2.code, crate::failure::FailureCode::LimitExceeded);
+        assert_eq!(error_2.code, FailureCode::LimitExceeded);
     }
 }
 
@@ -1993,7 +1994,7 @@ mod structure_tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].page_index, 1);
         let missing = document_tables(&bytes, Some(&[5]), &text_limits()).unwrap_err();
-        assert_eq!(missing.code, crate::failure::FailureCode::InvalidPdf);
+        assert_eq!(missing.code, FailureCode::InvalidPdf);
     }
 
     #[test]
@@ -2256,6 +2257,67 @@ mod structure_tests {
             drop(black_box(document_tables(&bytes, None, &limits)));
             drop(black_box(document_text(&bytes, None, &limits, MARKDOWN)));
         }
+    }
+
+    #[test]
+    fn page_limit_violations_propagate_instead_of_emptying_pages() {
+        let mut content = String::new();
+        for index in 0..20 {
+            content.push_str(&text(50.0, 700.0 - f64::from(index) * 20.0, 10.0, "linha"));
+        }
+        let bytes = document(&[page(text(50.0, 700.0, 10.0, "ok")), page(content)], &[]);
+        let tight = Limits {
+            max_items_per_page: 10,
+            ..text_limits()
+        };
+        for options in [PLAIN, MARKDOWN] {
+            let error = document_text(&bytes, None, &tight, options).unwrap_err();
+            assert_eq!(error.code, FailureCode::LimitExceeded);
+        }
+        let error = document_tables(&bytes, None, &tight).unwrap_err();
+        assert_eq!(error.code, FailureCode::LimitExceeded);
+        assert_eq!(
+            document_text(&bytes, Some(&[0]), &tight, PLAIN).unwrap(),
+            ["ok"]
+        );
+    }
+
+    #[test]
+    fn malformed_page_content_still_degrades_to_an_empty_page() {
+        let font = "/Resources << /Font << /F1 3 0 R >> >>";
+        let broken = crate::test_pdf::build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            ),
+            (
+                4,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 5 0 R {font} >>"
+                ),
+            ),
+            (
+                5,
+                crate::test_pdf::stream_object("", &text(50.0, 700.0, 10.0, "first")),
+            ),
+            (
+                6,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 7 0 R {font} >>"
+                ),
+            ),
+            (
+                7,
+                crate::test_pdf::stream_object("/Filter /FlateDecode", "xxxxx"),
+            ),
+        ]);
+        let pages = pages_of(&broken, PLAIN);
+        assert_eq!(pages, ["first", ""]);
     }
 
     #[test]
