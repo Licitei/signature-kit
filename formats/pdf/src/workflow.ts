@@ -572,7 +572,7 @@ const widgetRectFromPdf = (
 
 export const signPdfSignatureField = (
   input: PdfSigningInput,
-): Effect.Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures> =>
+): Effect.Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures | PdfCore> =>
   Schema.decodeUnknownEffect(PdfSigningInputSchema)(input).pipe(
     Effect.mapError(
       (issue) =>
@@ -649,7 +649,7 @@ const stampRubricsForPreparedDocument = (
   stamp: PdfSigningBatchVisibleStamp,
   pdf: Uint8Array,
   forIncrementalUpdate: boolean,
-): Effect.Effect<Uint8Array, PdfError> => {
+): Effect.Effect<Uint8Array, PdfError, PdfCore> => {
   const rubricLines = stamp.rubricLines ?? [];
   if (
     stamp.rubricEveryPage !== true ||
@@ -724,10 +724,14 @@ const preparePdfSigningBatchDocument = (
   document: PdfSigningBatchDocument,
   stamp: PdfSigningBatchVisibleStamp | undefined,
   signing: PdfSigningBatchPreparationInput["signing"],
-): Effect.Effect<PdfSigningBatchPreparationResult, never> =>
+): Effect.Effect<PdfSigningBatchPreparationResult, never, PdfCore> =>
   resolvePdfSigningBatchGeometry(document).pipe(
-    Effect.flatMap(({ pages, signatureRect, signaturePagePosition }) => {
-      const forIncrementalUpdate = hasPdfByteRange(document.pdf);
+    Effect.flatMap((geometry) =>
+      hasPdfByteRange(document.pdf).pipe(
+        Effect.map((forIncrementalUpdate) => ({ ...geometry, forIncrementalUpdate })),
+      ),
+    ),
+    Effect.flatMap(({ pages, signatureRect, signaturePagePosition, forIncrementalUpdate }) => {
       const preparedPdf =
         stamp === undefined
           ? Effect.succeed(document.pdf)
@@ -835,7 +839,7 @@ const prepareAndSignStampRects = (
 const prepareAndSignMainStamp = (
   input: PdfPrepareAndSignInput,
   stampRects: ReadonlyArray<PdfSignatureRect>,
-): Effect.Effect<Uint8Array, PdfError> => {
+): Effect.Effect<Uint8Array, PdfError, PdfCore> => {
   const lines = input.lines ?? [];
   if (
     input.badge === undefined &&
@@ -857,21 +861,24 @@ const prepareAndSignMainStamp = (
     );
   }
 
-  const forIncrementalUpdate = hasPdfByteRange(input.pdf);
-  return stampPdfVisibleSignatures(
-    {
-      pdf: input.pdf,
-      stamps: [
-        { pageIndex: firstStampRect.pageIndex, rect: firstStampRect },
-        ...stampRects.slice(1).map((rect) => ({ pageIndex: rect.pageIndex, rect })),
-      ],
-      ...(lines.length === 0 ? {} : { lines }),
-      ...(input.badge === undefined ? {} : { badge: input.badge }),
-      ...(input.inkPng === undefined ? {} : { inkPng: input.inkPng }),
-      ...(input.border === undefined ? {} : { border: input.border }),
-      ...(input.qr === undefined ? {} : { qr: input.qr }),
-    },
-    forIncrementalUpdate,
+  return hasPdfByteRange(input.pdf).pipe(
+    Effect.flatMap((forIncrementalUpdate) =>
+      stampPdfVisibleSignatures(
+        {
+          pdf: input.pdf,
+          stamps: [
+            { pageIndex: firstStampRect.pageIndex, rect: firstStampRect },
+            ...stampRects.slice(1).map((rect) => ({ pageIndex: rect.pageIndex, rect })),
+          ],
+          ...(lines.length === 0 ? {} : { lines }),
+          ...(input.badge === undefined ? {} : { badge: input.badge }),
+          ...(input.inkPng === undefined ? {} : { inkPng: input.inkPng }),
+          ...(input.border === undefined ? {} : { border: input.border }),
+          ...(input.qr === undefined ? {} : { qr: input.qr }),
+        },
+        forIncrementalUpdate,
+      ),
+    ),
   );
 };
 
@@ -881,7 +888,7 @@ const prepareAndSignRubrics = (
   pages: ReadonlyArray<PdfSignaturePage>,
   signaturePageIndexes: ReadonlyArray<number>,
   forIncrementalUpdate: boolean,
-): Effect.Effect<Uint8Array, PdfError> => {
+): Effect.Effect<Uint8Array, PdfError, PdfCore> => {
   const rubric = input.rubric;
   if (rubric === undefined) return Effect.succeed(pdf);
   const rubricLines = rubric.lines ?? [];
@@ -940,15 +947,19 @@ const preparePdfVisibleDocument = (input: PdfPrepareAndSignInput) =>
                     reason: "Text-anchor search did not find a signature placement.",
                   }),
                 );
-              return removePdfLinkAnchors(valid.pdf, valid.anchors?.matchers ?? []).pipe(
-                Effect.flatMap((pdf) => prepareAndSignMainStamp({ ...valid, pdf }, stampRects)),
-                Effect.flatMap((stamped) =>
-                  prepareAndSignRubrics(
-                    valid,
-                    stamped,
-                    document.pages,
-                    stampRects.map((rect) => rect.pageIndex),
-                    hasPdfByteRange(valid.pdf),
+              return hasPdfByteRange(valid.pdf).pipe(
+                Effect.flatMap((sourceSigned) =>
+                  removePdfLinkAnchors(valid.pdf, valid.anchors?.matchers ?? []).pipe(
+                    Effect.flatMap((pdf) => prepareAndSignMainStamp({ ...valid, pdf }, stampRects)),
+                    Effect.flatMap((stamped) =>
+                      prepareAndSignRubrics(
+                        valid,
+                        stamped,
+                        document.pages,
+                        stampRects.map((rect) => rect.pageIndex),
+                        sourceSigned,
+                      ),
+                    ),
                   ),
                 ),
                 Effect.flatMap((pdf) =>
@@ -1009,7 +1020,7 @@ export type PdfSigningBatchPreparationCallbacks = {
 export const preparePdfSigningBatch = (
   input: PdfSigningBatchPreparationInput,
   callbacks: PdfSigningBatchPreparationCallbacks = {},
-): Effect.Effect<ReadonlyArray<PdfSigningBatchPreparationResult>, PdfError> =>
+): Effect.Effect<ReadonlyArray<PdfSigningBatchPreparationResult>, PdfError, PdfCore> =>
   Schema.decodeUnknownEffect(PdfSigningBatchPreparationInputSchema)(input).pipe(
     Effect.mapError(
       (issue) =>
@@ -1048,8 +1059,8 @@ export type PdfSignatureBatchCallbacks = {
 export const signPdfSignatureBatch = (
   items: ReadonlyArray<PdfSigningBatchItem>,
   callbacks: PdfSignatureBatchCallbacks = {},
-): Effect.Effect<ReadonlyArray<PdfBatchResult>, never, Signatures> =>
-  Effect.forEach(items, (item, index): Effect.Effect<PdfBatchResult, never, Signatures> =>
+): Effect.Effect<ReadonlyArray<PdfBatchResult>, never, Signatures | PdfCore> =>
+  Effect.forEach(items, (item, index): Effect.Effect<PdfBatchResult, never, Signatures | PdfCore> =>
     signPdfSignatureField(item.input).pipe(
       Effect.match({
         onSuccess: (signedPdf): PdfBatchResult => ({ id: item.id, ok: true, signedPdf }),

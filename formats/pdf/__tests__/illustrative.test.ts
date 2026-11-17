@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { createIllustrativePdf } from "../src/stamp";
 import { verifyPdfSignatures } from "../src/verify";
 import { hasPdfByteRange } from "../src/byte-range";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 
 const extractText = async (bytes: Uint8Array) => {
@@ -55,8 +56,12 @@ describe("illustrative PDF documents", () => {
       expect(markedText).toContain("Example agreement");
       expect(markedText).toContain(variant);
       expect(markedText).toContain("DEMO MARK 2718");
-      expect(hasPdfByteRange(marked)).toBe(false);
-      const result = await Effect.runPromise(Effect.result(verifyPdfSignatures({ pdf: marked })));
+      expect(
+        await Effect.runPromise(hasPdfByteRange(marked).pipe(Effect.provide(pdfCoreTestLayer))),
+      ).toBe(false);
+      const result = await Effect.runPromise(
+        Effect.result(verifyPdfSignatures({ pdf: marked })).pipe(Effect.provide(pdfCoreTestLayer)),
+      );
       expect(result).toMatchObject({
         _tag: "Failure",
         failure: {

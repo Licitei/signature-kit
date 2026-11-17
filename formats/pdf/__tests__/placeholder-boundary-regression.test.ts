@@ -4,6 +4,7 @@ import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import type { PdfSigningRequest } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const createPdf = (): Effect.Effect<Uint8Array> =>
   Effect.promise(async () => {
@@ -45,7 +46,7 @@ describe("PDF placeholder public boundary", () => {
           expect(result.failure.reason).toBe("PDF signing input failed schema validation.");
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects inverted signature widgets without emitting a placeholder PDF", () =>
@@ -62,6 +63,6 @@ describe("PDF placeholder public boundary", () => {
         expect(result.failure.retryable).toBe(false);
         expect(result.failure.operation).toBe(PdfOperationValue.placeholder);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

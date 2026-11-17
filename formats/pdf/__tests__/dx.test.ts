@@ -148,7 +148,7 @@ describe("PDF DX helpers", () => {
       expect(anchors).toHaveLength(2);
       expect(anchors[0]).toStrictEqual({ pageIndex: 0, x: 160, y: 88, width: 80, height: 32 });
       expect(anchors[1]).toStrictEqual({ pageIndex: 0, x: 12, y: 26, width: 80, height: 32 });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("merges PDFs while preserving page order and sizes", () =>
@@ -166,7 +166,7 @@ describe("PDF DX helpers", () => {
         [300, 150],
         [400, 200],
       ]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("draws vector initials rubrics and derives Portuguese initials", () =>
@@ -185,7 +185,7 @@ describe("PDF DX helpers", () => {
       expect(content).toMatch(/\sm\s/);
       expect(content).toMatch(/\sl\s/);
       expect(content).toMatch(/\s(Tj|TJ)\s/);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("reserves two Contents hex digits for each configured CMS byte", () =>
@@ -200,7 +200,7 @@ describe("PDF DX helpers", () => {
 
       expect(contentHexLength(implicit)).toBe(32768 * 2);
       expect(contentHexLength(explicit)).toBe(64 * 2);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("signs ICP-Brasil PDFs without app-side policy assembly", () =>
@@ -216,7 +216,7 @@ describe("PDF DX helpers", () => {
       expect(extracted.signature.byteLength).toBeGreaterThan(0);
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -248,7 +248,7 @@ describe("PDF DX helpers", () => {
           expect(verification.signatureCount).toBe(2);
           expect(verification.valid).toBe(true);
         }
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("prepares multiple stamp rects, and signs with the final stamp rect", () =>
@@ -287,7 +287,7 @@ describe("PDF DX helpers", () => {
       expect(verification.signatureCount).toBe(1);
       expect(countOccurrences(content, "DXSTAMP")).toBe(2);
       expect(widgetRects).toContainEqual([120, 34, 270, 76]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("stamps rubric text only on pages without signature-rect coverage", () =>
@@ -325,6 +325,6 @@ describe("PDF DX helpers", () => {
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
       expect(countOccurrences(content, "RUBRIC_PAGE_3_ONLY")).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

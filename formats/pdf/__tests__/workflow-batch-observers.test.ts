@@ -4,9 +4,11 @@ import type { PdfSignaturePage, PdfSignatureRect, PdfSignatureTemplate } from ".
 import { PdfErrorCodeValue } from "../src/config";
 import { preparePdfSigningBatch, signPdfSignatureBatch } from "../src/workflow";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Redacted } from "effect";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { Effect, Layer, Redacted } from "effect";
 import type { Signatures } from "@signature-kit/signatures";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const createPdf = (): Effect.Effect<Uint8Array> =>
   Effect.promise(async () => {
@@ -17,10 +19,14 @@ const createPdf = (): Effect.Effect<Uint8Array> =>
 
 const PASSWORD = Redacted.make("changeit");
 
-const withTestSignatures = <A, E>(effect: Effect.Effect<A, E, Signatures>) =>
+const withTestSignatures = <A, E>(effect: Effect.Effect<A, E, Signatures | PdfCore>) =>
   readA1Fixture("ecnpj").pipe(
     Effect.flatMap((pfx) =>
-      effect.pipe(Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD }))),
+      effect.pipe(
+        Effect.provide(
+          Layer.merge(a1SignaturesLayer({ pfx, password: PASSWORD }), pdfCoreTestLayer),
+        ),
+      ),
     ),
   );
 
@@ -79,7 +85,7 @@ describe("PDF batch observer isolation", () => {
         signing: {},
       });
       expect(results.map((result) => result.ok)).toEqual([true]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("continues preparing every item when observers throw, fail, or die", () =>
@@ -120,7 +126,7 @@ describe("PDF batch observer isolation", () => {
       expect(results.every((result) => result.ok)).toBe(true);
       expect(settled).toEqual([0, 1, 2]);
       expect(yielded).toEqual([0, 1, 2]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("continues signing every item when its observer throws", () =>

@@ -16,6 +16,7 @@ import {
   PdfSignatureTemplateSchema,
 } from "../src/config";
 import type { PdfSignatureFieldDraft, PdfSignerRole } from "../src/config";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const templateFixture = (roles: ReadonlyArray<PdfSignerRole>) => ({
   id: "builder-store-template",
@@ -58,7 +59,7 @@ describe("PDF signature builder store invariants", () => {
         expect(result.failure.code).toBe(PdfErrorCodeValue.unknownRole);
         expect(result.failure.operation).toBe(PdfOperationValue.createBuilderState);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("clears a draft when setTemplate removes its role", () =>
@@ -71,7 +72,7 @@ describe("PDF signature builder store invariants", () => {
       yield* store.setTemplate(yield* template([{ id: "signer-2", label: "Replacement" }]));
 
       expect(store.getSnapshot().draft).toBeUndefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects invalid draft setter input without mutating builder state", () =>
@@ -99,7 +100,7 @@ describe("PDF signature builder store invariants", () => {
         expect(invalidDimensions.failure.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
       }
       expect(store.getSnapshot().draft).toBeUndefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("evaluates deferred draft updates against the current template", () =>
@@ -116,7 +117,7 @@ describe("PDF signature builder store invariants", () => {
       expect(state.template.roles[0]?.id).toBe("signer-2");
       expect(state.draft?.roleId).toBe("signer-2");
       expect(store.getSnapshot()).toEqual(state);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("continues every placement across observer hooks and item failures", () =>
@@ -164,7 +165,7 @@ describe("PDF signature builder store invariants", () => {
       expect(started).toEqual([0, 1, 2]);
       expect(settled).toEqual([0, 1, 2]);
       expect(yielded).toEqual([0, 1, 2]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("uses template order for first and last pages with noncanonical indexes", () =>
@@ -238,7 +239,7 @@ describe("PDF signature builder store invariants", () => {
       expect(reorderedFirst.pageIndex).toBe(17);
       expect(reorderedLast.pageIndex).toBe(42);
       expect(explicit.pageIndex).toBe(5);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("decodes and validates best-guess public input", () =>
     Effect.gen(function* () {
@@ -307,6 +308,6 @@ describe("PDF signature builder store invariants", () => {
       if (Result.isFailure(duplicateResult)) {
         expect(duplicateResult.failure.code).toBe(PdfErrorCodeValue.duplicateId);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

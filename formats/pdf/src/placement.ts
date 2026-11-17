@@ -1,13 +1,14 @@
-import {
-  type PDFDocument,
-  type PDFPage,
-  PDFArray,
-  PDFDict,
-  PDFName,
-  PDFNumber,
-  type PDFObject,
-} from "@cantoo/pdf-lib";
-import { Effect } from "effect";
+import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
+import type {
+  PdfCoreAnnotation,
+  PdfCoreDocument,
+  PdfCoreDocumentOptions,
+  PdfCoreDocumentPage,
+  PdfCoreFieldTarget,
+  PdfCoreSignatureSlotFailure,
+} from "@signature-kit/pdf-core/config";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import { Effect, Match } from "effect";
 import { PdfError, PdfErrorCodeValue, PdfOperationValue } from "./config.js";
 import type {
   PdfCoordinateTuple,
@@ -16,9 +17,9 @@ import type {
   PdfSignatureRect,
 } from "./config.js";
 import {
-  pdfCoordinateTupleFromTopLeftRect,
-  topLeftRectFromPdfCoordinateTuple,
-  visiblePdfPageSize,
+  pdfCoordinateTupleFromPdfPageGeometry,
+  topLeftRectFromPdfPageGeometry,
+  visiblePdfPageSizeFromGeometry,
 } from "./stamp.js";
 
 const DEFAULT_AUTO_WIDTH = 180;
@@ -42,8 +43,8 @@ type PlacementRectangle = {
 };
 
 type ExistingSignatureSlot = {
-  readonly widgetObject: PDFObject;
-  readonly signatureFieldObject: PDFObject;
+  readonly widget: PdfCoreAnnotation;
+  readonly field: PdfCoreFieldTarget;
   readonly widgetRect: PdfCoordinateTuple;
   readonly rect: PlacementRectangle;
 };
@@ -52,9 +53,15 @@ export type ResolvedPdfSignaturePlacement = {
   readonly pageIndex: number;
   readonly widgetRect: PdfCoordinateTuple;
   readonly invisible?: true;
-  readonly existingWidgetObject?: PDFObject;
-  readonly existingSignatureFieldObject?: PDFObject;
+  readonly existingWidgetObject?: PdfCoreAnnotation;
+  readonly existingSignatureFieldObject?: PdfCoreFieldTarget;
 };
+
+const signatureSlotFailureReasons = {
+  cyclic: "Signature widget field hierarchy is cyclic.",
+  invalidParent: "Signature widget field hierarchy has an invalid parent.",
+  depth: "Signature widget field hierarchy exceeds the supported depth.",
+} satisfies Record<PdfCoreSignatureSlotFailure, string>;
 
 const rectangleFromCoordinates = (
   left: number,
@@ -67,32 +74,6 @@ const rectangleFromCoordinates = (
   right: Math.max(left, right),
   top: Math.max(bottom, top),
 });
-
-const coordinateTupleFromArray = (array: PDFArray): PdfCoordinateTuple | undefined => {
-  if (array.size() !== 4) return undefined;
-  const left = array.lookupMaybe(0, PDFNumber)?.asNumber();
-  const bottom = array.lookupMaybe(1, PDFNumber)?.asNumber();
-  const right = array.lookupMaybe(2, PDFNumber)?.asNumber();
-  const top = array.lookupMaybe(3, PDFNumber)?.asNumber();
-  if (
-    left === undefined ||
-    bottom === undefined ||
-    right === undefined ||
-    top === undefined ||
-    !Number.isFinite(left) ||
-    !Number.isFinite(bottom) ||
-    !Number.isFinite(right) ||
-    !Number.isFinite(top)
-  ) {
-    return undefined;
-  }
-  return [left, bottom, right, top];
-};
-
-const rectangleFromArray = (array: PDFArray): PdfRectangle | undefined => {
-  const rect = coordinateTupleFromArray(array);
-  return rect === undefined ? undefined : rectangleFromCoordinates(...rect);
-};
 
 const placementRectangleFromEdges = (
   left: number,
@@ -111,9 +92,9 @@ const isVisibleWidgetRect = ([left, bottom, right, top]: PdfCoordinateTuple): bo
 
 const placementRectangleFromPdfCoordinates = (
   rect: PdfRectangle,
-  page: PDFPage,
+  page: PdfCoreDocumentPage,
 ): PlacementRectangle => {
-  const visibleRect = topLeftRectFromPdfCoordinateTuple(
+  const visibleRect = topLeftRectFromPdfPageGeometry(
     [rect.left, rect.bottom, rect.right, rect.top],
     page,
   );
@@ -125,8 +106,11 @@ const placementRectangleFromPdfCoordinates = (
   );
 };
 
-const placementRectangleFitsVisiblePage = (rect: PlacementRectangle, page: PDFPage): boolean => {
-  const { width, height } = visiblePdfPageSize(page);
+const placementRectangleFitsVisiblePage = (
+  rect: PlacementRectangle,
+  page: PdfCoreDocumentPage,
+): boolean => {
+  const { width, height } = visiblePdfPageSizeFromGeometry(page);
   return rect.left >= 0 && rect.top >= 0 && rect.right <= width && rect.bottom <= height;
 };
 
@@ -135,34 +119,14 @@ const MAX_AUTO_PLACEMENT_OBSTACLES = 10_000;
 const MAX_AUTO_PLACEMENT_COMPARISONS = 1_000_000;
 
 const pageAnnotationRectangles = (
-  pdfDoc: PDFDocument,
-  page: PDFPage,
-  annotations: PDFArray | undefined,
-): Effect.Effect<ReadonlyArray<PlacementRectangle>, PdfError> => {
-  if (annotations !== undefined && annotations.size() > MAX_AUTO_PLACEMENT_OBSTACLES) {
-    return Effect.fail(
-      new PdfError({
-        code: PdfErrorCodeValue.signaturePlacementFailed,
-        retryable: false,
-        reason: "Automatic signature placement scan exceeds the supported comparison budget.",
-        operation: PdfOperationValue.placeholder,
-      }),
-    );
-  }
-  const rectangles: Array<PlacementRectangle> = [];
-  if (annotations === undefined) return Effect.succeed(rectangles);
-
-  for (let index = 0; index < annotations.size(); index++) {
-    const annotation = pdfDoc.context.lookupMaybe(annotations.get(index), PDFDict);
-    const rectArray = annotation?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-    const rect = rectArray === undefined ? undefined : rectangleFromArray(rectArray);
-    if (rect !== undefined) rectangles.push(placementRectangleFromPdfCoordinates(rect, page));
-  }
-
-  return Effect.succeed(rectangles);
-};
-
-const MAX_ACROFORM_PARENT_DEPTH = 100;
+  page: PdfCoreDocumentPage,
+  annotations: ReadonlyArray<PdfCoreAnnotation>,
+): ReadonlyArray<PlacementRectangle> =>
+  annotations.flatMap((annotation) =>
+    annotation.rect === undefined
+      ? []
+      : [placementRectangleFromPdfCoordinates(rectangleFromCoordinates(...annotation.rect), page)],
+  );
 
 type SignatureSlotCandidate =
   | ExistingSignatureSlot
@@ -172,103 +136,25 @@ type SignatureSlotCandidate =
       readonly reason: string;
     };
 
-const signatureSlotCandidate = (
-  pdfDoc: PDFDocument,
-  widgetObject: PDFObject,
-  widget: PDFDict,
-  widgetRect: PdfCoordinateTuple,
-  rect: PlacementRectangle,
-): SignatureSlotCandidate | undefined => {
-  let currentObject = widgetObject;
-  let current = widget;
-  let inheritedFieldType: string | undefined;
-  let signatureFieldObject = widgetObject;
-  let hasValue = false;
-  const seenObjects = new Set<PDFObject>();
-  const seenFields = new Set<PDFDict>();
-
-  for (let depth = 0; depth < MAX_ACROFORM_PARENT_DEPTH; depth += 1) {
-    if (seenObjects.has(currentObject) || seenFields.has(current)) {
-      return inheritedFieldType === "/Sig"
-        ? { malformed: true, rect, reason: "Signature widget field hierarchy is cyclic." }
-        : undefined;
-    }
-    seenObjects.add(currentObject);
-    seenFields.add(current);
-
-    const fieldType = current.lookupMaybe(PDFName.of("FT"), PDFName)?.asString();
-    if (inheritedFieldType === undefined && fieldType !== undefined) {
-      inheritedFieldType = fieldType;
-    }
-    if (current.get(PDFName.of("V")) !== undefined) hasValue = true;
-
-    const parentObject = current.get(PDFName.of("Parent"));
-    if (parentObject === undefined) {
-      if (inheritedFieldType !== "/Sig" || hasValue) return undefined;
-      return { widgetObject, signatureFieldObject, widgetRect, rect };
-    }
-
-    const parent = pdfDoc.context.lookupMaybe(parentObject, PDFDict);
-    if (parent === undefined) {
-      return inheritedFieldType === "/Sig"
-        ? {
-            malformed: true,
-            rect,
-            reason: "Signature widget field hierarchy has an invalid parent.",
-          }
-        : undefined;
-    }
-    if (
-      current === widget &&
-      fieldType === undefined &&
-      current.get(PDFName.of("T")) === undefined
-    ) {
-      signatureFieldObject = parentObject;
-    }
-    currentObject = parentObject;
-    current = parent;
-  }
-
-  return inheritedFieldType === "/Sig"
-    ? {
-        malformed: true,
-        rect,
-        reason: "Signature widget field hierarchy exceeds the supported depth.",
-      }
-    : undefined;
-};
-
 const pageSignatureSlots = (
-  pdfDoc: PDFDocument,
-  page: PDFPage,
-  annotations: PDFArray | undefined,
+  page: PdfCoreDocumentPage,
+  annotations: ReadonlyArray<PdfCoreAnnotation>,
 ): ReadonlyArray<SignatureSlotCandidate> => {
   const slots: Array<SignatureSlotCandidate> = [];
-  if (annotations === undefined) return slots;
-
-  for (let index = 0; index < annotations.size(); index++) {
-    const widgetObject = annotations.get(index);
-    const widget = pdfDoc.context.lookupMaybe(widgetObject, PDFDict);
-    const subtype = widget?.lookupMaybe(PDFName.of("Subtype"), PDFName)?.asString();
-    const rectArray = widget?.lookupMaybe(PDFName.of("Rect"), PDFArray);
-    const widgetRect = rectArray === undefined ? undefined : coordinateTupleFromArray(rectArray);
-    if (
-      widgetObject !== undefined &&
-      widget !== undefined &&
-      subtype === "/Widget" &&
-      widgetRect !== undefined &&
-      isVisibleWidgetRect(widgetRect)
-    ) {
-      const rect = placementRectangleFromPdfCoordinates(
-        rectangleFromCoordinates(...widgetRect),
-        page,
-      );
-      if (!placementRectangleFitsVisiblePage(rect, page)) continue;
-      const candidate = signatureSlotCandidate(pdfDoc, widgetObject, widget, widgetRect, rect);
-      if (candidate !== undefined) slots.push(candidate);
+  for (const widget of annotations) {
+    const widgetRect = widget.rect;
+    if (!widget.widget || widgetRect === undefined || !isVisibleWidgetRect(widgetRect)) continue;
+    const rect = placementRectangleFromPdfCoordinates(
+      rectangleFromCoordinates(...widgetRect),
+      page,
+    );
+    if (!placementRectangleFitsVisiblePage(rect, page)) continue;
+    const slot = widget.signatureSlot;
+    if (slot.kind === "open") slots.push({ widget, field: slot.field, widgetRect, rect });
+    if (slot.kind === "malformed") {
+      slots.push({ malformed: true, rect, reason: signatureSlotFailureReasons[slot.reason] });
     }
   }
-
   return slots;
 };
 
@@ -532,143 +418,158 @@ const resolvedPageIndex = (
 };
 
 const resolveAutoPlacement = (
-  pdfDoc: PDFDocument,
+  pdf: Uint8Array,
+  document: PdfCoreDocument,
   pageIndex: number,
   appearance: PdfSignatureAppearance,
-): Effect.Effect<ResolvedPdfSignaturePlacement, PdfError> => {
-  const placement = appearance.placement;
-  const page = pdfDoc.getPages()[pageIndex];
-  if (page === undefined) {
-    return Effect.fail(
-      new PdfError({
+): Effect.Effect<ResolvedPdfSignaturePlacement, PdfError, PdfCore> =>
+  Effect.gen(function* () {
+    const placement = appearance.placement;
+    const page = document.pages[pageIndex];
+    if (page === undefined) {
+      return yield* new PdfError({
         code: PdfErrorCodeValue.invalidPdf,
         retryable: false,
         reason: "The selected PDF page does not exist.",
         operation: PdfOperationValue.placeholder,
-      }),
-    );
-  }
+      });
+    }
 
-  const width =
-    placement?.kind === "auto" ? (placement.width ?? DEFAULT_AUTO_WIDTH) : DEFAULT_AUTO_WIDTH;
-  const height =
-    placement?.kind === "auto" ? (placement.height ?? DEFAULT_AUTO_HEIGHT) : DEFAULT_AUTO_HEIGHT;
-  const margin =
-    placement?.kind === "auto" ? (placement.margin ?? DEFAULT_AUTO_MARGIN) : DEFAULT_AUTO_MARGIN;
-  const gap = placement?.kind === "auto" ? (placement.gap ?? DEFAULT_AUTO_GAP) : DEFAULT_AUTO_GAP;
-  const anchor =
-    placement?.kind === "auto" ? (placement.anchor ?? DEFAULT_AUTO_ANCHOR) : DEFAULT_AUTO_ANCHOR;
+    const width =
+      placement?.kind === "auto" ? (placement.width ?? DEFAULT_AUTO_WIDTH) : DEFAULT_AUTO_WIDTH;
+    const height =
+      placement?.kind === "auto" ? (placement.height ?? DEFAULT_AUTO_HEIGHT) : DEFAULT_AUTO_HEIGHT;
+    const margin =
+      placement?.kind === "auto" ? (placement.margin ?? DEFAULT_AUTO_MARGIN) : DEFAULT_AUTO_MARGIN;
+    const gap = placement?.kind === "auto" ? (placement.gap ?? DEFAULT_AUTO_GAP) : DEFAULT_AUTO_GAP;
+    const anchor =
+      placement?.kind === "auto" ? (placement.anchor ?? DEFAULT_AUTO_ANCHOR) : DEFAULT_AUTO_ANCHOR;
 
-  if (
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    !Number.isFinite(margin) ||
-    !Number.isFinite(gap) ||
-    width <= 0 ||
-    height <= 0 ||
-    margin < 0 ||
-    gap < 0
-  ) {
-    return Effect.fail(
-      new PdfError({
+    if (
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      !Number.isFinite(margin) ||
+      !Number.isFinite(gap) ||
+      width <= 0 ||
+      height <= 0 ||
+      margin < 0 ||
+      gap < 0
+    ) {
+      return yield* new PdfError({
         code: PdfErrorCodeValue.signaturePlacementFailed,
         retryable: false,
         reason: "Automatic signature placement dimensions must be finite positive numbers.",
         operation: PdfOperationValue.placeholder,
-      }),
-    );
-  }
+      });
+    }
 
-  const { width: pageWidth, height: pageHeight } = visiblePdfPageSize(page);
-  const availableWidth = pageWidth - margin * 2;
-  const availableHeight = pageHeight - margin * 2;
-  if (width > availableWidth || height > availableHeight) {
-    return Effect.fail(
-      new PdfError({
+    const { width: pageWidth, height: pageHeight } = visiblePdfPageSizeFromGeometry(page);
+    const availableWidth = pageWidth - margin * 2;
+    const availableHeight = pageHeight - margin * 2;
+    if (width > availableWidth || height > availableHeight) {
+      return yield* new PdfError({
         code: PdfErrorCodeValue.signaturePlacementFailed,
         retryable: false,
         reason: "Automatic signature placement does not fit inside the selected page margins.",
         operation: PdfOperationValue.placeholder,
-      }),
+      });
+    }
+    const bounds = placementRectangleFromEdges(
+      margin,
+      margin,
+      pageWidth - margin,
+      pageHeight - margin,
     );
-  }
-  const bounds = placementRectangleFromEdges(
-    margin,
-    margin,
-    pageWidth - margin,
-    pageHeight - margin,
-  );
-  const annotations = page.node.lookupMaybe(PDFName.of("Annots"), PDFArray);
-  if (annotations !== undefined && annotations.size() > MAX_AUTO_PLACEMENT_OBSTACLES) {
-    return Effect.fail(
-      new PdfError({
+    if (page.annotationCount > MAX_AUTO_PLACEMENT_OBSTACLES) {
+      return yield* new PdfError({
         code: PdfErrorCodeValue.signaturePlacementFailed,
         retryable: false,
         reason: "Automatic signature placement scan exceeds the supported comparison budget.",
         operation: PdfOperationValue.placeholder,
-      }),
+      });
+    }
+    const annotations =
+      page.annotationCount === 0
+        ? []
+        : (yield* describePdf(pdf, { annotationPages: [pageIndex] })).annotations;
+    const existingSlot = chooseExistingSignatureSlot(
+      bounds,
+      pageSignatureSlots(page, annotations),
+      anchor,
     );
-  }
-  const existingSlot = chooseExistingSignatureSlot(
-    bounds,
-    pageSignatureSlots(pdfDoc, page, annotations),
-    anchor,
-  );
-  if (existingSlot !== undefined) {
-    if ("malformed" in existingSlot) {
-      return Effect.fail(
-        new PdfError({
+    if (existingSlot !== undefined) {
+      if ("malformed" in existingSlot) {
+        return yield* new PdfError({
           code: PdfErrorCodeValue.signaturePlacementFailed,
           retryable: false,
           reason: existingSlot.reason,
           operation: PdfOperationValue.placeholder,
-        }),
-      );
+        });
+      }
+      return {
+        pageIndex,
+        widgetRect: existingSlot.widgetRect,
+        existingWidgetObject: existingSlot.widget,
+        existingSignatureFieldObject: existingSlot.field,
+      };
     }
-    return Effect.succeed({
-      pageIndex,
-      widgetRect: existingSlot.widgetRect,
-      existingWidgetObject: existingSlot.widgetObject,
-      existingSignatureFieldObject: existingSlot.signatureFieldObject,
-    });
-  }
 
-  return pageAnnotationRectangles(pdfDoc, page, annotations).pipe(
-    Effect.flatMap((obstacles) =>
-      chooseAutoRect(bounds, obstacles, width, height, gap, anchor).pipe(
-        Effect.flatMap((chosen) => {
-          if (chosen === undefined) {
-            return Effect.fail(
-              new PdfError({
-                code: PdfErrorCodeValue.signaturePlacementFailed,
-                retryable: false,
-                reason: "No empty signature placement slot was found on the selected page.",
-                operation: PdfOperationValue.placeholder,
-              }),
-            );
-          }
+    const chosen = yield* chooseAutoRect(
+      bounds,
+      pageAnnotationRectangles(page, annotations),
+      width,
+      height,
+      gap,
+      anchor,
+    );
+    if (chosen === undefined) {
+      return yield* new PdfError({
+        code: PdfErrorCodeValue.signaturePlacementFailed,
+        retryable: false,
+        reason: "No empty signature placement slot was found on the selected page.",
+        operation: PdfOperationValue.placeholder,
+      });
+    }
+    const widgetRect = pdfCoordinateTupleFromPdfPageGeometry(
+      {
+        pageIndex,
+        x: chosen.left,
+        y: chosen.top,
+        width: chosen.right - chosen.left,
+        height: chosen.bottom - chosen.top,
+      } satisfies PdfSignatureRect,
+      page,
+    );
+    return { pageIndex, widgetRect };
+  });
 
-          const widgetRect = pdfCoordinateTupleFromTopLeftRect(
-            {
-              pageIndex,
-              x: chosen.left,
-              y: chosen.top,
-              width: chosen.right - chosen.left,
-              height: chosen.bottom - chosen.top,
-            } satisfies PdfSignatureRect,
-            page,
-          );
-          return Effect.succeed({ pageIndex, widgetRect });
+export const describePdf = (
+  pdf: Uint8Array,
+  options: PdfCoreDocumentOptions,
+): Effect.Effect<PdfCoreDocument, PdfError, PdfCore> =>
+  Effect.gen(function* () {
+    const core = yield* PdfCore;
+    return yield* core.document(pdf, options);
+  }).pipe(
+    Effect.mapError(
+      (error) =>
+        new PdfError({
+          code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
+            Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+          ),
+          retryable: false,
+          operation: PdfOperationValue.placeholder,
+          ...(error.reason === undefined ? {} : { reason: error.reason }),
         }),
-      ),
     ),
   );
-};
 
-export const resolveSignatureWidgetPlacement = (
-  pdfDoc: PDFDocument,
+export const resolvePlacementForDocument = (
+  pdf: Uint8Array,
+  document: PdfCoreDocument,
   appearance: PdfSignatureAppearance,
-): Effect.Effect<ResolvedPdfSignaturePlacement, PdfError> => {
+): Effect.Effect<ResolvedPdfSignaturePlacement, PdfError, PdfCore> => {
   const placement = appearance.placement;
   if (appearance.widgetRect !== undefined && placement !== undefined) {
     return Effect.fail(
@@ -709,10 +610,9 @@ export const resolveSignatureWidgetPlacement = (
   }
   const placementPage = placement?.kind === "auto" ? (placement.page ?? "last") : undefined;
   const requestedPageIndex = placement?.pageIndex ?? appearance.pageIndex;
-  const pages = pdfDoc.getPages();
 
-  return resolvedPageIndex(pages.length, requestedPageIndex, placementPage).pipe(
-    Effect.flatMap((pageIndex) => {
+  return resolvedPageIndex(document.pages.length, requestedPageIndex, placementPage).pipe(
+    Effect.flatMap((pageIndex): Effect.Effect<ResolvedPdfSignaturePlacement, PdfError, PdfCore> => {
       if (placement?.kind === "manual") {
         return resolvedVisibleWidgetPlacement(pageIndex, placement.widgetRect);
       }
@@ -720,7 +620,7 @@ export const resolveSignatureWidgetPlacement = (
         return Effect.succeed({ pageIndex, widgetRect: [0, 0, 0, 0], invisible: true });
       }
       if (placement?.kind === "auto") {
-        return resolveAutoPlacement(pdfDoc, pageIndex, appearance);
+        return resolveAutoPlacement(pdf, document, pageIndex, appearance);
       }
       if (appearance.widgetRect === undefined) {
         return Effect.succeed({ pageIndex, widgetRect: [0, 0, 0, 0], invisible: true });
@@ -730,3 +630,11 @@ export const resolveSignatureWidgetPlacement = (
     }),
   );
 };
+
+export const resolveSignatureWidgetPlacement = (
+  pdf: Uint8Array,
+  appearance: PdfSignatureAppearance,
+): Effect.Effect<ResolvedPdfSignaturePlacement, PdfError, PdfCore> =>
+  describePdf(pdf, {}).pipe(
+    Effect.flatMap((document) => resolvePlacementForDocument(pdf, document, appearance)),
+  );

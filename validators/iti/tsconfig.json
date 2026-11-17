@@ -13,6 +13,9 @@
     },
     {
       "path": "../../formats/pdf"
+    },
+    {
+      "path": "../../shared/pdf-core"
     }
   ]
 }

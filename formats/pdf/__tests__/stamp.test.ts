@@ -39,6 +39,7 @@ import type {
   PdfSignaturePage,
   PdfVisibleStampInput,
 } from "../src/config";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const createThreePagePdf: Effect.Effect<Uint8Array> = Effect.promise(async () => {
   const pdf = await PDFDocument.create();
@@ -404,7 +405,7 @@ describe("stampPdfRubric", () => {
         badge: { header: { text: "Signed" }, rows: [[{ label: "Company", value }]], footer: [] },
       });
       expect(decodedFlateStreams(stamped)).toContain(`${encoded} Tj`);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a badge that has no positive drawing area inside its padding", () =>
@@ -420,7 +421,7 @@ describe("stampPdfRubric", () => {
       );
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("lays out logo, QR and handwriting without overlap on rotated cropped pages", () =>
@@ -470,7 +471,7 @@ describe("stampPdfRubric", () => {
       expect(document.getPageCount()).toBe(4);
       for (const page of document.getPages())
         expect(page.node.Resources()?.get(PDFName.of("XObject"))).toBeDefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("stamps the rubric on every page and preserves the page count", () =>
@@ -482,7 +483,7 @@ describe("stampPdfRubric", () => {
       });
       expect(yield* pageCount(stamped)).toBe(3);
       expect(stamped.byteLength).toBeGreaterThan(pdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("preserves existing signatures through default rubric helpers", () =>
     Effect.gen(function* () {
@@ -519,7 +520,7 @@ describe("stampPdfRubric", () => {
 
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(2);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps signed PDFs byte-identical for no-op rubric and visible stamps", () =>
@@ -574,7 +575,7 @@ describe("stampPdfRubric", () => {
       expect(noTargetVerification.valid).toBe(true);
       expect(noContentVerification.valid).toBe(true);
       expect(visibleVerification.valid).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("validates malformed empty visible stamps before no-op handling", () =>
@@ -595,7 +596,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects empty batches and malformed later visible stamp targets", () =>
     Effect.gen(function* () {
@@ -626,7 +627,7 @@ describe("stampPdfRubric", () => {
           expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects conflicting initials rubric modes", () =>
@@ -657,7 +658,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(imageConflict)) {
         expect(imageConflict.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects legacy visible fields combined with badge mode", () =>
@@ -693,7 +694,7 @@ describe("stampPdfRubric", () => {
           expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
         }
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("stamping more pages adds more content than stamping one", () =>
@@ -707,7 +708,7 @@ describe("stampPdfRubric", () => {
       });
       expect(yield* pageCount(allPages)).toBe(3);
       expect(allPages.byteLength).toBeGreaterThan(onePage.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("draws an embedded PNG rubric", () =>
@@ -722,7 +723,7 @@ describe("stampPdfRubric", () => {
       expect(ONE_BY_ONE_PNG[28]).toBe(0);
       expect(yield* pageCount(stamped)).toBe(3);
       expect(stamped.byteLength).toBeGreaterThan(pdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("draws an embedded interlaced PNG rubric", () =>
@@ -735,7 +736,7 @@ describe("stampPdfRubric", () => {
       });
 
       expect(stamped.byteLength).toBeGreaterThan(pdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects oversized PNG dimensions before image decoding", () =>
@@ -775,7 +776,7 @@ describe("stampPdfRubric", () => {
           "PNG image exceeds supported input or decoded pixel limits.",
         );
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects compressed PNG output beyond its filtered scanlines", () =>
@@ -794,7 +795,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects animated PNG frame chunks before image decoding", () =>
     Effect.gen(function* () {
@@ -813,7 +814,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("resolves reordered rubric metadata by declared page index", () =>
@@ -862,7 +863,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(duplicate)) {
         expect(duplicate.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("stamps side rubrics and the visible signature through PDF format APIs", () =>
@@ -890,7 +891,7 @@ describe("stampPdfRubric", () => {
 
       expect(yield* pageCount(stamped)).toBe(3);
       expect(stamped.byteLength).toBeGreaterThan(pdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("draws a vector QR stamp that remains valid after signing", () =>
@@ -920,7 +921,7 @@ describe("stampPdfRubric", () => {
       expect(filledPathOperators).toBeGreaterThan(100);
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("lays out every structured badge element inside the badge container", () =>
@@ -997,7 +998,7 @@ describe("stampPdfRubric", () => {
         }
       }
       expect(linkAnnotationCount).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("truncates unbreakable badge values before they leave the badge", () =>
     Effect.promise(async () => {
@@ -1028,7 +1029,7 @@ describe("stampPdfRubric", () => {
           item.value.rect.width + GEOMETRY_EPSILON,
         );
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -1063,7 +1064,7 @@ describe("stampPdfRubric", () => {
         expect(links[0]?.rect.height).toBeLessThan(10);
         expect(verification.valid).toBe(true);
         expect(verification.signatureCount).toBe(1);
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("round-trips untrusted badge URIs without PDF syntax injection", () =>
@@ -1093,7 +1094,7 @@ describe("stampPdfRubric", () => {
       expect(roundTrippedLinks).toHaveLength(1);
       expect(roundTrippedLinks[0]?.uri).toBe(MALICIOUS_PDF_TEXT);
       expect(Buffer.from(stamped).toString("latin1")).not.toContain(MALICIOUS_PDF_TEXT);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("preserves one signature dictionary and untrusted PDF text round trips", () =>
@@ -1147,7 +1148,7 @@ describe("stampPdfRubric", () => {
       });
       expect(links).toHaveLength(1);
       expect(links[0]?.uri).toBe(MALICIOUS_PDF_TEXT);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("scales long badge values without failing the stamp", () =>
@@ -1188,7 +1189,7 @@ describe("stampPdfRubric", () => {
       if (Result.isSuccess(result)) {
         expect(result.success.byteLength).toBeGreaterThan(pdf.byteLength);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("maps visible stamps through the rotated CropBox coordinate system", () =>
     Effect.gen(function* () {
@@ -1237,7 +1238,7 @@ describe("stampPdfRubric", () => {
       });
       expect(decodedFlateStreams(stamped)).toMatch(/\b0 1 -1 0 300 100 cm\b/);
       expect(decodedFlateStreams(cropOnlyStamped)).toMatch(/\b1 0 0 1 100 100 cm\b/);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("round-trips non-square CropBox coordinates across every page rotation", () =>
     Effect.promise(async () => {
@@ -1256,7 +1257,7 @@ describe("stampPdfRubric", () => {
           height: rect.height,
         });
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("maps rubric helpers through non-square rotated CropBoxes", () =>
     Effect.gen(function* () {
@@ -1284,7 +1285,7 @@ describe("stampPdfRubric", () => {
 
       expect(content).toMatch(/\b0 1 -1 0 300 100 cm\b/);
       expect(content).toMatch(/\b0 -1 1 0 100 260 cm\b/);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps the legacy lines stamp content snapshot-stable", () =>
@@ -1299,7 +1300,7 @@ describe("stampPdfRubric", () => {
       });
 
       expect(decodedFlateStreams(stamped)).toMatchSnapshot();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails with a typed PdfError when QR text exceeds the maximum version", () =>
@@ -1319,7 +1320,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects invalid visible rects and page identities on every batch target", () =>
@@ -1385,7 +1386,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(laterTargetResult)) {
         expect(laterTargetResult.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects visible rects outside rotated CropBox dimensions", () =>
@@ -1410,7 +1411,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects invalid and CropBox-external rubric tuples", () =>
@@ -1451,7 +1452,7 @@ describe("stampPdfRubric", () => {
         lines: ["x"],
       });
       expect(stamped.byteLength).toBeGreaterThan(croppedPdf.byteLength);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails when a target page index is out of range", () =>
@@ -1464,7 +1465,7 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails when the rect has no area", () =>
@@ -1477,6 +1478,6 @@ describe("stampPdfRubric", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

@@ -10,6 +10,7 @@ import {
 } from "@signature-kit/pdf/builder";
 import { Effect, Redacted } from "effect";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const PASSWORD = Redacted.make("changeit");
 
@@ -68,6 +69,6 @@ describe("PDF signing", () => {
       expect(signed.byteLength).toBeGreaterThan(pdf.byteLength);
       expect(verification.valid).toBe(true);
       expect(verification.signatureCount).toBe(1);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

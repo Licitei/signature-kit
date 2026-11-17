@@ -13,6 +13,7 @@ import * as asn1js from "asn1js";
 import { Effect, Redacted, Result } from "effect";
 import * as pkijs from "pkijs";
 import { validatePdfConformance } from "../src/conformance";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const PFX_PASSWORD = Redacted.make("changeit");
 const FIXED_DATE = new Date("2026-01-02T03:04:05Z");
@@ -417,7 +418,7 @@ describe("ITI local conformance hardening", () => {
       expect(Buffer.from(digest.valueBlock.valueHexView)).toEqual(
         Buffer.from(IcpBrasilPadesPolicy.adRbV11.policyHash),
       );
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a non-PDF envelope even when its detached CMS is valid", () =>
@@ -437,7 +438,7 @@ describe("ITI local conformance hardening", () => {
         expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
         expect(result.failure.operation).toBe("iti.conformance");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps a structurally valid unsigned PDF distinct from a malformed signed PDF", () =>
@@ -457,7 +458,7 @@ describe("ITI local conformance hardening", () => {
         expect(malformedResult.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
         expect(malformedResult.failure.operation).toBe("iti.conformance");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a parsed signature dictionary missing its ByteRange", () =>
@@ -472,7 +473,7 @@ describe("ITI local conformance hardening", () => {
         expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
         expect(result.failure.operation).toBe("iti.conformance");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a prior signature whose ByteRange ends before its complete revision", () =>
@@ -486,7 +487,7 @@ describe("ITI local conformance hardening", () => {
         expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
         expect(result.failure.operation).toBe("iti.conformance");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a ByteRange ending at fake revision markers inside a stream", () =>
@@ -501,7 +502,7 @@ describe("ITI local conformance hardening", () => {
         expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
         expect(result.failure.operation).toBe("iti.conformance");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects an orphan signature dictionary with a valid detached CMS", () =>
@@ -529,7 +530,7 @@ describe("ITI local conformance hardening", () => {
         expect(result.failure.code).toBe(SignatureKitErrorCodeValue.verifyFailed);
         expect(result.failure.operation).toBe("iti.conformance");
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("excludes a signature attached only in a later revision", () =>
@@ -566,7 +567,7 @@ describe("ITI local conformance hardening", () => {
       expect(report.signatureCount).toBe(1);
       expect(report.signatures).toHaveLength(1);
       expect(report.signatures[0]?.structure.status).toBe("Valid");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a CMS signature dictionary containing more than one SignerInfo", () =>
@@ -595,7 +596,7 @@ describe("ITI local conformance hardening", () => {
         message: "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF.",
       });
       expect(report.signatures[0]?.cipher.status).toBe("Invalid");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed content-type attribute with extra or wrong values", () =>
@@ -625,7 +626,7 @@ describe("ITI local conformance hardening", () => {
         status: "Invalid",
         message: "A assinatura não contém IdContentType apontando para id-data.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed duplicate messageDigest attribute", () =>
@@ -659,7 +660,7 @@ describe("ITI local conformance hardening", () => {
         message:
           "A assinatura não contém exatamente um atributo IdMessageDigest codificado como OCTET STRING.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed AD-RB policy with an unpinned digest", () =>
@@ -695,7 +696,7 @@ describe("ITI local conformance hardening", () => {
         status: "Invalid",
         message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed AD-RB policy with malformed qualifier encoding", () =>
@@ -734,7 +735,7 @@ describe("ITI local conformance hardening", () => {
         status: "Invalid",
         message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("approves a re-signed AD-RB policy without optional qualifiers", () =>
@@ -786,7 +787,7 @@ describe("ITI local conformance hardening", () => {
         name: "IdAaEtsSigPolicyId",
         status: "Valid",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed AD-RB policy with duplicate qualifiers", () =>
@@ -829,7 +830,7 @@ describe("ITI local conformance hardening", () => {
         status: "Invalid",
         message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed SigningCertificateV2 hash that does not bind the signer", () =>
@@ -871,7 +872,7 @@ describe("ITI local conformance hardening", () => {
         message:
           "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a correct first ESSCertIDv2 followed by an extra entry", () =>
@@ -902,7 +903,7 @@ describe("ITI local conformance hardening", () => {
         message:
           "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("approves a re-signed SigningCertificateV2 with omitted issuerSerial", () =>
@@ -930,7 +931,7 @@ describe("ITI local conformance hardening", () => {
         ["signingTime", "Valid"],
       ]);
       expect(report.approved).toBe(true);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("approves a re-signed SigningCertificateV2 with matching issuerSerial", () =>
@@ -954,7 +955,7 @@ describe("ITI local conformance hardening", () => {
         name: "IdAaSigningCertificateV2",
         status: "Valid",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed SigningCertificateV2 with a mismatched issuerSerial serial", () =>
@@ -993,7 +994,7 @@ describe("ITI local conformance hardening", () => {
         message:
           "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed SigningCertificateV2 with a mismatched issuerSerial issuer", () =>
@@ -1044,7 +1045,7 @@ describe("ITI local conformance hardening", () => {
         message:
           "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a re-signed SigningCertificateV2 with malformed issuerSerial", () =>
@@ -1074,6 +1075,6 @@ describe("ITI local conformance hardening", () => {
         message:
           "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

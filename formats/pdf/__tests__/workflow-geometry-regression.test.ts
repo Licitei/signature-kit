@@ -121,7 +121,7 @@ describe("PDF workflow geometry", () => {
       expect(widgetRects).toContainEqual([20, 120, 120, 160]);
       expect(content).toMatch(/1\s+0\s+0\s+1\s+20\s+160\s+cm/);
       expect(content).toMatch(/100\s+40\s+l/);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("prepares and signs a batch with one field rect for the mark and widget", () =>
@@ -193,7 +193,7 @@ describe("PDF workflow geometry", () => {
       expect(widgetRects).toContainEqual([20, 120, 120, 160]);
       expect(content).toMatch(/1\s+0\s+0\s+1\s+20\s+160\s+cm/);
       expect(content).toMatch(/100\s+40\s+l/);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect(
@@ -284,7 +284,7 @@ describe("PDF workflow geometry", () => {
           20, 130, 120, 170,
         ]);
         expect(yield* signatureWidgetRects(signed.signedPdf, 2)).toEqual([]);
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a batch whose visible rect conflicts with its selected template field", () =>
@@ -354,7 +354,7 @@ describe("PDF workflow geometry", () => {
       if (result?.ok === false) {
         expect(result.error.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects a same-size field owned by another batch document", () =>
     Effect.gen(function* () {
@@ -409,7 +409,7 @@ describe("PDF workflow geometry", () => {
       if (result?.ok === false) {
         expect(result.error.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("maps a cropped normalized rotation visible mark to the signed widget", () =>
     Effect.gen(function* () {
@@ -435,7 +435,7 @@ describe("PDF workflow geometry", () => {
       expect(verification.signatureCount).toBe(1);
       expect(widgetRects).toContainEqual([250, 35, 280, 75]);
       expect(content).toContain("<43524F502D524F54415445> Tj");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("uses visible rotated CropBox dimensions for default workflow placement", () =>
     Effect.gen(function* () {
@@ -465,7 +465,7 @@ describe("PDF workflow geometry", () => {
       expect(verification.signatureCount).toBe(1);
       expect(widgetRects).toContainEqual([246, 61, 276, 101]);
       expect(content).toContain("<43524F502D44454641554C54> Tj");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects rects beyond the rotated CropBox visible width", () =>
@@ -488,7 +488,7 @@ describe("PDF workflow geometry", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.fieldOutOfBounds);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("keeps a cropped rotated batch mark and widget coherent", () =>
@@ -553,7 +553,7 @@ describe("PDF workflow geometry", () => {
       expect(verification.signatureCount).toBe(1);
       expect(widgetRects).toContainEqual([250, 35, 280, 75]);
       expect(content).toContain("<42415443482D43524F502D524F54415445> Tj");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("rejects a standalone field outside the actual visible page", () =>
     Effect.gen(function* () {
@@ -595,6 +595,6 @@ describe("PDF workflow geometry", () => {
       if (Result.isFailure(result)) {
         expect(result.failure.code).toBe(PdfErrorCodeValue.fieldOutOfBounds);
       }
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

@@ -1,6 +1,7 @@
 import type { CmsError, CmsHashAlgorithm } from "@signature-kit/cms/config";
 import { IcpBrasilPadesPolicy } from "@signature-kit/cms/icp-brasil";
 import { createDetachedSignedData } from "@signature-kit/cms/sign";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { signatures } from "@signature-kit/signatures";
 import type { Signatures, SignatureAlgorithm, SignatureKitError } from "@signature-kit/signatures";
 import { Effect, Match, Schema } from "effect";
@@ -41,7 +42,7 @@ const signatureAlgorithmForHash = (
 
 export const signPdf = (
   input: PdfSigningRequest,
-): Effect.Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures> =>
+): Effect.Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures | PdfCore> =>
   Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(PdfSigningRequestSchema)(input).pipe(
       Effect.mapError(

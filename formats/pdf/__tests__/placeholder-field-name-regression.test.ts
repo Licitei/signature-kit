@@ -1,8 +1,10 @@
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFString } from "@cantoo/pdf-lib";
 import { describe, expect, it } from "@effect/vitest";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
 import { addSignaturePlaceholder } from "../src/placeholder";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const createPdfWithNestedSignatureKitName: Effect.Effect<Uint8Array> = Effect.promise(async () => {
   const pdfDoc = await PDFDocument.create();
@@ -66,7 +68,10 @@ const createPdfWithWideFieldHierarchy = (fieldCount: number): Effect.Effect<Uint
     }
   });
 
-const expectInvalidPdfPlaceholder = (pdf: Uint8Array, reason: string): Effect.Effect<void> =>
+const expectInvalidPdfPlaceholder = (
+  pdf: Uint8Array,
+  reason: string,
+): Effect.Effect<void, never, PdfCore> =>
   Effect.gen(function* () {
     const result = yield* Effect.result(addSignaturePlaceholder({ pdf, signatureLength: 128 }));
 
@@ -110,7 +115,7 @@ describe("PDF placeholder field names", () => {
       );
       expect(firstSignature?.get(PDFName.of("V"))).not.toBeUndefined();
       expect(secondSignature?.get(PDFName.of("V"))).not.toBeUndefined();
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("accepts a hierarchy at the supported node budget", () =>
     Effect.gen(function* () {
@@ -125,7 +130,7 @@ describe("PDF placeholder field names", () => {
       expect(signatureField?.lookupMaybe(PDFName.of("T"), PDFString)?.decodeText()).toBe(
         "SignatureKitSignature1",
       );
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails closed when a field hierarchy exceeds the node budget", () =>
@@ -136,7 +141,7 @@ describe("PDF placeholder field names", () => {
         source,
         "Signature field hierarchy exceeds the supported node budget.",
       );
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails closed when a field hierarchy exceeds the depth budget", () =>
@@ -147,7 +152,7 @@ describe("PDF placeholder field names", () => {
         source,
         "Signature field hierarchy exceeds the supported depth.",
       );
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails closed for a cyclic field hierarchy", () =>
@@ -155,7 +160,7 @@ describe("PDF placeholder field names", () => {
       const source = yield* createPdfWithCyclicFieldHierarchy();
 
       yield* expectInvalidPdfPlaceholder(source, "Signature field hierarchy is cyclic.");
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("fails closed when processing an oversized field name", () =>
@@ -170,7 +175,7 @@ describe("PDF placeholder field names", () => {
         source,
         "Signature field name exceeds the supported length.",
       );
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("fails closed when aggregate field-name processing exceeds its budget", () =>
     Effect.gen(function* () {
@@ -185,6 +190,6 @@ describe("PDF placeholder field names", () => {
         source,
         "Signature field names exceed the supported processing budget.",
       );
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

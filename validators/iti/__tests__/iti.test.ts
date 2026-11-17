@@ -8,10 +8,11 @@ import { CmsOid } from "@signature-kit/cms/config";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { extractPdfSignature } from "@signature-kit/pdf/byte-range";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Layer, Result, Schema } from "effect";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { validatePdfConformance } from "../src/conformance";
 import { validatePdfWithIti } from "../src/remote";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 const ITI_ENDPOINT = "https://validar.iti.gov.br/arquivo";
 const POLICY_OID = "2.16.76.1.7.1.11.1.1";
@@ -193,7 +194,7 @@ describe("ITI local conformance", () => {
         ["SignatureDictionary", "Valid"],
         ["signingTime", "Valid"],
       ]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a signature policy with AD-RB in a qualifier but not in SigPolicyId", () =>
@@ -212,7 +213,7 @@ describe("ITI local conformance", () => {
         status: "Invalid",
         message: "A assinatura não contém a política ICP-Brasil PAdES AD-RB 2.16.76.1.7.1.11.1.1.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("rejects a signed PDF containing prohibited CMS signingTime", () =>
@@ -234,7 +235,7 @@ describe("ITI local conformance", () => {
         status: "Invalid",
         message: "A política PA_PAdES_AD_RB_v1_1 proíbe o atributo CMS signingTime.",
       });
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
   it.effect("returns a rejected report for an unsigned PDF", () =>
@@ -246,7 +247,7 @@ describe("ITI local conformance", () => {
       expect(report.outcome).toBe("rejected");
       expect(report.signatureCount).toBe(0);
       expect(report.signatures).toEqual([]);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });
 
@@ -263,7 +264,7 @@ describe("ITI remote client", () => {
       const report = yield* validatePdfWithIti({
         source: { pdf: signed },
         fileName: "fixture.pdf",
-      }).pipe(Effect.provide(signatureHttpClientLive));
+      }).pipe(Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)));
       const request = local.requests[0];
 
       expect(report.validator).toBe("iti.remote");
@@ -292,7 +293,7 @@ describe("ITI remote client", () => {
       }));
       yield* installItiFetchRedirect(local.baseUrl);
       const report = yield* validatePdfWithIti({ source: { pdf: signed } }).pipe(
-        Effect.provide(signatureHttpClientLive),
+        Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
       );
 
       expect(report.validator).toBe("iti.remote");
@@ -318,7 +319,7 @@ describe("ITI remote client", () => {
         }));
         yield* installItiFetchRedirect(local.baseUrl);
         const report = yield* validatePdfWithIti({ source: { pdf: signed } }).pipe(
-          Effect.provide(signatureHttpClientLive),
+          Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
         );
 
         expect(report.validator).toBe("iti.remote");
@@ -346,7 +347,7 @@ describe("ITI remote client", () => {
       }));
       yield* installItiFetchRedirect(local.baseUrl);
       const report = yield* validatePdfWithIti({ source: { pdf: signed } }).pipe(
-        Effect.provide(signatureHttpClientLive),
+        Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
       );
 
       expect(report.validator).toBe("iti.remote");
@@ -378,7 +379,7 @@ describe("ITI remote client", () => {
       }));
       yield* installItiFetchRedirect(local.baseUrl);
       const report = yield* validatePdfWithIti({ source: { pdf: signed } }).pipe(
-        Effect.provide(signatureHttpClientLive),
+        Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
       );
 
       expect(report.validator).toBe("iti.remote");
@@ -401,7 +402,7 @@ describe("ITI remote client", () => {
       yield* installItiFetchRedirect(local.baseUrl);
       const result = yield* Effect.result(
         validatePdfWithIti({ source: { pdf: signed } }).pipe(
-          Effect.provide(signatureHttpClientLive),
+          Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
         ),
       );
 
@@ -430,7 +431,7 @@ describe("ITI remote client", () => {
       const report = yield* validatePdfWithIti({
         source: { url: `${local.baseUrl}/source.pdf` },
         fileName: "from-url.pdf",
-      }).pipe(Effect.provide(signatureHttpClientLive));
+      }).pipe(Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)));
       const getRequest = local.requests.find((request) => request.pathname === "/source.pdf");
       const postRequest = local.requests.find((request) => request.pathname === "/arquivo");
 

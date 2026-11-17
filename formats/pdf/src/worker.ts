@@ -11,7 +11,11 @@ import {
   PdfStampPreviewInputSchema,
 } from "./config.js";
 import type { createPdfStampPreview } from "./stamp.js";
-import type { preparePdfSigningBatch } from "./workflow.js";
+import type {
+  PdfSigningBatchPreparationInput,
+  PdfSigningBatchPreparationResult,
+} from "./config.js";
+import type { PdfSigningBatchPreparationCallbacks } from "./workflow.js";
 
 export const PdfWorkerRequests = RpcGroup.make(
   Rpc.make("Preview", {
@@ -29,7 +33,10 @@ export const PdfWorkerRequests = RpcGroup.make(
 export class PdfWorker extends Context.Service<
   PdfWorker,
   {
-    readonly prepare: typeof preparePdfSigningBatch;
+    readonly prepare: (
+      input: PdfSigningBatchPreparationInput,
+      callbacks?: PdfSigningBatchPreparationCallbacks,
+    ) => Effect.Effect<ReadonlyArray<PdfSigningBatchPreparationResult>, PdfError>;
     readonly preview: typeof createPdfStampPreview;
   }
 >()("@signature-kit/pdf/PdfWorker") {}

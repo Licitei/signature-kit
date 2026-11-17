@@ -4,6 +4,7 @@ import {
   SignatureKitOperationValue,
 } from "@signature-kit/signatures";
 import { SignatureHttpClient } from "@signature-kit/http";
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Option, Schema } from "effect";
 import {
   ItiConformanceOutcomeSchema,
@@ -247,7 +248,7 @@ const buildRemoteReport = (
 
 export const validatePdfWithIti = (
   input: ItiRemoteValidationInput,
-): Effect.Effect<ItiRemoteValidationReport, SignatureKitError, SignatureHttpClient> =>
+): Effect.Effect<ItiRemoteValidationReport, SignatureKitError, SignatureHttpClient | PdfCore> =>
   Effect.gen(function* () {
     const valid = yield* Schema.decodeUnknownEffect(ItiRemoteValidationInputSchema)(input).pipe(
       Effect.mapError(

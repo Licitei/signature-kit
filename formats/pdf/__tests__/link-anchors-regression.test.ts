@@ -170,6 +170,6 @@ describe("PDF link anchors", () => {
       const cleaned = yield* removePdfLinkAnchors(pdf, [{ text: "signature" }]);
 
       expect(cleaned).toBe(pdf);
-    }),
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 });

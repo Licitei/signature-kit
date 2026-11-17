@@ -14,19 +14,19 @@ Add a signer backend at the application boundary, for example:
 bun add @signature-kit/a1
 ```
 
-`effect` is a direct runtime dependency. The package consumes signing power through `@signature-kit/signatures`.
+`effect` is a direct runtime dependency. The package consumes signing power through `@signature-kit/signatures` and the in-house PDF engine through the `PdfCore` service from `@signature-kit/pdf-core`: provide `pdfCoreFileLayer` (with the Node or Bun platform layer) or `pdfCoreBrowserLayer` wherever you sign, verify, stamp, or prepare PDFs.
 
 ## Public surface
 
 - `@signature-kit/pdf/config` — PDF schemas, signing/stamping/builder contracts, error catalog, and message catalog.
-- `@signature-kit/pdf/sign` — `signPdf` for detached CMS/PAdES signing over a prepared placeholder.
-- `@signature-kit/pdf/verify` — `verifyPdf` for ByteRange, CMS, and optional trusted-root chain verification.
+- `@signature-kit/pdf/sign` — `signPdf` for detached CMS/PAdES signing over a prepared placeholder. The placeholder (signature dictionary, widget, AcroForm field, `/SigFlags`) is appended as an incremental update by the `PdfCore` engine, so the source bytes and every earlier signature stay untouched.
+- `@signature-kit/pdf/verify` — `verifyPdf` for ByteRange, CMS, and optional trusted-root chain verification. Revisions and signature dictionaries are read by the `PdfCore` engine.
 - `@signature-kit/pdf/stamp` — badge layout, QR/link stamping, visible-signature stamping, initials/rubric helpers, and coordinate conversion.
 - `@signature-kit/pdf/anchors` — `findPdfTextAnchors` for text, digit, and link anchor placement. It reads geometry, text, and link annotations through the `PdfCore` service from `@signature-kit/pdf-core`; calls that pass `pages` and `textBoxes` with only `text`/`digits` matchers need no service.
 - `@signature-kit/pdf/workflow` — high-level load/template/prepare/sign batch workflows.
 - `@signature-kit/pdf/builder` — pure signature-field builder operations.
 - `@signature-kit/pdf/builder-store` — external builder store and placement queue helpers.
-- `@signature-kit/pdf/byte-range` — placeholder preparation and signature extraction helpers.
+- `@signature-kit/pdf/byte-range` — placeholder preparation and signature extraction helpers built on `PdfCore.signatures`; `hasPdfByteRange`, `hasPdfSignatureDictionary`, and `isCompletePdfRevision` are Effects that require `PdfCore`.
 - `@signature-kit/pdf/merge` — `mergePdfs`; it copies pages only and intentionally drops source AcroForms, outlines, metadata, and attachments.
 - `@signature-kit/pdf/liteparse-browser` — browser-only page-image rendering (`renderPdfPagesBrowser`), plus a handwriting service with an explicitly supplied browser font.
 

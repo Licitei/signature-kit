@@ -1,3 +1,4 @@
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { Effect } from "effect";
 import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.browser";
 import * as React from "react";
@@ -179,7 +180,11 @@ if (typeof document === "undefined") {
     expect(signedRows).toHaveLength(2);
 
     const verifications = await Promise.all(
-      signedRows.map((row) => Effect.runPromise(verifyPdf({ pdf: row.signedPdf }))),
+      signedRows.map((row) =>
+        Effect.runPromise(
+          verifyPdf({ pdf: row.signedPdf }).pipe(Effect.provide(pdfCoreBrowserLayer)),
+        ),
+      ),
     );
 
     expect(verifications.every((result) => result.valid)).toBe(true);
@@ -249,7 +254,9 @@ if (typeof document === "undefined") {
     if (!result.ok) expect.fail("expected signing to complete");
     const row = result.rows[0];
     if (row?.status !== "signed") expect.fail("expected a signed PDF");
-    const verified = await Effect.runPromise(verifyPdfSignatures({ pdf: row.signedPdf }));
+    const verified = await Effect.runPromise(
+      verifyPdfSignatures({ pdf: row.signedPdf }).pipe(Effect.provide(pdfCoreBrowserLayer)),
+    );
     expect(verified.map((signature) => signature.cryptographicValid)).toEqual([true]);
   }, 30000);
 
@@ -351,7 +358,9 @@ if (typeof document === "undefined") {
 
     for (const row of firstOutcome.rows) {
       if (row.status !== "signed") expect.fail("expected signed PDF");
-      const verified = await Effect.runPromise(verifyPdfSignatures({ pdf: row.signedPdf }));
+      const verified = await Effect.runPromise(
+        verifyPdfSignatures({ pdf: row.signedPdf }).pipe(Effect.provide(pdfCoreBrowserLayer)),
+      );
       expect(verified.map((signature) => signature.cryptographicValid)).toEqual([true]);
     }
     const signer = currentSigner(probe);

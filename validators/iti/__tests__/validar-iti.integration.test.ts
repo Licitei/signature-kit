@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { verifyPdf } from "@signature-kit/pdf/verify";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import {
   DEFAULT_EXPECTED_STATUS_WITH_FIXTURE,
   DEFAULT_EXPECTED_STATUS_WITH_TRUSTED_FIXTURE,
@@ -12,6 +12,7 @@ import {
   sha256Hex,
 } from "./iti.integration-helper";
 import { validatePdfWithIti } from "../src/remote";
+import { pdfCoreTestLayer } from "./pdf-core-layer";
 
 describe("ITI Validar integration", () => {
   it.effect.runIf(itiIntegrationConfig !== undefined)(
@@ -40,7 +41,7 @@ describe("ITI Validar integration", () => {
         const report = yield* validatePdfWithIti({
           source: { pdf: signed },
           fileName: "signature-kit-validar-iti.pdf",
-        }).pipe(Effect.provide(signatureHttpClientLive));
+        }).pipe(Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)));
 
         if (expectedHttpStatus === DEFAULT_EXPECTED_STATUS_WITH_FIXTURE) {
           expect(report.outcome).toBe("untrusted_certificate");
@@ -57,7 +58,7 @@ describe("ITI Validar integration", () => {
             "rawVerifierReport" in report ? report.rawVerifierReport : undefined,
           ).not.toBeUndefined();
         }
-      }),
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
     180_000,
   );
 });
