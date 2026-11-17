@@ -499,7 +499,7 @@ fn skip_zlib_header(data: &[u8]) -> usize {
     }
     let cmf = data.first().copied().unwrap_or(0);
     let flg = data.get(1).copied().unwrap_or(0);
-    if cmf & 0x0f == 8 && (u16::from(cmf) << 8 | u16::from(flg)) % 31 == 0 {
+    if cmf & 0x0f == 8 && ((u16::from(cmf) << 8) | u16::from(flg)) % 31 == 0 {
         2
     } else {
         0
@@ -604,7 +604,7 @@ mod tests {
             a = (a.saturating_add(u32::from(*byte))) % 65521;
             b = (b.saturating_add(a)) % 65521;
         }
-        b << 16 | a
+        (b << 16) | a
     }
 
     #[test]

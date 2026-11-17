@@ -338,7 +338,7 @@ impl<'a> Parser<'a> {
                     .copied()
                     .and_then(hex_value)
             {
-                out.push(high << 4 | low);
+                out.push((high << 4) | low);
                 index = index.saturating_add(3);
             } else {
                 out.push(byte);
@@ -709,7 +709,7 @@ fn decode_hex(raw: &[u8], out: &mut Vec<u8>) {
     for &byte in raw {
         if let Some(nibble) = hex_value(byte) {
             match high.take() {
-                Some(upper) => out.push(upper << 4 | nibble),
+                Some(upper) => out.push((upper << 4) | nibble),
                 None => high = Some(nibble),
             }
         }
@@ -1246,7 +1246,7 @@ mod tests {
             Err(crate::failure::FailureCode::LimitExceeded)
         );
         let nested = b"[[[[1]]]]";
-        assert!(Parser::new(nested, 0, 64, true).parse_object().is_ok());
+        Parser::new(nested, 0, 64, true).parse_object().unwrap();
         let shallow = Parser::new(nested, 0, 3, true).parse_object();
         assert_eq!(
             shallow.map_err(|f| f.code),
@@ -1299,9 +1299,9 @@ mod tests {
 
     #[test]
     fn rejects_missing_header() {
-        assert!(parse_indirect_object(b"hello", 0, 64, no_length).is_err());
-        assert!(parse_indirect_object(b"1 0 objx", 0, 64, no_length).is_err());
-        assert!(parse_indirect_object(b"10obj", 0, 64, no_length).is_err());
+        parse_indirect_object(b"hello", 0, 64, no_length).unwrap_err();
+        parse_indirect_object(b"1 0 objx", 0, 64, no_length).unwrap_err();
+        parse_indirect_object(b"10obj", 0, 64, no_length).unwrap_err();
     }
 
     fn stream_bytes<'a>(data: &'a [u8], parsed: &IndirectObject) -> &'a [u8] {

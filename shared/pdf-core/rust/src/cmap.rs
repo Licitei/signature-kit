@@ -32,7 +32,10 @@ impl<'a> Lexer<'a> {
         self.position = self.position.saturating_add(count);
     }
 
-    fn take_run<P: Fn(u8) -> bool>(&mut self, accept: P) -> &'a [u8] {
+    fn take_run<P>(&mut self, accept: P) -> &'a [u8]
+    where
+        P: Fn(u8) -> bool,
+    {
         let start = self.position;
         while let Some(byte) = self.data.get(self.position) {
             if !accept(*byte) {
@@ -823,9 +826,8 @@ impl CMap {
         find_range(&self.cid_ranges, length, code)
             .map(|range| range.cid.saturating_add(code.saturating_sub(range.low)))
             .or_else(|| {
-                self.parent
-                    .as_deref()
-                    .and_then(|parent| parent.table_cid(code, usize::from(length)))
+                let parent = self.parent.as_deref()?;
+                parent.table_cid(code, usize::from(length))
             })
             .or_else(|| find_range(&self.notdef, length, code).map(|range| range.cid))
     }

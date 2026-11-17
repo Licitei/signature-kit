@@ -90,7 +90,10 @@ fn screaming(name: &str) -> String {
     out
 }
 
-fn array<T: Display>(items: &[T]) -> String {
+fn array<T>(items: &[T]) -> String
+where
+    T: Display,
+{
     let mut out = String::from("[");
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
@@ -102,12 +105,10 @@ fn array<T: Display>(items: &[T]) -> String {
     out
 }
 
-fn emit<T: Display>(
-    out: &mut String,
-    name: &str,
-    element: &str,
-    values: &[T],
-) -> Result<(), std::fmt::Error> {
+fn emit<T>(out: &mut String, name: &str, element: &str, values: &[T]) -> Result<(), std::fmt::Error>
+where
+    T: Display,
+{
     writeln!(
         out,
         "pub(crate) static {name}: [{element}; {}] = {};",
@@ -134,6 +135,10 @@ fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
     Ok(agl)
 }
 
+#[expect(
+    clippy::use_debug,
+    reason = "generated Rust uses Debug quoting for embeddable string literals"
+)]
 fn font_tables(
     glyphlist: &str,
     encodings: &Sections<'_>,
@@ -231,6 +236,10 @@ fn font_tables(
     Ok(out)
 }
 
+#[expect(
+    clippy::use_debug,
+    reason = "generated Rust uses Debug formatting for static string slice tables"
+)]
 fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
     let strings = section(cff, "StandardStrings")?;
     let sid = |name: &str| -> BuildResult<u16> {

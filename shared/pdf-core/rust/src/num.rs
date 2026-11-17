@@ -1,10 +1,16 @@
-const _: () = assert!(usize::BITS >= u32::BITS);
+const _: () = assert!(
+    usize::BITS >= u32::BITS,
+    "usize must be at least 32 bits wide"
+);
 
 #[expect(
     clippy::as_conversions,
     reason = "usize is at least 32 bits wide, asserted at compile time above"
 )]
-pub(crate) fn widen<T: Into<u32>>(value: T) -> usize {
+pub(crate) fn widen<T>(value: T) -> usize
+where
+    T: Into<u32>,
+{
     value.into() as usize
 }
 

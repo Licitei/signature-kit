@@ -87,7 +87,7 @@ fn uri_from_action(value: &Object) -> Option<String> {
 pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xfe, 0xff]) {
         let units = rest.chunks(2).map(|pair| match pair {
-            [high, low] => u16::from(*high) << 8 | u16::from(*low),
+            [high, low] => (u16::from(*high) << 8) | u16::from(*low),
             [high] => u16::from(*high) << 8,
             _ => 0,
         });
@@ -97,7 +97,7 @@ pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
     }
     if let Some(rest) = bytes.strip_prefix(&[0xff, 0xfe]) {
         let units = rest.chunks(2).map(|pair| match pair {
-            [low, high] => u16::from(*high) << 8 | u16::from(*low),
+            [low, high] => (u16::from(*high) << 8) | u16::from(*low),
             [low] => u16::from(*low),
             _ => 0,
         });
@@ -660,7 +660,12 @@ impl<'a> Document<'a> {
                     continue;
                 };
                 let replace = match *slot {
-                    Entry::Unset | Entry::Free | Entry::Compressed { .. } => true,
+                    Entry::Unset
+                    | Entry::Free
+                    | Entry::Compressed {
+                        stream: _,
+                        index: _,
+                    } => true,
                     Entry::Offset(existing) => existing < offset,
                 };
                 if replace {
@@ -1149,7 +1154,7 @@ impl<'a> Document<'a> {
 fn be_value(bytes: &[u8]) -> u64 {
     bytes
         .iter()
-        .fold(0_u64, |value, &byte| value << 8 | u64::from(byte))
+        .fold(0_u64, |value, &byte| (value << 8) | u64::from(byte))
 }
 
 fn normalize_rotation(value: f64) -> i32 {

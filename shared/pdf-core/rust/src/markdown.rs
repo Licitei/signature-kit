@@ -25,24 +25,68 @@ const STRAY_CHARS: usize = 120;
 const MARGINAL_SIZE: f64 = 0.9;
 
 const BULLETS: [char; 22] = [
-    '•', '●', '▪', '■', '◦', '○', '▸', '►', '➢', '➤', '✓', '✔', '·', '‣', '⁃', '*', '\u{f0a7}',
-    '\u{f0b7}', '\u{f0d8}', '\u{f076}', '\u{f0fc}', '\u{f06e}',
+    '\u{2022}', '\u{25cf}', '\u{25aa}', '\u{25a0}', '\u{25e6}', '\u{25cb}', '\u{25b8}', '\u{25ba}',
+    '\u{27a2}', '\u{27a4}', '\u{2713}', '\u{2714}', '\u{b7}', '\u{2023}', '\u{2043}', '*',
+    '\u{f0a7}', '\u{f0b7}', '\u{f0d8}', '\u{f076}', '\u{f0fc}', '\u{f06e}',
 ];
-const DASHES: [char; 3] = ['-', '–', '—'];
+const DASHES: [char; 3] = ['-', '\u{2013}', '\u{2014}'];
 const ROMAN: [char; 5] = ['I', 'V', 'X', 'L', 'C'];
 const CLITICS: [&str; 20] = [
     "lo", "la", "los", "las", "se", "me", "te", "nos", "vos", "lhe", "lhes", "o", "a", "os", "as",
     "no", "na", "nas", "mo", "ma",
 ];
 const PREFIXES: [&str; 14] = [
-    "ex", "vice", "pré", "pós", "pró", "recém", "além", "aquém", "sem", "bem", "grã", "grão",
-    "sota", "soto",
+    "ex",
+    "vice",
+    "pr\u{e9}",
+    "p\u{f3}s",
+    "pr\u{f3}",
+    "rec\u{e9}m",
+    "al\u{e9}m",
+    "aqu\u{e9}m",
+    "sem",
+    "bem",
+    "gr\u{e3}",
+    "gr\u{e3}o",
+    "sota",
+    "soto",
 ];
 const WEEKDAY_TAILS: [&str; 2] = ["feira", "feiras"];
 const FUNCTION_WORDS: [&str; 34] = [
-    "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas", "para", "por", "pelo",
-    "pela", "pelos", "pelas", "com", "sem", "ao", "aos", "à", "às", "um", "uma", "que", "ou",
-    "sob", "sobre", "entre", "até", "após", "the", "of",
+    "de",
+    "da",
+    "do",
+    "das",
+    "dos",
+    "e",
+    "em",
+    "no",
+    "na",
+    "nos",
+    "nas",
+    "para",
+    "por",
+    "pelo",
+    "pela",
+    "pelos",
+    "pelas",
+    "com",
+    "sem",
+    "ao",
+    "aos",
+    "\u{e0}",
+    "\u{e0}s",
+    "um",
+    "uma",
+    "que",
+    "ou",
+    "sob",
+    "sobre",
+    "entre",
+    "at\u{e9}",
+    "ap\u{f3}s",
+    "the",
+    "of",
 ];
 
 #[derive(Clone, Debug)]
@@ -294,7 +338,7 @@ fn x_after(line: &MdLine, chars: usize) -> f64 {
         if remaining < count {
             let share = f64::from(u32::try_from(remaining).unwrap_or(u32::MAX))
                 / f64::from(u32::try_from(count.max(1)).unwrap_or(u32::MAX));
-            return run.x0 + (run.x1 - run.x0) * share;
+            return f64::mul_add(run.x1 - run.x0, share, run.x0);
         }
         remaining = remaining.saturating_sub(count);
     }
@@ -424,7 +468,7 @@ fn lead(plain: &str) -> Option<Lead> {
         ))
     } else if DASHES.contains(&first) {
         skip_space(text, first.len_utf8()).map(|end| (LeadKind::Dash, end))
-    } else if first == '§' {
+    } else if first == '\u{a7}' {
         Some((LeadKind::Clause(1), 0))
     } else if first.is_ascii_digit() {
         numbered_lead(text)
@@ -458,7 +502,7 @@ const fn lead_family(kind: LeadKind) -> Option<Family> {
 
 fn last_char(text: &str) -> Option<char> {
     text.trim_end()
-        .trim_end_matches(['"', '”', '\'', '’', ')', ']', '*'])
+        .trim_end_matches(['"', '\u{201d}', '\'', '\u{2019}', ')', ']', '*'])
         .chars()
         .next_back()
 }
@@ -521,7 +565,8 @@ fn first_word_width(line: &Prepared<'_>) -> f64 {
 
 fn word_fits(previous: &Prepared<'_>, next: &Prepared<'_>, flow: Flow) -> bool {
     let size = next.line.size;
-    previous.line.x1 + SPACE_EM * size + first_word_width(next) <= flow.right - FIT_SLACK * size
+    SPACE_EM.mul_add(size, previous.line.x1) + first_word_width(next)
+        <= FIT_SLACK.mul_add(-size, flow.right)
 }
 
 fn near_size(first: f64, second: f64) -> bool {
@@ -672,7 +717,7 @@ fn breaks_within_flow(
     if let Some(found) = &next.lead {
         let evidence = ends_terminal(&previous.plain)
             || para.lead.is_some()
-            || below.x0 > flow.left + INDENT_EM * below.size
+            || below.x0 > INDENT_EM.mul_add(below.size, flow.left)
             || word_fits(previous, next, flow);
         if found.kind != LeadKind::Dash || evidence {
             return true;
@@ -694,8 +739,8 @@ fn breaks_within_flow(
         return true;
     }
     ends_terminal(&previous.plain)
-        && below.x0 > above.x0 + INDENT_EM * below.size
-        && below.x0 > flow.left + INDENT_EM * below.size
+        && below.x0 > INDENT_EM.mul_add(below.size, above.x0)
+        && below.x0 > INDENT_EM.mul_add(below.size, flow.left)
 }
 
 fn breaks_across_flows(previous: &Prepared<'_>, next: &Prepared<'_>) -> bool {
@@ -856,7 +901,7 @@ fn heading_level(para: &Para, body: f64) -> Option<usize> {
         && text.chars().next().is_some_and(char::is_alphanumeric)
         && !text.contains('_')
         && !text.contains("...")
-        && !text.contains('…');
+        && !text.contains('\u{2026}');
     let paged = depth.is_some()
         && words.len() > 2
         && words
@@ -1130,7 +1175,15 @@ fn tail_candidate(blocks: &[MdBlock], body: f64) -> Option<usize> {
     for (index, block) in blocks.iter().enumerate().rev() {
         let marginal = block.band != Band::Free && block.size < MARGINAL_SIZE * body;
         if !marginal
-            && matches!(block.kind, Kind::Paragraph | Kind::Item { .. })
+            && matches!(
+                block.kind,
+                Kind::Paragraph
+                    | Kind::Item {
+                        indent: _,
+                        marker: _,
+                        tight: _
+                    }
+            )
             && !ends_terminal(&block.plain)
         {
             return Some(index);
@@ -1402,7 +1455,11 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
                 out.push_str(" \\#");
             }
         }
-        Kind::Item { indent, marker, .. } => {
+        Kind::Item {
+            indent,
+            marker,
+            tight: _,
+        } => {
             out.push_str(&" ".repeat(*indent));
             out.push_str(marker);
             let mut text = String::new();
@@ -1430,7 +1487,14 @@ pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
             continue;
         }
         if !out.is_empty() {
-            let tight = matches!(block.kind, Kind::Item { tight: true, .. });
+            let tight = matches!(
+                block.kind,
+                Kind::Item {
+                    tight: true,
+                    indent: _,
+                    marker: _
+                }
+            );
             out.push_str(if tight { "\n" } else { "\n\n" });
         }
         out.push_str(&rendered);
@@ -1488,15 +1552,15 @@ mod tests {
     #[test]
     fn hyphenation_keeps_compounds_and_clitics() {
         for (left, right, expected) in [
-            ("a mão-", "de-obra", "a mão-de-obra"),
+            ("a m\u{e3}o-", "de-obra", "a m\u{e3}o-de-obra"),
             ("administra-", "tivo", "administrativo"),
-            ("apresentá-", "lo hoje", "apresentá-lo hoje"),
+            ("apresent\u{e1}-", "lo hoje", "apresent\u{e1}-lo hoje"),
             ("segunda-", "feira", "segunda-feira"),
             ("CEP 84.145-", "000", "CEP 84.145-000"),
-            ("Ji-", "Paraná", "Ji-Paraná"),
+            ("Ji-", "Paran\u{e1}", "Ji-Paran\u{e1}"),
             ("valor -", "total", "valor - total"),
             ("guarda", "chuva", "guarda chuva"),
-            ("inter\u{ad}", "rupção", "interrupção"),
+            ("inter\u{ad}", "rup\u{e7}\u{e3}o", "interrup\u{e7}\u{e3}o"),
         ] {
             let (plain, rendered) = joined(left, right);
             assert_eq!(plain, expected);
@@ -1507,7 +1571,10 @@ mod tests {
     #[test]
     fn leads_are_classified() {
         let kind = |text: &str| lead(text).map(|found| (found.kind, found.label));
-        assert_eq!(kind("• item"), Some((LeadKind::Bullet, String::new())));
+        assert_eq!(
+            kind("\u{2022} item"),
+            Some((LeadKind::Bullet, String::new()))
+        );
         assert_eq!(kind("- item"), Some((LeadKind::Dash, String::new())));
         assert_eq!(kind("1. item"), Some((LeadKind::Ordered, "1.".to_owned())));
         assert_eq!(kind("2) item"), Some((LeadKind::Ordered, "2)".to_owned())));
@@ -1533,22 +1600,25 @@ mod tests {
             Some((LeadKind::Labeled, "1 -".to_owned()))
         );
         assert_eq!(kind("I do edital"), None);
-        assert_eq!(kind("14.133/2021 dispõe"), None);
+        assert_eq!(kind("14.133/2021 disp\u{f5}e"), None);
         assert_eq!(kind("1.000,00 reais"), None);
         assert_eq!(kind("2026 foi"), None);
-        assert_eq!(kind("Contratação"), None);
+        assert_eq!(kind("Contrata\u{e7}\u{e3}o"), None);
     }
 
     #[test]
     fn justified_lines_reflow_into_one_paragraph() {
         let items = [
-            line(vec![run("O texto segue até a margem", 0.0, false)], 100.0),
+            line(
+                vec![run("O texto segue at\u{e9} a margem", 0.0, false)],
+                100.0,
+            ),
             line(vec![run("sem pausa e acaba.", 0.0, false)], 88.0),
-            line(vec![run("Outro parágrafo.", 0.0, false)], 76.0),
+            line(vec![run("Outro par\u{e1}grafo.", 0.0, false)], 76.0),
         ];
         assert_eq!(
             render(&items),
-            "O texto segue até a margem sem pausa e acaba.\n\nOutro parágrafo."
+            "O texto segue at\u{e9} a margem sem pausa e acaba.\n\nOutro par\u{e1}grafo."
         );
     }
 
@@ -1584,9 +1654,9 @@ mod tests {
     #[test]
     fn lists_nest_by_indentation() {
         let items = [
-            line(vec![run("• um", 0.0, false)], 100.0),
-            line(vec![run("– filho", 20.0, false)], 88.0),
-            line(vec![run("• dois", 0.0, false)], 76.0),
+            line(vec![run("\u{2022} um", 0.0, false)], 100.0),
+            line(vec![run("\u{2013} filho", 20.0, false)], 88.0),
+            line(vec![run("\u{2022} dois", 0.0, false)], 76.0),
         ];
         assert_eq!(render(&items), "- um\n  - filho\n- dois");
     }

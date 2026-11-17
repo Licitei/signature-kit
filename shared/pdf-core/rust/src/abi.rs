@@ -346,9 +346,8 @@ fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
         .len()
         .checked_mul(TABLE_RECORD_LEN)
         .and_then(|bytes| {
-            cell_count
-                .checked_mul(CELL_RECORD_LEN)
-                .and_then(|cells| bytes.checked_add(cells))
+            let cells = cell_count.checked_mul(CELL_RECORD_LEN)?;
+            bytes.checked_add(cells)
         })
         .ok_or_else(|| Failure::limit("result size overflow"))?;
     let capacity = TABLES_HEADER_LEN
@@ -704,7 +703,7 @@ mod tests {
                 LinkInfo {
                     page_index: 0,
                     rect: [5.0, 6.0, 7.0, 8.0],
-                    uri: "mailto:ünï@example.com".to_owned(),
+                    uri: "mailto:\u{fc}n\u{ef}@example.com".to_owned(),
                 },
                 LinkInfo {
                     page_index: 0,
@@ -724,7 +723,7 @@ mod tests {
                         TextItem {
                             rect: [5.0, 6.0, 7.0, 8.0],
                             font_size: 9.5,
-                            text: "mundo — ação 𝄞".to_owned(),
+                            text: "mundo \u{2014} a\u{e7}\u{e3}o \u{1d11e}".to_owned(),
                         },
                         TextItem {
                             rect: [0.0; 4],
@@ -1073,7 +1072,7 @@ mod tests {
     fn text_failures_carry_code_and_reason() {
         let block = call_text(b"not a pdf", 0, &[]);
         assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
-        assert!(std::str::from_utf8(&block.payload).is_ok());
+        std::str::from_utf8(&block.payload).unwrap();
         release(&block);
         let empty = call_text(b"", 0, &[]);
         assert_eq!(empty.status, u32::from(FailureCode::InvalidPdf));
@@ -1157,7 +1156,7 @@ mod tests {
         let block = call(b"not a pdf", 0, &[]);
         assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
         assert_ne!(block.payload, []);
-        assert!(std::str::from_utf8(&block.payload).is_ok());
+        std::str::from_utf8(&block.payload).unwrap();
         release(&block);
     }
 

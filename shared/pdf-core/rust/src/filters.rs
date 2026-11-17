@@ -622,7 +622,6 @@ const fn is_ws(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::Object;
     use std::hint::black_box;
     fn dict_filter(filter: &[u8], parms: Option<Object>) -> Dict {
         let mut dict = Dict::default();

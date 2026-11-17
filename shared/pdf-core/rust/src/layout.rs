@@ -411,8 +411,10 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
                 block.segments.push(segment_index);
                 block.x0 = block.x0.min(segment.x0);
                 block.x1 = block.x1.max(segment.x1);
-                block.top = block.top.max(segment.y1 - CORE_TOP * segment.size);
-                block.bottom = block.bottom.min(segment.y0 + CORE_BOTTOM * segment.size);
+                block.top = block.top.max(CORE_TOP.mul_add(-segment.size, segment.y1));
+                block.bottom = block
+                    .bottom
+                    .min(CORE_BOTTOM.mul_add(segment.size, segment.y0));
                 block.last = segment_index;
                 block.last_x0 = segment.x0;
                 block.last_x1 = segment.x1;
@@ -425,8 +427,8 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
                     segments: vec![segment_index],
                     x0: segment.x0,
                     x1: segment.x1,
-                    top: segment.y1 - CORE_TOP * segment.size,
-                    bottom: segment.y0 + CORE_BOTTOM * segment.size,
+                    top: CORE_TOP.mul_add(-segment.size, segment.y1),
+                    bottom: CORE_BOTTOM.mul_add(segment.size, segment.y0),
                     last: segment_index,
                     last_x0: segment.x0,
                     last_x1: segment.x1,
@@ -695,9 +697,8 @@ fn aligned_tables(
     let mut tables: Vec<Table> = Vec::new();
     let mut consumed = vec![false; ranges.len()];
     let line_at = |index: usize| {
-        ranges
-            .get(index)
-            .and_then(|&(start, end)| segments.get(start..end))
+        let &(start, end) = ranges.get(index)?;
+        segments.get(start..end)
     };
     let mut index = 0_usize;
     while let Some(first) = line_at(index) {
@@ -844,9 +845,10 @@ fn ruled_tables<'a>(frags: &[Frag<'a>], rulings: &[Rule]) -> Option<(Vec<Frag<'a
             .iter()
             .enumerate()
             .find_map(|(grid, shape)| shape.locate(cx, cy).map(|cell| (grid, cell)));
-        match home
-            .and_then(|(grid, cell)| members.get_mut(grid).and_then(|cells| cells.get_mut(cell)))
-        {
+        match home.and_then(|(grid, cell)| {
+            let cells = members.get_mut(grid)?;
+            cells.get_mut(cell)
+        }) {
             Some(cell) => cell.push(*frag),
             None => rest.push(*frag),
         }
@@ -1662,7 +1664,12 @@ mod tests {
             let start = segments.len();
             for word in 0..words {
                 let x = f64::from(word) * 300.0;
-                segments.push(segment(x, x + 250.0, 1000.0 - f64::from(line) * 12.0, SIZE));
+                segments.push(segment(
+                    x,
+                    x + 250.0,
+                    f64::mul_add(f64::from(line), -12.0, 1000.0),
+                    SIZE,
+                ));
             }
             ranges.push((start, segments.len()));
         }
@@ -1715,7 +1722,7 @@ mod tests {
         let mut runs = Vec::new();
         for (baseline, label, value) in [
             (700.0, "Data:", "22/12/2026."),
-            (688.0, "Horário:", "09h:00min."),
+            (688.0, "Hor\u{e1}rio:", "09h:00min."),
             (676.0, "Local:", "Sala 3"),
         ] {
             runs.push(run(50.0, baseline, 40.0, label));
@@ -1723,7 +1730,7 @@ mod tests {
         }
         assert_eq!(
             page_text(&runs, 0),
-            "Data: 22/12/2026.\nHorário: 09h:00min.\nLocal: Sala 3"
+            "Data: 22/12/2026.\nHor\u{e1}rio: 09h:00min.\nLocal: Sala 3"
         );
     }
 
@@ -1732,13 +1739,13 @@ mod tests {
         let runs = vec![
             run(50.0, 700.0, 40.0, "Prazo"),
             run(250.0, 700.0, 120.0, "180 dias corridos, contados"),
-            run(250.0, 688.0, 120.0, "da ordem de serviço"),
+            run(250.0, 688.0, 120.0, "da ordem de servi\u{e7}o"),
             run(50.0, 660.0, 40.0, "Local"),
             run(250.0, 660.0, 120.0, "Avenida Central"),
         ];
         assert_eq!(
             page_text(&runs, 0),
-            "Prazo 180 dias corridos, contados\nda ordem de serviço\n\nLocal Avenida Central"
+            "Prazo 180 dias corridos, contados\nda ordem de servi\u{e7}o\n\nLocal Avenida Central"
         );
     }
 
@@ -1846,7 +1853,7 @@ mod tests {
             state
         };
         for fixture in fixtures {
-            assert!(document_text(fixture, None, &limits, OPTIONS).is_ok());
+            document_text(fixture, None, &limits, OPTIONS).unwrap();
             for _ in 0..150 {
                 let mut bytes = fixture.to_vec();
                 for _ in 0..=(next() % 8) {
@@ -1952,7 +1959,7 @@ mod structure_tests {
             .into_iter()
             .enumerate()
         {
-            let baseline = top - 12.0 - 20.0 * usize_to_f64(index);
+            let baseline = 20.0_f64.mul_add(-usize_to_f64(index), top - 12.0);
             out.push_str(&text(55.0, baseline, 10.0, left));
             out.push_str(&text(205.0, baseline, 10.0, right));
         }
@@ -2032,7 +2039,7 @@ mod structure_tests {
     fn borderless(rows: &[(&str, &str, &str)], top: f64) -> String {
         let mut out = String::new();
         for (index, (a, b, c)) in rows.iter().enumerate() {
-            let baseline = top - 14.0 * usize_to_f64(index);
+            let baseline = 14.0_f64.mul_add(-usize_to_f64(index), top);
             out.push_str(&text(50.0, baseline, 10.0, a));
             out.push_str(&text(200.0, baseline, 10.0, b));
             out.push_str(&text(350.0, baseline, 10.0, c));
@@ -2084,7 +2091,7 @@ mod structure_tests {
         .iter()
         .enumerate()
         {
-            let baseline = 700.0 - 14.0 * usize_to_f64(index);
+            let baseline = 14.0_f64.mul_add(-usize_to_f64(index), 700.0);
             content.push_str(&text(50.0, baseline, 10.0, marker));
             content.push_str(&text(120.0, baseline, 10.0, body));
         }
@@ -2094,7 +2101,7 @@ mod structure_tests {
         assert!(!markdown[0].contains("| --- |"), "{}", markdown[0]);
         assert!(is_marker("(12)"));
         assert!(is_marker("IV."));
-        assert!(is_marker("•"));
+        assert!(is_marker("\u{2022}"));
         assert!(!is_marker("12"));
         assert!(!is_marker("Valor:  total geral do item"));
     }
@@ -2276,7 +2283,7 @@ mod structure_tests {
     fn two_text_columns_are_not_mistaken_for_a_table() {
         let mut content = String::new();
         for index in 0..8 {
-            let baseline = 700.0 - 12.0 * f64::from(index);
+            let baseline = 12.0_f64.mul_add(-f64::from(index), 700.0);
             content.push_str(&text(
                 50.0,
                 baseline,
@@ -2300,7 +2307,12 @@ mod structure_tests {
         content.push_str(&text(50.0, 770.0, 9.0, header));
         content.push_str(&text(480.0, 770.0, 9.0, &format!("Pagina {index} de 4")));
         for (line, value) in body.iter().enumerate() {
-            content.push_str(&text(50.0, 600.0 - 14.0 * usize_to_f64(line), 10.0, value));
+            content.push_str(&text(
+                50.0,
+                14.0_f64.mul_add(-usize_to_f64(line), 600.0),
+                10.0,
+                value,
+            ));
         }
         content.push_str(&text(
             50.0,
@@ -2443,7 +2455,12 @@ mod structure_tests {
     fn page_limit_violations_propagate_instead_of_emptying_pages() {
         let mut content = String::new();
         for index in 0..20 {
-            content.push_str(&text(50.0, 700.0 - f64::from(index) * 20.0, 10.0, "linha"));
+            content.push_str(&text(
+                50.0,
+                f64::mul_add(f64::from(index), -20.0, 700.0),
+                10.0,
+                "linha",
+            ));
         }
         let bytes = document(&[page(text(50.0, 700.0, 10.0, "ok")), page(content)], &[]);
         let tight = Limits {
@@ -2559,7 +2576,7 @@ mod structure_tests {
         }
         content.push_str(&text(50.0, 700.0, 10.0, "texto"));
         let bytes = document(&[page(content)], &[]);
-        assert!(document_tables(&bytes, None, &text_limits()).is_ok());
-        assert!(document_text(&bytes, None, &text_limits(), MARKDOWN).is_ok());
+        document_tables(&bytes, None, &text_limits()).unwrap();
+        document_text(&bytes, None, &text_limits(), MARKDOWN).unwrap();
     }
 }

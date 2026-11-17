@@ -567,11 +567,17 @@ impl CompositeFont {
     }
 }
 
-fn find_entry<T: Copy>(entries: &[(u32, u32, T)], cid: u32) -> Option<T> {
+fn find_entry<T>(entries: &[(u32, u32, T)], cid: u32) -> Option<T>
+where
+    T: Copy,
+{
     covering(entries, cid).map(|(_, _, value)| *value)
 }
 
-fn resolve_entries<T: Copy>(entries: &[(u32, u32, T)]) -> Vec<(u32, u32, T)> {
+fn resolve_entries<T>(entries: &[(u32, u32, T)]) -> Vec<(u32, u32, T)>
+where
+    T: Copy,
+{
     let spans: Vec<(u32, u32)> = entries
         .iter()
         .map(|(start, end, _)| (*start, *end))
@@ -1907,7 +1913,11 @@ mod tests {
             ("DW", Object::Integer(1000)),
         ])));
         for (cmap, bytes, expected) in [
-            ("UniGB-UCS2-H", vec![0x4E, 0x2D, 0x65, 0x87], "中文"),
+            (
+                "UniGB-UCS2-H",
+                vec![0x4E, 0x2D, 0x65, 0x87],
+                "\u{4e2d}\u{6587}",
+            ),
             (
                 "UniJIS-UTF16-H",
                 vec![0xD8, 0x40, 0xDC, 0x0B, 0x00, 0x41],
@@ -2080,7 +2090,7 @@ mod tests {
                 ("BaseFont", name("Symbol")),
             ]),
         );
-        assert_eq!(decode(&font, b"a").0, "α");
+        assert_eq!(decode(&font, b"a").0, "\u{3b1}");
     }
 
     #[test]
@@ -2102,7 +2112,7 @@ mod tests {
                 ),
             ]),
         );
-        assert_eq!(decode(&font, b"ABC").0, "€ЖC");
+        assert_eq!(decode(&font, b"ABC").0, "\u{20ac}\u{416}C");
     }
 
     #[test]
