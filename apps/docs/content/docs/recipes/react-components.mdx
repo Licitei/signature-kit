@@ -18,7 +18,7 @@ npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json
 | `signature-pdf-viewer` | `npx shadcn@latest add https://signaturekit.dev/r/signature-pdf-viewer.json` | `react-pdf` preview with text-anchor highlighting and manual click-to-place rectangles. |
 | `signature-dialog` | `npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json` | Direct A1 signing flow around `useA1Signer`, saved-password retry, progress, and signed-PDF download preview. |
 | `signing-progress-list` | `npx shadcn@latest add https://signaturekit.dev/r/signing-progress-list.json` | Standalone per-document status rows for a custom signing screen. |
-| `pdf-signature-anchor` | `npx shadcn@latest add https://signaturekit.dev/r/pdf-signature-anchor.json` | Invisible `@react-pdf/renderer` text token paired with `findPdfTextAnchors`. |
+| `pdf-signature-anchor` | `npx shadcn@latest add https://signaturekit.dev/r/pdf-signature-anchor.json` | Invisible `takumi-pdf` text and URI link markers paired with `findPdfTextAnchors`. |
 
 ## Direct signing dialog
 
@@ -66,21 +66,30 @@ export function SignButton({ pfx }: { pfx: Uint8Array }) {
 
 ## Anchor-first placement
 
-Use invisible text anchors when you generate PDFs with `@react-pdf/renderer`. This keeps placement deterministic and avoids asking a user to click every document.
+Use invisible anchors when you generate PDFs with `takumi-pdf`. Text and link variants pair with `findPdfTextAnchors` matchers.
 
-```tsx title="contract.pdf.tsx"
-import { Text, View } from "@react-pdf/renderer"
-import { PdfSignatureAnchor } from "@/components/pdf-signature-anchor"
+```tsx title="contract.tsx"
+import { render } from "takumi-pdf"
+import {
+  PdfSignatureAnchor,
+  PdfSignatureLinkAnchor,
+} from "@/components/signature-kit/pdf-signature-anchor"
 
-export function ContractSignatureBlock() {
-  return (
-    <View>
-      <Text>Signer</Text>
-      <PdfSignatureAnchor token="{{signature}}" />
-    </View>
+export async function buildContractPdf(fontBytes: Uint8Array) {
+  return render(
+    <main className="p-12 text-[11px]">
+      <p>Signer</p>
+      <div className="mt-4 flex flex-col items-center gap-1">
+        <PdfSignatureAnchor token="{{signature}}" />
+        <PdfSignatureLinkAnchor href="https://signature.invalid/anchor" />
+      </div>
+    </main>,
+    { size: "a4", fonts: [{ name: "Liberation", data: fontBytes }] },
   )
 }
 ```
+
+See [Anchor-based placement](/en-US/docs/recipes/anchor-placement) for the full generate → `findPdfTextAnchors` → `prepareAndSignPdf` flow.
 
 Use `signature-pdf-viewer` when a human needs to confirm anchor results or switch to manual click-to-place.
 

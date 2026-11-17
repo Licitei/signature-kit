@@ -85,7 +85,9 @@
   },
   "devDependencies": {
     "@signature-kit/a1": "^0.4.0",
-    "pdfjs-dist": "6.3.289"
+    "pdfjs-dist": "6.3.289",
+    "react": "19.3.1",
+    "takumi-pdf": "0.20.0"
   },
   "nx": {
     "implicitDependencies": [

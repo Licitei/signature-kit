@@ -12,6 +12,7 @@ export const CORPUS_LINK_URIS = {
   secondary: "https://signature-kit.dev/corpus/link-secondary",
   indirect: "https://signature-kit.dev/corpus/link-indirect",
   rotated: "https://signature-kit.dev/corpus/rotated-page-link",
+  takumiSignature: "licitei:assinatura",
 };
 
 export const CORPUS_STAMP_SIZE = { width: 80, height: 20 };
@@ -39,6 +40,9 @@ export const corpusAnchorMatchers = (fixture: string): ReadonlyArray<PdfTextAnch
   }
   if (fixture === "rotated-cropped.pdf") {
     return [...contentMatchers, { link: CORPUS_LINK_URIS.rotated }];
+  }
+  if (fixture === "takumi-declaration.pdf") {
+    return [...contentMatchers, { link: CORPUS_LINK_URIS.takumiSignature }];
   }
   return contentMatchers;
 };

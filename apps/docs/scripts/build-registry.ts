@@ -144,8 +144,7 @@ export const registry = {
       type: "registry:component",
       title: "PDF Signature Anchor",
       description:
-        "Invisible @react-pdf/renderer Text marker for SignatureKit text-anchor placement.",
-      dependencies: ["@react-pdf/renderer"],
+        "Invisible takumi-pdf text and URI link markers for SignatureKit anchor placement.",
       files: [
         {
           path: "registry/default/pdf-signature-anchor/pdf-signature-anchor.tsx",

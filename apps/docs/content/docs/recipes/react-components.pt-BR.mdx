@@ -18,7 +18,7 @@ npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json
 | `signature-pdf-viewer` | `npx shadcn@latest add https://signaturekit.dev/r/signature-pdf-viewer.json` | Preview com `react-pdf`, destaque de âncoras de texto e posicionamento manual por clique. |
 | `signature-dialog` | `npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json` | Fluxo direto de assinatura A1 com `useA1Signer`, retry de senha salva, progresso e preview/download do PDF assinado. |
 | `signing-progress-list` | `npx shadcn@latest add https://signaturekit.dev/r/signing-progress-list.json` | Linhas de status por documento para uma tela de assinatura customizada. |
-| `pdf-signature-anchor` | `npx shadcn@latest add https://signaturekit.dev/r/pdf-signature-anchor.json` | Texto invisível de `@react-pdf/renderer` pareado com `findPdfTextAnchors`. |
+| `pdf-signature-anchor` | `npx shadcn@latest add https://signaturekit.dev/r/pdf-signature-anchor.json` | Marcadores invisíveis `takumi-pdf` (texto e link URI) pareados com `findPdfTextAnchors`. |
 
 ## Dialog de assinatura direta
 
@@ -66,21 +66,30 @@ export function SignButton({ pfx }: { pfx: Uint8Array }) {
 
 ## Posicionamento por âncora
 
-Use texto invisível quando você gera PDFs com `@react-pdf/renderer`. O carimbo cai em um ponto determinístico e o usuário não precisa clicar em cada documento.
+Use âncoras invisíveis quando você gera PDFs com `takumi-pdf`. As variantes de texto e link combinam com os matchers de `findPdfTextAnchors`.
 
-```tsx title="contract.pdf.tsx"
-import { Text, View } from "@react-pdf/renderer"
-import { PdfSignatureAnchor } from "@/components/pdf-signature-anchor"
+```tsx title="contract.tsx"
+import { render } from "takumi-pdf"
+import {
+  PdfSignatureAnchor,
+  PdfSignatureLinkAnchor,
+} from "@/components/signature-kit/pdf-signature-anchor"
 
-export function ContractSignatureBlock() {
-  return (
-    <View>
-      <Text>Signatário</Text>
-      <PdfSignatureAnchor token="{{signature}}" />
-    </View>
+export async function buildContractPdf(fontBytes: Uint8Array) {
+  return render(
+    <main className="p-12 text-[11px]">
+      <p>Signatário</p>
+      <div className="mt-4 flex flex-col items-center gap-1">
+        <PdfSignatureAnchor token="{{signature}}" />
+        <PdfSignatureLinkAnchor href="https://signature.invalid/anchor" />
+      </div>
+    </main>,
+    { size: "a4", fonts: [{ name: "Liberation", data: fontBytes }] },
   )
 }
 ```
+
+Veja [Posicionamento por âncora](/pt-BR/docs/recipes/anchor-placement) para o fluxo gerar → `findPdfTextAnchors` → `prepareAndSignPdf`.
 
 Use `signature-pdf-viewer` quando uma pessoa precisar confirmar as âncoras ou trocar para posicionamento manual por clique.
 

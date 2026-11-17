@@ -1,24 +1,37 @@
-import * as React from "react";
-import { Text } from "@react-pdf/renderer";
+import type * as React from "react";
 
 export type PdfSignatureAnchorProps = {
   readonly token?: string;
   readonly children?: React.ReactNode;
-  readonly fontSize?: number;
-  readonly color?: string;
+  readonly className?: string;
 };
 
-const invisibleAnchorStyle = (fontSize: number, color: string) => ({
-  fontSize,
-  opacity: 0,
-  color,
-});
+const defaultTextAnchorClass = "text-[4px] text-white";
 
 export function PdfSignatureAnchor({
   token = "{{signature}}",
   children,
-  fontSize = 6,
-  color = "#ffffff",
+  className = defaultTextAnchorClass,
 }: PdfSignatureAnchorProps) {
-  return <Text style={invisibleAnchorStyle(fontSize, color)}>{children ?? token}</Text>;
+  return <p className={className}>{children ?? token}</p>;
+}
+
+export type PdfSignatureLinkAnchorProps = {
+  readonly href?: string;
+  readonly children?: React.ReactNode;
+  readonly className?: string;
+};
+
+const defaultLinkAnchorClass = "text-[4px] text-white";
+
+export function PdfSignatureLinkAnchor({
+  href = "https://signature.invalid/anchor",
+  children = "signature",
+  className = defaultLinkAnchorClass,
+}: PdfSignatureLinkAnchorProps) {
+  return (
+    <a href={href} className={className}>
+      {children}
+    </a>
+  );
 }

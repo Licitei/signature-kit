@@ -3,16 +3,13 @@
   "name": "pdf-signature-anchor",
   "type": "registry:component",
   "title": "PDF Signature Anchor",
-  "description": "Invisible @react-pdf/renderer Text marker for SignatureKit text-anchor placement.",
-  "dependencies": [
-    "@react-pdf/renderer"
-  ],
+  "description": "Invisible takumi-pdf text and URI link markers for SignatureKit anchor placement.",
   "files": [
     {
       "path": "registry/default/pdf-signature-anchor/pdf-signature-anchor.tsx",
       "type": "registry:component",
       "target": "@components/signature-kit/pdf-signature-anchor.tsx",
-      "content": "import * as React from \"react\";\nimport { Text } from \"@react-pdf/renderer\";\n\nexport type PdfSignatureAnchorProps = {\n  readonly token?: string;\n  readonly children?: React.ReactNode;\n  readonly fontSize?: number;\n  readonly color?: string;\n};\n\nconst invisibleAnchorStyle = (fontSize: number, color: string) => ({\n  fontSize,\n  opacity: 0,\n  color,\n});\n\nexport function PdfSignatureAnchor({\n  token = \"{{signature}}\",\n  children,\n  fontSize = 6,\n  color = \"#ffffff\",\n}: PdfSignatureAnchorProps) {\n  return <Text style={invisibleAnchorStyle(fontSize, color)}>{children ?? token}</Text>;\n}\n"
+      "content": "import type * as React from \"react\";\n\nexport type PdfSignatureAnchorProps = {\n  readonly token?: string;\n  readonly children?: React.ReactNode;\n  readonly className?: string;\n};\n\nconst defaultTextAnchorClass = \"text-[4px] text-white\";\n\nexport function PdfSignatureAnchor({\n  token = \"{{signature}}\",\n  children,\n  className = defaultTextAnchorClass,\n}: PdfSignatureAnchorProps) {\n  return <p className={className}>{children ?? token}</p>;\n}\n\nexport type PdfSignatureLinkAnchorProps = {\n  readonly href?: string;\n  readonly children?: React.ReactNode;\n  readonly className?: string;\n};\n\nconst defaultLinkAnchorClass = \"text-[4px] text-white\";\n\nexport function PdfSignatureLinkAnchor({\n  href = \"https://signature.invalid/anchor\",\n  children = \"signature\",\n  className = defaultLinkAnchorClass,\n}: PdfSignatureLinkAnchorProps) {\n  return (\n    <a href={href} className={className}>\n      {children}\n    </a>\n  );\n}\n"
     }
   ]
 }

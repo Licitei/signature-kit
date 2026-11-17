@@ -50,7 +50,8 @@
     "@react-pdf/renderer": "4.9.0",
     "binaryen": "130.0.0",
     "pdfjs-dist": "6.3.289",
-    "react": "19.3.1"
+    "react": "19.3.1",
+    "takumi-pdf": "0.20.0"
   },
   "nx": {
     "targets": {
