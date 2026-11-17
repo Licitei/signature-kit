@@ -79,7 +79,7 @@ Work is bounded: 128 revisions, 1,024 signature dictionaries, 200,000 indirect n
 
 ## Writing
 
-`document(pdf, options)` describes what an edit needs: `nextObjectNumber`, every page (`ref`, boxes, rotation, annotation count), whether the catalog has an AcroForm, the annotations of `annotationPages` (reference, widget flag, `/T` presence, `/Rect`, and the signature slot analysis of empty signature widgets), and with `fieldNamePrefix` the first unused `<prefix><n>` field name (or why the field tree could not be read within its depth, node, and name-length budgets).
+`document(pdf, options)` describes what an edit needs: `nextObjectNumber`, every page (`ref`, boxes, rotation, annotation count), whether the catalog has an AcroForm, the annotations of `annotationPages` (reference, widget flag, `/T` presence, `/Rect`, the `uri` of `/Link` annotations with a URI action, and the signature slot analysis of empty signature widgets), and with `fieldNamePrefix` the first unused `<prefix><n>` field name (or why the field tree could not be read within its depth, node, and name-length budgets).
 
 `edit(pdf, operations, options)` applies typed operations and serializes the result. Values are PDF syntax (`"<< /Fields [] >>"`, `"12 0 R"`, `"(text)"`); new objects use numbers from `nextObjectNumber` upward. Operations:
 
@@ -94,11 +94,18 @@ Work is bounded: 128 revisions, 1,024 signature dictionaries, 200,000 indirect n
 | `appendContent`  | Adds a content stream to a page; with `wrapRef` the existing content is wrapped in `q`/`Q` first.                                   |
 | `addResource`    | Adds a named resource (`Font`, `XObject`, `ExtGState`, …) to a page, materializing inherited resources.                             |
 | `image`          | Adds an 8-bit gray or RGB image XObject; with `alpha` the alpha channel becomes an `/SMask` object.                                 |
+| `png`            | Decodes a PNG (every color type and bit depth, Adam7 interlacing, `tRNS`) into an 8-bit image XObject with an `/SMask` when alpha.  |
 | `standardFont`   | Adds a standard-14 Type 1 font (`WinAnsiEncoding` except Symbol and ZapfDingbats).                                                  |
 | `signature`      | Adds a signature dictionary with a `/ByteRange` placeholder and a zero-filled `/Contents` of `contentsLength` bytes.                |
 | `repairCatalog`  | Sets `/Type /Catalog` on the document catalog.                                                                                      |
 
 `mode` chooses the serialization. `"incremental"` appends the changed objects after the untouched original bytes with a new cross-reference section linked by `/Prev` (a classic table, or an xref stream when the previous section is one), so earlier signatures stay valid; it fails when the cross-reference chain had to be repaired. `"rewrite"` copies the reachable object graph into a new file with renumbered objects, dropping unreachable ones; `objectStreams: true` packs non-stream objects into Flate object streams. `"auto"` (default) is incremental when possible and a rewrite otherwise.
+
+PNG input is bounded to 16 MiB, 16 Mi pixels, 64 MiB of decoded scanlines and 4,096 chunks; malformed PNGs fail with `pdfCore.INVALID_OPTIONS`.
+
+`create({ pages })` writes a new document with blank pages of the given sizes (1 to 10,000 pages, sides up to 14,400 points); edit it like any other PDF.
+
+`fontMetrics(baseFont)` returns, for one of the twelve WinAnsi standard-14 fonts, the Unicode code point (`unicode`, `0` when undefined) and the advance width in 1/1000 em (`widths`) of each of the 256 WinAnsi codes, so callers can encode and measure text drawn with the `standardFont` operation.
 
 `merge(sources, options)` copies pages into a new document: each source may select `pageIndexes`; inherited boxes, rotation, and resources are materialized, references to pages that are not copied become `null`, and `dropWidgets` removes widget annotations. `deflate(bytes)` returns a zlib stream.
 
@@ -108,7 +115,7 @@ Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.
 
 ## Wasm ABI
 
-The module exports `memory` and eleven functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
+The module exports `memory` and thirteen functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
 
 | Export                                                                                                   | Contract                                                                              |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -123,6 +130,8 @@ The module exports `memory` and eleven functions. There is no global mutable sta
 | `pdf_core_edit(pdf_ptr, pdf_len, ops_ptr, ops_len) -> result_ptr`                                        | Applies an edit payload; the result payload is the new PDF.                           |
 | `pdf_core_merge(payload_ptr, payload_len, flags) -> result_ptr`                                          | Merges sources; `flags` bit 0 drops widgets, bit 1 packs object streams.              |
 | `pdf_core_deflate(data_ptr, data_len) -> result_ptr`                                                     | The result payload is a zlib stream.                                                  |
+| `pdf_core_create(sizes_ptr, sizes_len) -> result_ptr`                                                    | `sizes_len` `f64` values, width and height per page; the payload is the new PDF.      |
+| `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                               |
 
 `flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
 
@@ -160,13 +169,17 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 
 Header of 24 bytes, all `u32`: `magic` (`0x47534450`, "PDSG"), `version` (`1`), `failure` (`0` none, then `1`–`10` in the order `streamEnd`, `revisionLengths`, `indirectLengths`, `lengthBudget`, `dictionaryParse`, `revisionStructure`, `crossReferenceStream`, `objectStream`, `traversalBudget`, `invalidByteRange`), `flags` (bit 0 parse failed, bit 1 stream failed, bit 2 stream uncertain, bit 3 limit exceeded), `count`, padding. Then `count` records of 72 bytes: `object_number`, `generation`, `object_start`, `flags` (bit 0 document timestamp, bit 1 has `/ByteRange`, bit 2 has `/Contents`, bit 3 byte-range values valid, bit 4 unsigned placeholder), the `/ByteRange` span and the `/Contents` span (`key_start`, `value_start`, `value_end` each, all `u32`), and the four byte-range values as `f64`.
 
-### Document payload (version 1)
+### Document payload (version 2)
 
-Header of 32 bytes, all `u32`: `magic` (`0x49444450`, "PDDI"), `version` (`1`), `page_count`, `annotation_count`, `next_object_number`, `flags` (bit 0 AcroForm, bit 1 field name available, bit 2 field name failed), `field_failure` (`1`–`6`: depth, node budget, cyclic, name length, qualified name length, character budget), `field_name_len`. Pages are 80-byte records: `media_box` and `crop_box` (4 × `f64` each), `rotate` (`i32`), `ref_number`, `ref_generation` (`0` when the page is not indirect), `annotation_count`. Annotations are 64-byte records: `page_index`, `index`, `ref_number`, `ref_generation`, `flags` (bit 0 widget, bit 1 has rect, bit 2 has `/T`), `slot` (`0` none, `1` open on the widget, `2` open on the referenced field, `3` open on the widget's direct `/Parent`, `4` malformed), `slot_a` (field object number, or `1` cyclic, `2` invalid parent, `3` depth), `slot_b` (field generation), then `rect` (4 × `f64`). The UTF-8 field name follows, padded to 8.
+Header of 32 bytes, all `u32`: `magic` (`0x49444450`, "PDDI"), `version` (`1`), `page_count`, `annotation_count`, `next_object_number`, `flags` (bit 0 AcroForm, bit 1 field name available, bit 2 field name failed), `field_failure` (`1`–`6`: depth, node budget, cyclic, name length, qualified name length, character budget), `field_name_len`. Pages are 80-byte records: `media_box` and `crop_box` (4 × `f64` each), `rotate` (`i32`), `ref_number`, `ref_generation` (`0` when the page is not indirect), `annotation_count`. Annotations are 72-byte records: `page_index`, `index`, `ref_number`, `ref_generation`, `flags` (bit 0 widget, bit 1 has rect, bit 2 has `/T`, bit 3 has a link URI), `slot` (`0` none, `1` open on the widget, `2` open on the referenced field, `3` open on the widget's direct `/Parent`, `4` malformed), `slot_a` (field object number, or `1` cyclic, `2` invalid parent, `3` depth), `slot_b` (field generation), `rect` (4 × `f64`), then `uri_offset` and `uri_len` (`u32`, relative to the URI blob). The UTF-8 URI blob (every link URI back to back) follows the records, then the UTF-8 field name, padded to 8. Version 1 had 64-byte records and no URIs.
+
+### Font metrics payload (version 1)
+
+Little-endian: `magic` (`0x4d464450`, "PDFM"), `version` (`1`), then 256 records of `unicode` and `width` (`u16` each), indexed by WinAnsi code.
 
 ### Edit payload (version 1)
 
-Little-endian and unaligned: `magic` (`0x44455044`, "PDED"), `version` (`1`), `flags` (bits 0–1 mode: `0` auto, `1` incremental, `2` rewrite; bit 2 object streams), `count`, then `count` operations. Each operation starts with its opcode (`1` setObject … `13` repairCatalog, in the order of the table above). Byte strings are a `u32` length followed by the bytes; references are `number`, `generation`; optional references use number `0` for none; targets are `kind` (`0` catalog, `1` page, `2` object), two `u32` arguments (page index, or number and generation), a step count, and steps (`0` + key bytes, or `1` + `u32` index).
+Little-endian and unaligned: `magic` (`0x44455044`, "PDED"), `version` (`1`), `flags` (bits 0–1 mode: `0` auto, `1` incremental, `2` rewrite; bit 2 object streams), `count`, then `count` operations. Each operation starts with its opcode (`1` setObject … `10` image, `11` standardFont, `12` signature, `13` repairCatalog, `14` png). Byte strings are a `u32` length followed by the bytes; references are `number`, `generation`; optional references use number `0` for none; targets are `kind` (`0` catalog, `1` page, `2` object), two `u32` arguments (page index, or number and generation), a step count, and steps (`0` + key bytes, or `1` + `u32` index).
 
 ### Merge payload
 

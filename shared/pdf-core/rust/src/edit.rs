@@ -8,6 +8,7 @@ use crate::failure::{Failure, Outcome};
 use crate::inspection::{Limits, PageInfo};
 use crate::num::{f64_to_i64, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
+use crate::png::{self, Image};
 use crate::revision::revision_complete;
 use crate::syntax::{Parser, skip_whitespace_at};
 use crate::write::{Body, Changes, Packing, incremental, rewrite};
@@ -31,6 +32,7 @@ const OP_IMAGE: u32 = 10;
 const OP_STANDARD_FONT: u32 = 11;
 const OP_SIGNATURE: u32 = 12;
 const OP_REPAIR_CATALOG: u32 = 13;
+const OP_PNG: u32 = 14;
 const STREAM_COMPRESS: u32 = 1;
 const CONTENT_COMPRESS: u32 = 1;
 const IMAGE_ALPHA: u32 = 1;
@@ -108,6 +110,7 @@ pub(crate) struct AnnotationInfo {
     pub reference: Option<ObjRef>,
     pub slot: Slot,
     pub titled: bool,
+    pub uri: Option<String>,
     pub widget: bool,
 }
 
@@ -281,6 +284,12 @@ impl Store<'_, '_> {
                 self.set_body(reference, standard_font(name)?, None);
             }
             OP_SIGNATURE => self.signature(reader)?,
+            OP_PNG => {
+                let reference = reader.reference()?;
+                let mask = reader.optional_reference()?;
+                let decoded = png::decode(reader.bytes()?)?;
+                self.store_image(reference, mask, decoded)?;
+            }
             OP_REPAIR_CATALOG => {
                 let root = self.root_ref()?;
                 dict_of(self.object_mut(root)?)?.insert(b"Type", Object::Name(b"Catalog".to_vec()));
@@ -380,53 +389,20 @@ impl Store<'_, '_> {
 
     fn image(&mut self, reader: &mut Reader<'_>) -> Outcome<()> {
         let reference = reader.reference()?;
-        let mask_target = reader.optional_reference()?;
+        let mask = reader.optional_reference()?;
         let width = reader.u32()?;
         let height = reader.u32()?;
         let components = reader.u32()?;
         let flags = reader.u32()?;
-        let data = reader.bytes()?;
-        let alpha = flags & IMAGE_ALPHA != 0;
-        let color_space: &[u8] = match components {
-            1 => b"DeviceGray",
-            3 => b"DeviceRGB",
-            _ => return Err(Failure::request("images need 1 or 3 color components")),
+        let samples = reader.bytes()?.to_vec();
+        let image = Image {
+            alpha: flags & IMAGE_ALPHA != 0,
+            components,
+            height,
+            samples,
+            width,
         };
-        let pixels = u64::from(width).saturating_mul(u64::from(height));
-        if width == 0 || height == 0 || pixels > MAX_IMAGE_PIXELS {
-            return Err(Failure::request("image dimensions are out of range"));
-        }
-        let channels = components.saturating_add(u32::from(alpha));
-        let expected = pixels.saturating_mul(u64::from(channels));
-        if u64::try_from(data.len()).ok() != Some(expected) {
-            return Err(Failure::request(
-                "image sample count does not match its dimensions",
-            ));
-        }
-        let mut dict = image_dict(width, height, color_space);
-        if alpha {
-            let color_width = widen(components);
-            let stride = widen(channels);
-            let mut color: Vec<u8> = Vec::with_capacity(data.len());
-            let mut mask: Vec<u8> = Vec::with_capacity(data.len().checked_div(stride).unwrap_or(0));
-            for pixel in data.chunks_exact(stride) {
-                color.extend_from_slice(pixel.get(..color_width).unwrap_or_default());
-                mask.push(pixel.get(color_width).copied().unwrap_or(u8::MAX));
-            }
-            let mask_ref = mask_target
-                .ok_or_else(|| Failure::request("alpha images need a soft-mask object"))?;
-            self.set_stream(
-                mask_ref,
-                image_dict(width, height, b"DeviceGray"),
-                mask,
-                true,
-            );
-            dict.insert(b"SMask", Object::Ref(mask_ref));
-            self.set_stream(reference, dict, color, true);
-        } else {
-            self.set_stream(reference, dict, data.to_vec(), true);
-        }
-        Ok(())
+        self.store_image(reference, mask, image)
     }
 
     fn locate(&mut self, target: &Target, create: bool) -> Outcome<(ObjRef, Vec<Step>)> {
@@ -610,6 +586,62 @@ impl Store<'_, '_> {
         );
         dict.insert(b"Contents", Object::String(vec![0; widen(contents)]));
         self.set_body(reference, Object::Dict(dict), None);
+        Ok(())
+    }
+
+    fn store_image(
+        &mut self,
+        reference: ObjRef,
+        mask_target: Option<ObjRef>,
+        image: Image,
+    ) -> Outcome<()> {
+        let Image {
+            alpha,
+            components,
+            height,
+            samples,
+            width,
+        } = image;
+        let color_space: &[u8] = match components {
+            1 => b"DeviceGray",
+            3 => b"DeviceRGB",
+            _ => return Err(Failure::request("images need 1 or 3 color components")),
+        };
+        let pixels = u64::from(width).saturating_mul(u64::from(height));
+        if width == 0 || height == 0 || pixels > MAX_IMAGE_PIXELS {
+            return Err(Failure::request("image dimensions are out of range"));
+        }
+        let channels = components.saturating_add(u32::from(alpha));
+        let expected = pixels.saturating_mul(u64::from(channels));
+        if u64::try_from(samples.len()).ok() != Some(expected) {
+            return Err(Failure::request(
+                "image sample count does not match its dimensions",
+            ));
+        }
+        let mut dict = image_dict(width, height, color_space);
+        if alpha {
+            let color_width = widen(components);
+            let stride = widen(channels);
+            let mut color: Vec<u8> = Vec::with_capacity(samples.len());
+            let mut mask: Vec<u8> =
+                Vec::with_capacity(samples.len().checked_div(stride).unwrap_or(0));
+            for pixel in samples.chunks_exact(stride) {
+                color.extend_from_slice(pixel.get(..color_width).unwrap_or_default());
+                mask.push(pixel.get(color_width).copied().unwrap_or(u8::MAX));
+            }
+            let mask_ref = mask_target
+                .ok_or_else(|| Failure::request("alpha images need a soft-mask object"))?;
+            self.set_stream(
+                mask_ref,
+                image_dict(width, height, b"DeviceGray"),
+                mask,
+                true,
+            );
+            dict.insert(b"SMask", Object::Ref(mask_ref));
+            self.set_stream(reference, dict, color, true);
+        } else {
+            self.set_stream(reference, dict, samples, true);
+        }
         Ok(())
     }
 }
@@ -969,6 +1001,7 @@ fn page_annotations(
                 reference,
                 slot: Slot::None,
                 titled: false,
+                uri: None,
                 widget: false,
             });
             continue;
@@ -991,6 +1024,7 @@ fn page_annotations(
             reference,
             slot,
             titled: dict.get(b"T").is_some(),
+            uri: document.link_uri(dict)?,
             widget,
         });
     }
@@ -1594,6 +1628,74 @@ mod tests {
     }
 
     #[test]
+    fn png_images_decode_into_image_objects_with_soft_masks() {
+        let mut png = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let data = zlib_compress(&[0, 10, 20, 30, 0, 40, 50, 60, 255]);
+        png.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
+        png.extend_from_slice(b"IDAT");
+        png.extend_from_slice(&data);
+        png.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        png.extend_from_slice(b"IEND");
+        png.extend_from_slice(&[0, 0, 0, 0]);
+        let source = sample();
+        let next = document_info(&source, None, b"", &limits())
+            .unwrap()
+            .next_object_number;
+        let mut ops = Ops::default();
+        ops.op(OP_PNG)
+            .u32(next)
+            .u32(0)
+            .u32(next.saturating_add(1))
+            .u32(0)
+            .bytes(&png);
+        let updated = edit(&source, &ops.finish(MODE_INCREMENTAL), &limits()).unwrap();
+        let opened = reopen(&updated);
+        let image = opened
+            .load(ObjRef {
+                generation: 0,
+                number: next,
+            })
+            .unwrap();
+        let Object::Stream(stream) = &*image else {
+            panic!("image stream expected")
+        };
+        assert_eq!(stream.dict.get(b"Width"), Some(&Object::Integer(2)));
+        assert_eq!(
+            Resolver::stream_data(&opened, stream).unwrap(),
+            vec![10, 20, 30, 40, 50, 60]
+        );
+        let mask = opened
+            .load(ObjRef {
+                generation: 0,
+                number: next.saturating_add(1),
+            })
+            .unwrap();
+        let Object::Stream(mask_stream) = &*mask else {
+            panic!("mask stream expected")
+        };
+        assert_eq!(
+            Resolver::stream_data(&opened, mask_stream).unwrap(),
+            vec![0, 255]
+        );
+        let mut broken = Ops::default();
+        broken
+            .op(OP_PNG)
+            .u32(next)
+            .u32(0)
+            .u32(0)
+            .u32(0)
+            .bytes(b"nope");
+        assert_eq!(
+            edit(&source, &broken.finish(MODE_INCREMENTAL), &limits())
+                .unwrap_err()
+                .code,
+            FailureCode::InvalidRequest
+        );
+    }
+
+    #[test]
     fn rejects_malformed_payloads() {
         let source = sample();
         let mut font = Ops::default();
@@ -1630,16 +1732,21 @@ mod tests {
         let objects = vec![
             (1, "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R 8 0 R] >> >>".to_owned()),
             (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned()),
-            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [5 0 R 7 0 R << /Subtype /Link /Rect [1 1 5 5] >>] >>".to_owned()),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [5 0 R 7 0 R << /Subtype /Link /Rect [1 1 5 5] /A << /S /URI /URI (https://a.test/x) >> >> 10 0 R] >>".to_owned()),
             (5, "<< /Type /Annot /Subtype /Widget /FT /Sig /T (Empty) /Rect [10 10 110 60] >>".to_owned()),
             (6, "<< /FT /Sig /T (Parent) /Kids [7 0 R] >>".to_owned()),
             (7, "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /Rect [120 10 220 60] >>".to_owned()),
             (8, "<< /T (Sig1) /Kids [9 0 R] >>".to_owned()),
             (9, "<< /T (Sig2) >>".to_owned()),
+            (10, "<< /Subtype /Link /Rect [2 2 6 6] /A 11 0 R >>".to_owned()),
+            (11, "<< /S /URI /URI <FEFF0068> >>".to_owned()),
         ];
         let pdf = build(&objects);
         let info = document_info(&pdf, Some(&[0]), b"Sig", &limits()).unwrap();
-        assert_eq!(info.pages[0].annotation_count, 3);
+        assert_eq!(info.pages[0].annotation_count, 4);
+        assert_eq!(info.annotations[0].uri, None);
+        assert_eq!(info.annotations[2].uri.as_deref(), Some("https://a.test/x"));
+        assert_eq!(info.annotations[3].uri.as_deref(), Some("h"));
         assert_eq!(info.annotations[0].slot, Slot::Open(FieldTarget::Widget));
         assert_eq!(
             info.annotations[1].slot,

@@ -57,6 +57,8 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.edit",
   "pdfCore.merge",
   "pdfCore.deflate",
+  "pdfCore.create",
+  "pdfCore.fontMetrics",
 ]);
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
@@ -70,6 +72,8 @@ export const PdfCoreOperationValue = {
   edit: "pdfCore.edit",
   merge: "pdfCore.merge",
   deflate: "pdfCore.deflate",
+  create: "pdfCore.create",
+  fontMetrics: "pdfCore.fontMetrics",
 } satisfies Record<string, PdfCoreOperation>;
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
@@ -87,6 +91,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreEditOptions",
   "PdfCoreMergeSources",
   "PdfCoreMergeOptions",
+  "PdfCoreCreateOptions",
+  "PdfCoreFontName",
 ]);
 export type PdfCoreSchemaName = (typeof PdfCoreSchemaNameSchema)["Type"];
 export const PdfCoreSchemaNameValue = {
@@ -104,6 +110,8 @@ export const PdfCoreSchemaNameValue = {
   editOptions: "PdfCoreEditOptions",
   mergeSources: "PdfCoreMergeSources",
   mergeOptions: "PdfCoreMergeOptions",
+  createOptions: "PdfCoreCreateOptions",
+  fontName: "PdfCoreFontName",
 } satisfies Record<string, PdfCoreSchemaName>;
 
 export class PdfCoreError extends Schema.TaggedError<
@@ -264,6 +272,8 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_edit: Schema.declare(isEditFunction, { identifier: "pdf_core_edit" }),
   pdf_core_merge: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_merge" }),
   pdf_core_deflate: Schema.declare(isBufferFunction, { identifier: "pdf_core_deflate" }),
+  pdf_core_create: Schema.declare(isBufferFunction, { identifier: "pdf_core_create" }),
+  pdf_core_font_metrics: Schema.declare(isBufferFunction, { identifier: "pdf_core_font_metrics" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 
@@ -382,6 +392,7 @@ export const PdfCoreAnnotationSchema = Schema.Struct({
   widget: Schema.Boolean,
   titled: Schema.Boolean,
   rect: Schema.optional(PdfCoreBoxSchema),
+  uri: Schema.optional(Schema.String),
   signatureSlot: PdfCoreSignatureSlotSchema,
 });
 export type PdfCoreAnnotation = (typeof PdfCoreAnnotationSchema)["Type"];
@@ -522,6 +533,12 @@ export const PdfCoreEditOperationSchema = Schema.Union([
     samples: Schema.Uint8Array,
   }),
   Schema.Struct({
+    op: Schema.Literal("png"),
+    ref: PdfCoreObjectRefSchema,
+    softMaskRef: Schema.optional(PdfCoreObjectRefSchema),
+    png: Schema.Uint8Array,
+  }),
+  Schema.Struct({
     op: Schema.Literal("standardFont"),
     ref: PdfCoreObjectRefSchema,
     baseFont: PdfCoreStandardFontSchema,
@@ -566,3 +583,40 @@ export const PdfCoreMergeOptionsSchema = Schema.Struct({
   objectStreams: Schema.optional(Schema.Boolean),
 });
 export type PdfCoreMergeOptions = (typeof PdfCoreMergeOptionsSchema)["Type"];
+
+export const MAX_PDF_CORE_PAGE_SIDE = 14_400;
+
+const pageSideSchema = Schema.Finite.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(MAX_PDF_CORE_PAGE_SIDE),
+);
+
+export const PdfCoreCreateOptionsSchema = Schema.Struct({
+  pages: Schema.NonEmptyArray(
+    Schema.Struct({ width: pageSideSchema, height: pageSideSchema }),
+  ).check(Schema.isMaxLength(10_000)),
+});
+export type PdfCoreCreateOptions = (typeof PdfCoreCreateOptionsSchema)["Type"];
+
+export const PdfCoreWinAnsiFontSchema = Schema.Literals([
+  "Courier",
+  "Courier-Bold",
+  "Courier-BoldOblique",
+  "Courier-Oblique",
+  "Helvetica",
+  "Helvetica-Bold",
+  "Helvetica-BoldOblique",
+  "Helvetica-Oblique",
+  "Times-Roman",
+  "Times-Bold",
+  "Times-BoldItalic",
+  "Times-Italic",
+]);
+export type PdfCoreWinAnsiFont = (typeof PdfCoreWinAnsiFontSchema)["Type"];
+
+export const PdfCoreFontMetricsSchema = Schema.Struct({
+  baseFont: PdfCoreWinAnsiFontSchema,
+  unicode: Schema.instanceOf(Uint16Array),
+  widths: Schema.instanceOf(Uint16Array),
+});
+export type PdfCoreFontMetrics = (typeof PdfCoreFontMetricsSchema)["Type"];

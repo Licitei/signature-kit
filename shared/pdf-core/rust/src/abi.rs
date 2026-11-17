@@ -13,12 +13,13 @@ use crate::deflate::zlib_compress;
 use crate::document;
 use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
+use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::num::widen;
 use crate::revision::{Analysis, Report, analyze, revision_complete};
 use crate::table::Table;
-use crate::write::{Packing, merge};
+use crate::write::{Packing, create, merge};
 
 const MAGIC: u32 = 0x4346_4450;
 const VERSION: u32 = 2;
@@ -44,12 +45,14 @@ const SIGNATURES_MAGIC: u32 = 0x4753_4450;
 const SIGNATURES_VERSION: u32 = 1;
 const SIGNATURE_RECORD_LEN: usize = 72;
 const DOCUMENT_MAGIC: u32 = 0x4944_4450;
-const DOCUMENT_VERSION: u32 = 1;
+const DOCUMENT_VERSION: u32 = 2;
 const DOCUMENT_PAGE_RECORD_LEN: usize = 80;
-const DOCUMENT_ANNOTATION_RECORD_LEN: usize = 64;
+const DOCUMENT_ANNOTATION_RECORD_LEN: usize = 72;
 const MERGE_DROP_WIDGETS: u32 = 1;
 const MERGE_OBJECT_STREAMS: u32 = 2;
 const ALL_PAGES: u32 = u32::MAX;
+const METRICS_MAGIC: u32 = 0x4d46_4450;
+const METRICS_VERSION: u32 = 1;
 
 type MergeRequest<'data> = (Vec<&'data [u8]>, Vec<Option<Vec<u32>>>);
 
@@ -576,6 +579,11 @@ fn encode_document(info: &DocumentInfo) -> Outcome<Writer> {
         Some(Ok(found)) => (2, 0, found.as_bytes()),
         Some(Err(code)) => (4, *code, &[]),
     };
+    let uri_total = info
+        .annotations
+        .iter()
+        .filter_map(|annotation| annotation.uri.as_ref())
+        .fold(0_usize, |total, uri| total.saturating_add(uri.len()));
     let mut out = Writer::with_capacity(
         HEADER_LEN
             .saturating_add(info.pages.len().saturating_mul(DOCUMENT_PAGE_RECORD_LEN))
@@ -584,6 +592,7 @@ fn encode_document(info: &DocumentInfo) -> Outcome<Writer> {
                     .len()
                     .saturating_mul(DOCUMENT_ANNOTATION_RECORD_LEN),
             )
+            .saturating_add(uri_total)
             .saturating_add(name.len())
             .saturating_add(ALIGNMENT),
     );
@@ -606,6 +615,7 @@ fn encode_document(info: &DocumentInfo) -> Outcome<Writer> {
         );
         out.u32(page.annotation_count);
     }
+    let mut uri_offset = 0_usize;
     for annotation in &info.annotations {
         let (slot, first, second) = match annotation.slot {
             Slot::None => (0, 0, 0),
@@ -625,12 +635,24 @@ fn encode_document(info: &DocumentInfo) -> Outcome<Writer> {
         out.u32(
             u32::from(annotation.widget)
                 | (u32::from(annotation.rect.is_some()) << 1_i32)
-                | (u32::from(annotation.titled) << 2_i32),
+                | (u32::from(annotation.titled) << 2_i32)
+                | (u32::from(annotation.uri.is_some()) << 3_i32),
         );
         out.u32(slot);
         out.u32(first);
         out.u32(second);
         out.boxed(&annotation.rect.unwrap_or_default());
+        let uri_len = annotation.uri.as_ref().map_or(0, String::len);
+        out.u32(len32(uri_offset)?);
+        out.u32(len32(uri_len)?);
+        uri_offset = uri_offset.saturating_add(uri_len);
+    }
+    for uri in info
+        .annotations
+        .iter()
+        .filter_map(|annotation| annotation.uri.as_ref())
+    {
+        out.bytes(uri.as_bytes());
     }
     out.bytes(name);
     out.align();
@@ -732,6 +754,52 @@ pub(crate) unsafe extern "C" fn pdf_core_deflate(data_ptr: *const u8, data_len: 
     // SAFETY: forwarded from this function's contract.
     let data = unsafe { view(data_ptr, data_len) };
     finish(data.and_then(|bytes| bytes_result(&zlib_compress(bytes))))
+}
+
+/// # Safety
+///
+/// `sizes_ptr` must satisfy [`view`] for `sizes_len` `f64` values until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_create(
+    sizes_ptr: *const f64,
+    sizes_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let sizes = unsafe { view(sizes_ptr, sizes_len) };
+    finish(sizes.and_then(|values| {
+        let (pairs, rest) = values.as_chunks::<2>();
+        if !rest.is_empty() {
+            return Err(Failure::request(
+                "page sizes come in width and height pairs",
+            ));
+        }
+        bytes_result(&create(pairs)?)
+    }))
+}
+
+/// # Safety
+///
+/// `name_ptr` must satisfy [`view`] for `name_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_font_metrics(
+    name_ptr: *const u8,
+    name_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let name = unsafe { view(name_ptr, name_len) };
+    finish(name.and_then(|base_font| {
+        let font = Standard14Font::named(base_font)
+            .ok_or_else(|| Failure::request("not a standard 14 font with WinAnsi encoding"))?;
+        let mut out = Writer::with_capacity(1032);
+        out.u32(METRICS_MAGIC);
+        out.u32(METRICS_VERSION);
+        for (code, width) in (0_u8..=u8::MAX).zip(font.widths()) {
+            let unicode = win_ansi_unicode(code);
+            out.bytes(&unicode.to_le_bytes());
+            out.bytes(&if unicode == 0 { 0 } else { *width }.to_le_bytes());
+        }
+        out.done()
+    }))
 }
 
 /// # Safety
@@ -1464,6 +1532,75 @@ mod tests {
         assert_eq!(decoded.text.len(), 9);
         assert!(decoded.text.iter().all(|page| page.items.len() == 12_000));
         release(&block);
+    }
+
+    #[test]
+    fn create_writes_blank_pages_that_reopen() {
+        let sizes = [595.0_f64, 842.0_f64, 200.5_f64, 100.0_f64];
+        // SAFETY: `sizes` lives for the whole call.
+        let block = adopt(unsafe { pdf_core_create(sizes.as_ptr(), sizes.len()) });
+        assert_eq!(block.status, STATUS_OK);
+        let reopened = document::Document::open(&block.payload, &Limits::default()).unwrap();
+        let pages = reopened.pages().unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(
+            pages[1].info.media_box,
+            [0.0_f64, 0.0_f64, 200.5_f64, 100.0_f64]
+        );
+        release(&block);
+        for invalid in [
+            &[1.0_f64][..],
+            &[],
+            &[0.0_f64, 10.0_f64],
+            &[f64::NAN, 1.0_f64],
+            &[20_000.0_f64, 1.0_f64],
+        ] {
+            // SAFETY: `invalid` lives for the whole call.
+            let rejected = adopt(unsafe { pdf_core_create(invalid.as_ptr(), invalid.len()) });
+            assert_eq!(rejected.status, u32::from(FailureCode::InvalidRequest));
+            release(&rejected);
+        }
+    }
+
+    #[test]
+    fn font_metrics_map_win_ansi_codes_to_unicode_and_widths() {
+        let name = b"Helvetica-Bold";
+        // SAFETY: `name` lives for the whole call.
+        let block = adopt(unsafe { pdf_core_font_metrics(name.as_ptr(), name.len()) });
+        assert_eq!(block.status, STATUS_OK);
+        let mut reader = Reader {
+            data: &block.payload,
+            at: 0,
+        };
+        assert_eq!(reader.u32(), METRICS_MAGIC);
+        assert_eq!(reader.u32(), METRICS_VERSION);
+        let entries: Vec<(u16, u16)> = reader
+            .take(1024)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[low, high, width_low, width_high]| {
+                (
+                    u16::from_le_bytes([low, high]),
+                    u16::from_le_bytes([width_low, width_high]),
+                )
+            })
+            .collect();
+        assert_eq!(entries[usize::from(b'A')], (0x41, 722));
+        assert_eq!(entries[0x80], (0x20AC, 556));
+        assert_eq!(entries[0xE3], (0xE3, 556));
+        assert_eq!(entries[0x81], (0, 0));
+        assert_eq!(entries[0x7F], (0, 0));
+        assert_eq!(entries[0x10], (0, 0));
+        release(&block);
+        for rejected_name in [&b"Symbol"[..], b"Arial"] {
+            // SAFETY: `rejected_name` lives for the whole call.
+            let rejected = adopt(unsafe {
+                pdf_core_font_metrics(rejected_name.as_ptr(), rejected_name.len())
+            });
+            assert_eq!(rejected.status, u32::from(FailureCode::InvalidRequest));
+            release(&rejected);
+        }
     }
 
     #[test]

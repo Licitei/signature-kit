@@ -588,7 +588,7 @@ fn png_predict(
     Ok(())
 }
 
-fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
+pub(crate) fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
     let pred = match filter {
         1 => left,
         2 => up,

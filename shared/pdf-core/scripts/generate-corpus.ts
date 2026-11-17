@@ -1,24 +1,28 @@
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { PDFFont, PDFPage } from "@cantoo/pdf-lib";
+import type {
+  PdfCoreEditOperation,
+  PdfCoreEditTarget,
+  PdfCoreFontMetrics,
+  PdfCoreObjectRef,
+} from "../src/config.ts";
+import { PdfCore, pdfCoreLayer } from "../src/pdf-core.ts";
+import { Effect } from "effect";
 
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
 
-const { PDFDocument, PDFHexString, PDFString, rgb, StandardFonts } =
-  await import("@cantoo/pdf-lib");
 const { renderToBuffer, Document, Link, Page, Text, View, Font, StyleSheet } =
   await import("@react-pdf/renderer");
 const React = await import("react");
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-const FIXED_DATE = new Date("2024-01-15T10:30:00.000Z");
-const CORPUS_CREATOR = "signature-kit-pdf-core-corpus";
 const PAGE_SIZE: readonly [number, number] = [612, 792];
 const icpSource = join(repoRoot, "validators/iti/__tests__/fixtures/icp-brasil-ad-rb-signed.pdf");
+const encoder = new TextEncoder();
 
 const MINIMAL_PNG = Uint8Array.from(
   atob(
@@ -27,65 +31,236 @@ const MINIMAL_PNG = Uint8Array.from(
   (character) => character.charCodeAt(0),
 );
 
-const stampMetadata = (document: PDFDocument): void => {
-  document.setTitle("signature-kit-pdf-core-corpus");
-  document.setAuthor("Licitei");
-  document.setSubject("pdf-core regression corpus");
-  document.setCreator(CORPUS_CREATOR);
-  document.setProducer(CORPUS_CREATOR);
-  document.setCreationDate(FIXED_DATE);
-  document.setModificationDate(FIXED_DATE);
+type FontName = "Helvetica" | "Helvetica-Bold" | "Helvetica-Oblique";
+type Box = readonly [number, number, number, number];
+type Rgb = readonly [number, number, number];
+
+const FONT_RESOURCES: Readonly<Record<FontName, string>> = {
+  Helvetica: "F1",
+  "Helvetica-Bold": "F2",
+  "Helvetica-Oblique": "F3",
 };
+
+type Metrics = Readonly<Record<FontName, PdfCoreFontMetrics>>;
+
+type Painter = {
+  readonly text: (
+    text: string,
+    options: {
+      readonly x: number;
+      readonly y: number;
+      readonly size: number;
+      readonly font?: FontName;
+      readonly color?: Rgb;
+    },
+  ) => void;
+  readonly rect: (box: Box, lineWidth: number) => void;
+  readonly image: (box: Box) => void;
+  readonly link: (
+    uri: string,
+    rect: Box,
+    options?: { readonly hex?: boolean; readonly indirectAction?: boolean },
+  ) => void;
+  readonly width: (text: string, size: number, font?: FontName) => number;
+};
+
+type PageSpec = {
+  readonly rotate?: number;
+  readonly cropBox?: Box;
+  readonly draw: (painter: Painter) => void;
+};
+
+type LinkSpec = {
+  readonly uri: string;
+  readonly rect: Box;
+  readonly hex: boolean;
+  readonly indirectAction: boolean;
+};
+
+const winAnsiHex = (metrics: PdfCoreFontMetrics, text: string): string => {
+  const codes = new Map<number, number>();
+  metrics.unicode.forEach((unicode, code) => {
+    if (unicode !== 0 && !codes.has(unicode)) codes.set(unicode, code);
+  });
+  return Array.from(text, (character) =>
+    (codes.get(character.codePointAt(0) ?? 0) ?? 0x3f).toString(16).padStart(2, "0"),
+  ).join("");
+};
+
+const textWidth = (metrics: PdfCoreFontMetrics, text: string, size: number): number => {
+  let units = 0;
+  for (const character of text) {
+    const code = metrics.unicode.indexOf(character.codePointAt(0) ?? 0);
+    units += code < 0 ? 0 : (metrics.widths[code] ?? 0);
+  }
+  return (units * size) / 1000;
+};
+
+const utf16Hex = (text: string): string =>
+  `FEFF${Array.from({ length: text.length }, (_, index) =>
+    text.charCodeAt(index).toString(16).padStart(4, "0"),
+  ).join("")}`;
+
+const literal = (text: string): string => `(${text.replace(/[\\()]/gu, (match) => `\\${match}`)})`;
+
+const loadMetrics = Effect.gen(function* () {
+  const core = yield* PdfCore;
+  return {
+    Helvetica: yield* core.fontMetrics("Helvetica"),
+    "Helvetica-Bold": yield* core.fontMetrics("Helvetica-Bold"),
+    "Helvetica-Oblique": yield* core.fontMetrics("Helvetica-Oblique"),
+  } satisfies Metrics;
+});
+
+const buildPdf = (
+  pages: ReadonlyArray<PageSpec>,
+  options: { readonly objectStreams?: boolean } = {},
+) =>
+  Effect.gen(function* () {
+    const core = yield* PdfCore;
+    const metrics = yield* loadMetrics;
+    const created = yield* core.create({
+      pages: pages.map(() => ({ width: PAGE_SIZE[0], height: PAGE_SIZE[1] })),
+    });
+    const { nextObjectNumber } = yield* core.document(created);
+    let next = nextObjectNumber;
+    const allocate = (): PdfCoreObjectRef => ({ number: next++, generation: 0 });
+    const fontRefs = new Map<FontName, PdfCoreObjectRef>();
+    let imageRef: PdfCoreObjectRef | undefined;
+    const operations: Array<PdfCoreEditOperation> = [];
+    const fontRef = (font: FontName): PdfCoreObjectRef => {
+      const found = fontRefs.get(font);
+      if (found !== undefined) return found;
+      const created = allocate();
+      fontRefs.set(font, created);
+      operations.push({ op: "standardFont", ref: created, baseFont: font });
+      return created;
+    };
+    for (const [pageIndex, page] of pages.entries()) {
+      const content: Array<string> = [];
+      const links: Array<LinkSpec> = [];
+      const usedFonts = new Set<FontName>();
+      let usesImage = false;
+      page.draw({
+        text: (text, { x, y, size, font = "Helvetica", color = [0, 0, 0] }) => {
+          usedFonts.add(font);
+          content.push(
+            `BT ${color.join(" ")} rg /${FONT_RESOURCES[font]} ${size} Tf ${x} ${y} Td <${winAnsiHex(metrics[font], text)}> Tj ET`,
+          );
+        },
+        rect: ([x, y, width, height], lineWidth) =>
+          content.push(`q 0 0 0 RG ${lineWidth} w ${x} ${y} ${width} ${height} re S Q`),
+        image: ([x, y, width, height]) => {
+          usesImage = true;
+          content.push(`q ${width} 0 0 ${height} ${x} ${y} cm /Im1 Do Q`);
+        },
+        link: (uri, rect, linkOptions) =>
+          links.push({
+            uri,
+            rect,
+            hex: linkOptions?.hex === true,
+            indirectAction: linkOptions?.indirectAction === true,
+          }),
+        width: (text, size, font = "Helvetica") => textWidth(metrics[font], text, size),
+      });
+      const target: PdfCoreEditTarget = { base: { kind: "page", pageIndex } };
+      if (page.rotate !== undefined) {
+        operations.push({ op: "set", target, key: "Rotate", value: String(page.rotate) });
+      }
+      if (page.cropBox !== undefined) {
+        operations.push({
+          op: "set",
+          target,
+          key: "CropBox",
+          value: `[${page.cropBox.join(" ")}]`,
+        });
+      }
+      for (const font of usedFonts) {
+        const ref = fontRef(font);
+        operations.push({
+          op: "addResource",
+          pageIndex,
+          category: "Font",
+          name: FONT_RESOURCES[font],
+          value: `${ref.number} 0 R`,
+        });
+      }
+      if (usesImage) {
+        if (imageRef === undefined) {
+          imageRef = allocate();
+          operations.push({ op: "png", ref: imageRef, softMaskRef: allocate(), png: MINIMAL_PNG });
+        }
+        operations.push({
+          op: "addResource",
+          pageIndex,
+          category: "XObject",
+          name: "Im1",
+          value: `${imageRef.number} 0 R`,
+        });
+      }
+      if (content.length > 0) {
+        operations.push({
+          op: "appendContent",
+          pageIndex,
+          ref: allocate(),
+          data: encoder.encode(content.join("\n")),
+          compress: true,
+        });
+      }
+      for (const link of links) {
+        const action = `<< /S /URI /URI ${link.hex ? `<${utf16Hex(link.uri)}>` : literal(link.uri)} >>`;
+        const actionRef = link.indirectAction ? allocate() : undefined;
+        if (actionRef !== undefined) {
+          operations.push({ op: "setObject", ref: actionRef, value: action });
+        }
+        const annotation = allocate();
+        operations.push(
+          {
+            op: "setObject",
+            ref: annotation,
+            value: `<< /Type /Annot /Subtype /Link /Rect [${link.rect.join(" ")}] /Border [0 0 0] /A ${
+              actionRef === undefined ? action : `${actionRef.number} 0 R`
+            } >>`,
+          },
+          { op: "append", target, key: "Annots", value: `${annotation.number} 0 R` },
+        );
+      }
+    }
+    return yield* core.edit(created, operations, {
+      mode: "rewrite",
+      ...(options.objectStreams === true ? { objectStreams: true } : {}),
+    });
+  });
 
 const writeFixture = (name: string, bytes: Uint8Array): void => {
   const target = join(PDF_CORE_FIXTURES_DIR, name);
   writeFileSync(target, bytes);
 };
 
-const addLinkAnnotation = (
-  document: PDFDocument,
-  page: ReturnType<PDFDocument["addPage"]>,
-  uri: string,
-  rect: readonly [number, number, number, number],
-  options?: { readonly hex?: boolean; readonly indirectAction?: boolean },
-): void => {
-  const action = document.context.obj({
-    S: "URI",
-    URI: options?.hex === true ? PDFHexString.fromText(uri) : PDFString.of(uri),
-  });
-  const annotation = document.context.register(
-    document.context.obj({
-      Type: "Annot",
-      Subtype: "Link",
-      Rect: [...rect],
-      Border: [0, 0, 0],
-      A: options?.indirectAction === true ? document.context.register(action) : action,
-    }),
-  );
-  page.node.addAnnot(annotation);
-};
-
-const buildHelveticaWinansi = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const regular = await document.embedFont(StandardFonts.Helvetica);
-  const bold = await document.embedFont(StandardFonts.HelveticaBold);
-  const page = document.addPage(PAGE_SIZE);
-  const lines = [
-    "Declaração de habilitação — corpus SignatureKit",
-    "Ação, coração, situação e à margem do edital.",
-    "CPF 123.456.789-09 e CNPJ 12.345.678/0001-95.",
-    "Âncoras [[licitei-assinatura]] e {{signature}}.",
-  ];
-  let y = 720;
-  for (const [index, line] of lines.entries()) {
-    const font = index === 0 ? bold : regular;
-    const size = index === 0 ? 16 : 12;
-    page.drawText(line, { x: 72, y, size, font, color: rgb(0.1, 0.1, 0.1) });
-    y -= size + 10;
-  }
-  return document.save({ useObjectStreams: false });
-};
+const buildHelveticaWinansi = buildPdf([
+  {
+    draw: (painter) => {
+      const lines = [
+        "Declaração de habilitação — corpus SignatureKit",
+        "Ação, coração, situação e à margem do edital.",
+        "CPF 123.456.789-09 e CNPJ 12.345.678/0001-95.",
+        "Âncoras [[licitei-assinatura]] e {{signature}}.",
+      ];
+      let y = 720;
+      for (const [index, line] of lines.entries()) {
+        const size = index === 0 ? 16 : 12;
+        painter.text(line, {
+          x: 72,
+          y,
+          size,
+          font: index === 0 ? "Helvetica-Bold" : "Helvetica",
+          color: [0.1, 0.1, 0.1],
+        });
+        y -= size + 10;
+      }
+    },
+  },
+]);
 
 const requireFromModule = createRequire(import.meta.url);
 
@@ -139,34 +314,27 @@ const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
   return new Uint8Array(await renderToBuffer(body));
 };
 
-const buildRotatedCropped = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const rotations: ReadonlyArray<90 | 270> = [90, 270];
-  for (const rotation of rotations) {
-    const page = document.addPage(PAGE_SIZE);
-    page.setRotation({ type: "degrees", angle: rotation });
-    page.setCropBox(72, 72, PAGE_SIZE[0] - 72, PAGE_SIZE[1] - 72);
-    page.drawText(`Página com rotação ${rotation}°`, { x: 120, y: 420, size: 14, font });
-    addLinkAnnotation(document, page, LINK_FIXTURE_URIS.rotated, [100, 360, 320, 390]);
-  }
-  return document.save({ useObjectStreams: false });
-};
+const buildRotatedCropped = buildPdf(
+  [90, 270].map((rotation) => ({
+    rotate: rotation,
+    cropBox: [72, 72, PAGE_SIZE[0], PAGE_SIZE[1]],
+    draw: (painter: Painter) => {
+      painter.text(`Página com rotação ${rotation}°`, { x: 120, y: 420, size: 14 });
+      painter.link(LINK_FIXTURE_URIS.rotated, [100, 360, 320, 390]);
+    },
+  })),
+);
 
-const buildLinks = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  page.drawText("Documento de links para âncoras URI.", { x: 72, y: 700, size: 12, font });
-  addLinkAnnotation(document, page, LINK_FIXTURE_URIS.primary, [72, 620, 280, 650]);
-  addLinkAnnotation(document, page, LINK_FIXTURE_URIS.secondary, [72, 560, 280, 590]);
-  addLinkAnnotation(document, page, LINK_FIXTURE_URIS.indirect, [72, 500, 280, 530], {
-    indirectAction: true,
-  });
-  return document.save({ useObjectStreams: false });
-};
+const buildLinks = buildPdf([
+  {
+    draw: (painter) => {
+      painter.text("Documento de links para âncoras URI.", { x: 72, y: 700, size: 12 });
+      painter.link(LINK_FIXTURE_URIS.primary, [72, 620, 280, 650]);
+      painter.link(LINK_FIXTURE_URIS.secondary, [72, 560, 280, 590]);
+      painter.link(LINK_FIXTURE_URIS.indirect, [72, 500, 280, 530], { indirectAction: true });
+    },
+  },
+]);
 
 const habilitacaoParagraph = (pageIndex: number): string => {
   const topics = [
@@ -179,202 +347,172 @@ const habilitacaoParagraph = (pageIndex: number): string => {
   return `Página ${pageIndex + 1}: bloco sobre ${topic}, com referência ao edital e à execução contratual em conformidade com a Lei 14.133/2021.`;
 };
 
-const buildHabilitacao150 = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const bold = await document.embedFont(StandardFonts.HelveticaBold);
-  const png = await document.embedPng(MINIMAL_PNG);
-  for (let pageIndex = 0; pageIndex < 150; pageIndex += 1) {
-    const page = document.addPage(PAGE_SIZE);
-    page.drawText(`Habilitação — folha ${pageIndex + 1}`, {
-      x: 72,
-      y: 730,
-      size: 12,
-      font: bold,
-    });
-    page.drawText(habilitacaoParagraph(pageIndex), {
-      x: 72,
-      y: 700,
-      size: 10,
-      font,
-      maxWidth: 468,
-      lineHeight: 12,
-    });
-    if (pageIndex % 12 === 5) {
-      const rows = 4;
-      const cols = 3;
-      for (let row = 0; row < rows; row += 1) {
-        for (let col = 0; col < cols; col += 1) {
-          const x = 72 + col * 150;
-          const y = 520 - row * 50;
-          page.drawRectangle({ x, y, width: 130, height: 30, borderWidth: 0.5 });
-          page.drawText(`C${col + 1}R${row + 1}`, { x: x + 6, y: y + 10, size: 9, font });
-        }
-      }
-    }
-    if (pageIndex % 25 === 12) {
-      const scale = 80 + (pageIndex % 40);
-      page.drawImage(png, { x: 360, y: 220, width: scale, height: scale });
-    }
-    if (pageIndex === 149) {
-      page.drawText("Âncora [[licitei-assinatura]] na última página.", {
-        x: 72,
-        y: 120,
-        size: 11,
-        font,
-      });
-    }
-  }
-  return document.save({ useObjectStreams: false });
-};
-
-const buildObjectStreams = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  page.drawText("PDF salvo com object streams e xref stream.", { x: 72, y: 700, size: 12, font });
-  return document.save({ useObjectStreams: true });
-};
-
-const buildIncrementalUpdate = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  page.drawText("Versão original do documento.", { x: 72, y: 700, size: 12, font });
-  const base = await document.save({ useObjectStreams: false });
-  const updated = await PDFDocument.load(base);
-  updated.setModificationDate(FIXED_DATE);
-  const updatedFont = await updated.embedFont(StandardFonts.Helvetica);
-  const updatedPage = updated.getPage(0);
-  updatedPage.drawText("Texto alterado por atualização incremental.", {
-    x: 72,
-    y: 660,
-    size: 12,
-    font: updatedFont,
-  });
-  return updated.save();
-};
-
-type DrawnPiece = { readonly text: string; readonly font: PDFFont };
-
-const drawPieces = (
-  page: PDFPage,
-  pieces: ReadonlyArray<DrawnPiece>,
-  x: number,
-  y: number,
-  size: number,
-): void => {
-  let cursor = x;
-  for (const piece of pieces) {
-    page.drawText(piece.text, { x: cursor, y, size, font: piece.font });
-    cursor += piece.font.widthOfTextAtSize(piece.text, size);
-  }
-};
-
-const wrapWords = (text: string, font: PDFFont, size: number, width: number): string[] => {
+const wrapWords = (
+  text: string,
+  width: (candidate: string) => number,
+  maxWidth: number,
+): string[] => {
   const lines: string[] = [];
   let current = "";
   for (const word of text.split(" ")) {
     const candidate = current === "" ? word : `${current} ${word}`;
-    if (current !== "" && font.widthOfTextAtSize(candidate, size) > width) {
+    if (current !== "" && width(candidate) > maxWidth) {
       lines.push(current);
       current = word;
     } else {
       current = candidate;
     }
   }
-  if (current !== "") {
-    lines.push(current);
-  }
+  if (current !== "") lines.push(current);
   return lines;
 };
 
+const buildHabilitacao150 = buildPdf(
+  Array.from({ length: 150 }, (_, pageIndex) => ({
+    draw: (painter: Painter) => {
+      painter.text(`Habilitação — folha ${pageIndex + 1}`, {
+        x: 72,
+        y: 730,
+        size: 12,
+        font: "Helvetica-Bold",
+      });
+      wrapWords(habilitacaoParagraph(pageIndex), (line) => painter.width(line, 10), 468).forEach(
+        (line, index) => painter.text(line, { x: 72, y: 700 - index * 12, size: 10 }),
+      );
+      if (pageIndex % 12 === 5) {
+        for (let row = 0; row < 4; row += 1) {
+          for (let col = 0; col < 3; col += 1) {
+            const x = 72 + col * 150;
+            const y = 520 - row * 50;
+            painter.rect([x, y, 130, 30], 0.5);
+            painter.text(`C${col + 1}R${row + 1}`, { x: x + 6, y: y + 10, size: 9 });
+          }
+        }
+      }
+      if (pageIndex % 25 === 12) {
+        const scale = 80 + (pageIndex % 40);
+        painter.image([360, 220, scale, scale]);
+      }
+      if (pageIndex === 149) {
+        painter.text("Âncora [[licitei-assinatura]] na última página.", {
+          x: 72,
+          y: 120,
+          size: 11,
+        });
+      }
+    },
+  })),
+);
+
+const buildObjectStreams = buildPdf(
+  [
+    {
+      draw: (painter) =>
+        painter.text("PDF salvo com object streams e xref stream.", { x: 72, y: 700, size: 12 }),
+    },
+  ],
+  { objectStreams: true },
+);
+
+const buildIncrementalUpdate = Effect.gen(function* () {
+  const core = yield* PdfCore;
+  const metrics = yield* loadMetrics;
+  const base = yield* buildPdf([
+    {
+      draw: (painter) => painter.text("Versão original do documento.", { x: 72, y: 700, size: 12 }),
+    },
+  ]);
+  const { nextObjectNumber } = yield* core.document(base);
+  const font = { number: nextObjectNumber, generation: 0 };
+  return yield* core.edit(
+    base,
+    [
+      { op: "standardFont", ref: font, baseFont: "Helvetica" },
+      {
+        op: "addResource",
+        pageIndex: 0,
+        category: "Font",
+        name: "F9",
+        value: `${font.number} 0 R`,
+      },
+      {
+        op: "appendContent",
+        pageIndex: 0,
+        ref: { number: nextObjectNumber + 1, generation: 0 },
+        wrapRef: { number: nextObjectNumber + 2, generation: 0 },
+        data: encoder.encode(
+          `BT /F9 12 Tf 72 660 Td <${winAnsiHex(metrics.Helvetica, "Texto alterado por atualização incremental.")}> Tj ET`,
+        ),
+        compress: true,
+      },
+    ],
+    { mode: "incremental" },
+  );
+});
+
 const drawJustified = (
-  page: PDFPage,
+  painter: Painter,
   lines: ReadonlyArray<string>,
   options: {
     readonly x: number;
     readonly y: number;
     readonly width: number;
-    readonly font: PDFFont;
     readonly size: number;
     readonly leading: number;
   },
 ): void => {
-  const { x, y, width, font, size, leading } = options;
+  const { x, y, width, size, leading } = options;
   for (const [index, line] of lines.entries()) {
     const baseline = y - index * leading;
     const words = line.split(" ");
     if (index === lines.length - 1 || words.length < 2) {
-      page.drawText(line, { x, y: baseline, size, font });
+      painter.text(line, { x, y: baseline, size });
       continue;
     }
-    const extra = (width - font.widthOfTextAtSize(line, size)) / (words.length - 1);
+    const extra = (width - painter.width(line, size)) / (words.length - 1);
     let cursor = x;
     for (const word of words) {
-      page.drawText(word, { x: cursor, y: baseline, size, font });
-      cursor += font.widthOfTextAtSize(`${word} `, size) + extra;
+      painter.text(word, { x: cursor, y: baseline, size });
+      cursor += painter.width(`${word} `, size) + extra;
     }
   }
 };
 
-const buildMarkdownBasics = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const regular = await document.embedFont(StandardFonts.Helvetica);
-  const bold = await document.embedFont(StandardFonts.HelveticaBold);
-  const oblique = await document.embedFont(StandardFonts.HelveticaOblique);
-  const page = document.addPage(PAGE_SIZE);
-  page.drawText("1. INFORMAÇÕES GERAIS", { x: 72, y: 720, size: 14, font: bold });
-  drawPieces(
-    page,
-    [
-      { text: "Texto de corpo com destaque ", font: regular },
-      { text: "CONCORRÊNCIA", font: bold },
-      { text: " aberta.", font: regular },
-    ],
-    72,
-    690,
-    11,
-  );
-  page.drawText("• primeiro item", { x: 72, y: 660, size: 11, font: regular });
-  page.drawText("• segundo item", { x: 72, y: 642, size: 11, font: regular });
-  page.drawText("1.1. cláusula numerada permanece parágrafo.", {
-    x: 72,
-    y: 614,
-    size: 11,
-    font: oblique,
-  });
-  addLinkAnnotation(
-    document,
-    page,
-    "https://signature-kit.dev/corpus/markdown-link",
-    [72, 520, 260, 540],
-  );
-  page.drawText("Link para documentação", { x: 72, y: 528, size: 11, font: regular });
-  for (let row = 0; row < 2; row += 1) {
-    for (let col = 0; col < 2; col += 1) {
-      const x = 72 + col * 150;
-      const y = 440 - row * 28;
-      page.drawRectangle({
-        x,
-        y,
-        width: 150,
-        height: 28,
-        borderWidth: 0.5,
-        borderColor: rgb(0, 0, 0),
+const buildMarkdownBasics = buildPdf([
+  {
+    draw: (painter) => {
+      painter.text("1. INFORMAÇÕES GERAIS", { x: 72, y: 720, size: 14, font: "Helvetica-Bold" });
+      let cursor = 72;
+      for (const [text, font] of [
+        ["Texto de corpo com destaque ", "Helvetica"],
+        ["CONCORRÊNCIA", "Helvetica-Bold"],
+        [" aberta.", "Helvetica"],
+      ] satisfies ReadonlyArray<readonly [string, FontName]>) {
+        painter.text(text, { x: cursor, y: 690, size: 11, font });
+        cursor += painter.width(text, 11, font);
+      }
+      painter.text("• primeiro item", { x: 72, y: 660, size: 11 });
+      painter.text("• segundo item", { x: 72, y: 642, size: 11 });
+      painter.text("1.1. cláusula numerada permanece parágrafo.", {
+        x: 72,
+        y: 614,
+        size: 11,
+        font: "Helvetica-Oblique",
       });
-    }
-  }
-  page.drawText("Item", { x: 78, y: 450, size: 10, font: bold });
-  page.drawText("Qtd", { x: 228, y: 450, size: 10, font: bold });
-  page.drawText("Areia", { x: 78, y: 422, size: 10, font: regular });
-  page.drawText("4", { x: 228, y: 422, size: 10, font: regular });
-  return document.save({ useObjectStreams: false });
-};
+      painter.link("https://signature-kit.dev/corpus/markdown-link", [72, 520, 260, 540]);
+      painter.text("Link para documentação", { x: 72, y: 528, size: 11 });
+      for (let row = 0; row < 2; row += 1) {
+        for (let col = 0; col < 2; col += 1) {
+          painter.rect([72 + col * 150, 440 - row * 28, 150, 28], 0.5);
+        }
+      }
+      painter.text("Item", { x: 78, y: 450, size: 10, font: "Helvetica-Bold" });
+      painter.text("Qtd", { x: 228, y: 450, size: 10, font: "Helvetica-Bold" });
+      painter.text("Areia", { x: 78, y: 422, size: 10 });
+      painter.text("4", { x: 228, y: 422, size: 10 });
+    },
+  },
+]);
 
 const HYPHENATED_PARAGRAPHS: ReadonlyArray<ReadonlyArray<string>> = [
   [
@@ -390,68 +528,62 @@ const HYPHENATED_PARAGRAPHS: ReadonlyArray<ReadonlyArray<string>> = [
   ],
 ];
 
-const buildMarkdownHyphenation = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  const size = 11;
-  const width = Math.max(
-    ...HYPHENATED_PARAGRAPHS.flatMap((lines) =>
-      lines.slice(0, -1).map((line) => font.widthOfTextAtSize(line, size)),
-    ),
-  );
-  let y = 700;
-  for (const lines of HYPHENATED_PARAGRAPHS) {
-    drawJustified(page, lines, { x: 72, y, width, font, size, leading: 14 });
-    y -= lines.length * 14 + 14;
-  }
-  return document.save({ useObjectStreams: false });
-};
-
-const buildMarkdownPageContinue = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const regular = await document.embedFont(StandardFonts.Helvetica);
-  const small = await document.embedFont(StandardFonts.HelveticaOblique);
-  const bodies: ReadonlyArray<ReadonlyArray<ReadonlyArray<string>>> = [
-    [
-      ["O presente edital trata da contratação de serviços contínuos de", "manutenção predial."],
-      [
-        "A proposta deve considerar a mão-de-obra, os encargos e os insumos",
-        "necessários à execução dos serviços, sem interrup-",
-      ],
-    ],
-    [
-      ["ção contratual, durante toda a vigência do contrato."],
-      ["Segundo parágrafo da página dois."],
-    ],
-  ];
-  for (const [index, paragraphs] of bodies.entries()) {
-    const page = document.addPage(PAGE_SIZE);
-    page.drawText(`EDITAL Nº 7/2026 — PÁGINA ${index + 1} DE ${bodies.length}`, {
-      x: 72,
-      y: 760,
-      size: 9,
-      font: small,
-    });
-    page.drawText(`Licitei — corpus markdown — ${index + 1}/${bodies.length}`, {
-      x: 72,
-      y: 40,
-      size: 9,
-      font: small,
-    });
-    let y = 700;
-    for (const lines of paragraphs) {
-      for (const line of lines) {
-        page.drawText(line, { x: 72, y, size: 11, font: regular });
-        y -= 14;
+const buildMarkdownHyphenation = buildPdf([
+  {
+    draw: (painter) => {
+      const size = 11;
+      const width = Math.max(
+        ...HYPHENATED_PARAGRAPHS.flatMap((lines) =>
+          lines.slice(0, -1).map((line) => painter.width(line, size)),
+        ),
+      );
+      let y = 700;
+      for (const lines of HYPHENATED_PARAGRAPHS) {
+        drawJustified(painter, lines, { x: 72, y, width, size, leading: 14 });
+        y -= lines.length * 14 + 14;
       }
-      y -= 12;
-    }
-  }
-  return document.save({ useObjectStreams: false });
-};
+    },
+  },
+]);
+
+const MARKDOWN_PAGE_BODIES: ReadonlyArray<ReadonlyArray<ReadonlyArray<string>>> = [
+  [
+    ["O presente edital trata da contratação de serviços contínuos de", "manutenção predial."],
+    [
+      "A proposta deve considerar a mão-de-obra, os encargos e os insumos",
+      "necessários à execução dos serviços, sem interrup-",
+    ],
+  ],
+  [["ção contratual, durante toda a vigência do contrato."], ["Segundo parágrafo da página dois."]],
+];
+
+const buildMarkdownPageContinue = buildPdf(
+  MARKDOWN_PAGE_BODIES.map((paragraphs, index) => ({
+    draw: (painter: Painter) => {
+      const total = MARKDOWN_PAGE_BODIES.length;
+      painter.text(`EDITAL Nº 7/2026 — PÁGINA ${index + 1} DE ${total}`, {
+        x: 72,
+        y: 760,
+        size: 9,
+        font: "Helvetica-Oblique",
+      });
+      painter.text(`Licitei — corpus markdown — ${index + 1}/${total}`, {
+        x: 72,
+        y: 40,
+        size: 9,
+        font: "Helvetica-Oblique",
+      });
+      let y = 700;
+      for (const lines of paragraphs) {
+        for (const line of lines) {
+          painter.text(line, { x: 72, y, size: 11 });
+          y -= 14;
+        }
+        y -= 12;
+      }
+    },
+  })),
+);
 
 const NESTED_LIST_LINES: ReadonlyArray<readonly [number, number, string]> = [
   [72, 720, "• Documentos de habilitação:"],
@@ -467,16 +599,13 @@ const NESTED_LIST_LINES: ReadonlyArray<readonly [number, number, string]> = [
   [72, 540, "II - qualificação técnica."],
 ];
 
-const buildMarkdownNestedLists = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  for (const [x, y, line] of NESTED_LIST_LINES) {
-    page.drawText(line, { x, y, size: 11, font });
-  }
-  return document.save({ useObjectStreams: false });
-};
+const buildMarkdownNestedLists = buildPdf([
+  {
+    draw: (painter) => {
+      for (const [x, y, line] of NESTED_LIST_LINES) painter.text(line, { x, y, size: 11 });
+    },
+  },
+]);
 
 const TWO_COLUMN_TEXT: ReadonlyArray<ReadonlyArray<string>> = [
   [
@@ -489,26 +618,29 @@ const TWO_COLUMN_TEXT: ReadonlyArray<ReadonlyArray<string>> = [
   ],
 ];
 
-const buildMarkdownTwoColumn = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  const size = 10;
-  const width = 230;
-  for (const [column, paragraphs] of TWO_COLUMN_TEXT.entries()) {
-    const x = 72 + column * (width + 20);
-    let y = 700;
-    for (const paragraph of paragraphs) {
-      for (const line of wrapWords(paragraph, font, size, width)) {
-        page.drawText(line, { x, y, size, font });
-        y -= 13;
+const buildMarkdownTwoColumn = buildPdf([
+  {
+    draw: (painter) => {
+      const size = 10;
+      const width = 230;
+      for (const [column, paragraphs] of TWO_COLUMN_TEXT.entries()) {
+        const x = 72 + column * (width + 20);
+        let y = 700;
+        for (const paragraph of paragraphs) {
+          for (const line of wrapWords(
+            paragraph,
+            (candidate) => painter.width(candidate, size),
+            width,
+          )) {
+            painter.text(line, { x, y, size });
+            y -= 13;
+          }
+          y -= 10;
+        }
       }
-      y -= 10;
-    }
-  }
-  return document.save({ useObjectStreams: false });
-};
+    },
+  },
+]);
 
 const buildMarkdownHeadingsReact = async (): Promise<Uint8Array> => {
   const styles = StyleSheet.create({
@@ -547,43 +679,43 @@ const buildMarkdownHeadingsReact = async (): Promise<Uint8Array> => {
   return new Uint8Array(await renderToBuffer(body));
 };
 
-const buildBrokenXref = async (): Promise<Uint8Array> => {
-  const document = await PDFDocument.create();
-  stampMetadata(document);
-  const font = await document.embedFont(StandardFonts.Helvetica);
-  const page = document.addPage(PAGE_SIZE);
-  page.drawText("PDF válido com startxref corrompido.", { x: 72, y: 700, size: 12, font });
-  const bytes = await document.save({ useObjectStreams: false });
-  const ascii = new TextDecoder().decode(bytes);
-  const startxrefIndex = ascii.lastIndexOf("startxref");
-  if (startxrefIndex < 0) {
-    return bytes;
-  }
-  const lineBreak = ascii.indexOf("\n", startxrefIndex);
-  if (lineBreak < 0) {
-    return bytes;
-  }
-  const corrupted = `${ascii.slice(0, lineBreak + 1)}999999999\n${ascii.slice(lineBreak + 1)}`;
-  return new TextEncoder().encode(corrupted);
-};
+const buildBrokenXref = buildPdf([
+  {
+    draw: (painter) =>
+      painter.text("PDF válido com startxref corrompido.", { x: 72, y: 700, size: 12 }),
+  },
+]).pipe(
+  Effect.map((bytes) => {
+    const ascii = new TextDecoder("latin1").decode(bytes);
+    const startxrefIndex = ascii.lastIndexOf("startxref");
+    const lineBreak = startxrefIndex < 0 ? -1 : ascii.indexOf("\n", startxrefIndex);
+    if (lineBreak < 0) return bytes;
+    const corrupted = `${ascii.slice(0, lineBreak + 1)}999999999\n${ascii.slice(lineBreak + 1)}`;
+    return Uint8Array.from(corrupted, (character) => character.charCodeAt(0));
+  }),
+);
 
-const main = async (): Promise<void> => {
+const program = Effect.gen(function* () {
   mkdirSync(PDF_CORE_FIXTURES_DIR, { recursive: true });
-  writeFixture("markdown-basics.pdf", await buildMarkdownBasics());
-  writeFixture("markdown-hyphenation.pdf", await buildMarkdownHyphenation());
-  writeFixture("markdown-page-continue.pdf", await buildMarkdownPageContinue());
-  writeFixture("markdown-nested-lists.pdf", await buildMarkdownNestedLists());
-  writeFixture("markdown-two-column.pdf", await buildMarkdownTwoColumn());
-  writeFixture("markdown-headings-react.pdf", await buildMarkdownHeadingsReact());
-  writeFixture("helvetica-winansi.pdf", await buildHelveticaWinansi());
-  writeFixture("react-pdf-declaration.pdf", await buildReactPdfDeclaration());
-  writeFixture("rotated-cropped.pdf", await buildRotatedCropped());
-  writeFixture("links.pdf", await buildLinks());
-  writeFixture("habilitacao-150.pdf", await buildHabilitacao150());
-  writeFixture("object-streams.pdf", await buildObjectStreams());
-  writeFixture("incremental-update.pdf", await buildIncrementalUpdate());
-  writeFixture("broken-xref.pdf", await buildBrokenXref());
+  writeFixture("markdown-basics.pdf", yield* buildMarkdownBasics);
+  writeFixture("markdown-hyphenation.pdf", yield* buildMarkdownHyphenation);
+  writeFixture("markdown-page-continue.pdf", yield* buildMarkdownPageContinue);
+  writeFixture("markdown-nested-lists.pdf", yield* buildMarkdownNestedLists);
+  writeFixture("markdown-two-column.pdf", yield* buildMarkdownTwoColumn);
+  writeFixture("markdown-headings-react.pdf", yield* Effect.promise(buildMarkdownHeadingsReact));
+  writeFixture("helvetica-winansi.pdf", yield* buildHelveticaWinansi);
+  writeFixture("react-pdf-declaration.pdf", yield* Effect.promise(buildReactPdfDeclaration));
+  writeFixture("rotated-cropped.pdf", yield* buildRotatedCropped);
+  writeFixture("links.pdf", yield* buildLinks);
+  writeFixture("habilitacao-150.pdf", yield* buildHabilitacao150);
+  writeFixture("object-streams.pdf", yield* buildObjectStreams);
+  writeFixture("incremental-update.pdf", yield* buildIncrementalUpdate);
+  writeFixture("broken-xref.pdf", yield* buildBrokenXref);
   copyFileSync(icpSource, join(PDF_CORE_FIXTURES_DIR, "icp-signed.pdf"));
-};
+});
 
-await main();
+const pdfCoreModule = await WebAssembly.compile(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../dist/pdf-core.wasm")),
+);
+
+await Effect.runPromise(program.pipe(Effect.provide(pdfCoreLayer(pdfCoreModule))));

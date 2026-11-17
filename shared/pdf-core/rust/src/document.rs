@@ -304,6 +304,31 @@ impl<'data> Document<'data> {
         length
     }
 
+    pub(crate) fn link_uri(&self, dict: &Dict) -> Outcome<Option<String>> {
+        if !name_is(dict, b"Subtype", b"Link") {
+            return Ok(None);
+        }
+        let Some(action) = dict.get(b"A") else {
+            return Ok(None);
+        };
+        let Some(resolved_action) = lenient(self.follow(action))? else {
+            return Ok(None);
+        };
+        let Some(action_dict) = resolved_action.as_dict() else {
+            return Ok(None);
+        };
+        if !name_is(action_dict, b"S", b"URI") {
+            return Ok(None);
+        }
+        let Some(uri) = action_dict.get(b"URI") else {
+            return Ok(None);
+        };
+        let Some(resolved_uri) = lenient(self.follow(uri))? else {
+            return Ok(None);
+        };
+        Ok(uri_from_action(&resolved_uri))
+    }
+
     pub(crate) fn links(&self, pages: &[Page]) -> Outcome<Vec<LinkInfo>> {
         let mut links = Vec::new();
         for (index, page) in pages.iter().enumerate() {
@@ -542,28 +567,7 @@ impl<'data> Document<'data> {
             let Some(dict) = annotation.as_dict() else {
                 continue;
             };
-            if !name_is(dict, b"Subtype", b"Link") {
-                continue;
-            }
-            let Some(action) = dict.get(b"A") else {
-                continue;
-            };
-            let Some(resolved_action) = lenient(self.follow(action))? else {
-                continue;
-            };
-            let Some(action_dict) = resolved_action.as_dict() else {
-                continue;
-            };
-            if !name_is(action_dict, b"S", b"URI") {
-                continue;
-            }
-            let Some(uri) = action_dict.get(b"URI") else {
-                continue;
-            };
-            let Some(resolved_uri) = lenient(self.follow(uri))? else {
-                continue;
-            };
-            let Some(uri_next) = uri_from_action(&resolved_uri) else {
+            let Some(uri_next) = self.link_uri(dict)? else {
                 continue;
             };
             let Some(rect) = dict.get(b"Rect") else {
