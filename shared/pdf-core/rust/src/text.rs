@@ -18,6 +18,7 @@ const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 const MAX_OPERANDS: usize = 512;
 const MAX_FORM_DEPTH: usize = 24;
 const MAX_CACHED_FONTS: usize = 2048;
+const MAX_CACHED_FORM_BYTES: usize = 16 << 20;
 const SPACE_GAP: f64 = 0.2;
 const BREAK_GAP: f64 = 1.5;
 const BACK_GAP: f64 = 0.4;
@@ -494,6 +495,7 @@ struct Interpreter<'d, 'a> {
     document: &'d Document<'a>,
     limits: &'d Limits,
     fonts: FontCache,
+    forms: FormCache,
     generation: u32,
     skipped: HashSet<ObjRef>,
     active: Vec<ObjRef>,
@@ -570,8 +572,42 @@ impl PageContent {
 type FontCache = HashMap<FontKey, (Option<Rc<FontEntry>>, u32)>;
 
 #[derive(Default)]
+struct FormCache {
+    entries: HashMap<ObjRef, (Rc<[u8]>, u32)>,
+    bytes: usize,
+}
+
+impl FormCache {
+    fn get(&mut self, reference: ObjRef, generation: u32) -> Option<Rc<[u8]>> {
+        let (data, used) = self.entries.get_mut(&reference)?;
+        *used = generation;
+        Some(Rc::clone(data))
+    }
+
+    fn insert(&mut self, reference: ObjRef, data: &Rc<[u8]>, generation: u32) {
+        let fits = |bytes: usize| bytes.saturating_add(data.len()) <= MAX_CACHED_FORM_BYTES;
+        if !fits(self.bytes) {
+            let previous = generation.wrapping_sub(1);
+            self.entries
+                .retain(|_, (_, used)| *used == generation || *used == previous);
+            self.bytes = self
+                .entries
+                .values()
+                .fold(0, |sum, (cached, _)| sum.saturating_add(cached.len()));
+        }
+        if fits(self.bytes) {
+            self.bytes = self.bytes.saturating_add(data.len());
+            self.entries
+                .insert(reference, (Rc::clone(data), generation));
+        }
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct Session {
     fonts: FontCache,
+    forms: FormCache,
+    skipped: HashSet<ObjRef>,
     scopes: u32,
     generation: u32,
 }
@@ -612,8 +648,9 @@ pub(crate) fn extract_content(
         document,
         limits,
         fonts: std::mem::take(&mut session.fonts),
+        forms: std::mem::take(&mut session.forms),
         generation: session.generation,
-        skipped: HashSet::new(),
+        skipped: std::mem::take(&mut session.skipped),
         active: Vec::new(),
         scopes: session.scopes,
         budget: limits.max_decoded_stream_bytes,
@@ -646,6 +683,8 @@ pub(crate) fn extract_content(
         .run(&content, &mut scope, &mut state, &mut matrices, 0)
         .and_then(|()| interpreter.flush());
     session.fonts = std::mem::take(&mut interpreter.fonts);
+    session.forms = std::mem::take(&mut interpreter.forms);
+    session.skipped = std::mem::take(&mut interpreter.skipped);
     session.scopes = interpreter.scopes;
     outcome?;
     Ok(PageContent {
@@ -1548,10 +1587,24 @@ impl Interpreter<'_, '_> {
             }
             return Ok(());
         }
-        let data = match self.document.stream_data(stream) {
-            Ok(data) => data,
-            Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
-            Err(_) => return Ok(()),
+        let cached = reference.and_then(|known| self.forms.get(known, self.generation));
+        let data: Rc<[u8]> = match cached {
+            Some(data) => data,
+            None => match self.document.stream_data(stream) {
+                Ok(data) => {
+                    let data: Rc<[u8]> = data.into();
+                    if let Some(known) = reference {
+                        if scan_shows(&data) == Shows::Nothing {
+                            self.skipped.insert(known);
+                        } else {
+                            self.forms.insert(known, &data, self.generation);
+                        }
+                    }
+                    data
+                }
+                Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
+                Err(_) => return Ok(()),
+            },
         };
         let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
         let own = stream.dict.get(b"Resources");
@@ -2230,6 +2283,69 @@ mod tests {
             session.fonts.keys().next(),
             Some(FontKey::Within(_, 0))
         ));
+    }
+
+    #[test]
+    fn forms_are_decoded_once_per_session_and_text_free_forms_are_skipped() {
+        let bytes = shared_inline_font_pdf();
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        for _ in 0..3 {
+            let content = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+            assert_eq!(run_texts(&content), ["Shared", "Form"]);
+        }
+        assert_eq!(session.forms.entries.len(), 1);
+        assert!(session.skipped.is_empty());
+
+        let drawing = page_pdf(
+            "<< /Font << /F1 5 0 R >> /XObject << /X 6 0 R >> >>",
+            "/X Do BT /F1 10 Tf 20 100 Td (After) Tj ET",
+            &[
+                (5, HELVETICA.to_owned()),
+                (
+                    6,
+                    stream_object(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                        "0 0 m 10 10 l S",
+                    ),
+                ),
+            ],
+        );
+        let drawn = Document::open(&drawing, &limits).unwrap();
+        let drawn_pages = drawn.pages().unwrap();
+        let mut fresh = Session::default();
+        for _ in 0..2 {
+            let content = extract_runs(&drawn, &drawn_pages[0], &limits, true, &mut fresh).unwrap();
+            assert_eq!(run_texts(&content), ["After"]);
+        }
+        assert_eq!(fresh.forms.entries.len(), 0);
+        assert!(fresh.skipped.contains(&ObjRef {
+            number: 6,
+            generation: 0
+        }));
+    }
+
+    #[test]
+    fn form_cache_stays_within_its_byte_budget() {
+        let chunk = (MAX_CACHED_FORM_BYTES >> 1) + 1;
+        let block = |byte: u8| -> Rc<[u8]> { vec![byte; chunk].into() };
+        let key = |number: u32| ObjRef {
+            number,
+            generation: 0,
+        };
+        let mut cache = FormCache::default();
+        cache.insert(key(1), &block(1), 1);
+        cache.insert(key(2), &block(2), 3);
+        assert!(cache.get(key(1), 3).is_none());
+        assert!(cache.get(key(2), 3).is_some());
+        cache.insert(key(3), &block(3), 3);
+        assert!(cache.get(key(3), 3).is_none());
+        assert_eq!(cache.bytes, chunk);
+        cache.insert(key(4), &vec![0; MAX_CACHED_FORM_BYTES + 1].into(), 9);
+        assert!(cache.get(key(4), 9).is_none());
+        assert!(cache.bytes <= MAX_CACHED_FORM_BYTES);
     }
 
     #[test]
