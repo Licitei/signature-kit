@@ -3,7 +3,7 @@ use crate::num::{f64_to_i64, f64_to_usize};
 use crate::syntax::is_whitespace;
 use crate::text::Session;
 use crate::text::extract_runs;
-use crate::text::{Capture, extract_content};
+use crate::text::{Capture, Reposition, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1286,7 +1286,7 @@ pub(crate) fn inspect(
             };
             let content = if options.runs {
                 let capture = Capture {
-                    split_repositioned: true,
+                    reposition: Reposition::SplitGapped,
                     split_style: true,
                     structure: false,
                 };
@@ -1490,6 +1490,11 @@ mod tests {
             bold(28.0, 700.0, 9.0, "17/06/2026 15:39:26"),
             text(122.0, 700.0, 9.0, "MENSAGEM PREGOEIRO"),
             "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Marca: ) Tj /F2 9 Tf (ACME) Tj ET\n".to_owned(),
+            text(28.0, 660.0, 9.0, "AB"),
+            text(40.006, 660.0, 9.0, "CD"),
+            text(28.0, 640.0, 9.0, "EF"),
+            text(39.004, 640.0, 9.0, "    "),
+            text(49.0, 640.0, 9.0, "GH"),
         ]
         .concat();
         let bytes = document(&[page(content)], &[]);
@@ -1514,7 +1519,7 @@ mod tests {
             (texts, page.styles)
         };
         let (merged, _) = run(false);
-        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.len(), 4);
         let (texts, styles) = run(true);
         assert_eq!(
             texts,
@@ -1522,10 +1527,13 @@ mod tests {
                 "17/06/2026 15:39:26",
                 "MENSAGEM PREGOEIRO",
                 "Marca:",
-                "ACME"
+                "ACME",
+                "ABCD",
+                "EF",
+                "GH"
             ]
         );
-        assert_eq!(styles, [1, 0, 0, 1]);
+        assert_eq!(styles, [1, 0, 0, 1, 0, 0, 0]);
     }
 
     #[test]

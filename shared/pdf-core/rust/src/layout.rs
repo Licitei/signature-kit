@@ -13,7 +13,7 @@ use crate::markdown::{
 use crate::table::{
     Cell, Rule, Table, column_of, merge_row, render_markdown, render_text, ruled_grids,
 };
-use crate::text::{Capture, PageContent, Session, extract_content};
+use crate::text::{Capture, PageContent, Reposition, Session, extract_content};
 
 const CELL_GAP: f64 = 1.75;
 const INTRA_WORD_SCALE: f64 = 4.0;
@@ -1398,7 +1398,7 @@ fn single_page(
     mode: Mode,
 ) -> Outcome<PageLayout> {
     let capture = Capture {
-        split_repositioned: true,
+        reposition: Reposition::Split,
         structure: true,
         split_style: mode.markdown,
     };
