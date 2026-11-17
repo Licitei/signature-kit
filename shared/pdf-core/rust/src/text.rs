@@ -1350,9 +1350,7 @@ impl Interpreter<'_, '_> {
             let glyph_text = match replacement.as_deref() {
                 Some(text) => text,
                 None if spanned => "",
-                None => decoded
-                    .get(widen(glyph.text.start)..widen(glyph.text.end))
-                    .unwrap_or_default(),
+                None => decoded.get(glyph.text.clone()).unwrap_or_default(),
             };
             let spacing = state.char_space
                 + if glyph.is_word_space {

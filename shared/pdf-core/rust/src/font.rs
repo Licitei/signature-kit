@@ -34,7 +34,7 @@ pub(crate) struct Glyph {
     pub code: u32,
     pub advance: f64,
     pub is_word_space: bool,
-    pub text: Range<u32>,
+    pub text: Range<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,14 +77,14 @@ struct CompositeFont {
 
 #[derive(Clone, Copy)]
 struct IdentitySlot {
-    start: u32,
-    end: u32,
+    start: usize,
+    end: usize,
     advance: f64,
 }
 
 const UNRESOLVED: IdentitySlot = IdentitySlot {
-    start: u32::MAX,
-    end: u32::MAX,
+    start: usize::MAX,
+    end: usize::MAX,
     advance: 0.0,
 };
 
@@ -205,7 +205,7 @@ impl SimpleFont {
         for byte in bytes {
             let code = u32::from(*byte);
             let advance = self.width_for_code(code);
-            let text_start = u32::try_from(text.len()).unwrap_or(u32::MAX);
+            let text_start = text.len();
             match table {
                 Some(table) => {
                     if let Some(Some(slice)) = table.get(usize::from(*byte)) {
@@ -222,7 +222,7 @@ impl SimpleFont {
                 code,
                 advance,
                 is_word_space: *byte == 32,
-                text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
+                text: text_start..text.len(),
             });
         }
     }
@@ -425,13 +425,13 @@ impl CompositeFont {
             offset = offset.saturating_add(consumed);
             let cid = self.cmap.cid(code, consumed);
             let advance = self.horizontal.width(cid) / 1000.0;
-            let text_start = u32::try_from(text.len()).unwrap_or(u32::MAX);
+            let text_start = text.len();
             self.push_text(code, cid, text);
             glyphs.push(Glyph {
                 code: cid.unwrap_or(code),
                 advance,
                 is_word_space: consumed == 1 && code == 32,
-                text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
+                text: text_start..text.len(),
             });
         }
     }
@@ -446,30 +446,25 @@ impl CompositeFont {
                 table.slots.resize(index.saturating_add(1), UNRESOLVED);
             }
             let mut slot = table.slots.get(index).copied().unwrap_or(UNRESOLVED);
-            if slot.start == u32::MAX {
+            if slot.start == usize::MAX {
                 let start = table.text.len();
                 self.push_text(code, Some(code), &mut table.text);
                 slot = IdentitySlot {
-                    start: u32::try_from(start).unwrap_or(u32::MAX),
-                    end: u32::try_from(table.text.len()).unwrap_or(u32::MAX),
+                    start,
+                    end: table.text.len(),
                     advance: self.horizontal.width(Some(code)) / 1000.0,
                 };
                 if let Some(stored) = table.slots.get_mut(index) {
                     *stored = slot;
                 }
             }
-            let text_start = u32::try_from(text.len()).unwrap_or(u32::MAX);
-            text.push_str(
-                table
-                    .text
-                    .get(widen(slot.start)..widen(slot.end))
-                    .unwrap_or_default(),
-            );
+            let text_start = text.len();
+            text.push_str(table.text.get(slot.start..slot.end).unwrap_or_default());
             glyphs.push(Glyph {
                 code,
                 advance: slot.advance,
                 is_word_space: false,
-                text: text_start..u32::try_from(text.len()).unwrap_or(u32::MAX),
+                text: text_start..text.len(),
             });
         }
     }
@@ -1828,11 +1823,7 @@ mod tests {
         assert_exact(&advances, &[0.25, 0.5, 0.3, 0.5, 0.5, 0.5]);
         let spans: Vec<&str> = first_glyphs
             .iter()
-            .map(|glyph| {
-                first
-                    .get(widen(glyph.text.start)..widen(glyph.text.end))
-                    .unwrap()
-            })
+            .map(|glyph| first.get(glyph.text.clone()).unwrap())
             .collect();
         assert_eq!(spans, ["A", " ", "B", "fi", "", "C"]);
     }
