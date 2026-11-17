@@ -250,7 +250,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target) and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1 MiB.
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target) and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1.5 MiB (about 425 KB gzipped today).
 
 ## License
 
