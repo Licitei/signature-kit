@@ -89,77 +89,75 @@ const FUNCTION_WORDS: [&str; 34] = [
     "of",
 ];
 
+const LINK_TRAILERS: [char; 4] = ['.', ',', ';', ')'];
+
 #[derive(Clone, Debug)]
 pub(crate) struct MdRun {
-    pub text: String,
-    pub x0: f64,
-    pub x1: f64,
-    pub size: f64,
     pub bold: bool,
     pub italic: bool,
     pub link: Option<usize>,
+    pub size: f64,
+    pub text: String,
+    pub x0: f64,
+    pub x1: f64,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct MdLine {
+    pub band: Band,
+    pub center: f64,
     pub runs: Vec<MdRun>,
+    pub size: f64,
     pub x0: f64,
     pub x1: f64,
-    pub center: f64,
-    pub size: f64,
-    pub band: Band,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum MdItem {
-    Line(MdLine),
-    Table { text: String, band: Band, top: f64 },
     Break,
+    Line(MdLine),
+    Table { band: Band, text: String, top: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Span {
-    text: String,
     bold: bool,
     italic: bool,
     link: Option<usize>,
+    text: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Family {
     Bullet,
-    Ordered,
     Labeled,
+    Ordered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
-    Paragraph,
     Heading(usize),
     Item {
         indent: usize,
         marker: String,
         tight: bool,
     },
+    Paragraph,
     Table,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct MdBlock {
-    kind: Kind,
-    spans: Vec<Span>,
-    plain: String,
     band: Band,
+    kind: Kind,
     lines: usize,
+    plain: String,
     size: f64,
+    spans: Vec<Span>,
     top: f64,
 }
 
 impl MdBlock {
-    pub(crate) const fn top(&self) -> f64 {
-        self.top
-    }
-
     pub(crate) const fn band(&self) -> Band {
         self.band
     }
@@ -167,73 +165,123 @@ impl MdBlock {
     pub(crate) fn plain(&self) -> &str {
         &self.plain
     }
+
+    pub(crate) const fn top(&self) -> f64 {
+        self.top
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LeadKind {
     Bullet,
-    Dash,
-    Ordered,
-    Labeled,
     Clause(usize),
+    Dash,
+    Labeled,
+    Ordered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Lead {
     kind: LeadKind,
-    len: usize,
     label: String,
+    len: usize,
 }
 
-struct Prepared<'a> {
-    line: &'a MdLine,
-    spans: Vec<Span>,
-    plain: String,
-    lead: Option<Lead>,
+struct Prepared<'data> {
     content_x: f64,
+    lead: Option<Lead>,
+    line: &'data MdLine,
+    plain: String,
+    spans: Vec<Span>,
 }
 
 #[derive(Clone, Copy)]
 struct Flow {
     id: usize,
     left: f64,
-    right: f64,
     pitch: f64,
+    right: f64,
 }
 
 struct Para {
-    spans: Vec<Span>,
-    plain: String,
-    lines: usize,
-    x0: f64,
-    content_x: f64,
-    size: f64,
     band: Band,
+    content_x: f64,
     lead: Option<Lead>,
+    lines: usize,
+    plain: String,
+    size: f64,
+    spans: Vec<Span>,
     top: f64,
+    x0: f64,
 }
 
 #[derive(Clone, Copy)]
 struct Level {
-    x0: f64,
     content: f64,
+    family: Family,
     indent: usize,
     width: usize,
-    family: Family,
+    x0: f64,
 }
 
 #[derive(Default)]
 struct ListState {
-    stack: Vec<Level>,
     open: bool,
+    stack: Vec<Level>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Metrics {
     body: f64,
-    pitch: f64,
     bold_body: bool,
     italic_body: bool,
+    pitch: f64,
+}
+
+enum Glue {
+    Direct,
+    DropLast,
+    Space,
+}
+
+impl ListState {
+    fn place(&mut self, para: &Para, family: Family, marker: &str) -> (usize, bool) {
+        let tolerance = LIST_TOLERANCE * para.size;
+        let (x0, content) = (para.x0, para.content_x);
+        if !self.open {
+            self.stack.clear();
+        }
+        let aligned = |top: &Level| {
+            (top.x0 - x0).abs() <= tolerance
+                || (top.family == family && (top.content - content).abs() <= tolerance)
+        };
+        while self
+            .stack
+            .last()
+            .is_some_and(|top| !aligned(top) && top.x0 > x0 + tolerance)
+        {
+            let _: Option<Level> = self.stack.pop();
+        }
+        let width = marker.chars().count().saturating_add(1);
+        let (indent, restart) = match self.stack.last().copied() {
+            Some(top) if aligned(&top) || content <= top.content + tolerance => {
+                let _: Option<Level> = self.stack.pop();
+                (top.indent, top.family != family && self.stack.is_empty())
+            }
+            Some(top) => (top.indent.saturating_add(top.width), false),
+            None => (0, false),
+        };
+        self.stack.push(Level {
+            content,
+            family,
+            indent,
+            width,
+            x0,
+        });
+        let tight = self.open && !restart;
+        self.open = true;
+        (indent, tight)
+    }
 }
 
 fn line_gap(above: &MdLine, below: &MdLine) -> Option<f64> {
@@ -247,7 +295,7 @@ fn line_gap(above: &MdLine, below: &MdLine) -> Option<f64> {
         .then(|| gap / size)
 }
 
-pub(crate) fn document_metrics<'a>(pages: impl IntoIterator<Item = &'a [MdItem]>) -> Metrics {
+pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [MdItem]>) -> Metrics {
     let mut weighted: Vec<(f64, usize)> = Vec::new();
     let mut ratios: Vec<f64> = Vec::new();
     let mut styled = [0_usize; 3];
@@ -494,7 +542,7 @@ fn lead(plain: &str) -> Option<Lead> {
             skipped.saturating_add(end)
         }
     };
-    Some(Lead { kind, len, label })
+    Some(Lead { kind, label, len })
 }
 
 const fn lead_family(kind: LeadKind) -> Option<Family> {
@@ -522,8 +570,10 @@ fn ends_terminal(text: &str) -> bool {
 }
 
 fn url_word(word: &str) -> bool {
-    let word = word.trim_start_matches(['(', '<', '[']);
-    word.starts_with("http://") || word.starts_with("https://") || word.starts_with("www.")
+    let trimmed_word = word.trim_start_matches(['(', '<', '[']);
+    trimmed_word.starts_with("http://")
+        || trimmed_word.starts_with("https://")
+        || trimmed_word.starts_with("www.")
 }
 
 const fn url_char(ch: char) -> bool {
@@ -533,8 +583,6 @@ const fn url_char(ch: char) -> bool {
             '/' | '.' | '-' | '_' | '~' | '?' | '&' | '=' | '#' | '%' | '+' | ':' | '@'
         )
 }
-
-const LINK_TRAILERS: [char; 4] = ['.', ',', ';', ')'];
 
 fn url_continues(left: &str, right: &str) -> bool {
     let word = left_word(left);
@@ -681,7 +729,7 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
     let mut members: Vec<Vec<usize>> = Vec::new();
     let mut previous: Option<&Prepared<'_>> = None;
     for line in lines {
-        let Some(line) = line else {
+        let Some(line_next) = line else {
             previous = None;
             flows.push(Flow {
                 id: usize::MAX,
@@ -691,13 +739,13 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             });
             continue;
         };
-        let current = line.line;
+        let current = line_next.line;
         let joined = previous
             .zip(flows.last().copied())
             .is_some_and(|(before, flow)| {
                 let gap = before.line.center - current.center;
                 let size = before.line.size.max(current.size);
-                gap > 0.3 * size
+                gap > 0.3_f64 * size
                     && gap <= FLOW_GAP * size
                     && current.x0 < flow.right
                     && current.x1 > flow.left
@@ -719,7 +767,7 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             });
             members.push(vec![index]);
         }
-        previous = Some(line);
+        previous = Some(line_next);
     }
     for group in &members {
         let mut left = f64::INFINITY;
@@ -745,7 +793,7 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
         let pitch = if gaps.len() >= FLOW_SAMPLES {
             gaps.get(gaps.len().checked_div(4).unwrap_or(0))
                 .copied()
-                .unwrap_or(0.0)
+                .unwrap_or(0.0_f64)
         } else {
             metrics.pitch * size
         };
@@ -777,7 +825,7 @@ fn breaks_within_flow(
     if !near_size(above.size, below.size) {
         return true;
     }
-    if flow.pitch > 0.0 && gap > PARAGRAPH_GAP * flow.pitch && !strong {
+    if flow.pitch > 0.0_f64 && gap > PARAGRAPH_GAP * flow.pitch && !strong {
         return true;
     }
     if let Some(found) = &next.lead {
@@ -840,12 +888,6 @@ fn keeps_hyphen(stem: &str, right: &str) -> bool {
         || WEEKDAY_TAILS.contains(&word.as_str())
 }
 
-enum Glue {
-    Space,
-    Direct,
-    DropLast,
-}
-
 fn glue(left: &str, right: &str) -> Glue {
     if left.is_empty()
         || right.is_empty()
@@ -866,8 +908,13 @@ fn glue(left: &str, right: &str) -> Glue {
     let before = stem.chars().next_back();
     let after = right.chars().next();
     match (before, after) {
-        (Some(before), Some(after)) if before.is_alphanumeric() && after.is_alphanumeric() => {
-            if before.is_alphabetic() && after.is_lowercase() && !keeps_hyphen(stem, right) {
+        (Some(inner_before), Some(inner_after))
+            if inner_before.is_alphanumeric() && inner_after.is_alphanumeric() =>
+        {
+            if inner_before.is_alphabetic()
+                && inner_after.is_lowercase()
+                && !keeps_hyphen(stem, right)
+            {
                 Glue::DropLast
             } else {
                 Glue::Direct
@@ -877,21 +924,21 @@ fn glue(left: &str, right: &str) -> Glue {
     }
 }
 
-pub(crate) fn reflow_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> String {
+pub(crate) fn reflow_lines<'data>(lines: impl IntoIterator<Item = &'data str>) -> String {
     let mut out = String::new();
     for line in lines {
-        let line = line.trim();
-        if line.is_empty() {
+        let trimmed_line = line.trim();
+        if trimmed_line.is_empty() {
             continue;
         }
-        match glue(&out, line) {
+        match glue(&out, trimmed_line) {
             Glue::Direct => {}
             Glue::Space => out.push(' '),
             Glue::DropLast => {
-                out.pop();
+                let _: Option<char> = out.pop();
             }
         }
-        out.push_str(line);
+        out.push_str(trimmed_line);
     }
     out
 }
@@ -919,9 +966,9 @@ fn append_spans(spans: &mut Vec<Span>, plain: &mut String, mut next: Vec<Span>, 
             plain.push(' ');
         }
         Glue::DropLast => {
-            plain.pop();
+            let _: Option<char> = plain.pop();
             if let Some(last) = spans.iter_mut().rev().find(|span| !span.text.is_empty()) {
-                last.text.pop();
+                let _: Option<char> = last.text.pop();
             }
         }
     }
@@ -1057,7 +1104,7 @@ fn heading_level(para: &Para, body: f64) -> Option<usize> {
         return None;
     }
     Some(match depth {
-        Some(depth) => depth.saturating_add(1).min(MAX_HEADING_LEVEL),
+        Some(inner_depth) => inner_depth.saturating_add(1).min(MAX_HEADING_LEVEL),
         None if ratio >= TITLE_RATIO => 1,
         None => 2,
     })
@@ -1070,7 +1117,7 @@ fn drop_prefix(spans: &mut Vec<Span>, mut count: usize) {
         };
         if first.text.len() <= count {
             count = count.saturating_sub(first.text.len());
-            spans.remove(0);
+            drop(spans.remove(0));
         } else {
             first.text = first.text.get(count..).unwrap_or_default().to_owned();
             count = 0;
@@ -1078,46 +1125,6 @@ fn drop_prefix(spans: &mut Vec<Span>, mut count: usize) {
     }
     if let Some(first) = spans.first_mut() {
         first.text = first.text.trim_start().to_owned();
-    }
-}
-
-impl ListState {
-    fn place(&mut self, para: &Para, family: Family, marker: &str) -> (usize, bool) {
-        let tolerance = LIST_TOLERANCE * para.size;
-        let (x0, content) = (para.x0, para.content_x);
-        if !self.open {
-            self.stack.clear();
-        }
-        let aligned = |top: &Level| {
-            (top.x0 - x0).abs() <= tolerance
-                || (top.family == family && (top.content - content).abs() <= tolerance)
-        };
-        while self
-            .stack
-            .last()
-            .is_some_and(|top| !aligned(top) && top.x0 > x0 + tolerance)
-        {
-            self.stack.pop();
-        }
-        let width = marker.chars().count().saturating_add(1);
-        let (indent, restart) = match self.stack.last().copied() {
-            Some(top) if aligned(&top) || content <= top.content + tolerance => {
-                self.stack.pop();
-                (top.indent, top.family != family && self.stack.is_empty())
-            }
-            Some(top) => (top.indent.saturating_add(top.width), false),
-            None => (0, false),
-        };
-        self.stack.push(Level {
-            x0,
-            content,
-            indent,
-            width,
-            family,
-        });
-        let tight = self.open && !restart;
-        self.open = true;
-        (indent, tight)
     }
 }
 
@@ -1136,17 +1143,17 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
         return;
     }
     let family = para.lead.as_ref().and_then(|found| lead_family(found.kind));
-    if let (Some(found), Some(family)) = (para.lead.clone(), family) {
-        let marker = match family {
+    if let (Some(found), Some(inner_family)) = (para.lead.clone(), family) {
+        let marker = match inner_family {
             Family::Bullet => "-".to_owned(),
             Family::Ordered => found.label.clone(),
             Family::Labeled => format!("- {}", found.label),
         };
-        let shown = match family {
+        let shown = match inner_family {
             Family::Labeled => "-",
             Family::Bullet | Family::Ordered => marker.as_str(),
         };
-        let (indent, tight) = list.place(&para, family, shown);
+        let (indent, tight) = list.place(&para, inner_family, shown);
         let mut spans = para.spans;
         drop_prefix(&mut spans, found.len);
         out.push(MdBlock {
@@ -1301,7 +1308,7 @@ pub(crate) fn page_blocks(items: &[MdItem], metrics: Metrics) -> Vec<MdBlock> {
     let mut list = ListState::default();
     let mut current: Option<(Para, usize)> = None;
     for (index, (item, line)) in items.iter().zip(&prepared).enumerate() {
-        let Some(line) = line else {
+        let Some(line_next) = line else {
             if let MdItem::Table { text, band, top } = item {
                 if let Some((para, _)) = current.take() {
                     finish(para, body, &mut list, &mut out);
@@ -1335,20 +1342,20 @@ pub(crate) fn page_blocks(items: &[MdItem], metrics: Metrics) -> Vec<MdBlock> {
             };
             let same_flow = flows.get(*last).is_some_and(|before| before.id == flow.id);
             if same_flow {
-                !breaks_within_flow(previous, line, flow, para)
+                !breaks_within_flow(previous, line_next, flow, para)
             } else {
-                !breaks_across_flows(previous, line)
+                !breaks_across_flows(previous, line_next)
             }
         });
         if joins && let Some((para, last)) = current.as_mut() {
-            extend(para, line);
+            extend(para, line_next);
             *last = index;
             continue;
         }
         if let Some((para, _)) = current.take() {
             finish(para, body, &mut list, &mut out);
         }
-        current = Some((start(line), index));
+        current = Some((start(line_next), index));
     }
     if let Some((para, _)) = current {
         finish(para, body, &mut list, &mut out);
@@ -1369,15 +1376,7 @@ fn tail_candidate(blocks: &[MdBlock], body: f64) -> Option<usize> {
     for (index, block) in blocks.iter().enumerate().rev() {
         let marginal = block.band != Band::Free && block.size < MARGINAL_SIZE * body;
         if !marginal
-            && matches!(
-                block.kind,
-                Kind::Paragraph
-                    | Kind::Item {
-                        indent: _,
-                        marker: _,
-                        tight: _
-                    }
-            )
+            && matches!(block.kind, Kind::Paragraph | Kind::Item { .. })
             && !ends_terminal(&block.plain)
         {
             return Some(index);
@@ -1511,55 +1510,56 @@ fn emphasize(span: &Span, out: &mut String) {
 fn normalized(spans: &[Span]) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::with_capacity(spans.len());
     for (index, span) in spans.iter().enumerate() {
-        let mut span = span.clone();
-        if span.text.trim().is_empty() {
+        let mut span_next = span.clone();
+        if span_next.text.trim().is_empty() {
             let next = spans.get(index.saturating_add(1));
             let keep = out.last().zip(next).is_some_and(|(before, after)| {
                 (before.bold, before.italic, before.link) == (after.bold, after.italic, after.link)
             });
             match out.last() {
                 Some(before) if keep => {
-                    span.bold = before.bold;
-                    span.italic = before.italic;
-                    span.link = before.link;
+                    span_next.bold = before.bold;
+                    span_next.italic = before.italic;
+                    span_next.link = before.link;
                 }
                 _ => {
-                    span.bold = false;
-                    span.italic = false;
-                    span.link = span.link.filter(|_| keep);
+                    span_next.bold = false;
+                    span_next.italic = false;
+                    span_next.link = span_next.link.filter(|_| keep);
                 }
             }
         }
         match out.last_mut() {
             Some(last)
-                if (last.bold, last.italic, last.link) == (span.bold, span.italic, span.link) =>
+                if (last.bold, last.italic, last.link)
+                    == (span_next.bold, span_next.italic, span_next.link) =>
             {
-                last.text.push_str(&span.text);
+                last.text.push_str(&span_next.text);
             }
-            _ => out.push(span),
+            _ => out.push(span_next),
         }
     }
     out
 }
 
 fn render_inline(spans: &[Span], links: &[LinkInfo], out: &mut String) {
-    let mut spans = normalized(spans);
-    detach_link_trailers(&mut spans);
+    let mut spans_next = normalized(spans);
+    detach_link_trailers(&mut spans_next);
     let mut index = 0_usize;
-    while let Some(span) = spans.get(index) {
+    while let Some(span) = spans_next.get(index) {
         let Some(link) = span.link.and_then(|at| links.get(at)) else {
             emphasize(span, out);
             index = index.saturating_add(1);
             continue;
         };
         let mut end = index;
-        while spans
+        while spans_next
             .get(end.saturating_add(1))
             .is_some_and(|next| next.link == span.link)
         {
             end = end.saturating_add(1);
         }
-        let group = spans.get(index..=end).unwrap_or_default();
+        let group = spans_next.get(index..=end).unwrap_or_default();
         let label = concat(group);
         let bare = label.contains(&link.uri)
             || label.trim_start().starts_with("http")
@@ -1608,8 +1608,7 @@ fn block_start_escape(text: &str) -> bool {
         Some('-' | '+') => second.is_none_or(char::is_whitespace) || trimmed.starts_with("---"),
         Some(digit) if digit.is_ascii_digit() => {
             let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
-            let rest = trimmed.chars().skip(digits);
-            let mut rest = rest;
+            let mut rest = trimmed.chars().skip(digits);
             matches!(rest.next(), Some('.' | ')')) && rest.next().is_none_or(char::is_whitespace)
         }
         _ => false,
@@ -1650,19 +1649,15 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
                 out.push_str(" \\#");
             }
         }
-        Kind::Item {
-            indent,
-            marker,
-            tight: _,
-        } => {
+        Kind::Item { indent, marker, .. } => {
             out.push_str(&" ".repeat(*indent));
             out.push_str(marker);
             let mut text = String::new();
             render_inline(&block.spans, links, &mut text);
-            let text = text.trim();
-            if !text.is_empty() {
+            let trimmed_text = text.trim();
+            if !trimmed_text.is_empty() {
                 out.push(' ');
-                out.push_str(text);
+                out.push_str(trimmed_text);
             }
         }
         Kind::Paragraph => {
@@ -1682,14 +1677,7 @@ pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
             continue;
         }
         if !out.is_empty() {
-            let tight = matches!(
-                block.kind,
-                Kind::Item {
-                    tight: true,
-                    indent: _,
-                    marker: _
-                }
-            );
+            let tight = matches!(block.kind, Kind::Item { tight: true, .. });
             out.push_str(if tight { "\n" } else { "\n\n" });
         }
         out.push_str(&rendered);
@@ -1702,7 +1690,7 @@ mod tests {
     use super::*;
 
     fn run(text: &str, x0: f64, bold: bool) -> MdRun {
-        let width = 5.0 * f64::from(u32::try_from(text.chars().count()).unwrap());
+        let width = 5.0_f64 * f64::from(u32::try_from(text.chars().count()).unwrap());
         MdRun {
             text: text.to_owned(),
             x0,
@@ -1835,7 +1823,7 @@ mod tests {
         append_spans(&mut spans, &mut plain, vec![next], "/empreendedor; ver");
         let links = [LinkInfo {
             page_index: 0,
-            rect: [0.0; 4],
+            rect: [0.0_f64; 4],
             uri: "https://www.gov.br/pt-br/empreendedor".to_owned(),
         }];
         let mut out = String::new();
@@ -1999,9 +1987,9 @@ mod tests {
                 band: Band::Free,
             }),
         ];
-        assert!((document_metrics([items.as_slice()]).body - 10.0).abs() < 1e-9);
+        assert!((document_metrics([items.as_slice()]).body - 10.0).abs() < 1e-9_f64);
         let empty = document_metrics([[].as_slice()]);
-        assert!((empty.body - DEFAULT_BODY).abs() < 1e-9);
-        assert!((empty.pitch - DEFAULT_PITCH).abs() < 1e-9);
+        assert!((empty.body - DEFAULT_BODY).abs() < 1e-9_f64);
+        assert!((empty.pitch - DEFAULT_PITCH).abs() < 1e-9_f64);
     }
 }

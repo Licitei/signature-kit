@@ -3,8 +3,11 @@
     reason = "the C ABI boundary hands raw pointers across the WebAssembly import surface"
 )]
 
-use std::alloc::{Layout, alloc, dealloc, realloc};
-use std::ptr;
+use alloc::alloc::{alloc, dealloc, realloc};
+use core::alloc::Layout;
+use core::mem;
+use core::ptr;
+use core::slice;
 
 use crate::document;
 use crate::failure::{Failure, Outcome};
@@ -33,64 +36,26 @@ const TABLE_RECORD_LEN: usize = 48;
 const CELL_RECORD_LEN: usize = 56;
 const ALIGNMENT: usize = 8;
 
-fn block_layout(len: usize) -> Option<Layout> {
-    Layout::from_size_align(len.max(1), ALIGNMENT).ok()
-}
-
-fn len32(value: usize) -> Outcome<u32> {
-    u32::try_from(value)
-        .ok()
-        .ok_or_else(|| Failure::limit("result exceeds the 32-bit size limit"))
-}
-
-fn padded(value: usize) -> Outcome<usize> {
-    value
-        .checked_add(ALIGNMENT - 1)
-        .map(|sum| sum & !(ALIGNMENT - 1))
-        .ok_or_else(|| Failure::limit("result size overflow"))
-}
-
 struct Writer {
-    data: *mut u8,
-    len: usize,
     capacity: usize,
+    data: *mut u8,
     failed: bool,
+    len: usize,
 }
 
 impl Writer {
-    fn with_capacity(payload: usize) -> Self {
-        let capacity = payload.saturating_add(RESULT_HEADER_LEN);
-        let data = block_layout(capacity).map_or(ptr::null_mut(), |layout| {
-            // SAFETY: `block_layout` never yields a zero-sized layout.
-            unsafe { alloc(layout) }
-        });
-        Self {
-            data,
-            len: RESULT_HEADER_LEN,
-            capacity,
-            failed: data.is_null(),
+    fn align(&mut self) {
+        let remainder = self.payload_len() & (ALIGNMENT - 1);
+        if remainder != 0 {
+            let zeros = [0_u8; ALIGNMENT];
+            self.bytes(zeros.get(remainder..).unwrap_or_default());
         }
     }
 
-    const fn payload_len(&self) -> usize {
-        self.len.saturating_sub(RESULT_HEADER_LEN)
-    }
-
-    fn grow(&mut self, needed: usize) -> bool {
-        let target = needed.max(self.capacity.saturating_mul(2));
-        let (Some(current), Some(_)) = (block_layout(self.capacity), block_layout(target)) else {
-            self.failed = true;
-            return false;
-        };
-        // SAFETY: `data` was allocated with `current`, and `target` is a valid non-zero size for the same alignment.
-        let grown = unsafe { realloc(self.data, current, target) };
-        if grown.is_null() {
-            self.failed = true;
-            return false;
+    fn boxed(&mut self, rect: &[f64; 4]) {
+        for value in rect {
+            self.f64(*value);
         }
-        self.data = grown;
-        self.capacity = target;
-        true
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
@@ -110,39 +75,37 @@ impl Writer {
         self.len = needed;
     }
 
-    fn u32(&mut self, value: u32) {
-        self.bytes(&value.to_le_bytes());
-    }
-
-    fn i32(&mut self, value: i32) {
-        self.bytes(&value.to_le_bytes());
+    fn done(self) -> Outcome<Self> {
+        if self.failed {
+            return Err(Failure::limit("result allocation failed"));
+        }
+        let _: u32 = len32(self.len)?;
+        Ok(self)
     }
 
     fn f64(&mut self, value: f64) {
         self.bytes(&value.to_le_bytes());
     }
 
-    fn boxed(&mut self, rect: &[f64; 4]) {
-        for value in rect {
-            self.f64(*value);
+    fn grow(&mut self, needed: usize) -> bool {
+        let target = needed.max(self.capacity.saturating_mul(2));
+        let (Some(current), Some(_)) = (block_layout(self.capacity), block_layout(target)) else {
+            self.failed = true;
+            return false;
+        };
+        // SAFETY: `data` was allocated with `current`, and `target` is a valid non-zero size for the same alignment.
+        let grown = unsafe { realloc(self.data, current, target) };
+        if grown.is_null() {
+            self.failed = true;
+            return false;
         }
+        self.data = grown;
+        self.capacity = target;
+        true
     }
 
-    fn align(&mut self) {
-        let remainder = self.payload_len() % ALIGNMENT;
-        if remainder != 0 {
-            let zeros = [0_u8; ALIGNMENT];
-            self.bytes(zeros.get(remainder..).unwrap_or_default());
-        }
-    }
-
-    const fn payload_mut(&mut self) -> &mut [u8] {
-        if self.failed || self.data.is_null() {
-            return &mut [];
-        }
-        let start = self.data.wrapping_add(RESULT_HEADER_LEN);
-        // SAFETY: the block holds `len` initialised bytes owned by this writer, and the payload follows the header.
-        unsafe { std::slice::from_raw_parts_mut(start, self.payload_len()) }
+    fn i32(&mut self, value: i32) {
+        self.bytes(&value.to_le_bytes());
     }
 
     fn patch_u32(&mut self, at: usize, value: u32) {
@@ -154,12 +117,22 @@ impl Writer {
         }
     }
 
-    fn done(self) -> Outcome<Self> {
-        if self.failed {
-            return Err(Failure::limit("result allocation failed"));
+    #[cfg(test)]
+    fn payload(mut self) -> Vec<u8> {
+        self.payload_mut().to_vec()
+    }
+
+    const fn payload_len(&self) -> usize {
+        self.len.saturating_sub(RESULT_HEADER_LEN)
+    }
+
+    const fn payload_mut(&mut self) -> &mut [u8] {
+        if self.failed || self.data.is_null() {
+            return &mut [];
         }
-        len32(self.len)?;
-        Ok(self)
+        let start = self.data.wrapping_add(RESULT_HEADER_LEN);
+        // SAFETY: the block holds `len` initialised bytes owned by this writer, and the payload follows the header.
+        unsafe { slice::from_raw_parts_mut(start, self.payload_len()) }
     }
 
     fn publish(mut self, status: u32) -> *mut u8 {
@@ -187,12 +160,25 @@ impl Writer {
         status_field.copy_from_slice(&status.to_le_bytes());
         // SAFETY: the block holds at least `RESULT_HEADER_LEN` bytes, and `header` is a distinct local array.
         unsafe { ptr::copy_nonoverlapping(header.as_ptr(), self.data, RESULT_HEADER_LEN) };
-        std::mem::replace(&mut self.data, ptr::null_mut())
+        mem::replace(&mut self.data, ptr::null_mut())
     }
 
-    #[cfg(test)]
-    fn payload(mut self) -> Vec<u8> {
-        self.payload_mut().to_vec()
+    fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn with_capacity(payload: usize) -> Self {
+        let capacity = payload.saturating_add(RESULT_HEADER_LEN);
+        let data = block_layout(capacity).map_or(ptr::null_mut(), |layout| {
+            // SAFETY: `block_layout` never yields a zero-sized layout.
+            unsafe { alloc(layout) }
+        });
+        Self {
+            data,
+            len: RESULT_HEADER_LEN,
+            capacity,
+            failed: data.is_null(),
+        }
     }
 }
 
@@ -206,6 +192,56 @@ impl Drop for Writer {
             unsafe { dealloc(self.data, layout) };
         }
     }
+}
+
+struct Request<'data> {
+    flags: u32,
+    pages: Option<&'data [u32]>,
+    pdf: &'data [u8],
+}
+
+impl Request<'_> {
+    /// # Safety
+    ///
+    /// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for `pdf_len` and `pages_len` for the whole call.
+    unsafe fn from_raw(
+        pdf_ptr: *const u8,
+        pdf_len: usize,
+        flags: u32,
+        pages_ptr: *const u32,
+        pages_len: usize,
+    ) -> Outcome<Self> {
+        // SAFETY: forwarded from this function's contract.
+        let pdf = unsafe { view(pdf_ptr, pdf_len) }?;
+        let pages = if flags & FLAG_PAGE_INDEXES == 0 {
+            None
+        } else {
+            // SAFETY: forwarded from this function's contract.
+            Some(unsafe { view(pages_ptr, pages_len) }?)
+        };
+        Ok(Self { flags, pages, pdf })
+    }
+
+    const fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
+    }
+}
+
+fn block_layout(len: usize) -> Option<Layout> {
+    Layout::from_size_align(len.max(1), ALIGNMENT).ok()
+}
+
+fn len32(value: usize) -> Outcome<u32> {
+    u32::try_from(value)
+        .ok()
+        .ok_or_else(|| Failure::limit("result exceeds the 32-bit size limit"))
+}
+
+fn padded(value: usize) -> Outcome<usize> {
+    value
+        .checked_add(ALIGNMENT - 1)
+        .map(|sum| sum & !(ALIGNMENT - 1))
+        .ok_or_else(|| Failure::limit("result size overflow"))
 }
 
 fn encode(inspection: &Inspection) -> Outcome<Writer> {
@@ -283,7 +319,7 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
         out.align();
     }
 
-    padded(out.payload_len())?;
+    let _: usize = padded(out.payload_len())?;
     out.done()
 }
 
@@ -402,8 +438,8 @@ fn finish(outcome: Outcome<Writer>) -> *mut u8 {
 
 /// # Safety
 ///
-/// `data` must be null or valid for reads of `len` initialised elements that stay unmodified for `'a`.
-unsafe fn view<'a, T>(data: *const T, len: usize) -> Outcome<&'a [T]> {
+/// `data` must be null or valid for reads of `len` initialised elements that stay unmodified for `'data`.
+unsafe fn view<'data, T>(data: *const T, len: usize) -> Outcome<&'data [T]> {
     if len == 0 || data.is_null() {
         return Ok(&[]);
     }
@@ -411,40 +447,7 @@ unsafe fn view<'a, T>(data: *const T, len: usize) -> Outcome<&'a [T]> {
         return Err(Failure::invalid("misaligned input buffer"));
     }
     // SAFETY: non-null, aligned, and valid for `len` elements by the caller contract.
-    Ok(unsafe { std::slice::from_raw_parts(data, len) })
-}
-
-struct Request<'a> {
-    pdf: &'a [u8],
-    flags: u32,
-    pages: Option<&'a [u32]>,
-}
-
-impl Request<'_> {
-    /// # Safety
-    ///
-    /// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for `pdf_len` and `pages_len` for the whole call.
-    unsafe fn from_raw(
-        pdf_ptr: *const u8,
-        pdf_len: usize,
-        flags: u32,
-        pages_ptr: *const u32,
-        pages_len: usize,
-    ) -> Outcome<Self> {
-        // SAFETY: forwarded from this function's contract.
-        let pdf = unsafe { view(pdf_ptr, pdf_len) }?;
-        let pages = if flags & FLAG_PAGE_INDEXES == 0 {
-            None
-        } else {
-            // SAFETY: forwarded from this function's contract.
-            Some(unsafe { view(pages_ptr, pages_len) }?)
-        };
-        Ok(Self { pdf, flags, pages })
-    }
-
-    const fn has(&self, flag: u32) -> bool {
-        self.flags & flag != 0
-    }
+    Ok(unsafe { slice::from_raw_parts(data, len) })
 }
 
 #[unsafe(no_mangle)]
@@ -482,13 +485,13 @@ pub(crate) unsafe extern "C" fn pdf_core_inspect(
 ) -> *mut u8 {
     // SAFETY: forwarded from this function's contract.
     let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
-    finish(request.and_then(|request| {
+    finish(request.and_then(|inner_request| {
         let options = InspectOptions {
-            text: request.has(FLAG_TEXT),
-            links: request.has(FLAG_LINKS),
-            page_indexes: request.pages.map(<[u32]>::to_vec),
+            text: inner_request.has(FLAG_TEXT),
+            links: inner_request.has(FLAG_LINKS),
+            page_indexes: inner_request.pages.map(<[u32]>::to_vec),
         };
-        let inspection = document::inspect(request.pdf, &options, &layout::text_limits())?;
+        let inspection = document::inspect(inner_request.pdf, &options, &layout::text_limits())?;
         encode(&inspection)
     }))
 }
@@ -506,13 +509,17 @@ pub(crate) unsafe extern "C" fn pdf_core_text(
 ) -> *mut u8 {
     // SAFETY: forwarded from this function's contract.
     let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
-    finish(request.and_then(|request| {
+    finish(request.and_then(|inner_request| {
         let options = TextOptions {
-            markdown: request.has(FLAG_MARKDOWN),
-            drop_running: request.has(FLAG_DROP_RUNNING),
+            markdown: inner_request.has(FLAG_MARKDOWN),
+            drop_running: inner_request.has(FLAG_DROP_RUNNING),
         };
-        let pages =
-            layout::document_text(request.pdf, request.pages, &layout::text_limits(), options)?;
+        let pages = layout::document_text(
+            inner_request.pdf,
+            inner_request.pages,
+            &layout::text_limits(),
+            options,
+        )?;
         encode_text(&pages)
     }))
 }
@@ -530,8 +537,12 @@ pub(crate) unsafe extern "C" fn pdf_core_tables(
 ) -> *mut u8 {
     // SAFETY: forwarded from this function's contract.
     let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
-    finish(request.and_then(|request| {
-        let tables = layout::document_tables(request.pdf, request.pages, &layout::text_limits())?;
+    finish(request.and_then(|inner_request| {
+        let tables = layout::document_tables(
+            inner_request.pdf,
+            inner_request.pages,
+            &layout::text_limits(),
+        )?;
         encode_tables(&tables)
     }))
 }
@@ -543,15 +554,38 @@ mod tests {
     use crate::inspection::{LinkInfo, PageInfo, PageText, TextItem};
     use crate::num::widen;
     use crate::test_pdf::assert_exact;
-    use std::fmt::Write as _;
+    use crate::test_pdf::document;
+    use crate::test_pdf::page;
+    use core::fmt::Write as _;
+    use core::iter;
 
-    struct Reader<'a> {
-        data: &'a [u8],
+    const LINKS_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/links.pdf");
+
+    const ROTATED_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
+
+    struct Reader<'data> {
         at: usize,
+        data: &'data [u8],
     }
 
-    impl<'a> Reader<'a> {
-        fn take(&mut self, len: usize) -> &'a [u8] {
+    impl<'data> Reader<'data> {
+        fn align(&mut self) {
+            self.at = (self.at.saturating_add(7)) & !7;
+        }
+
+        fn f64(&mut self) -> f64 {
+            f64::from_le_bytes(self.take(8).try_into().unwrap_or([0; 8]))
+        }
+
+        fn i32(&mut self) -> i32 {
+            i32::from_le_bytes(self.take(4).try_into().unwrap_or([0; 4]))
+        }
+
+        fn rect(&mut self) -> [f64; 4] {
+            [self.f64(), self.f64(), self.f64(), self.f64()]
+        }
+
+        fn take(&mut self, len: usize) -> &'data [u8] {
             let slice = self
                 .data
                 .get(self.at..self.at.saturating_add(len))
@@ -564,22 +598,31 @@ mod tests {
         fn u32(&mut self) -> u32 {
             u32::from_le_bytes(self.take(4).try_into().unwrap_or([0; 4]))
         }
+    }
 
-        fn i32(&mut self) -> i32 {
-            i32::from_le_bytes(self.take(4).try_into().unwrap_or([0; 4]))
-        }
+    struct Block {
+        payload: Vec<u8>,
+        ptr: *mut u8,
+        status: u32,
+        total: usize,
+    }
 
-        fn f64(&mut self) -> f64 {
-            f64::from_le_bytes(self.take(8).try_into().unwrap_or([0; 8]))
-        }
+    type Entry = unsafe extern "C" fn(*const u8, usize, u32, *const u32, usize) -> *mut u8;
 
-        fn rect(&mut self) -> [f64; 4] {
-            [self.f64(), self.f64(), self.f64(), self.f64()]
-        }
+    struct DecodedCell {
+        bbox: [f64; 4],
+        col: u32,
+        row: u32,
+        spans: (u32, u32),
+        text: String,
+    }
 
-        fn align(&mut self) {
-            self.at = (self.at.saturating_add(7)) & !7;
-        }
+    struct DecodedTable {
+        bbox: [f64; 4],
+        cells: Vec<DecodedCell>,
+        cols: u32,
+        page_index: u32,
+        rows: u32,
     }
 
     fn decode(payload: &[u8]) -> Inspection {
@@ -596,37 +639,37 @@ mod tests {
         let links_offset = widen(reader.u32());
         let text_offset = widen(reader.u32());
         assert_eq!(pages_offset, HEADER_LEN);
-        assert_eq!(pages_offset % 8, 0);
-        assert_eq!(links_offset % 8, 0);
-        assert_eq!(text_offset % 8, 0);
+        assert_eq!(pages_offset & 7, 0);
+        assert_eq!(links_offset & 7, 0);
+        assert_eq!(text_offset & 7, 0);
         assert_eq!(
             links_offset,
             pages_offset.saturating_add((widen(page_count)).saturating_mul(PAGE_RECORD_LEN))
         );
-        let pages = (0..page_count)
-            .map(|_| {
-                let media_box = reader.rect();
-                let crop_box = reader.rect();
-                let rotate = reader.i32();
-                reader.u32();
-                PageInfo {
-                    media_box,
-                    crop_box,
-                    rotate,
-                }
-            })
-            .collect();
+        let pages = iter::repeat_with(|| {
+            let media_box = reader.rect();
+            let crop_box = reader.rect();
+            let rotate = reader.i32();
+            let _: u32 = reader.u32();
+            PageInfo {
+                crop_box,
+                media_box,
+                rotate,
+            }
+        })
+        .take(widen(page_count))
+        .collect();
         assert_eq!(reader.at, links_offset);
-        let records: Vec<_> = (0..link_count)
-            .map(|_| {
-                let rect = reader.rect();
-                let page_index = reader.u32();
-                let start = widen(reader.u32());
-                let len = widen(reader.u32());
-                reader.u32();
-                (rect, page_index, start, len)
-            })
-            .collect();
+        let records: Vec<_> = iter::repeat_with(|| {
+            let rect = reader.rect();
+            let page_index = reader.u32();
+            let start = widen(reader.u32());
+            let len = widen(reader.u32());
+            let _: u32 = reader.u32();
+            (rect, page_index, start, len)
+        })
+        .take(widen(link_count))
+        .collect();
         let blob_len: usize = records.iter().map(|record| record.3).sum();
         let blob = reader.take(blob_len);
         let links = records
@@ -640,44 +683,43 @@ mod tests {
             .collect();
         reader.align();
         assert_eq!(reader.at, text_offset);
-        let text = (0..text_count)
-            .map(|_| {
-                let page_index = reader.u32();
-                let item_count = widen(reader.u32());
-                let text_len = widen(reader.u32());
-                reader.u32();
-                let rects: Vec<([f64; 4], f64)> = (0..item_count)
-                    .map(|_| {
-                        let rect = reader.rect();
-                        (rect, reader.f64())
-                    })
-                    .collect();
-                let offsets: Vec<usize> = (0..=item_count).map(|_| widen(reader.u32())).collect();
-                reader.align();
-                let strings = reader.take(text_len);
-                reader.align();
-                let units: Vec<u16> = std::str::from_utf8(strings)
-                    .unwrap()
-                    .encode_utf16()
-                    .collect();
-                assert_eq!(offsets.last().copied(), Some(units.len()));
-                let items = rects
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (rect, font_size))| TextItem {
-                        rect: *rect,
-                        font_size: *font_size,
-                        text: String::from_utf16(
-                            &units[offsets[index]..offsets[index.saturating_add(1)]],
-                        )
-                        .unwrap(),
-                    })
-                    .collect();
-                PageText { page_index, items }
+        let text = iter::repeat_with(|| {
+            let page_index = reader.u32();
+            let item_count = widen(reader.u32());
+            let text_len = widen(reader.u32());
+            let _: u32 = reader.u32();
+            let rects: Vec<([f64; 4], f64)> = iter::repeat_with(|| {
+                let rect = reader.rect();
+                (rect, reader.f64())
             })
+            .take(item_count)
             .collect();
+            let offsets: Vec<usize> = iter::repeat_with(|| widen(reader.u32()))
+                .take(item_count.saturating_add(1))
+                .collect();
+            reader.align();
+            let strings = reader.take(text_len);
+            reader.align();
+            let units: Vec<u16> = str::from_utf8(strings).unwrap().encode_utf16().collect();
+            assert_eq!(offsets.last().copied(), Some(units.len()));
+            let items = rects
+                .iter()
+                .enumerate()
+                .map(|(index, (rect, font_size))| TextItem {
+                    rect: *rect,
+                    font_size: *font_size,
+                    text: String::from_utf16(
+                        &units[offsets[index]..offsets[index.saturating_add(1)]],
+                    )
+                    .unwrap(),
+                })
+                .collect();
+            PageText { items, page_index }
+        })
+        .take(widen(text_count))
+        .collect();
         assert_eq!(reader.at, payload.len());
-        Inspection { pages, links, text }
+        Inspection { links, pages, text }
     }
 
     fn sample() -> Inspection {
@@ -755,11 +797,10 @@ mod tests {
         assert_eq!(payload.len(), HEADER_LEN);
         assert_eq!(decode(&payload), Inspection::default());
     }
-
     #[test]
     fn payload_length_is_eight_byte_aligned() {
         let payload = encode(&sample()).map(Writer::payload).unwrap_or_default();
-        assert_eq!(payload.len() % 8, 0);
+        assert_eq!(payload.len() & 7, 0);
     }
 
     #[test]
@@ -769,20 +810,13 @@ mod tests {
             data: &payload,
             at: 0,
         };
-        reader.take(20);
+        let _: &[u8] = reader.take(20);
         let pages_offset = widen(reader.u32());
         let links_offset = widen(reader.u32());
         let text_offset = widen(reader.u32());
-        assert_eq!(pages_offset % 8, 0);
-        assert_eq!(links_offset % 8, 0);
-        assert_eq!(text_offset % 8, 0);
-    }
-
-    struct Block {
-        ptr: *mut u8,
-        total: usize,
-        status: u32,
-        payload: Vec<u8>,
+        assert_eq!(pages_offset & 7, 0);
+        assert_eq!(links_offset & 7, 0);
+        assert_eq!(text_offset & 7, 0);
     }
 
     fn call(bytes: &[u8], flags: u32, pages: &[u32]) -> Block {
@@ -793,11 +827,6 @@ mod tests {
         // SAFETY: the block was published by this module with exactly `total` bytes.
         unsafe { pdf_core_free(block.ptr, block.total) };
     }
-
-    const LINKS_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/links.pdf");
-    const ROTATED_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
-
-    type Entry = unsafe extern "C" fn(*const u8, usize, u32, *const u32, usize) -> *mut u8;
 
     fn call_text(bytes: &[u8], flags: u32, pages: &[u32]) -> Block {
         call_entry(pdf_core_text, bytes, flags, pages)
@@ -832,16 +861,16 @@ mod tests {
 
     fn adopt(result: *mut u8) -> Block {
         assert!(!result.is_null());
-        assert_eq!(result.addr() % 8, 0);
+        assert_eq!(result.addr() & 7, 0);
         // SAFETY: every published block starts with an `RESULT_HEADER_LEN` byte header.
-        let header = unsafe { std::slice::from_raw_parts(result, RESULT_HEADER_LEN) };
+        let header = unsafe { slice::from_raw_parts(result, RESULT_HEADER_LEN) };
         let [t0, t1, t2, t3, s0, s1, s2, s3] = <[u8; RESULT_HEADER_LEN]>::try_from(header).unwrap();
         let total = widen(u32::from_le_bytes([t0, t1, t2, t3]));
         let status = u32::from_le_bytes([s0, s1, s2, s3]);
         let tail = result.wrapping_add(RESULT_HEADER_LEN);
         // SAFETY: the header declares `total` bytes, and the payload is everything after the header.
         let payload =
-            unsafe { std::slice::from_raw_parts(tail, total.saturating_sub(RESULT_HEADER_LEN)) }
+            unsafe { slice::from_raw_parts(tail, total.saturating_sub(RESULT_HEADER_LEN)) }
                 .to_vec();
         Block {
             ptr: result,
@@ -867,7 +896,7 @@ mod tests {
         let offsets_at = TEXT_HEADER_LEN;
         let blob_at = offsets_at
             .saturating_add((((count.saturating_add(1)).saturating_mul(4)).saturating_add(7)) & !7);
-        assert_eq!(blob_at % 8, 0);
+        assert_eq!(blob_at & 7, 0);
         assert_eq!(
             payload.len(),
             ((blob_at.saturating_add(text_len)).saturating_add(7)) & !7
@@ -886,12 +915,12 @@ mod tests {
     }
 
     fn table_pdf() -> Vec<u8> {
-        use crate::test_pdf::{document, grid, page, text};
+        use crate::test_pdf::{grid, text};
         let mut pages = Vec::new();
-        for (index, shift) in [0.0, 40.0, 80.0].into_iter().enumerate() {
+        for (index, shift) in [0.0_f64, 40.0_f64, 80.0_f64].into_iter().enumerate() {
             let mut content = grid(
-                &[700.0 - shift, 680.0 - shift, 660.0 - shift],
-                &[50.0, 200.0, 350.0],
+                &[700.0_f64 - shift, 680.0_f64 - shift, 660.0_f64 - shift],
+                &[50.0_f64, 200.0_f64, 350.0_f64],
             );
             content.push_str(&text(55.0, 688.0 - shift, 10.0, "Item | x"));
             content.push_str(&text(205.0, 688.0 - shift, 10.0, "Valor"));
@@ -902,22 +931,6 @@ mod tests {
             pages.push(page(content));
         }
         document(&pages, &[])
-    }
-
-    struct DecodedCell {
-        row: u32,
-        col: u32,
-        spans: (u32, u32),
-        bbox: [f64; 4],
-        text: String,
-    }
-
-    struct DecodedTable {
-        page_index: u32,
-        rows: u32,
-        cols: u32,
-        bbox: [f64; 4],
-        cells: Vec<DecodedCell>,
     }
 
     fn decode_tables(payload: &[u8]) -> Vec<DecodedTable> {
@@ -945,8 +958,8 @@ mod tests {
         let cells = widen(word(12));
         let blob = (TABLES_HEADER_LEN.saturating_add(tables.saturating_mul(TABLE_RECORD_LEN)))
             .saturating_add(cells.saturating_mul(CELL_RECORD_LEN));
-        assert_eq!(blob % 8, 0);
-        assert_eq!(payload.len() % 8, 0);
+        assert_eq!(blob & 7, 0);
+        assert_eq!(payload.len() & 7, 0);
         let mut at = TABLES_HEADER_LEN;
         let mut out = Vec::new();
         for _ in 0..tables {
@@ -987,12 +1000,12 @@ mod tests {
         assert_eq!(tables.len(), 3);
         let first = &tables[0];
         assert_eq!((first.page_index, first.rows, first.cols), (0, 2, 2));
-        assert_exact(&first.bbox, &[50.0, 660.0, 350.0, 700.0]);
+        assert_exact(&first.bbox, &[50.0_f64, 660.0_f64, 350.0_f64, 700.0_f64]);
         assert_eq!(first.cells.len(), 4);
         let header = &first.cells[0];
         assert_eq!((header.row, header.col, header.spans), (0, 0, (1, 1)));
         assert_eq!(header.text, "Item | x");
-        assert_exact(&header.bbox, &[50.0, 680.0, 200.0, 700.0]);
+        assert_exact(&header.bbox, &[50.0_f64, 680.0_f64, 200.0_f64, 700.0_f64]);
         assert_eq!(first.cells[3].text, "12,50");
         release(&block);
     }
@@ -1045,7 +1058,7 @@ mod tests {
     fn empty_tables_payload_is_header_only() {
         let payload = encode_tables(&[]).unwrap().payload();
         assert_eq!(payload.len(), TABLES_HEADER_LEN);
-        assert_eq!(payload.len() % 8, 0);
+        assert_eq!(payload.len() & 7, 0);
     }
 
     #[test]
@@ -1075,7 +1088,7 @@ mod tests {
     fn text_failures_carry_code_and_reason() {
         let block = call_text(b"not a pdf", 0, &[]);
         assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
-        std::str::from_utf8(&block.payload).unwrap();
+        let _: &str = str::from_utf8(&block.payload).unwrap();
         release(&block);
         let empty = call_text(b"", 0, &[]);
         assert_eq!(empty.status, u32::from(FailureCode::InvalidPdf));
@@ -1142,10 +1155,10 @@ mod tests {
             }
         }
         content.push_str("ET\n");
-        let pages: Vec<_> = (0..9)
-            .map(|_| crate::test_pdf::page(content.clone()))
+        let pages: Vec<_> = iter::repeat_with(|| page(content.clone()))
+            .take(9)
             .collect();
-        let pdf = crate::test_pdf::document(&pages, &[]);
+        let pdf = document(&pages, &[]);
         let block = call(&pdf, FLAG_TEXT, &[]);
         assert_eq!(block.status, STATUS_OK);
         let decoded = decode(&block.payload);
@@ -1159,7 +1172,7 @@ mod tests {
         let block = call(b"not a pdf", 0, &[]);
         assert_eq!(block.status, u32::from(FailureCode::InvalidPdf));
         assert_ne!(block.payload, []);
-        std::str::from_utf8(&block.payload).unwrap();
+        let _: &str = str::from_utf8(&block.payload).unwrap();
         release(&block);
     }
 
@@ -1203,7 +1216,7 @@ mod tests {
         for len in [0_usize, 1, 7, 8, 9, 1000] {
             let block = pdf_core_alloc(len);
             assert!(!block.is_null());
-            assert_eq!(block.addr() % 8, 0);
+            assert_eq!(block.addr() & 7, 0);
             // SAFETY: `block` came from `pdf_core_alloc(len)`.
             unsafe { pdf_core_free(block, len) };
         }
@@ -1218,7 +1231,7 @@ mod tests {
 
     #[test]
     fn repeated_calls_do_not_leak_or_corrupt() {
-        for _ in 0..200 {
+        for _ in 0_i32..200_i32 {
             let block = call(LINKS_PDF, FLAG_TEXT | FLAG_LINKS, &[]);
             assert_eq!(block.status, STATUS_OK);
             release(&block);

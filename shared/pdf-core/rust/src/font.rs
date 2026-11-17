@@ -1,8 +1,10 @@
+use crate::cmap::text_usable;
 use crate::num::{f64_to_i64, widen};
-use std::cell::{OnceCell, RefCell};
+use alloc::rc::Rc;
+use core::cell::{OnceCell, RefCell};
+use core::iter;
+use core::ops::Range;
 use std::collections::HashMap;
-use std::ops::Range;
-use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::cmap::{CMap, UnicodeMap, covering, disjoint};
@@ -15,10 +17,10 @@ use crate::fontprog::{
 use crate::inspection::Limits;
 use crate::object::{Dict, Object, Resolver};
 
-const MAX_METRIC_ENTRIES: usize = 262_144;
-const MAX_METRIC_ITEMS: usize = 1_048_576;
-const MAX_WIDTH_RANGE: u32 = 65_536;
-const MAX_DENSE_WIDTHS: usize = 65_536;
+const MAX_METRIC_ENTRIES: usize = 0x0004_0000;
+const MAX_METRIC_ITEMS: usize = 0x0010_0000;
+const MAX_WIDTH_RANGE: u32 = 0x0001_0000;
+const MAX_DENSE_WIDTHS: usize = 0x0001_0000;
 const MAX_CMAP_DEPTH: usize = 4;
 const MAX_PROGRAM_CHECKS: usize = 4096;
 const LIGATURES: [&str; 14] = [
@@ -30,10 +32,19 @@ const LIGATURE_ADVANCE_ABOVE: f64 = 0.03;
 const DEFAULT_VERTICAL_ORIGIN: f64 = 880.0;
 const DEFAULT_VERTICAL_ADVANCE: f64 = 1000.0;
 
+const UNRESOLVED: IdentitySlot = IdentitySlot {
+    start: usize::MAX,
+    end: usize::MAX,
+    advance: 0.0,
+};
+
+static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; BuiltinEncoding::COUNT] =
+    [const { OnceLock::new() }; BuiltinEncoding::COUNT];
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Glyph {
-    pub code: u32,
     pub advance: f64,
+    pub code: u32,
     pub is_word_space: bool,
     pub text: Range<usize>,
 }
@@ -50,44 +61,38 @@ pub(crate) struct Font {
 }
 
 enum FontKind {
-    Simple(Box<SimpleFont>),
     Composite(Box<CompositeFont>),
+    Simple(Box<SimpleFont>),
 }
 
 struct SimpleFont {
-    encoding: EncodingState,
-    to_unicode: UnicodeMap,
-    program: Option<FontProgram>,
-    widths: WidthState,
-    font_scale: Option<f64>,
-    symbolic: bool,
     cache: Vec<OnceCell<Box<[u32]>>>,
+    encoding: EncodingState,
+    font_scale: Option<f64>,
+    program: Option<FontProgram>,
+    symbolic: bool,
+    to_unicode: UnicodeMap,
+    widths: WidthState,
 }
 
 struct CompositeFont {
-    cmap: CMap,
-    to_unicode: UnicodeMap,
-    program: Option<FontProgram>,
+    cache: RefCell<HashMap<u32, Box<[u32]>>>,
     cid_to_gid: CidToGid,
+    cmap: CMap,
     gid_to_cid: OnceCell<HashMap<u16, u32>>,
     horizontal: CidWidths,
-    vertical: VerticalCidMetrics,
-    cache: RefCell<HashMap<u32, Box<[u32]>>>,
     identity: RefCell<IdentityTable>,
+    program: Option<FontProgram>,
+    to_unicode: UnicodeMap,
+    vertical: VerticalCidMetrics,
 }
 
 #[derive(Clone, Copy)]
 struct IdentitySlot {
-    start: usize,
-    end: usize,
     advance: f64,
+    end: usize,
+    start: usize,
 }
-
-const UNRESOLVED: IdentitySlot = IdentitySlot {
-    start: usize::MAX,
-    end: usize::MAX,
-    advance: 0.0,
-};
 
 #[derive(Default)]
 struct IdentityTable {
@@ -101,34 +106,45 @@ enum CidToGid {
 }
 
 struct EncodingState {
-    builtin: BuiltinEncoding,
     base_explicit: bool,
+    builtin: BuiltinEncoding,
     differences: Vec<(u8, Vec<u8>)>,
 }
 
 struct WidthState {
     first_char: i64,
-    widths: Vec<f64>,
     missing: f64,
     standard14: Option<Standard14Font>,
+    widths: Vec<f64>,
 }
 
 struct CidWidths {
     default_width: f64,
-    entries: Vec<(u32, u32, f64)>,
     dense: Vec<f64>,
+    entries: Vec<(u32, u32, f64)>,
 }
 
 struct VerticalCidMetrics {
-    origin_y: f64,
     advance: f64,
     entries: Vec<(u32, u32, [f64; 3])>,
+    origin_y: f64,
 }
 
-static BUILTIN_TEXT_TABLES: [OnceLock<Vec<Option<Vec<u32>>>>; BuiltinEncoding::COUNT] =
-    [const { OnceLock::new() }; BuiltinEncoding::COUNT];
-
 impl Font {
+    pub(crate) fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
+        match &self.inner {
+            FontKind::Simple(simple) => simple.decode(bytes, glyphs, text),
+            FontKind::Composite(composite) => composite.decode(bytes, glyphs, text),
+        }
+    }
+
+    pub(crate) fn is_vertical(&self) -> bool {
+        match &self.inner {
+            FontKind::Simple(_) => false,
+            FontKind::Composite(composite) => composite.cmap.is_vertical(),
+        }
+    }
+
     pub(crate) fn load(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome<Self> {
         let subtype = name_bytes(font.get(b"Subtype"));
         let inner = if subtype == Some(b"Type0") {
@@ -139,26 +155,12 @@ impl Font {
         Ok(Self { inner })
     }
 
-    pub(crate) fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
-        match &self.inner {
-            FontKind::Simple(simple) => simple.decode(bytes, glyphs, text),
-            FontKind::Composite(composite) => composite.decode(bytes, glyphs, text),
-        }
-    }
-
     pub(crate) fn program_style(&self) -> Option<FontStyle> {
         let program = match &self.inner {
             FontKind::Simple(simple) => simple.program.as_ref(),
             FontKind::Composite(composite) => composite.program.as_ref(),
         };
         program.map(FontProgram::style)
-    }
-
-    pub(crate) fn is_vertical(&self) -> bool {
-        match &self.inner {
-            FontKind::Simple(_) => false,
-            FontKind::Composite(composite) => composite.cmap.is_vertical(),
-        }
     }
 
     pub(crate) fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
@@ -174,6 +176,59 @@ impl Font {
 }
 
 impl SimpleFont {
+    fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
+        let table = self.plain_table();
+        for byte in bytes {
+            let code = u32::from(*byte);
+            let advance = self.width_for_code(code);
+            let text_start = text.len();
+            match table {
+                Some(inner_table) => {
+                    if let Some(Some(slice)) = inner_table.get(usize::from(*byte)) {
+                        push_codepoints(text, slice);
+                    }
+                }
+                None => {
+                    if let Some(cell) = self.cache.get(usize::from(*byte)) {
+                        push_codepoints(text, cell.get_or_init(|| self.resolve(code)));
+                    }
+                }
+            }
+            glyphs.push(Glyph {
+                code,
+                advance,
+                is_word_space: *byte == 32,
+                text: text_start..text.len(),
+            });
+        }
+    }
+
+    fn gid_text(&self, program: &FontProgram, gid: u16) -> Option<Vec<u32>> {
+        if let Some(text) = program.gid_text(gid) {
+            return Some(text);
+        }
+        compose_parts(program, gid, |part| {
+            let code = program.code_for_gid(part)?;
+            self.to_unicode
+                .usable(code)
+                .map(|found| found.as_slice().to_vec())
+        })
+        .or_else(|| {
+            shape_ligature(program, gid, |letter| {
+                let code = self.to_unicode.code_for_char(u32::from(letter))?;
+                program.code_to_gid(code, self.symbolic)
+            })
+        })
+    }
+
+    fn name_text(&self, name: &[u8]) -> Option<Vec<u32>> {
+        agl_components(name).or_else(|| {
+            let program = self.program.as_ref()?;
+            let gid = program.gid_for_name(name)?;
+            self.gid_text(program, gid)
+        })
+    }
+
     fn plain_table(&self) -> Option<&'static [Option<Vec<u32>>]> {
         let plain = self.to_unicode.is_empty()
             && self.encoding.differences.is_empty()
@@ -201,31 +256,16 @@ impl SimpleFont {
         )
     }
 
-    fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
-        let table = self.plain_table();
-        for byte in bytes {
-            let code = u32::from(*byte);
-            let advance = self.width_for_code(code);
-            let text_start = text.len();
-            match table {
-                Some(table) => {
-                    if let Some(Some(slice)) = table.get(usize::from(*byte)) {
-                        push_codepoints(text, slice);
-                    }
-                }
-                None => {
-                    if let Some(cell) = self.cache.get(usize::from(*byte)) {
-                        push_codepoints(text, cell.get_or_init(|| self.resolve(code)));
-                    }
-                }
-            }
-            glyphs.push(Glyph {
-                code,
-                advance,
-                is_word_space: *byte == 32,
-                text: text_start..text.len(),
-            });
+    fn program_text(&self, code: u32) -> Option<Vec<u32>> {
+        let program = self.program.as_ref()?;
+        if let Ok(byte) = u8::try_from(code)
+            && let Some(name) = program.builtin_name(byte)
+            && let Some(text) = self.name_text(name)
+        {
+            return Some(text);
         }
+        let gid = program.code_to_gid(code, self.symbolic)?;
+        self.gid_text(program, gid)
     }
 
     fn resolve(&self, code: u32) -> Box<[u32]> {
@@ -272,44 +312,6 @@ impl SimpleFont {
         Box::new([])
     }
 
-    fn name_text(&self, name: &[u8]) -> Option<Vec<u32>> {
-        agl_components(name).or_else(|| {
-            let program = self.program.as_ref()?;
-            let gid = program.gid_for_name(name)?;
-            self.gid_text(program, gid)
-        })
-    }
-
-    fn program_text(&self, code: u32) -> Option<Vec<u32>> {
-        let program = self.program.as_ref()?;
-        if let Ok(byte) = u8::try_from(code)
-            && let Some(name) = program.builtin_name(byte)
-            && let Some(text) = self.name_text(name)
-        {
-            return Some(text);
-        }
-        let gid = program.code_to_gid(code, self.symbolic)?;
-        self.gid_text(program, gid)
-    }
-
-    fn gid_text(&self, program: &FontProgram, gid: u16) -> Option<Vec<u32>> {
-        if let Some(text) = program.gid_text(gid) {
-            return Some(text);
-        }
-        compose_parts(program, gid, |part| {
-            let code = program.code_for_gid(part)?;
-            self.to_unicode
-                .usable(code)
-                .map(|found| found.as_slice().to_vec())
-        })
-        .or_else(|| {
-            shape_ligature(program, gid, |letter| {
-                let code = self.to_unicode.code_for_char(u32::from(letter))?;
-                program.code_to_gid(code, self.symbolic)
-            })
-        })
-    }
-
     fn width_for_code(&self, code: u32) -> f64 {
         let width = self.widths.standard14.map_or_else(
             || {
@@ -330,92 +332,46 @@ impl SimpleFont {
             },
         );
         self.font_scale
-            .map_or_else(|| width / 1000.0, |scale| width * scale)
+            .map_or_else(|| width / 1_000.0_f64, |scale| width * scale)
     }
 }
 
 impl EncodingState {
     fn difference(&self, code: u32) -> Option<&[u8]> {
-        let code = u8::try_from(code).ok()?;
+        let code_u8 = u8::try_from(code).ok()?;
         self.differences
             .iter()
             .rev()
-            .find(|(slot, _)| *slot == code)
+            .find(|(slot, _)| *slot == code_u8)
             .map(|(_, name)| name.as_slice())
     }
 }
 
-fn is_mark(codepoint: u32) -> bool {
-    matches!(codepoint, 0x5E | 0x60 | 0x7E | 0xA8 | 0xAF | 0xB4 | 0xB8)
-        || (0x02C6..=0x02DD).contains(&codepoint)
-        || (0x0300..=0x036F).contains(&codepoint)
-}
-
-fn compose_parts(
-    program: &FontProgram,
-    gid: u16,
-    outside: impl Fn(u16) -> Option<Vec<u32>>,
-) -> Option<Vec<u32>> {
-    let parts = program.gid_parts(gid)?;
-    let mut text = Vec::new();
-    for part in parts {
-        let piece = program.gid_text(part).or_else(|| outside(part))?;
-        if piece.iter().any(|codepoint| is_mark(*codepoint)) {
-            return None;
-        }
-        text.extend(piece);
-    }
-    (!text.is_empty()).then_some(text)
-}
-
-fn shape_ligature(
-    program: &FontProgram,
-    gid: u16,
-    letter_gid: impl Fn(char) -> Option<u16>,
-) -> Option<Vec<u32>> {
-    let ligature = program.glyph_metrics(gid)?;
-    let em = f64::from(ligature.units_per_em);
-    let mut found: Option<&str> = None;
-    for candidate in LIGATURES {
-        let mut advance = 0.0;
-        let mut x_min = f64::MAX;
-        let mut y_min = f64::MAX;
-        let mut y_max = f64::MIN;
-        let mut complete = true;
-        for (index, letter) in candidate.chars().enumerate() {
-            let Some(metrics) = letter_gid(letter).and_then(|letter| program.glyph_metrics(letter))
-            else {
-                complete = false;
-                break;
-            };
-            if index == 0 {
-                x_min = f64::from(metrics.x_min);
-            }
-            advance += f64::from(metrics.advance);
-            y_min = y_min.min(f64::from(metrics.y_min));
-            y_max = y_max.max(f64::from(metrics.y_max));
-        }
-        if !complete {
-            continue;
-        }
-        let tolerance = LIGATURE_EDGE_TOLERANCE * em;
-        let drift = f64::from(ligature.advance) - advance;
-        let matches = (f64::from(ligature.x_min) - x_min).abs() <= tolerance
-            && (f64::from(ligature.y_min) - y_min).abs() <= tolerance
-            && (f64::from(ligature.y_max) - y_max).abs() <= tolerance
-            && drift >= -LIGATURE_ADVANCE_BELOW * em
-            && drift <= LIGATURE_ADVANCE_ABOVE * em;
-        if matches {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(candidate);
-        }
-    }
-    found.map(|text| text.chars().map(u32::from).collect())
-}
-
 impl CompositeFont {
+    fn cid_for_gid(&self, program: &FontProgram, gid: u16) -> Option<u32> {
+        if program.is_cid_keyed() {
+            return program.gid_to_cid(gid);
+        }
+        match &self.cid_to_gid {
+            CidToGid::Identity => Some(u32::from(gid)),
+            CidToGid::Table(table) => self
+                .gid_to_cid
+                .get_or_init(|| {
+                    let mut map = HashMap::new();
+                    for (cid, pair) in table.as_chunks::<2>().0.iter().enumerate() {
+                        let mapped = (u16::from(pair.first().copied().unwrap_or(0)) << 8_i32)
+                            | u16::from(pair.get(1).copied().unwrap_or(0));
+                        let _: &mut u32 = map
+                            .entry(mapped)
+                            .or_insert_with(|| u32::try_from(cid).unwrap_or(u32::MAX));
+                    }
+                    map
+                })
+                .get(&gid)
+                .copied(),
+        }
+    }
+
     fn decode(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
         if self.cmap.is_identity() {
             self.decode_identity(bytes, glyphs, text);
@@ -425,7 +381,7 @@ impl CompositeFont {
         while let Some((code, consumed)) = self.cmap.read(bytes, offset) {
             offset = offset.saturating_add(consumed);
             let cid = self.cmap.cid(code, consumed);
-            let advance = self.horizontal.width(cid) / 1000.0;
+            let advance = self.horizontal.width(cid) / 1_000.0_f64;
             let text_start = text.len();
             self.push_text(code, cid, text);
             glyphs.push(Glyph {
@@ -470,28 +426,6 @@ impl CompositeFont {
         }
     }
 
-    fn push_text(&self, code: u32, cid: Option<u32>, text: &mut String) {
-        if let Some(found) = self.to_unicode.usable(code) {
-            push_codepoints(text, found.as_slice());
-            return;
-        }
-        if let Some(direct) = self.cmap.direct_unicode(code) {
-            push_codepoints(text, &direct);
-            return;
-        }
-        if self.program.is_none() {
-            return;
-        }
-        let key = cid.unwrap_or(code);
-        if let Some(cached) = self.cache.borrow().get(&code) {
-            push_codepoints(text, cached);
-            return;
-        }
-        let resolved: Box<[u32]> = self.program_text(key).unwrap_or_default().into();
-        push_codepoints(text, &resolved);
-        self.cache.borrow_mut().insert(code, resolved);
-    }
-
     fn gid_for_cid(&self, program: &FontProgram, cid: u32) -> Option<u16> {
         if program.is_cid_keyed() {
             return program.cid_to_gid(cid);
@@ -529,27 +463,26 @@ impl CompositeFont {
         })
     }
 
-    fn cid_for_gid(&self, program: &FontProgram, gid: u16) -> Option<u32> {
-        if program.is_cid_keyed() {
-            return program.gid_to_cid(gid);
+    fn push_text(&self, code: u32, cid: Option<u32>, text: &mut String) {
+        if let Some(found) = self.to_unicode.usable(code) {
+            push_codepoints(text, found.as_slice());
+            return;
         }
-        match &self.cid_to_gid {
-            CidToGid::Identity => Some(u32::from(gid)),
-            CidToGid::Table(table) => self
-                .gid_to_cid
-                .get_or_init(|| {
-                    let mut map = HashMap::new();
-                    for (cid, pair) in table.as_chunks::<2>().0.iter().enumerate() {
-                        let mapped = (u16::from(pair.first().copied().unwrap_or(0)) << 8)
-                            | u16::from(pair.get(1).copied().unwrap_or(0));
-                        map.entry(mapped)
-                            .or_insert_with(|| u32::try_from(cid).unwrap_or(u32::MAX));
-                    }
-                    map
-                })
-                .get(&gid)
-                .copied(),
+        if let Some(direct) = self.cmap.direct_unicode(code) {
+            push_codepoints(text, &direct);
+            return;
         }
+        if self.program.is_none() {
+            return;
+        }
+        let key = cid.unwrap_or(code);
+        if let Some(cached) = self.cache.borrow().get(&code) {
+            push_codepoints(text, cached);
+            return;
+        }
+        let resolved: Box<[u32]> = self.program_text(key).unwrap_or_default().into();
+        push_codepoints(text, &resolved);
+        drop(self.cache.borrow_mut().insert(code, resolved));
     }
 
     fn vertical_metrics(&self, code: u32) -> VerticalMetrics {
@@ -557,7 +490,7 @@ impl CompositeFont {
         let found = find_entry(&self.vertical.entries, code);
         let [advance, origin_x, origin_y] = found.unwrap_or([
             self.vertical.advance,
-            horizontal / 2.0,
+            horizontal / 2.0_f64,
             self.vertical.origin_y,
         ]);
         VerticalMetrics {
@@ -566,27 +499,6 @@ impl CompositeFont {
             origin_y: origin_y / 1000.0,
         }
     }
-}
-
-fn find_entry<T>(entries: &[(u32, u32, T)], cid: u32) -> Option<T>
-where
-    T: Copy,
-{
-    covering(entries, cid).map(|(_, _, value)| *value)
-}
-
-fn resolve_entries<T>(entries: &[(u32, u32, T)]) -> Vec<(u32, u32, T)>
-where
-    T: Copy,
-{
-    let spans: Vec<(u32, u32)> = entries
-        .iter()
-        .map(|(start, end, _)| (*start, *end))
-        .collect();
-    disjoint(&spans)
-        .into_iter()
-        .filter_map(|(start, end, index)| entries.get(index).map(|entry| (start, end, entry.2)))
-        .collect()
 }
 
 impl CidWidths {
@@ -608,23 +520,115 @@ impl CidWidths {
         }
         Self {
             default_width,
-            entries,
             dense,
+            entries,
         }
     }
 
     fn width(&self, cid: Option<u32>) -> f64 {
-        let Some(cid) = cid else {
+        let Some(cid_next) = cid else {
             return self.default_width;
         };
         if self.dense.is_empty() {
-            return find_entry(&self.entries, cid).unwrap_or(self.default_width);
+            return find_entry(&self.entries, cid_next).unwrap_or(self.default_width);
         }
         self.dense
-            .get(widen(cid))
+            .get(widen(cid_next))
             .copied()
             .unwrap_or(self.default_width)
     }
+}
+
+fn is_mark(codepoint: u32) -> bool {
+    matches!(codepoint, 0x5E | 0x60 | 0x7E | 0xA8 | 0xAF | 0xB4 | 0xB8)
+        || (0x02C6..=0x02DD).contains(&codepoint)
+        || (0x0300..=0x036F).contains(&codepoint)
+}
+
+fn compose_parts(
+    program: &FontProgram,
+    gid: u16,
+    outside: impl Fn(u16) -> Option<Vec<u32>>,
+) -> Option<Vec<u32>> {
+    let parts = program.gid_parts(gid)?;
+    let mut text = Vec::new();
+    for part in parts {
+        let piece = program.gid_text(part).or_else(|| outside(part))?;
+        if piece.iter().any(|codepoint| is_mark(*codepoint)) {
+            return None;
+        }
+        text.extend(piece);
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+fn shape_ligature(
+    program: &FontProgram,
+    gid: u16,
+    letter_gid: impl Fn(char) -> Option<u16>,
+) -> Option<Vec<u32>> {
+    let ligature = program.glyph_metrics(gid)?;
+    let em = f64::from(ligature.units_per_em);
+    let mut found: Option<&str> = None;
+    for candidate in LIGATURES {
+        let mut advance = 0.0_f64;
+        let mut x_min = f64::MAX;
+        let mut y_min = f64::MAX;
+        let mut y_max = f64::MIN;
+        let mut complete = true;
+        for (index, letter) in candidate.chars().enumerate() {
+            let Some(metrics) =
+                letter_gid(letter).and_then(|inner_letter| program.glyph_metrics(inner_letter))
+            else {
+                complete = false;
+                break;
+            };
+            if index == 0 {
+                x_min = f64::from(metrics.x_min);
+            }
+            advance += f64::from(metrics.advance);
+            y_min = y_min.min(f64::from(metrics.y_min));
+            y_max = y_max.max(f64::from(metrics.y_max));
+        }
+        if !complete {
+            continue;
+        }
+        let tolerance = LIGATURE_EDGE_TOLERANCE * em;
+        let drift = f64::from(ligature.advance) - advance;
+        let matches = (f64::from(ligature.x_min) - x_min).abs() <= tolerance
+            && (f64::from(ligature.y_min) - y_min).abs() <= tolerance
+            && (f64::from(ligature.y_max) - y_max).abs() <= tolerance
+            && drift >= -LIGATURE_ADVANCE_BELOW * em
+            && drift <= LIGATURE_ADVANCE_ABOVE * em;
+        if matches {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(candidate);
+        }
+    }
+    found.map(|text| text.chars().map(u32::from).collect())
+}
+
+fn find_entry<T>(entries: &[(u32, u32, T)], cid: u32) -> Option<T>
+where
+    T: Copy,
+{
+    covering(entries, cid).map(|(_, _, value)| *value)
+}
+
+fn resolve_entries<T>(entries: &[(u32, u32, T)]) -> Vec<(u32, u32, T)>
+where
+    T: Copy,
+{
+    let spans: Vec<(u32, u32)> = entries
+        .iter()
+        .map(|(start, end, _)| (*start, *end))
+        .collect();
+    disjoint(&spans)
+        .into_iter()
+        .filter_map(|(start, end, index)| entries.get(index).map(|entry| (start, end, entry.2)))
+        .collect()
 }
 
 fn deref(resolver: &dyn Resolver, value: Option<&Object>) -> Option<Rc<Object>> {
@@ -653,7 +657,7 @@ fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome
     );
     let font_scale = read_font_matrix(resolver, font)
         .map(|matrix| (matrix[0] * matrix[0] + matrix[1] * matrix[1]).sqrt())
-        .filter(|scale| *scale > 0.0);
+        .filter(|scale| *scale > 0.0_f64);
     let needs_program = simple_needs_program(&encoding, &to_unicode, &widths, symbolic);
     let program = descriptor
         .as_ref()
@@ -669,7 +673,7 @@ fn load_simple(resolver: &dyn Resolver, font: &Dict, limits: &Limits) -> Outcome
         cache: Vec::new(),
     };
     if simple.plain_table().is_none() {
-        simple.cache = (0..256).map(|_| OnceCell::new()).collect();
+        simple.cache = iter::repeat_with(OnceCell::new).take(256).collect();
     }
     Ok(simple)
 }
@@ -692,7 +696,7 @@ fn simple_needs_program(
     };
     for code in first..=last {
         if let Some(found) = to_unicode.lookup(code) {
-            if crate::cmap::text_usable(found.as_slice()) {
+            if text_usable(found.as_slice()) {
                 continue;
             }
             return true;
@@ -797,8 +801,8 @@ fn load_cmap(
                     )),
                     None => parsed.parent.as_deref().map(predefined),
                 };
-                if let Some(parent) = parent {
-                    cmap = cmap.with_parent(parent);
+                if let Some(inner_parent) = parent {
+                    cmap = cmap.with_parent(inner_parent);
                 }
             }
             if let Some(Object::Integer(mode)) = stream.dict.get(b"WMode") {
@@ -962,11 +966,11 @@ fn load_widths(
     let widths = resolved_items(resolver, font.get(b"Widths"), MAX_METRIC_ENTRIES)
         .unwrap_or_default()
         .iter()
-        .map(|item| item.as_number().unwrap_or(0.0))
+        .map(|item| item.as_number().unwrap_or(0.0_f64))
         .collect();
     let missing = descriptor
         .and_then(|dict| deref_number(resolver, dict.get(b"MissingWidth")))
-        .unwrap_or(0.0);
+        .unwrap_or(0.0_f64);
     WidthState {
         first_char,
         widths,
@@ -982,7 +986,7 @@ fn load_widths(
 }
 
 fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
-    let default_width = deref_number(resolver, descendant.get(b"DW")).unwrap_or(1000.0);
+    let default_width = deref_number(resolver, descendant.get(b"DW")).unwrap_or(1_000.0_f64);
     let mut entries: Vec<(u32, u32, f64)> = Vec::new();
     if let Some(items) = resolved_items(resolver, descendant.get(b"W"), MAX_METRIC_ITEMS) {
         let mut index = 0_usize;
@@ -995,10 +999,11 @@ fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
             match items.get(index) {
                 Some(Object::Array(inner)) => {
                     index = index.saturating_add(1);
-                    let Some(start) = start else { continue };
+                    let Some(start_next) = start else { continue };
                     for (step, item) in inner.iter().enumerate() {
                         if let Some(width) = item.as_number() {
-                            let cid = start.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
+                            let cid =
+                                start_next.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
                             entries.push((cid, cid, width));
                         }
                     }
@@ -1008,13 +1013,14 @@ fn load_cid_widths(resolver: &dyn Resolver, descendant: &Dict) -> CidWidths {
                         .get(index.saturating_add(1))
                         .and_then(Object::as_number);
                     index = index.saturating_add(2);
-                    if let (Some(start), Ok(end), Some(width)) = (start, u32::try_from(*end), width)
-                        && start <= end
+                    if let (Some(start_u32), Ok(end_u32), Some(width_u32)) =
+                        (start, u32::try_from(*end), width)
+                        && start_u32 <= end_u32
                     {
                         entries.push((
-                            start,
-                            end.min(start.saturating_add(MAX_WIDTH_RANGE)),
-                            width,
+                            start_u32,
+                            end_u32.min(start_u32.saturating_add(MAX_WIDTH_RANGE)),
+                            width_u32,
                         ));
                     }
                 }
@@ -1051,12 +1057,13 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
             match items.get(index) {
                 Some(Object::Array(inner)) => {
                     index = index.saturating_add(1);
-                    let Some(start) = start else { continue };
+                    let Some(start_next) = start else { continue };
                     for (step, triple) in inner.as_chunks::<3>().0.iter().enumerate() {
                         let values: Vec<f64> =
                             triple.iter().filter_map(Object::as_number).collect();
                         if let [vertical_advance, origin_x, shift_y] = values.as_slice() {
-                            let cid = start.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
+                            let cid =
+                                start_next.saturating_add(u32::try_from(step).unwrap_or(u32::MAX));
                             entries.push((cid, cid, [*vertical_advance, *origin_x, *shift_y]));
                         }
                     }
@@ -1069,15 +1076,18 @@ fn load_vertical_metrics(resolver: &dyn Resolver, descendant: &Dict) -> Vertical
                                 .and_then(Object::as_number)
                         })
                         .collect();
-                    let end = u32::try_from(*end).ok();
+                    let end_u32 = u32::try_from(*end).ok();
                     index = index.saturating_add(4);
-                    if let (Some(start), Some(end), [vertical_advance, origin_x, shift_y]) =
-                        (start, end, values.as_slice())
-                        && start <= end
+                    if let (
+                        Some(inner_start),
+                        Some(inner_end),
+                        [vertical_advance, origin_x, shift_y],
+                    ) = (start, end_u32, values.as_slice())
+                        && inner_start <= inner_end
                     {
                         entries.push((
-                            start,
-                            end.min(start.saturating_add(MAX_WIDTH_RANGE)),
+                            inner_start,
+                            inner_end.min(inner_start.saturating_add(MAX_WIDTH_RANGE)),
                             [*vertical_advance, *origin_x, *shift_y],
                         ));
                     }
@@ -1123,7 +1133,7 @@ fn read_font_matrix(resolver: &dyn Resolver, font: &Dict) -> Option<[f64; 6]> {
     let Object::Array(items) = &*matrix_array else {
         return None;
     };
-    let mut matrix = [0.0; 6];
+    let mut matrix = [0.0_f64; 6];
     for (slot, item) in matrix.iter_mut().zip(items.iter()) {
         *slot = item.as_number()?;
     }
@@ -1188,8 +1198,8 @@ fn name_bytes(value: Option<&Object>) -> Option<&[u8]> {
 
 const fn read_integer(value: Option<&Object>) -> Option<i64> {
     match value {
-        Some(Object::Integer(v)) => Some(*v),
-        Some(Object::Real(v)) => Some(f64_to_i64(*v)),
+        Some(Object::Integer(inner_value)) => Some(*inner_value),
+        Some(Object::Real(inner_value)) => Some(f64_to_i64(*inner_value)),
         _ => None,
     }
 }
@@ -1219,25 +1229,26 @@ fn push_codepoints(text: &mut String, codepoints: &[u32]) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use crate::fontprog::tests::ligature_gsub;
+    use alloc::collections::BTreeMap;
 
     use super::*;
     use crate::cff::tests::{Layout, build as build_cff};
     use crate::object::{ObjRef, Stream};
     use crate::test_pdf::assert_exact;
-    use std::hint::black_box;
+    use core::hint::black_box;
 
     #[derive(Default)]
     struct TestResolver {
-        objects: BTreeMap<u32, Object>,
         data: Vec<u8>,
         next: u32,
+        objects: BTreeMap<u32, Object>,
     }
 
     impl TestResolver {
         fn add(&mut self, object: Object) -> Object {
             self.next = self.next.saturating_add(1);
-            self.objects.insert(self.next, object);
+            drop(self.objects.insert(self.next, object));
             Object::Ref(ObjRef {
                 number: self.next,
                 generation: 0,
@@ -1399,7 +1410,7 @@ mod tests {
         composite.extend([40, 0]);
         for glyph in [simple(0), simple(1), simple(2), composite] {
             glyf.extend_from_slice(&glyph);
-            while glyf.len() % 4 != 0 {
+            while !glyf.len().is_multiple_of(4) {
                 glyf.push(0);
             }
             loca.extend(be32(u32::try_from(glyf.len()).unwrap()));
@@ -1437,12 +1448,12 @@ mod tests {
             let stream = resolver.add_stream(Dict::default(), &map);
             descendant.insert(b"CIDToGIDMap", stream);
         }
-        let descendant = resolver.add(Object::Dict(descendant));
+        let descendant_next = resolver.add(Object::Dict(descendant));
         let mut font = dict(vec![
             ("Type", name("Font")),
             ("Subtype", name("Type0")),
             ("Encoding", name("Identity-H")),
-            ("DescendantFonts", Object::Array(vec![descendant])),
+            ("DescendantFonts", Object::Array(vec![descendant_next])),
         ]);
         if let Some(cmap) = to_unicode {
             let stream = resolver.add_stream(Dict::default(), cmap.as_bytes());
@@ -1457,7 +1468,7 @@ mod tests {
         let cmap = "1 begincodespacerange <0000> <ffff> endcodespacerange\n3 beginbfrange\n<0010> <0010> <0074>\n<0020> <0020> <0069>\n<0030> <0030> <0000>\nendbfrange";
         let mut map = vec![0_u8; 0x31 * 2];
         for (cid, gid) in [(0x10_usize, 1_u16), (0x20, 2), (0x30, 3)] {
-            map[cid * 2] = u8::try_from(gid >> 8).unwrap();
+            map[cid * 2] = u8::try_from(gid >> 8_i32).unwrap();
             map[cid * 2 + 1] = u8::try_from(gid).unwrap();
         }
         let font = type0_with_program(
@@ -1466,11 +1477,11 @@ mod tests {
             Some(cmap),
             Some(map),
         );
-        let font = load(&resolver, &font);
-        let (text, glyphs) = decode(&font, &[0x00, 0x10, 0x00, 0x30, 0x00, 0x20]);
+        let font_next = load(&resolver, &font);
+        let (text, glyphs) = decode(&font_next, &[0x00, 0x10, 0x00, 0x30, 0x00, 0x20]);
         assert_eq!(text, "ttii");
         assert_eq!(glyphs.len(), 3);
-        assert!((glyphs[0].advance - 0.5).abs() < 1e-9);
+        assert!((glyphs[0].advance - 0.5).abs() < 1e-9_f64);
     }
 
     fn metric_font(glyphs: &[(i16, i16, i16, i16, u16)]) -> Vec<u8> {
@@ -1517,11 +1528,11 @@ mod tests {
         ]);
         let cmap = "beginbfrange <0001> <0001> <0074> <0002> <0002> <0069> <0003> <0003> <0066> <0004> <0004> <006c> <0005> <0007> <0000> endbfrange";
         let font = type0_with_program(&mut resolver, &program, Some(cmap), None);
-        let font = load(&resolver, &font);
-        assert_eq!(decode(&font, &[0, 5]).0, "ti");
-        assert_eq!(decode(&font, &[0, 6]).0, "");
-        assert_eq!(decode(&font, &[0, 7]).0, "");
-        assert_eq!(decode(&font, &[0, 1, 0, 5, 0, 2]).0, "ttii");
+        let font_next = load(&resolver, &font);
+        assert_eq!(decode(&font_next, &[0, 5]).0, "ti");
+        assert_eq!(decode(&font_next, &[0, 6]).0, "");
+        assert_eq!(decode(&font_next, &[0, 7]).0, "");
+        assert_eq!(decode(&font_next, &[0, 1, 0, 5, 0, 2]).0, "ttii");
     }
 
     #[test]
@@ -1549,7 +1560,7 @@ mod tests {
                 ("Subtype", name("TrueType")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
-                ("Widths", numbers(&[500.0; 3])),
+                ("Widths", numbers(&[500.0_f64; 3])),
                 ("ToUnicode", tu),
             ]),
         );
@@ -1574,8 +1585,8 @@ mod tests {
         let borrowed: Vec<(&[u8; 4], Vec<u8>)> = tables
             .iter()
             .map(|(tag, body)| {
-                let tag: &[u8; 4] = tag.as_slice().try_into().expect("tag");
-                (tag, body.clone())
+                let tag_next: &[u8; 4] = tag.as_slice().try_into().expect("tag");
+                (tag_next, body.clone())
             })
             .collect();
         sfnt(&borrowed)
@@ -1586,17 +1597,14 @@ mod tests {
         for extension in [false, true] {
             let mut resolver = TestResolver::default();
             let program = sfnt(&[
-                (
-                    b"GSUB",
-                    crate::fontprog::tests::ligature_gsub(extension, 1, &[2], 3),
-                ),
+                (b"GSUB", ligature_gsub(extension, 1, &[2], 3)),
                 (b"maxp", maxp(4)),
             ]);
             let cmap = "beginbfrange <0001> <0001> <0066> <0002> <0002> <0069> <0003> <0003> <0000> endbfrange";
             let font = type0_with_program(&mut resolver, &program, Some(cmap), None);
-            let font = load(&resolver, &font);
+            let font_next = load(&resolver, &font);
             assert_eq!(
-                decode(&font, &[0, 1, 0, 3]).0,
+                decode(&font_next, &[0, 1, 0, 3]).0,
                 "ffi",
                 "extension={extension}"
             );
@@ -1620,12 +1628,12 @@ mod tests {
                 Object::Array(vec![Object::Integer(500)]),
             ]),
         );
-        let font = load(&resolver, &font);
-        match &font.inner {
+        let font_next = load(&resolver, &font);
+        match &font_next.inner {
             FontKind::Composite(composite) => assert!(composite.program.is_none()),
             FontKind::Simple(_) => panic!("composite expected"),
         }
-        assert_eq!(decode(&font, &[0, 2]).0, "B");
+        assert_eq!(decode(&font_next, &[0, 2]).0, "B");
     }
 
     #[test]
@@ -1647,9 +1655,9 @@ mod tests {
             sfnt(&[(b"post", table), (b"maxp", maxp(4))])
         };
         let font = type0_with_program(&mut resolver, &program, Some(cmap), Some(map));
-        let font = load(&resolver, &font);
-        assert_eq!(decode(&font, &[0, 0x10]).0, "X");
-        assert_eq!(decode(&font, &[0, 0x30]).0, "ti");
+        let font_next = load(&resolver, &font);
+        assert_eq!(decode(&font_next, &[0, 0x10]).0, "X");
+        assert_eq!(decode(&font_next, &[0, 0x30]).0, "ti");
     }
 
     #[test]
@@ -1672,7 +1680,7 @@ mod tests {
                 ("Subtype", name("TrueType")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
-                ("Widths", numbers(&[500.0, 500.0, 500.0])),
+                ("Widths", numbers(&[500.0_f64, 500.0_f64, 500.0_f64])),
                 ("ToUnicode", tu),
             ]),
         );
@@ -1703,7 +1711,7 @@ mod tests {
                 ("Subtype", name("TrueType")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
-                ("Widths", numbers(&[500.0, 500.0, 500.0])),
+                ("Widths", numbers(&[500.0_f64, 500.0_f64, 500.0_f64])),
                 ("ToUnicode", tu),
             ]),
         );
@@ -1736,7 +1744,7 @@ mod tests {
                 ("Subtype", name("Type1")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(0x41)),
-                ("Widths", numbers(&[600.0, 600.0])),
+                ("Widths", numbers(&[600.0_f64, 600.0_f64])),
             ]),
         );
         assert_eq!(decode(&font, b"AB").0, "Afi");
@@ -1757,7 +1765,7 @@ mod tests {
                 ("Subtype", name("Type1")),
                 ("FontDescriptor", descriptor),
                 ("FirstChar", Object::Integer(1)),
-                ("Widths", numbers(&[500.0, 500.0])),
+                ("Widths", numbers(&[500.0_f64, 500.0_f64])),
             ]),
         );
         assert_eq!(decode(&font, &[1, 2]).0, "\u{fb01}\u{0416}");
@@ -1839,7 +1847,10 @@ mod tests {
         let codes: Vec<u32> = first_glyphs.iter().map(|glyph| glyph.code).collect();
         assert_eq!(codes, [0x10, 3, 0x11, 0x100, 5, 0x12]);
         let advances: Vec<f64> = first_glyphs.iter().map(|glyph| glyph.advance).collect();
-        assert_exact(&advances, &[0.25, 0.5, 0.3, 0.5, 0.5, 0.5]);
+        assert_exact(
+            &advances,
+            &[0.25_f64, 0.5_f64, 0.3_f64, 0.5_f64, 0.5_f64, 0.5_f64],
+        );
         let spans: Vec<&str> = first_glyphs
             .iter()
             .map(|glyph| first.get(glyph.text.clone()).unwrap())
@@ -1876,9 +1887,9 @@ mod tests {
         let (text, glyphs) = decode(&font, b"ABC");
         assert_eq!(text, "abc");
         assert_eq!(glyphs[0].code, 100);
-        assert!((glyphs[0].advance - 0.25).abs() < 1e-9);
-        assert!((glyphs[1].advance - 0.3).abs() < 1e-9);
-        assert!((glyphs[2].advance - 1.0).abs() < 1e-9);
+        assert!((glyphs[0].advance - 0.25).abs() < 1e-9_f64);
+        assert!((glyphs[1].advance - 0.3).abs() < 1e-9_f64);
+        assert!((glyphs[2].advance - 1.0).abs() < 1e-9_f64);
     }
 
     #[test]
@@ -1914,7 +1925,7 @@ mod tests {
         assert!(font.is_vertical());
         let (_, glyphs) = decode(&font, &[0x01, 0x05, 0x00, 0x41]);
         assert_eq!(glyphs[0].code, 505);
-        assert!((glyphs[0].advance - 0.4).abs() < 1e-9);
+        assert!((glyphs[0].advance - 0.4).abs() < 1e-9_f64);
         assert_eq!(glyphs[1].code, 0x41);
     }
 
@@ -1950,7 +1961,7 @@ mod tests {
             assert!(
                 glyphs
                     .iter()
-                    .all(|glyph| (glyph.advance - 1.0).abs() < 1e-9)
+                    .all(|glyph| (glyph.advance - 1.0).abs() < 1e-9_f64)
             );
         }
     }
@@ -1961,7 +1972,7 @@ mod tests {
         let descendant = resolver.add(Object::Dict(dict(vec![
             ("Subtype", name("CIDFontType0")),
             ("DW", Object::Integer(800)),
-            ("DW2", numbers(&[900.0, -1100.0])),
+            ("DW2", numbers(&[900.0_f64, -1_100.0_f64])),
             (
                 "W2",
                 Object::Array(vec![
@@ -1989,16 +2000,16 @@ mod tests {
         );
         assert!(font.is_vertical());
         let metrics = font.vertical_metrics(10);
-        assert!((metrics.advance - 0.5).abs() < 1e-9);
-        assert!((metrics.origin_x - 0.3).abs() < 1e-9);
-        assert!((metrics.origin_y - 0.7).abs() < 1e-9);
+        assert!((metrics.advance - 0.5).abs() < 1e-9_f64);
+        assert!((metrics.origin_x - 0.3).abs() < 1e-9_f64);
+        assert!((metrics.origin_y - 0.7).abs() < 1e-9_f64);
         let ranged = font.vertical_metrics(21);
-        assert!((ranged.advance - 0.6).abs() < 1e-9);
-        assert!((ranged.origin_x - 0.1).abs() < 1e-9);
+        assert!((ranged.advance - 0.6).abs() < 1e-9_f64);
+        assert!((ranged.origin_x - 0.1).abs() < 1e-9_f64);
         let default = font.vertical_metrics(99);
-        assert!((default.advance - 1.1).abs() < 1e-9);
-        assert!((default.origin_x - 0.4).abs() < 1e-9);
-        assert!((default.origin_y - 0.9).abs() < 1e-9);
+        assert!((default.advance - 1.1).abs() < 1e-9_f64);
+        assert!((default.origin_x - 0.4).abs() < 1e-9_f64);
+        assert!((default.origin_y - 0.9).abs() < 1e-9_f64);
     }
 
     #[test]
@@ -2021,9 +2032,18 @@ mod tests {
         let mut resolver = TestResolver::default();
         let tu = resolver.add_stream(Dict::default(), b"beginbfchar <41> <0058> endbfchar");
         for (matrix, expected) in [
-            (vec![0.001, 0.0, 0.0, 0.001, 0.0, 0.0], 0.5),
-            (vec![0.01, 0.0, 0.0, 0.01, 0.0, 0.0], 5.0),
-            (vec![0.0, 0.002, -0.002, 0.0, 0.0, 0.0], 1.0),
+            (
+                vec![0.001_f64, 0.0_f64, 0.0_f64, 0.001_f64, 0.0_f64, 0.0_f64],
+                0.5_f64,
+            ),
+            (
+                vec![0.01_f64, 0.0_f64, 0.0_f64, 0.01_f64, 0.0_f64, 0.0_f64],
+                5.0_f64,
+            ),
+            (
+                vec![0.0_f64, 0.002_f64, -0.002_f64, 0.0_f64, 0.0_f64, 0.0_f64],
+                1.0_f64,
+            ),
         ] {
             let font = load(
                 &resolver,
@@ -2031,14 +2051,17 @@ mod tests {
                     ("Subtype", name("Type3")),
                     ("FontMatrix", numbers(&matrix)),
                     ("FirstChar", Object::Integer(0x41)),
-                    ("Widths", numbers(&[500.0])),
+                    ("Widths", numbers(&[500.0_f64])),
                     ("ToUnicode", tu.clone()),
                 ]),
             );
             let (text, glyphs) = decode(&font, b"AB");
             assert_eq!(text, "XB");
-            assert!((glyphs[0].advance - expected).abs() < 1e-9, "{matrix:?}");
-            assert_exact(&[glyphs[1].advance], &[0.0]);
+            assert!(
+                (glyphs[0].advance - expected).abs() < 1e-9_f64,
+                "{matrix:?}"
+            );
+            assert_exact(&[glyphs[1].advance], &[0.0_f64]);
         }
     }
 
@@ -2056,7 +2079,10 @@ mod tests {
                         Object::Array(vec![Object::Integer(1), name("fi"), name("a1")]),
                     )])),
                 ),
-                ("FontMatrix", numbers(&[0.001, 0.0, 0.0, 0.001, 0.0, 0.0])),
+                (
+                    "FontMatrix",
+                    numbers(&[0.001_f64, 0.0_f64, 0.0_f64, 0.001_f64, 0.0_f64, 0.0_f64]),
+                ),
             ]),
         );
         assert_eq!(decode(&font, &[1, 2]).0, "\u{fb01}");
@@ -2168,12 +2194,12 @@ mod tests {
         ]);
         let descendant = dict(vec![("W", widths), ("DW", Object::Integer(700))]);
         let metrics = load_cid_widths(&TestResolver::default(), &descendant);
-        assert_exact(&[metrics.width(Some(1))], &[100.0]);
-        assert_exact(&[metrics.width(Some(2))], &[200.0]);
-        assert_exact(&[metrics.width(Some(3))], &[700.0]);
-        assert_exact(&[metrics.width(Some(15))], &[300.0]);
-        assert_exact(&[metrics.width(Some(21))], &[700.0]);
-        assert_exact(&[metrics.width(None)], &[700.0]);
+        assert_exact(&[metrics.width(Some(1))], &[100.0_f64]);
+        assert_exact(&[metrics.width(Some(2))], &[200.0_f64]);
+        assert_exact(&[metrics.width(Some(3))], &[700.0_f64]);
+        assert_exact(&[metrics.width(Some(15))], &[300.0_f64]);
+        assert_exact(&[metrics.width(Some(21))], &[700.0_f64]);
+        assert_exact(&[metrics.width(None)], &[700.0_f64]);
     }
 
     #[test]
@@ -2203,8 +2229,13 @@ mod tests {
             .into_iter()
             .map(|cid| metrics.width(Some(cid)))
             .collect();
-        assert_exact(&widths, &[100.0, 300.0, 300.0, 900.0, 900.0, 700.0]);
-        assert_exact(&[metrics.width(Some(30))], &[3.0]);
+        assert_exact(
+            &widths,
+            &[
+                100.0_f64, 300.0_f64, 300.0_f64, 900.0_f64, 900.0_f64, 700.0_f64,
+            ],
+        );
+        assert_exact(&[metrics.width(Some(30))], &[3.0_f64]);
         assert!(
             metrics
                 .entries
@@ -2215,18 +2246,21 @@ mod tests {
 
     #[test]
     fn dense_and_sparse_width_tables_agree() {
-        let dense = CidWidths::new(700.0, vec![(1, 1, 100.0), (2, 5, 300.0), (10, 10, 50.0)]);
-        let sparse = CidWidths::new(700.0, vec![(1, 1, 100.0), (60_000, 60_000, 50.0)]);
-        let huge = CidWidths::new(700.0, vec![(70_000, 70_010, 20.0)]);
+        let dense = CidWidths::new(
+            700.0,
+            vec![(1, 1, 100.0_f64), (2, 5, 300.0_f64), (10, 10, 50.0_f64)],
+        );
+        let sparse = CidWidths::new(700.0, vec![(1, 1, 100.0_f64), (60_000, 60_000, 50.0_f64)]);
+        let huge = CidWidths::new(700.0, vec![(70_000, 70_010, 20.0_f64)]);
         assert_eq!(dense.dense.len(), 11);
         assert_eq!(sparse.dense.len(), 0);
         assert_eq!(huge.dense.len(), 0);
         for table in [&dense, &sparse, &huge] {
             for cid in [0, 1, 2, 5, 6, 10, 11, 60_000, 70_005, 70_011, u32::MAX] {
-                let expected = find_entry(&table.entries, cid).unwrap_or(700.0);
+                let expected = find_entry(&table.entries, cid).unwrap_or(700.0_f64);
                 assert_exact(&[table.width(Some(cid))], &[expected]);
             }
-            assert_exact(&[table.width(None)], &[700.0]);
+            assert_exact(&[table.width(None)], &[700.0_f64]);
         }
     }
 
@@ -2245,7 +2279,10 @@ mod tests {
             ]),
         );
         let (_, glyphs) = decode(&font, b"AB");
-        assert_exact(&[glyphs[0].advance, glyphs[1].advance], &[0.25, 0.3]);
+        assert_exact(
+            &[glyphs[0].advance, glyphs[1].advance],
+            &[0.25_f64, 0.3_f64],
+        );
     }
 
     #[test]
@@ -2264,7 +2301,7 @@ mod tests {
                 metrics.width(Some(2)),
                 metrics.width(Some(3)),
             ],
-            &[100.0, 200.0, 700.0],
+            &[100.0_f64, 200.0_f64, 700.0_f64],
         );
     }
 
@@ -2301,15 +2338,15 @@ mod tests {
         ));
         fonts.push(load(&resolver, &dict(vec![("Subtype", name("Type1"))])));
         let mut seed = 0x1234_5678_u32;
-        for _ in 0..200 {
+        for _ in 0_i32..200_i32 {
             let mut bytes = Vec::new();
-            for _ in 0..32 {
+            for _ in 0_i32..32_i32 {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                bytes.push(u8::try_from(seed >> 24).unwrap());
+                bytes.push(u8::try_from(seed >> 24_i32).unwrap());
             }
             for font in &fonts {
-                black_box(decode(font, &bytes));
-                black_box(font.vertical_metrics(seed));
+                drop(black_box(decode(font, &bytes)));
+                let _: VerticalMetrics = black_box(font.vertical_metrics(seed));
             }
         }
     }
@@ -2343,8 +2380,8 @@ mod tests {
                 ("Widths", Object::Array(vec![Object::Null])),
                 ("FontMatrix", Object::Array(vec![Object::Null])),
             ]);
-            if let Ok(font) = Font::load(&resolver, &font, &Limits::default()) {
-                black_box(decode(&font, &[0, 1, 2, 3, 255]));
+            if let Ok(inner_font) = Font::load(&resolver, &font, &Limits::default()) {
+                drop(black_box(decode(&inner_font, &[0, 1, 2, 3, 255])));
             }
         }
     }

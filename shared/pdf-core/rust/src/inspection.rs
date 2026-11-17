@@ -4,14 +4,14 @@
     reason = "the max_ prefix names what kind of bound each field is"
 )]
 pub(crate) struct Limits {
-    pub max_pdf_bytes: usize,
-    pub max_pages: usize,
-    pub max_items_per_page: usize,
-    pub max_items: usize,
-    pub max_text_bytes: usize,
     pub max_decoded_stream_bytes: usize,
-    pub max_objects: usize,
+    pub max_items: usize,
+    pub max_items_per_page: usize,
     pub max_nesting: usize,
+    pub max_objects: usize,
+    pub max_pages: usize,
+    pub max_pdf_bytes: usize,
+    pub max_text_bytes: usize,
 }
 
 impl Default for Limits {
@@ -31,15 +31,15 @@ impl Default for Limits {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct InspectOptions {
-    pub text: bool,
     pub links: bool,
     pub page_indexes: Option<Vec<u32>>,
+    pub text: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PageInfo {
-    pub media_box: [f64; 4],
     pub crop_box: [f64; 4],
+    pub media_box: [f64; 4],
     pub rotate: i32,
 }
 
@@ -52,20 +52,20 @@ pub(crate) struct LinkInfo {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TextItem {
-    pub rect: [f64; 4],
     pub font_size: f64,
+    pub rect: [f64; 4],
     pub text: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PageText {
-    pub page_index: u32,
     pub items: Vec<TextItem>,
+    pub page_index: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Inspection {
-    pub pages: Vec<PageInfo>,
     pub links: Vec<LinkInfo>,
+    pub pages: Vec<PageInfo>,
     pub text: Vec<PageText>,
 }

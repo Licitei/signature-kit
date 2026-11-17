@@ -1,3 +1,8 @@
+pub(crate) struct PageSpec {
+    pub content: String,
+    pub rotate: i32,
+}
+
 pub(crate) fn stream_object(dict: &str, data: &str) -> String {
     format!(
         "<< /Length {} {} >>\nstream\n{}\nendstream",
@@ -18,7 +23,7 @@ pub(crate) fn build(objects: &[(u32, String)]) -> Vec<u8> {
     let max = objects.iter().map(|(number, _)| *number).max().unwrap_or(0);
     bytes.extend_from_slice(format!("xref\n0 {}\n", max.saturating_add(1)).as_bytes());
     for number in 0..=max {
-        match offsets.iter().find(|(n, _)| *n == number) {
+        match offsets.iter().find(|(found, _)| *found == number) {
             Some((_, offset)) => {
                 bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
             }
@@ -33,11 +38,6 @@ pub(crate) fn build(objects: &[(u32, String)]) -> Vec<u8> {
         .as_bytes(),
     );
     bytes
-}
-
-pub(crate) struct PageSpec {
-    pub content: String,
-    pub rotate: i32,
 }
 
 pub(crate) fn page(content: String) -> PageSpec {

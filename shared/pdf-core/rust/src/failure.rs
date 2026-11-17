@@ -1,15 +1,16 @@
-use std::error::Error;
-use std::fmt;
+use alloc::fmt;
+use core::error::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureCode {
-    InvalidPdf,
     EncryptedPdf,
+    InvalidPdf,
     LimitExceeded,
     UnsupportedFeature,
 }
 
 impl From<FailureCode> for u32 {
+    #[inline]
     fn from(code: FailureCode) -> Self {
         match code {
             FailureCode::InvalidPdf => 1,
@@ -27,16 +28,6 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
-    pub(crate) fn new<R>(code: FailureCode, reason: R) -> Self
-    where
-        R: Into<String>,
-    {
-        Self {
-            code,
-            reason: reason.into(),
-        }
-    }
-
     pub(crate) fn invalid<R>(reason: R) -> Self
     where
         R: Into<String>,
@@ -49,6 +40,16 @@ impl Failure {
         R: Into<String>,
     {
         Self::new(FailureCode::LimitExceeded, reason)
+    }
+
+    pub(crate) fn new<R>(code: FailureCode, reason: R) -> Self
+    where
+        R: Into<String>,
+    {
+        Self {
+            code,
+            reason: reason.into(),
+        }
     }
 }
 

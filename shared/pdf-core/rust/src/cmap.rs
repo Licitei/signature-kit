@@ -1,49 +1,36 @@
-use std::collections::BinaryHeap;
+use alloc::collections::BinaryHeap;
+use core::slice;
 
 use crate::inspection::Limits;
 use crate::syntax::{hex_value, is_regular, is_whitespace};
 
-const MAX_ENTRIES: usize = 262_144;
+const MAX_ENTRIES: usize = 0x0004_0000;
 const MAX_HEX_BYTES: usize = 64;
-const MAX_ARRAY_ITEMS: usize = 65_536;
+const MAX_ARRAY_ITEMS: usize = 0x0001_0000;
 const MAX_PARENT_DEPTH: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Token<'a> {
-    Hex(&'a [u8]),
-    Int(i64),
-    Name(&'a [u8]),
-    Keyword(&'a [u8]),
-    ArrayOpen,
+enum Token<'data> {
     ArrayClose,
+    ArrayOpen,
+    Hex(&'data [u8]),
+    Int(i64),
+    Keyword(&'data [u8]),
+    Name(&'data [u8]),
 }
 
-struct Lexer<'a> {
-    data: &'a [u8],
+struct Lexer<'data> {
+    data: &'data [u8],
     position: usize,
 }
 
-impl<'a> Lexer<'a> {
-    const fn new(data: &'a [u8]) -> Self {
-        Self { data, position: 0 }
-    }
-
+impl<'data> Lexer<'data> {
     const fn advance(&mut self, count: usize) {
         self.position = self.position.saturating_add(count);
     }
 
-    fn take_run<P>(&mut self, accept: P) -> &'a [u8]
-    where
-        P: Fn(u8) -> bool,
-    {
-        let start = self.position;
-        while let Some(byte) = self.data.get(self.position) {
-            if !accept(*byte) {
-                break;
-            }
-            self.advance(1);
-        }
-        self.data.get(start..self.position).unwrap_or_default()
+    const fn new(data: &'data [u8]) -> Self {
+        Self { data, position: 0 }
     }
 
     fn skip_string(&mut self) {
@@ -63,18 +50,32 @@ impl<'a> Lexer<'a> {
             }
         }
     }
+
+    fn take_run<P>(&mut self, accept: P) -> &'data [u8]
+    where
+        P: Fn(u8) -> bool,
+    {
+        let start = self.position;
+        while let Some(byte) = self.data.get(self.position) {
+            if !accept(*byte) {
+                break;
+            }
+            self.advance(1);
+        }
+        self.data.get(start..self.position).unwrap_or_default()
+    }
 }
 
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Token<'a>;
+impl<'data> Iterator for Lexer<'data> {
+    type Item = Token<'data>;
 
-    fn next(&mut self) -> Option<Token<'a>> {
+    fn next(&mut self) -> Option<Token<'data>> {
         loop {
             let byte = *self.data.get(self.position)?;
             match byte {
                 _ if is_whitespace(byte) => self.advance(1),
                 b'%' => {
-                    self.take_run(|other| !matches!(other, b'\n' | b'\r'));
+                    let _: &[u8] = self.take_run(|other| !matches!(other, b'\n' | b'\r'));
                 }
                 b'(' => self.skip_string(),
                 b'<' => {
@@ -113,6 +114,578 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum RangeDest {
+    Incrementing(Box<[u32]>),
+    PerCode(Vec<Box<[u32]>>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct UnicodeRange {
+    dest: RangeDest,
+    end: u32,
+    start: u32,
+}
+
+pub(crate) enum Lookup<'data> {
+    One(u32),
+    Owned(Vec<u32>),
+    Slice(&'data [u32]),
+}
+
+impl Lookup<'_> {
+    pub(crate) fn as_slice(&self) -> &[u32] {
+        match self {
+            Lookup::Slice(slice) => slice,
+            Lookup::One(value) => slice::from_ref(value),
+            Lookup::Owned(vec) => vec,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct UnicodeMap {
+    chars: Vec<(u32, Box<[u32]>)>,
+    has_unusable: bool,
+    ranges: Vec<UnicodeRange>,
+    segments: Vec<(u32, u32, usize)>,
+}
+
+impl UnicodeMap {
+    pub(crate) fn code_for_char(&self, character: u32) -> Option<u32> {
+        let wanted = [character];
+        if let Some((code, _)) = self.chars.iter().find(|(_, dest)| **dest == wanted) {
+            return Some(*code);
+        }
+        for range in &self.ranges {
+            match &range.dest {
+                RangeDest::Incrementing(base) => {
+                    if let [single] = &**base
+                        && character >= *single
+                        && character.saturating_sub(*single)
+                            <= range.end.saturating_sub(range.start)
+                    {
+                        return Some(
+                            range
+                                .start
+                                .saturating_add(character.saturating_sub(*single)),
+                        );
+                    }
+                }
+                RangeDest::PerCode(items) => {
+                    if let Some(position) = items.iter().position(|item| **item == wanted) {
+                        return range.start.checked_add(u32::try_from(position).ok()?);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn finish(&mut self) {
+        self.chars.sort_by_key(|(key, _)| *key);
+        let mut merged: Vec<(u32, Box<[u32]>)> = Vec::with_capacity(self.chars.len());
+        for item in self.chars.drain(..) {
+            match merged.last_mut() {
+                Some(last) if last.0 == item.0 => *last = item,
+                _ => merged.push(item),
+            }
+        }
+        self.chars = merged;
+        let spans: Vec<(u32, u32)> = self
+            .ranges
+            .iter()
+            .map(|range| (range.start, range.end))
+            .collect();
+        self.segments = disjoint(&spans);
+    }
+
+    pub(crate) const fn has_unusable(&self) -> bool {
+        self.has_unusable
+    }
+
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.chars.is_empty() && self.ranges.is_empty()
+    }
+
+    pub(crate) fn lookup(&self, code: u32) -> Option<Lookup<'_>> {
+        if let Ok(position) = self.chars.binary_search_by_key(&code, |(key, _)| *key)
+            && let Some((_, dest)) = self.chars.get(position)
+        {
+            return Some(Lookup::Slice(dest));
+        }
+        let &(_, _, index) = covering(&self.segments, code)?;
+        let range = self.ranges.get(index)?;
+        let offset = code.saturating_sub(range.start);
+        match &range.dest {
+            RangeDest::Incrementing(base) => match &**base {
+                [] => None,
+                [single] => Some(Lookup::One(single.saturating_add(offset))),
+                [head @ .., last] => {
+                    let mut text = head.to_vec();
+                    text.push(last.saturating_add(offset));
+                    Some(Lookup::Owned(text))
+                }
+            },
+            RangeDest::PerCode(items) => items
+                .get(usize::try_from(offset).ok()?)
+                .map(|item| Lookup::Slice(item)),
+        }
+    }
+
+    pub(crate) fn parse(data: &[u8], limits: &Limits) -> Self {
+        parse_cmap_data(data, limits).unicode
+    }
+
+    pub(crate) fn usable(&self, code: u32) -> Option<Lookup<'_>> {
+        self.lookup(code)
+            .filter(|found| text_usable(found.as_slice()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Codespace {
+    high: [u8; 4],
+    length: u8,
+    low: [u8; 4],
+}
+
+impl Codespace {
+    fn contains(self, bytes: &[u8]) -> bool {
+        let length = usize::from(self.length);
+        bytes.len() >= length
+            && self
+                .low
+                .iter()
+                .zip(self.high.iter())
+                .zip(bytes.iter())
+                .take(length)
+                .all(|((low, high), byte)| byte >= low && byte <= high)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CidRange {
+    cid: u32,
+    high: u32,
+    length: u8,
+    low: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CMapData {
+    cid_ranges: Vec<CidRange>,
+    codespace: Vec<Codespace>,
+    notdef: Vec<CidRange>,
+    parent: Option<Vec<u8>>,
+    unicode: UnicodeMap,
+    vertical: bool,
+}
+
+struct CMapParser<'data> {
+    cap: usize,
+    entries: usize,
+    lexer: Lexer<'data>,
+    out: CMapData,
+}
+
+impl<'data> CMapParser<'data> {
+    fn bf_chars(&mut self) {
+        while let Some(Token::Hex(source)) = self.lexer.next() {
+            let Some(dest) = self.lexer.next() else { break };
+            let Token::Hex(dest_next) = dest else {
+                continue;
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let Some((code, _)) = hex_code(source) {
+                let text = decode_utf16(&hex_bytes(dest_next));
+                self.out.unicode.has_unusable |= !text_usable(&text);
+                self.out.unicode.chars.push((code, text.into_boxed_slice()));
+            }
+        }
+    }
+
+    fn bf_ranges(&mut self) {
+        while let Some(Token::Hex(low)) = self.lexer.next() {
+            let (Some(Token::Hex(high)), Some(dest)) = (self.lexer.next(), self.lexer.next())
+            else {
+                break;
+            };
+            let bounds = hex_code(low).zip(hex_code(high));
+            let dest_next = match dest {
+                Token::Hex(raw) => {
+                    let text = decode_utf16(&hex_bytes(raw)).into_boxed_slice();
+                    self.out.unicode.has_unusable |= !text_usable(&text);
+                    Some(RangeDest::Incrementing(text))
+                }
+                Token::ArrayOpen => {
+                    let items: Vec<Box<[u32]>> = array_items(&mut self.lexer)
+                        .into_iter()
+                        .map(|raw| decode_utf16(&hex_bytes(raw)).into_boxed_slice())
+                        .collect();
+                    self.out.unicode.has_unusable |= items.iter().any(|item| !text_usable(item));
+                    Some(RangeDest::PerCode(items))
+                }
+                Token::Int(_) | Token::Name(_) | Token::Keyword(_) | Token::ArrayClose => None,
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let (Some(((start, _), (end, _))), Some(inner_dest)) = (bounds, dest_next)
+                && start <= end
+            {
+                self.out.unicode.ranges.push(UnicodeRange {
+                    start,
+                    end,
+                    dest: inner_dest,
+                });
+            }
+        }
+    }
+
+    fn cid_chars(&mut self, notdef: bool) {
+        while let Some(Token::Hex(source)) = self.lexer.next() {
+            let Some(Token::Int(cid)) = self.lexer.next() else {
+                break;
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let (Some((code, length)), Ok(cid_u32)) = (hex_code(source), u32::try_from(cid)) {
+                let range = CidRange {
+                    length: u8::try_from(length).unwrap_or(u8::MAX),
+                    low: code,
+                    high: code,
+                    cid: cid_u32,
+                };
+                self.push_cid(notdef, range);
+            }
+        }
+    }
+
+    fn cid_ranges(&mut self, notdef: bool) {
+        while let Some(Token::Hex(low)) = self.lexer.next() {
+            let (Some(Token::Hex(high)), Some(Token::Int(cid))) =
+                (self.lexer.next(), self.lexer.next())
+            else {
+                break;
+            };
+            if !self.take_slot() {
+                break;
+            }
+            if let (Some((start, length)), Some((end, _)), Ok(inner_cid)) =
+                (hex_code(low), hex_code(high), u32::try_from(cid))
+                && start <= end
+            {
+                let range = CidRange {
+                    length: u8::try_from(length).unwrap_or(u8::MAX),
+                    low: start,
+                    high: end,
+                    cid: inner_cid,
+                };
+                self.push_cid(notdef, range);
+            }
+        }
+    }
+
+    fn codespace_ranges(&mut self) {
+        while let Some(Token::Hex(low)) = self.lexer.next() {
+            let Some(Token::Hex(high)) = self.lexer.next() else {
+                break;
+            };
+            let (low_next, high_next) = (hex_bytes(low), hex_bytes(high));
+            if (1..=4).contains(&low_next.len())
+                && low_next.len() == high_next.len()
+                && self.out.codespace.len() < 256
+            {
+                let mut space = Codespace {
+                    length: u8::try_from(low_next.len()).unwrap_or(u8::MAX),
+                    low: [0; 4],
+                    high: [0; 4],
+                };
+                for (slot, byte) in space.low.iter_mut().zip(low_next.iter()) {
+                    *slot = *byte;
+                }
+                for (slot, byte) in space.high.iter_mut().zip(high_next.iter()) {
+                    *slot = *byte;
+                }
+                self.out.codespace.push(space);
+            }
+        }
+    }
+
+    fn new(data: &'data [u8], limits: &Limits) -> Self {
+        Self {
+            lexer: Lexer::new(data),
+            out: CMapData::default(),
+            entries: 0,
+            cap: limits.max_items.min(MAX_ENTRIES),
+        }
+    }
+
+    fn parse(mut self) -> CMapData {
+        let mut last_name: Option<&[u8]> = None;
+        while let Some(token) = self.lexer.next() {
+            match token {
+                Token::Name(name) => last_name = Some(name),
+                Token::Keyword(b"usecmap") => {
+                    if let Some(name) = last_name {
+                        self.out.parent = Some(name.to_vec());
+                    }
+                }
+                Token::Int(value) if last_name == Some(b"WMode".as_slice()) => {
+                    self.out.vertical = value == 1;
+                    last_name = None;
+                }
+                Token::Keyword(b"begincodespacerange") => self.codespace_ranges(),
+                Token::Keyword(b"beginbfchar") => self.bf_chars(),
+                Token::Keyword(b"beginbfrange") => self.bf_ranges(),
+                Token::Keyword(b"begincidchar") => self.cid_chars(false),
+                Token::Keyword(b"beginnotdefchar") => self.cid_chars(true),
+                Token::Keyword(b"begincidrange") => self.cid_ranges(false),
+                Token::Keyword(b"beginnotdefrange") => self.cid_ranges(true),
+                Token::Hex(_)
+                | Token::Int(_)
+                | Token::Keyword(_)
+                | Token::ArrayOpen
+                | Token::ArrayClose => {}
+            }
+        }
+        self.out.unicode.finish();
+        self.out.cid_ranges = disjoint_cids(&self.out.cid_ranges);
+        self.out.notdef = disjoint_cids(&self.out.notdef);
+        self.out
+    }
+
+    fn push_cid(&mut self, notdef: bool, range: CidRange) {
+        if notdef {
+            self.out.notdef.push(range);
+        } else {
+            self.out.cid_ranges.push(range);
+        }
+    }
+
+    const fn take_slot(&mut self) -> bool {
+        if self.entries >= self.cap {
+            return false;
+        }
+        self.entries = self.entries.saturating_add(1);
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Embedded,
+    Identity,
+    Ucs2,
+    Utf16,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CMap {
+    cid_ranges: Vec<CidRange>,
+    codespace: Vec<Codespace>,
+    kind: Kind,
+    notdef: Vec<CidRange>,
+    parent: Option<Box<Self>>,
+    vertical: bool,
+}
+
+pub(crate) struct ParsedCMap {
+    pub cmap: CMap,
+    pub parent: Option<Vec<u8>>,
+}
+
+impl CMap {
+    pub(crate) fn cid(&self, code: u32, length: usize) -> Option<u32> {
+        match self.kind {
+            Kind::Identity => Some(code),
+            Kind::Ucs2 | Kind::Utf16 => None,
+            Kind::Embedded => Some(self.table_cid(code, length).unwrap_or(0)),
+        }
+    }
+
+    pub(crate) fn direct_unicode(&self, code: u32) -> Option<Vec<u32>> {
+        match self.kind {
+            Kind::Ucs2 => Some(vec![code]),
+            Kind::Utf16 => Some(if code > 0xFFFF {
+                vec![surrogate_pair(code >> 16, code & 0xFFFF)]
+            } else {
+                vec![code]
+            }),
+            Kind::Identity | Kind::Embedded => None,
+        }
+    }
+
+    fn effective_codespace(&self) -> &[Codespace] {
+        if self.codespace.is_empty()
+            && let Some(parent) = self.parent.as_deref()
+        {
+            return parent.effective_codespace();
+        }
+        &self.codespace
+    }
+
+    pub(crate) const fn identity(vertical: bool) -> Self {
+        Self::with_kind(Kind::Identity, vertical)
+    }
+
+    pub(crate) fn is_empty_table(&self) -> bool {
+        self.kind == Kind::Embedded
+            && self.codespace.is_empty()
+            && self.cid_ranges.is_empty()
+            && self.parent.is_none()
+    }
+
+    pub(crate) fn is_identity(&self) -> bool {
+        self.kind == Kind::Identity
+    }
+
+    pub(crate) const fn is_unicode_keyed(&self) -> bool {
+        matches!(self.kind, Kind::Ucs2 | Kind::Utf16)
+    }
+
+    pub(crate) const fn is_vertical(&self) -> bool {
+        self.vertical
+    }
+
+    pub(crate) fn parse(data: &[u8], limits: &Limits) -> ParsedCMap {
+        let parsed = parse_cmap_data(data, limits);
+        ParsedCMap {
+            cmap: Self {
+                kind: Kind::Embedded,
+                codespace: parsed.codespace,
+                cid_ranges: parsed.cid_ranges,
+                notdef: parsed.notdef,
+                parent: None,
+                vertical: parsed.vertical,
+            },
+            parent: parsed.parent,
+        }
+    }
+
+    pub(crate) fn predefined(name: &[u8]) -> Option<Self> {
+        let vertical = match name {
+            b"Identity-H" => return Some(Self::identity(false)),
+            b"Identity-V" => return Some(Self::identity(true)),
+            _ if name.ends_with(b"-V") => true,
+            _ if name.ends_with(b"-H") => false,
+            _ => return None,
+        };
+        if !name.starts_with(b"Uni") {
+            return None;
+        }
+        let contains = |needle: &[u8]| name.windows(needle.len()).any(|window| window == needle);
+        if contains(b"UCS2") {
+            Some(Self::with_kind(Kind::Ucs2, vertical))
+        } else if contains(b"UTF16") {
+            Some(Self::with_kind(Kind::Utf16, vertical))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn read(&self, bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
+        let rest = bytes.get(offset..)?;
+        let first = *rest.first()?;
+        match self.kind {
+            Kind::Identity | Kind::Ucs2 => {
+                let pair = rest.get(..2)?;
+                Some((
+                    (u32::from(*pair.first()?) << 8) | u32::from(*pair.get(1)?),
+                    2,
+                ))
+            }
+            Kind::Utf16 => {
+                let pair = rest.get(..2)?;
+                let unit = (u32::from(*pair.first()?) << 8) | u32::from(*pair.get(1)?);
+                if (0xD800..0xDC00).contains(&unit)
+                    && let Some(tail) = rest.get(2..4)
+                {
+                    let trail = (u32::from(*tail.first()?) << 8) | u32::from(*tail.get(1)?);
+                    if (0xDC00..0xE000).contains(&trail) {
+                        return Some(((unit << 16) | trail, 4));
+                    }
+                }
+                Some((unit, 2))
+            }
+            Kind::Embedded => {
+                let spaces = self.effective_codespace();
+                if spaces.is_empty() {
+                    let pair = rest.get(..2);
+                    return match pair {
+                        Some(inner_pair) => Some((
+                            (u32::from(*inner_pair.first()?) << 8) | u32::from(*inner_pair.get(1)?),
+                            2,
+                        )),
+                        None => Some((u32::from(first), 1)),
+                    };
+                }
+                for length in 1..=4_usize {
+                    let Some(window) = rest.get(..length) else {
+                        break;
+                    };
+                    if spaces
+                        .iter()
+                        .any(|space| usize::from(space.length) == length && space.contains(window))
+                    {
+                        return Some((be_value(window), length));
+                    }
+                }
+                let shortest = spaces.iter().map(|space| usize::from(space.length)).min()?;
+                let length = shortest.min(rest.len());
+                Some((be_value(rest.get(..length)?), length))
+            }
+        }
+    }
+
+    fn table_cid(&self, code: u32, length: usize) -> Option<u32> {
+        let length_u8 = u8::try_from(length).ok()?;
+        find_range(&self.cid_ranges, length_u8, code)
+            .map(|range| range.cid.saturating_add(code.saturating_sub(range.low)))
+            .or_else(|| {
+                let parent = self.parent.as_deref()?;
+                parent.table_cid(code, usize::from(length_u8))
+            })
+            .or_else(|| find_range(&self.notdef, length_u8, code).map(|range| range.cid))
+    }
+
+    const fn with_kind(kind: Kind, vertical: bool) -> Self {
+        Self {
+            kind,
+            codespace: Vec::new(),
+            cid_ranges: Vec::new(),
+            notdef: Vec::new(),
+            parent: None,
+            vertical,
+        }
+    }
+
+    pub(crate) fn with_parent(mut self, parent: Self) -> Self {
+        let mut depth = 0_usize;
+        let mut cursor = &parent;
+        while let Some(next) = cursor.parent.as_deref() {
+            depth = depth.saturating_add(1);
+            cursor = next;
+        }
+        if depth < MAX_PARENT_DEPTH {
+            if !self.vertical {
+                self.vertical = parent.vertical;
+            }
+            self.parent = Some(Box::new(parent));
+        }
+        self
+    }
+
+    pub(crate) const fn with_vertical(mut self, vertical: bool) -> Self {
+        self.vertical = vertical;
+        self
+    }
+}
+
 fn parse_int(word: &[u8]) -> Option<i64> {
     let digits = match word.first()? {
         b'+' | b'-' => word.get(1..)?,
@@ -121,7 +694,7 @@ fn parse_int(word: &[u8]) -> Option<i64> {
     if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let value = core::str::from_utf8(word).ok()?.parse::<i64>().ok()?;
+    let value = str::from_utf8(word).ok()?.parse::<i64>().ok()?;
     Some(value)
 }
 
@@ -136,12 +709,12 @@ fn hex_bytes(raw: &[u8]) -> Vec<u8> {
             break;
         }
         match high.take() {
-            Some(first) => out.push((first << 4) | value),
+            Some(first) => out.push((first << 4_i32) | value),
             None => high = Some(value),
         }
     }
     if let Some(first) = high {
-        out.push(first << 4);
+        out.push(first << 4_i32);
     }
     out
 }
@@ -153,7 +726,7 @@ fn hex_code(raw: &[u8]) -> Option<(u32, usize)> {
     }
     let value = bytes
         .iter()
-        .fold(0_u32, |acc, byte| (acc << 8) | u32::from(*byte));
+        .fold(0_u32, |acc, byte| (acc << 8_i32) | u32::from(*byte));
     Some((value, bytes.len()))
 }
 
@@ -169,7 +742,7 @@ pub(crate) fn decode_utf16(bytes: &[u8]) -> Vec<u32> {
     }
     let mut out = Vec::with_capacity(bytes.len().div_euclid(2));
     let mut units = bytes.as_chunks::<2>().0.iter().map(|pair| {
-        (u32::from(pair.first().copied().unwrap_or(0)) << 8)
+        (u32::from(pair.first().copied().unwrap_or(0)) << 8_i32)
             | u32::from(pair.get(1).copied().unwrap_or(0))
     });
     while let Some(unit) = units.next() {
@@ -226,7 +799,7 @@ pub(crate) fn disjoint(spans: &[(u32, u32)]) -> Vec<(u32, u32, usize)> {
         while let Some(&top) = active.peek()
             && end_of(top) < cursor
         {
-            active.pop();
+            let _: Option<usize> = active.pop();
         }
         let Some(&top) = active.peek() else {
             continue;
@@ -256,175 +829,7 @@ pub(crate) fn covering<T>(segments: &[(u32, u32, T)], code: u32) -> Option<&(u32
         .filter(|segment| code <= segment.1)
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum RangeDest {
-    Incrementing(Box<[u32]>),
-    PerCode(Vec<Box<[u32]>>),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct UnicodeRange {
-    start: u32,
-    end: u32,
-    dest: RangeDest,
-}
-
-pub(crate) enum Lookup<'a> {
-    Slice(&'a [u32]),
-    One(u32),
-    Owned(Vec<u32>),
-}
-
-impl Lookup<'_> {
-    pub(crate) fn as_slice(&self) -> &[u32] {
-        match self {
-            Lookup::Slice(slice) => slice,
-            Lookup::One(value) => core::slice::from_ref(value),
-            Lookup::Owned(vec) => vec,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct UnicodeMap {
-    chars: Vec<(u32, Box<[u32]>)>,
-    ranges: Vec<UnicodeRange>,
-    segments: Vec<(u32, u32, usize)>,
-    has_unusable: bool,
-}
-
-impl UnicodeMap {
-    pub(crate) fn parse(data: &[u8], limits: &Limits) -> Self {
-        parse_cmap_data(data, limits).unicode
-    }
-
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.chars.is_empty() && self.ranges.is_empty()
-    }
-
-    pub(crate) const fn has_unusable(&self) -> bool {
-        self.has_unusable
-    }
-
-    pub(crate) fn lookup(&self, code: u32) -> Option<Lookup<'_>> {
-        if let Ok(position) = self.chars.binary_search_by_key(&code, |(key, _)| *key)
-            && let Some((_, dest)) = self.chars.get(position)
-        {
-            return Some(Lookup::Slice(dest));
-        }
-        let &(_, _, index) = covering(&self.segments, code)?;
-        let range = self.ranges.get(index)?;
-        let offset = code.saturating_sub(range.start);
-        match &range.dest {
-            RangeDest::Incrementing(base) => match &**base {
-                [] => None,
-                [single] => Some(Lookup::One(single.saturating_add(offset))),
-                [head @ .., last] => {
-                    let mut text = head.to_vec();
-                    text.push(last.saturating_add(offset));
-                    Some(Lookup::Owned(text))
-                }
-            },
-            RangeDest::PerCode(items) => items
-                .get(usize::try_from(offset).ok()?)
-                .map(|item| Lookup::Slice(item)),
-        }
-    }
-
-    pub(crate) fn code_for_char(&self, character: u32) -> Option<u32> {
-        let wanted = [character];
-        if let Some((code, _)) = self.chars.iter().find(|(_, dest)| **dest == wanted) {
-            return Some(*code);
-        }
-        for range in &self.ranges {
-            match &range.dest {
-                RangeDest::Incrementing(base) => {
-                    if let [single] = &**base
-                        && character >= *single
-                        && character.saturating_sub(*single)
-                            <= range.end.saturating_sub(range.start)
-                    {
-                        return Some(
-                            range
-                                .start
-                                .saturating_add(character.saturating_sub(*single)),
-                        );
-                    }
-                }
-                RangeDest::PerCode(items) => {
-                    if let Some(position) = items.iter().position(|item| **item == wanted) {
-                        return range.start.checked_add(u32::try_from(position).ok()?);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    pub(crate) fn usable(&self, code: u32) -> Option<Lookup<'_>> {
-        self.lookup(code)
-            .filter(|found| text_usable(found.as_slice()))
-    }
-
-    fn finish(&mut self) {
-        self.chars.sort_by_key(|(key, _)| *key);
-        let mut merged: Vec<(u32, Box<[u32]>)> = Vec::with_capacity(self.chars.len());
-        for item in self.chars.drain(..) {
-            match merged.last_mut() {
-                Some(last) if last.0 == item.0 => *last = item,
-                _ => merged.push(item),
-            }
-        }
-        self.chars = merged;
-        let spans: Vec<(u32, u32)> = self
-            .ranges
-            .iter()
-            .map(|range| (range.start, range.end))
-            .collect();
-        self.segments = disjoint(&spans);
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Codespace {
-    length: u8,
-    low: [u8; 4],
-    high: [u8; 4],
-}
-
-impl Codespace {
-    fn contains(self, bytes: &[u8]) -> bool {
-        let length = usize::from(self.length);
-        bytes.len() >= length
-            && self
-                .low
-                .iter()
-                .zip(self.high.iter())
-                .zip(bytes.iter())
-                .take(length)
-                .all(|((low, high), byte)| byte >= low && byte <= high)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CidRange {
-    length: u8,
-    low: u32,
-    high: u32,
-    cid: u32,
-}
-
-#[derive(Clone, Debug, Default)]
-struct CMapData {
-    codespace: Vec<Codespace>,
-    cid_ranges: Vec<CidRange>,
-    notdef: Vec<CidRange>,
-    unicode: UnicodeMap,
-    parent: Option<Vec<u8>>,
-    vertical: bool,
-}
-
-fn array_items<'a>(lexer: &mut Lexer<'a>) -> Vec<&'a [u8]> {
+fn array_items<'data>(lexer: &mut Lexer<'data>) -> Vec<&'data [u8]> {
     let mut items = Vec::new();
     for token in lexer {
         match token {
@@ -440,409 +845,8 @@ fn array_items<'a>(lexer: &mut Lexer<'a>) -> Vec<&'a [u8]> {
     items
 }
 
-struct CMapParser<'a> {
-    lexer: Lexer<'a>,
-    out: CMapData,
-    entries: usize,
-    cap: usize,
-}
-
-impl<'a> CMapParser<'a> {
-    fn new(data: &'a [u8], limits: &Limits) -> Self {
-        Self {
-            lexer: Lexer::new(data),
-            out: CMapData::default(),
-            entries: 0,
-            cap: limits.max_items.min(MAX_ENTRIES),
-        }
-    }
-
-    const fn take_slot(&mut self) -> bool {
-        if self.entries >= self.cap {
-            return false;
-        }
-        self.entries = self.entries.saturating_add(1);
-        true
-    }
-
-    fn parse(mut self) -> CMapData {
-        let mut last_name: Option<&[u8]> = None;
-        while let Some(token) = self.lexer.next() {
-            match token {
-                Token::Name(name) => last_name = Some(name),
-                Token::Keyword(b"usecmap") => {
-                    if let Some(name) = last_name {
-                        self.out.parent = Some(name.to_vec());
-                    }
-                }
-                Token::Int(value) if last_name == Some(b"WMode".as_slice()) => {
-                    self.out.vertical = value == 1;
-                    last_name = None;
-                }
-                Token::Keyword(b"begincodespacerange") => self.codespace_ranges(),
-                Token::Keyword(b"beginbfchar") => self.bf_chars(),
-                Token::Keyword(b"beginbfrange") => self.bf_ranges(),
-                Token::Keyword(b"begincidchar") => self.cid_chars(false),
-                Token::Keyword(b"beginnotdefchar") => self.cid_chars(true),
-                Token::Keyword(b"begincidrange") => self.cid_ranges(false),
-                Token::Keyword(b"beginnotdefrange") => self.cid_ranges(true),
-                Token::Hex(_)
-                | Token::Int(_)
-                | Token::Keyword(_)
-                | Token::ArrayOpen
-                | Token::ArrayClose => {}
-            }
-        }
-        self.out.unicode.finish();
-        self.out.cid_ranges = disjoint_cids(&self.out.cid_ranges);
-        self.out.notdef = disjoint_cids(&self.out.notdef);
-        self.out
-    }
-
-    fn codespace_ranges(&mut self) {
-        while let Some(Token::Hex(low)) = self.lexer.next() {
-            let Some(Token::Hex(high)) = self.lexer.next() else {
-                break;
-            };
-            let (low, high) = (hex_bytes(low), hex_bytes(high));
-            if (1..=4).contains(&low.len())
-                && low.len() == high.len()
-                && self.out.codespace.len() < 256
-            {
-                let mut space = Codespace {
-                    length: u8::try_from(low.len()).unwrap_or(u8::MAX),
-                    low: [0; 4],
-                    high: [0; 4],
-                };
-                for (slot, byte) in space.low.iter_mut().zip(low.iter()) {
-                    *slot = *byte;
-                }
-                for (slot, byte) in space.high.iter_mut().zip(high.iter()) {
-                    *slot = *byte;
-                }
-                self.out.codespace.push(space);
-            }
-        }
-    }
-
-    fn bf_chars(&mut self) {
-        while let Some(Token::Hex(source)) = self.lexer.next() {
-            let Some(dest) = self.lexer.next() else { break };
-            let Token::Hex(dest) = dest else { continue };
-            if !self.take_slot() {
-                break;
-            }
-            if let Some((code, _)) = hex_code(source) {
-                let text = decode_utf16(&hex_bytes(dest));
-                self.out.unicode.has_unusable |= !text_usable(&text);
-                self.out.unicode.chars.push((code, text.into_boxed_slice()));
-            }
-        }
-    }
-
-    fn bf_ranges(&mut self) {
-        while let Some(Token::Hex(low)) = self.lexer.next() {
-            let (Some(Token::Hex(high)), Some(dest)) = (self.lexer.next(), self.lexer.next())
-            else {
-                break;
-            };
-            let bounds = hex_code(low).zip(hex_code(high));
-            let dest = match dest {
-                Token::Hex(raw) => {
-                    let text = decode_utf16(&hex_bytes(raw)).into_boxed_slice();
-                    self.out.unicode.has_unusable |= !text_usable(&text);
-                    Some(RangeDest::Incrementing(text))
-                }
-                Token::ArrayOpen => {
-                    let items: Vec<Box<[u32]>> = array_items(&mut self.lexer)
-                        .into_iter()
-                        .map(|raw| decode_utf16(&hex_bytes(raw)).into_boxed_slice())
-                        .collect();
-                    self.out.unicode.has_unusable |= items.iter().any(|item| !text_usable(item));
-                    Some(RangeDest::PerCode(items))
-                }
-                Token::Int(_) | Token::Name(_) | Token::Keyword(_) | Token::ArrayClose => None,
-            };
-            if !self.take_slot() {
-                break;
-            }
-            if let (Some(((start, _), (end, _))), Some(dest)) = (bounds, dest)
-                && start <= end
-            {
-                self.out
-                    .unicode
-                    .ranges
-                    .push(UnicodeRange { start, end, dest });
-            }
-        }
-    }
-
-    fn push_cid(&mut self, notdef: bool, range: CidRange) {
-        if notdef {
-            self.out.notdef.push(range);
-        } else {
-            self.out.cid_ranges.push(range);
-        }
-    }
-
-    fn cid_chars(&mut self, notdef: bool) {
-        while let Some(Token::Hex(source)) = self.lexer.next() {
-            let Some(Token::Int(cid)) = self.lexer.next() else {
-                break;
-            };
-            if !self.take_slot() {
-                break;
-            }
-            if let (Some((code, length)), Ok(cid)) = (hex_code(source), u32::try_from(cid)) {
-                let range = CidRange {
-                    length: u8::try_from(length).unwrap_or(u8::MAX),
-                    low: code,
-                    high: code,
-                    cid,
-                };
-                self.push_cid(notdef, range);
-            }
-        }
-    }
-
-    fn cid_ranges(&mut self, notdef: bool) {
-        while let Some(Token::Hex(low)) = self.lexer.next() {
-            let (Some(Token::Hex(high)), Some(Token::Int(cid))) =
-                (self.lexer.next(), self.lexer.next())
-            else {
-                break;
-            };
-            if !self.take_slot() {
-                break;
-            }
-            if let (Some((start, length)), Some((end, _)), Ok(cid)) =
-                (hex_code(low), hex_code(high), u32::try_from(cid))
-                && start <= end
-            {
-                let range = CidRange {
-                    length: u8::try_from(length).unwrap_or(u8::MAX),
-                    low: start,
-                    high: end,
-                    cid,
-                };
-                self.push_cid(notdef, range);
-            }
-        }
-    }
-}
-
 fn parse_cmap_data(data: &[u8], limits: &Limits) -> CMapData {
     CMapParser::new(data, limits).parse()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Identity,
-    Ucs2,
-    Utf16,
-    Embedded,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct CMap {
-    kind: Kind,
-    codespace: Vec<Codespace>,
-    cid_ranges: Vec<CidRange>,
-    notdef: Vec<CidRange>,
-    parent: Option<Box<Self>>,
-    vertical: bool,
-}
-
-pub(crate) struct ParsedCMap {
-    pub cmap: CMap,
-    pub parent: Option<Vec<u8>>,
-}
-
-impl CMap {
-    pub(crate) const fn identity(vertical: bool) -> Self {
-        Self::with_kind(Kind::Identity, vertical)
-    }
-
-    const fn with_kind(kind: Kind, vertical: bool) -> Self {
-        Self {
-            kind,
-            codespace: Vec::new(),
-            cid_ranges: Vec::new(),
-            notdef: Vec::new(),
-            parent: None,
-            vertical,
-        }
-    }
-
-    pub(crate) fn predefined(name: &[u8]) -> Option<Self> {
-        let vertical = match name {
-            b"Identity-H" => return Some(Self::identity(false)),
-            b"Identity-V" => return Some(Self::identity(true)),
-            _ if name.ends_with(b"-V") => true,
-            _ if name.ends_with(b"-H") => false,
-            _ => return None,
-        };
-        if !name.starts_with(b"Uni") {
-            return None;
-        }
-        let contains = |needle: &[u8]| name.windows(needle.len()).any(|window| window == needle);
-        if contains(b"UCS2") {
-            Some(Self::with_kind(Kind::Ucs2, vertical))
-        } else if contains(b"UTF16") {
-            Some(Self::with_kind(Kind::Utf16, vertical))
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn parse(data: &[u8], limits: &Limits) -> ParsedCMap {
-        let parsed = parse_cmap_data(data, limits);
-        ParsedCMap {
-            cmap: Self {
-                kind: Kind::Embedded,
-                codespace: parsed.codespace,
-                cid_ranges: parsed.cid_ranges,
-                notdef: parsed.notdef,
-                parent: None,
-                vertical: parsed.vertical,
-            },
-            parent: parsed.parent,
-        }
-    }
-
-    pub(crate) fn with_parent(mut self, parent: Self) -> Self {
-        let mut depth = 0_usize;
-        let mut cursor = &parent;
-        while let Some(next) = cursor.parent.as_deref() {
-            depth = depth.saturating_add(1);
-            cursor = next;
-        }
-        if depth < MAX_PARENT_DEPTH {
-            if !self.vertical {
-                self.vertical = parent.vertical;
-            }
-            self.parent = Some(Box::new(parent));
-        }
-        self
-    }
-
-    pub(crate) const fn with_vertical(mut self, vertical: bool) -> Self {
-        self.vertical = vertical;
-        self
-    }
-
-    pub(crate) const fn is_vertical(&self) -> bool {
-        self.vertical
-    }
-
-    pub(crate) fn is_identity(&self) -> bool {
-        self.kind == Kind::Identity
-    }
-
-    pub(crate) const fn is_unicode_keyed(&self) -> bool {
-        matches!(self.kind, Kind::Ucs2 | Kind::Utf16)
-    }
-
-    pub(crate) fn is_empty_table(&self) -> bool {
-        self.kind == Kind::Embedded
-            && self.codespace.is_empty()
-            && self.cid_ranges.is_empty()
-            && self.parent.is_none()
-    }
-
-    fn effective_codespace(&self) -> &[Codespace] {
-        if self.codespace.is_empty()
-            && let Some(parent) = self.parent.as_deref()
-        {
-            return parent.effective_codespace();
-        }
-        &self.codespace
-    }
-
-    pub(crate) fn read(&self, bytes: &[u8], offset: usize) -> Option<(u32, usize)> {
-        let rest = bytes.get(offset..)?;
-        let first = *rest.first()?;
-        match self.kind {
-            Kind::Identity | Kind::Ucs2 => {
-                let pair = rest.get(..2)?;
-                Some((
-                    (u32::from(*pair.first()?) << 8) | u32::from(*pair.get(1)?),
-                    2,
-                ))
-            }
-            Kind::Utf16 => {
-                let pair = rest.get(..2)?;
-                let unit = (u32::from(*pair.first()?) << 8) | u32::from(*pair.get(1)?);
-                if (0xD800..0xDC00).contains(&unit)
-                    && let Some(tail) = rest.get(2..4)
-                {
-                    let trail = (u32::from(*tail.first()?) << 8) | u32::from(*tail.get(1)?);
-                    if (0xDC00..0xE000).contains(&trail) {
-                        return Some(((unit << 16) | trail, 4));
-                    }
-                }
-                Some((unit, 2))
-            }
-            Kind::Embedded => {
-                let spaces = self.effective_codespace();
-                if spaces.is_empty() {
-                    let pair = rest.get(..2);
-                    return match pair {
-                        Some(pair) => Some((
-                            (u32::from(*pair.first()?) << 8) | u32::from(*pair.get(1)?),
-                            2,
-                        )),
-                        None => Some((u32::from(first), 1)),
-                    };
-                }
-                for length in 1..=4_usize {
-                    let Some(window) = rest.get(..length) else {
-                        break;
-                    };
-                    if spaces
-                        .iter()
-                        .any(|space| usize::from(space.length) == length && space.contains(window))
-                    {
-                        return Some((be_value(window), length));
-                    }
-                }
-                let shortest = spaces.iter().map(|space| usize::from(space.length)).min()?;
-                let length = shortest.min(rest.len());
-                Some((be_value(rest.get(..length)?), length))
-            }
-        }
-    }
-
-    pub(crate) fn cid(&self, code: u32, length: usize) -> Option<u32> {
-        match self.kind {
-            Kind::Identity => Some(code),
-            Kind::Ucs2 | Kind::Utf16 => None,
-            Kind::Embedded => Some(self.table_cid(code, length).unwrap_or(0)),
-        }
-    }
-
-    fn table_cid(&self, code: u32, length: usize) -> Option<u32> {
-        let length = u8::try_from(length).ok()?;
-        find_range(&self.cid_ranges, length, code)
-            .map(|range| range.cid.saturating_add(code.saturating_sub(range.low)))
-            .or_else(|| {
-                let parent = self.parent.as_deref()?;
-                parent.table_cid(code, usize::from(length))
-            })
-            .or_else(|| find_range(&self.notdef, length, code).map(|range| range.cid))
-    }
-
-    pub(crate) fn direct_unicode(&self, code: u32) -> Option<Vec<u32>> {
-        match self.kind {
-            Kind::Ucs2 => Some(vec![code]),
-            Kind::Utf16 => Some(if code > 0xFFFF {
-                vec![surrogate_pair(code >> 16, code & 0xFFFF)]
-            } else {
-                vec![code]
-            }),
-            Kind::Identity | Kind::Embedded => None,
-        }
-    }
 }
 
 fn disjoint_cids(ranges: &[CidRange]) -> Vec<CidRange> {
@@ -877,15 +881,15 @@ fn find_range(ranges: &[CidRange], length: u8, code: u32) -> Option<&CidRange> {
 fn be_value(bytes: &[u8]) -> u32 {
     bytes
         .iter()
-        .fold(0_u32, |acc, byte| (acc << 8) | u32::from(*byte))
+        .fold(0_u32, |acc, byte| (acc << 8_i32) | u32::from(*byte))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::num::widen;
-    use std::fmt::Write as _;
-    use std::hint::black_box;
+    use core::fmt::Write as _;
+    use core::hint::black_box;
 
     fn limits() -> Limits {
         Limits::default()
@@ -960,8 +964,13 @@ mod tests {
     #[test]
     fn overlapping_ranges_resolve_to_the_latest_definition() {
         let mut data = String::from("beginbfrange <0000> <00ff> <0100> ");
-        for code in 1..=40 {
-            write!(data, "<{code:04x}> <{code:04x}> <{:04x}> ", 0x1000 + code).unwrap();
+        for code in 1_i32..=40_i32 {
+            write!(
+                data,
+                "<{code:04x}> <{code:04x}> <{:04x}> ",
+                0x1000_i32 + code
+            )
+            .unwrap();
         }
         data.push_str("<0020> <0023> <0041> endbfrange");
         let map = UnicodeMap::parse(data.as_bytes(), &limits());
@@ -1037,7 +1046,7 @@ mod tests {
     #[test]
     fn parent_depth_is_bounded() {
         let mut cmap = CMap::identity(false);
-        for _ in 0..16 {
+        for _ in 0_i32..16_i32 {
             cmap = CMap::parse(b"", &limits()).cmap.with_parent(cmap);
         }
         assert!(cmap.cid(1, 2).is_some());
@@ -1120,23 +1129,25 @@ mod tests {
         ];
         for round in 0..2048_usize {
             let mut data = Vec::new();
-            for _ in 0..(8 + round % 40) {
+            for _ in 0..(8 + round.rem_euclid(40)) {
                 seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-                match (seed >> 16) % 6 {
-                    0 => data.extend_from_slice(keywords[widen(seed >> 20) % keywords.len()]),
+                match (seed >> 16_i32).rem_euclid(6) {
+                    0 => data.extend_from_slice(
+                        keywords[widen(seed >> 20_i32).rem_euclid(keywords.len())],
+                    ),
                     1 => data.extend_from_slice(b"<00"),
                     2 => data.extend_from_slice(b"<ffff> "),
-                    3 => data.push(u8::try_from((seed >> 8) & 0xFF).unwrap()),
+                    3 => data.push(u8::try_from((seed >> 8_i32) & 0xFF).unwrap()),
                     4 => data.extend_from_slice(b" 12345678901234567890 "),
                     _ => data.extend_from_slice(b"> ] "),
                 }
             }
             let map = UnicodeMap::parse(&data, &limits());
-            black_box(map.lookup(1));
+            drop(black_box(map.lookup(1)));
             let parsed = CMap::parse(&data, &limits());
-            black_box(parsed.cmap.read(&data, 0));
-            black_box(parsed.cmap.cid(0x41, 1));
-            black_box(parsed.cmap.cid(0x4141, 2));
+            let _: Option<(u32, usize)> = black_box(parsed.cmap.read(&data, 0));
+            let _: Option<u32> = black_box(parsed.cmap.cid(0x41, 1));
+            let _: Option<u32> = black_box(parsed.cmap.cid(0x4141, 2));
         }
     }
 }

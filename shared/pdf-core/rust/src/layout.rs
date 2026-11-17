@@ -1,5 +1,6 @@
 use crate::num::{f64_to_i64, widen};
-use std::cmp::Ordering;
+use core::cmp::Ordering;
+use core::mem;
 use std::collections::{HashMap, HashSet};
 
 use crate::document::{Document, Page, select_pages};
@@ -29,41 +30,46 @@ const DUPLICATE_OVERLAP: f64 = 0.5;
 const MAX_CUT_DEPTH: usize = 48;
 const FLOWING_LINES: usize = 3;
 
-fn turn(quarter: usize, x: f64, y: f64) -> (f64, f64) {
-    match quarter % 4 {
-        0 => (x, y),
-        1 => (y, -x),
-        2 => (-x, -y),
-        _ => (-y, x),
-    }
-}
+const ROW_GAP: f64 = 2.6;
 
-fn quarter_of(direction: (f64, f64)) -> usize {
-    let (dx, dy) = direction;
-    if dx.abs() >= dy.abs() {
-        if dx >= 0.0 { 0 } else { 2 }
-    } else if dy >= 0.0 {
-        1
-    } else {
-        3
-    }
-}
+const WRAP_GAP: f64 = 1.7;
 
-fn page_quarter(rotate: i32) -> usize {
-    let normalized = rotate.rem_euclid(360);
-    usize::try_from(normalized.div_euclid(90)).unwrap_or(0) % 4
-}
+const HEADER_BAND: f64 = 0.1;
+
+const ALIGNED_SIZE: f64 = 0.15;
+
+const MIN_FILLED_CELLS: usize = 2;
+
+const MARKER_CHARS: usize = 12;
+
+const TEXT_RECURRING: Recurring = Recurring {
+    min_pages: 2,
+    share: 2,
+};
+
+const MARKDOWN_RECURRING: Recurring = Recurring {
+    min_pages: 3,
+    share: 20,
+};
+
+const FURNITURE_BLOCKS: usize = 3;
+
+const FURNITURE_PITCH: f64 = 2.0;
+
+const FURNITURE_MIN_PAGES: usize = 3;
+
+const FURNITURE_SHARE: usize = 20;
 
 #[derive(Clone, Copy)]
-struct Frag<'a> {
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    size: f64,
+struct Frag<'data> {
     bold: bool,
     italic: bool,
-    text: &'a str,
+    size: f64,
+    text: &'data str,
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
 }
 
 impl Frag<'_> {
@@ -83,30 +89,154 @@ struct Line {
 }
 
 struct Segment {
+    bold: bool,
+    center: f64,
+    continuation: bool,
+    italic: bool,
     members: Vec<usize>,
+    size: f64,
     x0: f64,
     x1: f64,
     y0: f64,
     y1: f64,
-    size: f64,
-    center: f64,
-    continuation: bool,
-    bold: bool,
-    italic: bool,
 }
 
 struct Block {
-    table: Option<usize>,
-    segments: Vec<usize>,
-    x0: f64,
-    x1: f64,
-    top: f64,
     bottom: f64,
     last: usize,
-    last_x0: f64,
-    last_x1: f64,
     last_center: f64,
     last_size: f64,
+    last_x0: f64,
+    last_x1: f64,
+    segments: Vec<usize>,
+    table: Option<usize>,
+    top: f64,
+    x0: f64,
+    x1: f64,
+}
+
+struct Sweep {
+    order: Vec<usize>,
+    reach: Vec<f64>,
+    starts: Vec<f64>,
+}
+
+impl Sweep {
+    fn new(spans: impl Iterator<Item = (usize, f64, f64)>) -> Self {
+        let mut items: Vec<(usize, f64, f64)> = spans.collect();
+        items.sort_by(|left, right| left.1.total_cmp(&right.1));
+        let mut reach = Vec::with_capacity(items.len());
+        let mut furthest = f64::NEG_INFINITY;
+        for item in &items {
+            furthest = furthest.max(item.2);
+            reach.push(furthest);
+        }
+        Self {
+            order: items.iter().map(|item| item.0).collect(),
+            starts: items.iter().map(|item| item.1).collect(),
+            reach,
+        }
+    }
+
+    fn unique(&self, x0: f64, x1: f64, mut accept: impl FnMut(usize) -> bool) -> Option<usize> {
+        let upper = self.starts.partition_point(|&start| start < x1);
+        let mut found = None;
+        for position in (0..upper).rev() {
+            if self.reach.get(position).is_none_or(|&reach| reach <= x0) {
+                break;
+            }
+            let Some(&id) = self.order.get(position) else {
+                break;
+            };
+            if accept(id) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(id);
+            }
+        }
+        found
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Band {
+    Bottom,
+    Free,
+    Top,
+}
+
+struct Piece {
+    band: Band,
+    lead: &'static str,
+    text: String,
+}
+
+#[derive(Clone, Copy)]
+struct Mode {
+    aligned: bool,
+    markdown: bool,
+    text: bool,
+}
+
+#[derive(Default)]
+struct PoolOut {
+    md: Vec<MdItem>,
+    pieces: Vec<Piece>,
+    tables: Vec<Table>,
+}
+
+#[derive(Default)]
+struct PageLayout {
+    height: f64,
+    md: Vec<MdItem>,
+    pieces: Vec<Piece>,
+    tables: Vec<Table>,
+}
+
+type LinkRect = ([f64; 4], usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TextOptions {
+    pub drop_running: bool,
+    pub markdown: bool,
+}
+
+type RunningKeys = HashMap<(bool, String), usize>;
+struct Recurrence {
+    count: usize,
+    digits: String,
+    first: usize,
+    varying: bool,
+}
+#[derive(Clone, Copy)]
+struct Recurring {
+    min_pages: usize,
+    share: usize,
+}
+type FurnitureKey = (String, i64, i64);
+fn turn(quarter: usize, x: f64, y: f64) -> (f64, f64) {
+    match quarter & 3 {
+        0 => (x, y),
+        1 => (y, -x),
+        2 => (-x, -y),
+        _ => (-y, x),
+    }
+}
+fn quarter_of(direction: (f64, f64)) -> usize {
+    let (dx, dy) = direction;
+    if dx.abs() >= dy.abs() {
+        if dx >= 0.0 { 0 } else { 2 }
+    } else if dy >= 0.0 {
+        1
+    } else {
+        3
+    }
+}
+
+fn page_quarter(rotate: i32) -> usize {
+    let normalized = rotate.rem_euclid(360);
+    usize::try_from(normalized.div_euclid(90)).unwrap_or(0) & 3
 }
 
 fn compare(left: f64, right: f64) -> Ordering {
@@ -165,9 +295,9 @@ fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
         };
         if let Some(left) = previous {
             let gap = frag.x0 - left.x1;
-            if gap > 0.0 {
+            if gap > 0.0_f64 {
                 let em = left.size.max(frag.size);
-                if em > 0.0 {
+                if em > 0.0_f64 {
                     gaps.push(gap / em);
                 }
             }
@@ -202,7 +332,7 @@ fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
             .is_some_and(|prior| {
                 let overlap = prior.x1.min(frag.x1) - prior.x0.max(frag.x0);
                 let width = (frag.x1 - frag.x0).min(prior.x1 - prior.x0);
-                prior.text == frag.text && width > 0.0 && overlap >= DUPLICATE_OVERLAP * width
+                prior.text == frag.text && width > 0.0_f64 && overlap >= DUPLICATE_OVERLAP * width
             });
         if !duplicate {
             kept.push(index);
@@ -274,50 +404,6 @@ fn overlaps(first_x0: f64, first_x1: f64, second_x0: f64, second_x1: f64) -> boo
 
 fn similar_size(first: f64, second: f64) -> bool {
     (first - second).abs() <= SIZE_TOLERANCE * first.max(second)
-}
-
-struct Sweep {
-    order: Vec<usize>,
-    starts: Vec<f64>,
-    reach: Vec<f64>,
-}
-
-impl Sweep {
-    fn new(spans: impl Iterator<Item = (usize, f64, f64)>) -> Self {
-        let mut items: Vec<(usize, f64, f64)> = spans.collect();
-        items.sort_by(|left, right| left.1.total_cmp(&right.1));
-        let mut reach = Vec::with_capacity(items.len());
-        let mut furthest = f64::NEG_INFINITY;
-        for item in &items {
-            furthest = furthest.max(item.2);
-            reach.push(furthest);
-        }
-        Self {
-            order: items.iter().map(|item| item.0).collect(),
-            starts: items.iter().map(|item| item.1).collect(),
-            reach,
-        }
-    }
-
-    fn unique(&self, x0: f64, x1: f64, mut accept: impl FnMut(usize) -> bool) -> Option<usize> {
-        let upper = self.starts.partition_point(|&start| start < x1);
-        let mut found = None;
-        for position in (0..upper).rev() {
-            if self.reach.get(position).is_none_or(|&reach| reach <= x0) {
-                break;
-            }
-            let Some(&id) = self.order.get(position) else {
-                break;
-            };
-            if accept(id) {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(id);
-            }
-        }
-        found
-    }
 }
 
 fn fits(block: &Block, segment: &Segment) -> bool {
@@ -477,7 +563,7 @@ fn cut_bands(
                 start >= frontier
             };
         if separated {
-            out.push(std::mem::take(&mut band));
+            out.push(mem::take(&mut band));
             frontier = if descending {
                 f64::INFINITY
             } else {
@@ -562,56 +648,6 @@ fn reading_order(
     }
 }
 
-const ROW_GAP: f64 = 2.6;
-const WRAP_GAP: f64 = 1.7;
-const HEADER_BAND: f64 = 0.1;
-const ALIGNED_SIZE: f64 = 0.15;
-const MIN_FILLED_CELLS: usize = 2;
-const MARKER_CHARS: usize = 12;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Band {
-    Free,
-    Top,
-    Bottom,
-}
-
-struct Piece {
-    text: String,
-    lead: &'static str,
-    band: Band,
-}
-
-#[derive(Clone, Copy)]
-struct Mode {
-    markdown: bool,
-    aligned: bool,
-    text: bool,
-}
-
-#[derive(Default)]
-struct PoolOut {
-    pieces: Vec<Piece>,
-    tables: Vec<Table>,
-    md: Vec<MdItem>,
-}
-
-#[derive(Default)]
-struct PageLayout {
-    pieces: Vec<Piece>,
-    tables: Vec<Table>,
-    md: Vec<MdItem>,
-    height: f64,
-}
-
-type LinkRect = ([f64; 4], usize);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TextOptions {
-    pub markdown: bool,
-    pub drop_running: bool,
-}
-
 fn write_segment(frags: &[Frag<'_>], segment: &Segment, out: &mut String) {
     let mut right_edge: Option<f64> = None;
     for &index in &segment.members {
@@ -654,19 +690,19 @@ fn near_size(first: f64, second: f64) -> bool {
 }
 
 fn is_marker(text: &str) -> bool {
-    let text = text.trim();
-    let count = text.chars().count();
+    let trimmed_text = text.trim();
+    let count = trimmed_text.chars().count();
     if count == 0 || count > MARKER_CHARS {
         return false;
     }
-    if text
+    if trimmed_text
         .chars()
         .all(|ch| matches!(ch, '•' | '●' | '▪' | '*' | '-' | '–' | '—' | '§'))
     {
         return true;
     }
-    text.ends_with(['.', ')', ':'])
-        && text
+    trimmed_text.ends_with(['.', ')', ':'])
+        && trimmed_text
             .chars()
             .all(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '(' | ')' | ':' | '°' | 'º'))
 }
@@ -688,9 +724,9 @@ fn is_list(cells: &[Cell], columns: usize) -> bool {
     markers >= 2
 }
 
-fn truncate_unmappable<'s, F>(rows: &mut Vec<Vec<usize>>, columns: &[(f64, f64)], line_at: F)
+fn truncate_unmappable<'seg, F>(rows: &mut Vec<Vec<usize>>, columns: &[(f64, f64)], line_at: F)
 where
-    F: Fn(usize) -> Option<&'s [Segment]>,
+    F: Fn(usize) -> Option<&'seg [Segment]>,
 {
     let mappable = |line: usize| {
         line_at(line).is_some_and(|segments| {
@@ -717,14 +753,14 @@ where
     }
 }
 
-fn aligned_cells<'s, F>(
+fn aligned_cells<'seg, F>(
     frags: &[Frag<'_>],
     rows: &[Vec<usize>],
     columns: &[(f64, f64)],
     line_at: F,
 ) -> (Vec<Cell>, [f64; 4])
 where
-    F: Fn(usize) -> Option<&'s [Segment]>,
+    F: Fn(usize) -> Option<&'seg [Segment]>,
 {
     let mut cells: Vec<Cell> = Vec::with_capacity(rows.len().saturating_mul(columns.len()));
     let mut bounds = [
@@ -764,8 +800,8 @@ where
         bounds[1] = bounds[1].min(bottom);
         bounds[3] = bounds[3].max(top);
     }
-    bounds[0] = columns.first().map_or(0.0, |column| column.0);
-    bounds[2] = columns.last().map_or(0.0, |column| column.1);
+    bounds[0] = columns.first().map_or(0.0_f64, |column| column.0);
+    bounds[2] = columns.last().map_or(0.0_f64, |column| column.1);
     (cells, bounds)
 }
 
@@ -796,8 +832,8 @@ fn aligned_tables(
         let mut last = index;
         let mut next = index.saturating_add(1);
         while let (Some(line), Some(previous)) = (line_at(next), line_at(last)) {
-            let gap = previous.first().map_or(0.0, |segment| segment.center)
-                - line.first().map_or(0.0, |segment| segment.center);
+            let gap = previous.first().map_or(0.0_f64, |segment| segment.center)
+                - line.first().map_or(0.0_f64, |segment| segment.center);
             let size = line_size(line);
             if is_row_line(line) {
                 if gap > ROW_GAP * base_size || !near_size(base_size, size) {
@@ -815,9 +851,10 @@ fn aligned_tables(
                     && near_size(base_size, size)
                     && line.iter().all(|segment| {
                         let column = column_of(&columns, segment.x0, segment.x1);
-                        let fresh = column.is_some_and(|column| !used.contains(&column));
-                        if let Some(column) = column {
-                            used.push(column);
+                        let fresh =
+                            column.is_some_and(|inner_column| !used.contains(&inner_column));
+                        if let Some(found) = column {
+                            used.push(found);
                         }
                         fresh && (!segment.bold || row_bold)
                     });
@@ -871,16 +908,19 @@ fn cell_text(frags: &[Frag<'_>]) -> String {
     assemble(&sink.pieces, &HashMap::new(), 0).replace("\n\n", "\n")
 }
 
-fn ruled_tables<'a>(frags: &[Frag<'a>], rulings: &[Rule]) -> Option<(Vec<Frag<'a>>, Vec<Table>)> {
+fn ruled_tables<'data>(
+    frags: &[Frag<'data>],
+    rulings: &[Rule],
+) -> Option<(Vec<Frag<'data>>, Vec<Table>)> {
     let grids = ruled_grids(rulings);
     if grids.is_empty() {
         return None;
     }
-    let mut members: Vec<Vec<Vec<Frag<'a>>>> = grids
+    let mut members: Vec<Vec<Vec<Frag<'data>>>> = grids
         .iter()
         .map(|grid| vec![Vec::new(); grid.cells.len()])
         .collect();
-    let mut rest: Vec<Frag<'a>> = Vec::new();
+    let mut rest: Vec<Frag<'data>> = Vec::new();
     for frag in frags {
         let (cx, cy) = (
             f64::midpoint(frag.x0, frag.x1),
@@ -942,7 +982,6 @@ fn band_of(extent: Option<[f64; 4]>, bottom: f64, top: f64) -> Band {
         Band::Free
     }
 }
-
 fn link_at(links: &[LinkRect], frag: &Frag<'_>) -> Option<usize> {
     let (cx, cy) = (
         f64::midpoint(frag.x0, frag.x1),
@@ -951,7 +990,7 @@ fn link_at(links: &[LinkRect], frag: &Frag<'_>) -> Option<usize> {
     links
         .iter()
         .find(|([x0, y0, x1, y1], _)| {
-            *x0 - 1.0 <= cx && cx <= *x1 + 1.0 && *y0 - 1.0 <= cy && cy <= *y1 + 1.0
+            *x0 - 1.0_f64 <= cx && cx <= *x1 + 1.0_f64 && *y0 - 1.0_f64 <= cy && cy <= *y1 + 1.0_f64
         })
         .map(|(_, index)| *index)
 }
@@ -1157,30 +1196,6 @@ fn running_key(text: &str) -> String {
     key
 }
 
-type RunningKeys = HashMap<(bool, String), usize>;
-
-struct Recurrence {
-    count: usize,
-    first: usize,
-    digits: String,
-    varying: bool,
-}
-
-#[derive(Clone, Copy)]
-struct Recurring {
-    min_pages: usize,
-    share: usize,
-}
-
-const TEXT_RECURRING: Recurring = Recurring {
-    min_pages: 2,
-    share: 2,
-};
-const MARKDOWN_RECURRING: Recurring = Recurring {
-    min_pages: 3,
-    share: 20,
-};
-
 fn running_keys(pages: &[Vec<(Band, &str)>], recurring: Recurring) -> RunningKeys {
     let mut counts: HashMap<(bool, String), Recurrence> = HashMap::new();
     for (position, page) in pages.iter().enumerate() {
@@ -1272,7 +1287,7 @@ fn page_layout(
         }
         let visible = turn(page, run.direction.0, run.direction.1);
         let quarter = quarter_of(visible);
-        let turns = (page.saturating_add(quarter)) % 4;
+        let turns = (page.saturating_add(quarter)) & 3;
         let [x0, y0, x1, y1] = run.rect;
         let (ax, ay) = turn(turns, x0, y0);
         let (bx, by) = turn(turns, x1, y1);
@@ -1299,7 +1314,7 @@ fn page_layout(
         }
     }
     let mut ranking: Vec<usize> = (0..4)
-        .filter(|&q| weights.get(q).copied().unwrap_or(0) > 0)
+        .filter(|&quarter| weights.get(quarter).copied().unwrap_or(0) > 0)
         .collect();
     ranking.sort_by(|&a, &b| {
         weights
@@ -1314,13 +1329,13 @@ fn page_layout(
         let Some(pool) = pools.get(quarter) else {
             continue;
         };
-        let turns = (page.saturating_add(quarter)) % 4;
+        let turns = (page.saturating_add(quarter)) & 3;
         let ruled_lines: Vec<Rule> = rulings
             .iter()
             .map(|ruling| {
                 let [x0, y0, x1, y1] =
                     turn_rect(turns, [ruling.x0, ruling.y0, ruling.x1, ruling.y1]);
-                Rule { x0, y0, x1, y1 }
+                Rule { x0, x1, y0, y1 }
             })
             .collect();
         let pool_extent = extent
@@ -1342,7 +1357,7 @@ fn page_layout(
             first.lead = "\n\n";
         }
         layout.pieces.append(&mut sink.pieces);
-        let back = 4_usize.saturating_sub(turns % 4) % 4;
+        let back = 4_usize.saturating_sub(turns & 3) & 3;
         for mut table in sink.tables {
             table.bbox = turn_rect(back, table.bbox);
             for cell in &mut table.cells {
@@ -1353,7 +1368,6 @@ fn page_layout(
     }
     layout
 }
-
 pub(crate) fn text_limits() -> Limits {
     Limits {
         max_items_per_page: 250_000,
@@ -1362,7 +1376,6 @@ pub(crate) fn text_limits() -> Limits {
         ..Limits::default()
     }
 }
-
 fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkRect> {
     links
         .iter()
@@ -1371,7 +1384,6 @@ fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkRect> {
         .map(|(index, link)| (link.rect, index))
         .collect()
 }
-
 fn single_page(
     document: &Document<'_>,
     page: &Page,
@@ -1478,13 +1490,6 @@ pub(crate) fn document_text(
     Ok(texts)
 }
 
-const FURNITURE_BLOCKS: usize = 3;
-const FURNITURE_PITCH: f64 = 2.0;
-const FURNITURE_MIN_PAGES: usize = 3;
-const FURNITURE_SHARE: usize = 20;
-
-type FurnitureKey = (String, i64, i64);
-
 fn furniture_key(block: &MdBlock, height: f64) -> Option<FurnitureKey> {
     let key = running_key(block.plain());
     (!key.is_empty()).then(|| {
@@ -1503,7 +1508,7 @@ const fn at_page_edge(index: usize, len: usize) -> bool {
 fn drop_furniture(pages: &mut [Vec<MdBlock>], heights: &[f64]) {
     let mut recurring: HashMap<FurnitureKey, (usize, usize)> = HashMap::new();
     for (position, blocks) in pages.iter().enumerate() {
-        let height = heights.get(position).copied().unwrap_or(0.0);
+        let height = heights.get(position).copied().unwrap_or(0.0_f64);
         let mut seen: HashSet<FurnitureKey> = HashSet::new();
         for (index, block) in blocks.iter().enumerate() {
             if !at_page_edge(index, blocks.len()) {
@@ -1523,7 +1528,7 @@ fn drop_furniture(pages: &mut [Vec<MdBlock>], heights: &[f64]) {
         return;
     }
     for (position, blocks) in pages.iter_mut().enumerate() {
-        let height = heights.get(position).copied().unwrap_or(0.0);
+        let height = heights.get(position).copied().unwrap_or(0.0_f64);
         let len = blocks.len();
         let mut index = 0_usize;
         blocks.retain(|block| {
@@ -1632,7 +1637,10 @@ pub(crate) fn document_tables(
 mod tests {
     use super::*;
     use crate::inspection::TextItem;
-    use std::hint::black_box;
+    use crate::text::Run;
+    use core::hint::black_box;
+    use core::iter;
+    use std::time::Instant;
 
     const SIZE: f64 = 10.0;
     const OPTIONS: TextOptions = TextOptions {
@@ -1641,10 +1649,10 @@ mod tests {
     };
 
     struct Piece {
-        item: TextItem,
-        direction: (f64, f64),
         bold: bool,
+        direction: (f64, f64),
         italic: bool,
+        item: TextItem,
     }
 
     fn page_text(pieces: &[Piece], rotate: i32) -> String {
@@ -1652,7 +1660,7 @@ mod tests {
         for piece in pieces {
             let start = u32::try_from(content.text.len()).unwrap();
             content.text.push_str(&piece.item.text);
-            content.runs.push(crate::text::Run {
+            content.runs.push(Run {
                 rect: piece.item.rect,
                 font_size: piece.item.font_size,
                 text: start..u32::try_from(content.text.len()).unwrap(),
@@ -1714,22 +1722,26 @@ mod tests {
     #[test]
     fn zero_width_segment_maps_to_its_column() {
         assert_eq!(
-            column_of(&[(10.0, 50.0), (100.0, 160.0)], 50.0, 50.0),
+            column_of(&[(10.0_f64, 50.0_f64), (100.0_f64, 160.0_f64)], 50.0, 50.0),
             Some(0)
         );
         assert_eq!(
-            column_of(&[(10.0, 50.0), (100.0, 100.0)], 100.0, 120.0),
+            column_of(
+                &[(10.0_f64, 50.0_f64), (100.0_f64, 100.0_f64)],
+                100.0,
+                120.0
+            ),
             Some(1)
         );
         assert_eq!(
-            merge_row(&[(10.0, 50.0)], &[(50.0, 50.0)]),
-            Some(vec![(10.0, 50.0)])
+            merge_row(&[(10.0_f64, 50.0_f64)], &[(50.0_f64, 50.0_f64)]),
+            Some(vec![(10.0_f64, 50.0_f64)])
         );
     }
 
     #[test]
     fn rows_are_truncated_before_an_unmappable_wrap_line() {
-        let columns = [(50.0, 100.0), (200.0, 260.0)];
+        let columns = [(50.0_f64, 100.0_f64), (200.0_f64, 260.0_f64)];
         let segments = [
             segment(50.0, 90.0, 700.0, SIZE),
             segment(200.0, 250.0, 700.0, SIZE),
@@ -1769,27 +1781,29 @@ mod tests {
     fn swept_line_targets_match_the_exhaustive_search() {
         let mut state = 0x853C_49E6_748F_EA9B_u64;
         let mut draw = move |bound: u64| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            u32::try_from(state % bound).unwrap()
+            state ^= state << 13_i32;
+            state ^= state >> 7_i32;
+            state ^= state << 17_i32;
+            u32::try_from(state.rem_euclid(bound)).unwrap()
         };
-        for _ in 0..2000 {
-            let blocks: Vec<Block> = (0..usize::try_from(draw(12)).unwrap())
-                .map(|_| {
-                    let x0 = f64::from(draw(100));
-                    open_block(x0, x0 + f64::from(draw(40)), 9.0 + f64::from(draw(3)))
-                })
-                .collect();
+        for _ in 0_i32..2_000_i32 {
+            let count = usize::try_from(draw(12)).unwrap();
+            let blocks: Vec<Block> = iter::repeat_with(|| {
+                let x0 = f64::from(draw(100));
+                open_block(x0, x0 + f64::from(draw(40)), 9.0 + f64::from(draw(3)))
+            })
+            .take(count)
+            .collect();
             let active: Vec<usize> = (0..blocks.len())
-                .filter(|_| f64::from(draw(4)) > 0.0)
+                .filter(|_| f64::from(draw(4)) > 0.0_f64)
                 .collect();
-            let line: Vec<Segment> = (0..=usize::try_from(draw(10)).unwrap())
-                .map(|_| {
-                    let x0 = f64::from(draw(100));
-                    segment(x0, x0 + f64::from(draw(30)), 0.0, 9.0 + f64::from(draw(3)))
-                })
-                .collect();
+            let width = usize::try_from(draw(10)).unwrap() + 1;
+            let line: Vec<Segment> = iter::repeat_with(|| {
+                let x0 = f64::from(draw(100));
+                segment(x0, x0 + f64::from(draw(30)), 0.0, 9.0 + f64::from(draw(3)))
+            })
+            .take(width)
+            .collect();
             assert_eq!(
                 line_targets(&blocks, &active, &line),
                 naive_targets(&blocks, &active, &line)
@@ -1812,12 +1826,12 @@ mod tests {
         for line in 0..lines {
             let start = segments.len();
             for word in 0..words {
-                let x = f64::from(word) * 300.0;
+                let x = f64::from(word) * 300.0_f64;
                 segments.push(segment(x, x + 250.0, 1000.0 - f64::from(line) * 12.0, SIZE));
             }
             ranges.push((start, segments.len()));
         }
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let blocks = build_blocks(&segments, &ranges);
         assert!(started.elapsed().as_secs() < 5);
         assert_eq!(blocks.len(), usize::try_from(words).unwrap());
@@ -1851,7 +1865,7 @@ mod tests {
     #[test]
     fn two_text_columns_are_read_column_by_column() {
         let mut runs = Vec::new();
-        for (index, baseline) in [700.0, 688.0, 676.0].into_iter().enumerate() {
+        for (index, baseline) in [700.0_f64, 688.0_f64, 676.0_f64].into_iter().enumerate() {
             runs.push(run(300.0, baseline, 230.0, &format!("right {index}")));
             runs.push(run(50.0, baseline, 230.0, &format!("left {index}")));
         }
@@ -1865,9 +1879,9 @@ mod tests {
     fn label_value_rows_stay_row_major() {
         let mut runs = Vec::new();
         for (baseline, label, value) in [
-            (700.0, "Data:", "22/12/2026."),
-            (688.0, "Hor\u{e1}rio:", "09h:00min."),
-            (676.0, "Local:", "Sala 3"),
+            (700.0_f64, "Data:", "22/12/2026."),
+            (688.0_f64, "Hor\u{e1}rio:", "09h:00min."),
+            (676.0_f64, "Local:", "Sala 3"),
         ] {
             runs.push(run(50.0, baseline, 40.0, label));
             runs.push(run(250.0, baseline, 60.0, value));
@@ -1896,13 +1910,29 @@ mod tests {
     #[test]
     fn page_rotation_reads_in_the_visible_orientation() {
         let runs = vec![
-            turned([100.0, 50.0, 111.7, 110.0], (0.0, -1.0), "top line"),
-            turned([88.0, 50.0, 99.7, 110.0], (0.0, -1.0), "bottom line"),
+            turned(
+                [100.0_f64, 50.0_f64, 111.7_f64, 110.0_f64],
+                (0.0_f64, -1.0_f64),
+                "top line",
+            ),
+            turned(
+                [88.0_f64, 50.0_f64, 99.7_f64, 110.0_f64],
+                (0.0_f64, -1.0_f64),
+                "bottom line",
+            ),
         ];
         assert_eq!(page_text(&runs, 90), "top line\nbottom line");
         let upside_down = vec![
-            turned([100.0, 50.0, 140.0, 61.7], (-1.0, 0.0), "last"),
-            turned([100.0, 38.0, 140.0, 49.7], (-1.0, 0.0), "first"),
+            turned(
+                [100.0_f64, 50.0_f64, 140.0_f64, 61.7_f64],
+                (-1.0_f64, 0.0_f64),
+                "last",
+            ),
+            turned(
+                [100.0_f64, 38.0_f64, 140.0_f64, 49.7_f64],
+                (-1.0_f64, 0.0_f64),
+                "first",
+            ),
         ];
         assert_eq!(page_text(&upside_down, 180), "first\nlast");
     }
@@ -1910,7 +1940,11 @@ mod tests {
     #[test]
     fn sideways_text_is_emitted_after_the_main_pool() {
         let runs = vec![
-            turned([20.0, 100.0, 31.7, 160.0], (0.0, 1.0), "margin note"),
+            turned(
+                [20.0_f64, 100.0_f64, 31.7_f64, 160.0_f64],
+                (0.0_f64, 1.0_f64),
+                "margin note",
+            ),
             run(50.0, 700.0, 200.0, "main body text on the page"),
         ];
         assert_eq!(
@@ -1949,11 +1983,11 @@ mod tests {
             run(10.0, 10.0, 10.0, ""),
             Piece {
                 item: TextItem {
-                    rect: [0.0; 4],
+                    rect: [0.0_f64; 4],
                     font_size: 0.0,
                     text: "x".to_owned(),
                 },
-                direction: (f64::NAN, 0.0),
+                direction: (f64::NAN, 0.0_f64),
                 bold: false,
                 italic: false,
             },
@@ -1964,16 +1998,16 @@ mod tests {
     #[test]
     fn hostile_layouts_stay_bounded() {
         let mut runs = Vec::new();
-        for index in 0..4000 {
-            let x = f64::from(index % 97) * 7.0;
-            let y = f64::from(index % 211) * 3.0;
+        for index in 0_i32..4_000_i32 {
+            let x = f64::from(index.rem_euclid(97_i32)) * 7.0_f64;
+            let y = f64::from(index.rem_euclid(211_i32)) * 3.0_f64;
             runs.push(run(x, y, 30.0, "ab"));
         }
         let text = page_text(&runs, 270);
         assert_ne!(text, "");
         let mut nested = Vec::new();
-        for index in 0..200 {
-            let offset = f64::from(index) * 2.0;
+        for index in 0_i32..200_i32 {
+            let offset = f64::from(index) * 2.0_f64;
             nested.push(run(offset, 700.0 - offset, 500.0 - offset, "n"));
         }
         assert_ne!(page_text(&nested, 0), "");
@@ -1991,23 +2025,25 @@ mod tests {
         let limits = text_limits();
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
+            state ^= state << 13_i32;
+            state ^= state >> 7_i32;
+            state ^= state << 17_i32;
             state
         };
         for fixture in fixtures {
-            document_text(fixture, None, &limits, OPTIONS).unwrap();
-            for _ in 0..150 {
+            drop(document_text(fixture, None, &limits, OPTIONS).unwrap());
+            for _ in 0_i32..150_i32 {
                 let mut bytes = fixture.to_vec();
-                for _ in 0..=(next() % 8) {
-                    let at = usize::try_from(next()).unwrap_or(0) % bytes.len();
+                for _ in 0..=(next() & 7) {
+                    let at = usize::try_from(next()).unwrap_or(0).rem_euclid(bytes.len());
                     if let Some(byte) = bytes.get_mut(at) {
-                        *byte ^= u8::try_from(next() % 255).unwrap_or(1).max(1);
+                        *byte ^= u8::try_from(next().rem_euclid(255)).unwrap_or(1).max(1);
                     }
                 }
-                let cut = usize::try_from(next()).unwrap_or(0) % (bytes.len() + 1);
-                if next() % 4 == 0 {
+                let cut = usize::try_from(next())
+                    .unwrap_or(0)
+                    .rem_euclid(bytes.len() + 1);
+                if next().is_multiple_of(4) {
                     bytes.truncate(cut);
                 }
                 drop(black_box(document_text(&bytes, None, &limits, OPTIONS)));
@@ -2033,9 +2069,11 @@ mod tests {
 mod structure_tests {
     use super::*;
     use crate::num::usize_to_f64;
+    use crate::test_pdf::build;
+    use crate::test_pdf::stream_object;
     use crate::test_pdf::{PageSpec, bold, document, grid, page, rule, text};
-    use std::fmt::Write as _;
-    use std::hint::black_box;
+    use core::fmt::Write as _;
+    use core::hint::black_box;
 
     const PLAIN: TextOptions = TextOptions {
         markdown: false,
@@ -2101,13 +2139,13 @@ mod structure_tests {
     }
 
     fn price_table(top: f64) -> String {
-        let rows = [top, top - 20.0, top - 40.0, top - 60.0];
-        let mut out = grid(&rows, &[50.0, 200.0, 350.0]);
+        let rows = [top, top - 20.0_f64, top - 40.0_f64, top - 60.0_f64];
+        let mut out = grid(&rows, &[50.0_f64, 200.0_f64, 350.0_f64]);
         for (index, (left, right)) in [("Item", "Valor"), ("Cimento", "12,50"), ("Areia", "8,00")]
             .into_iter()
             .enumerate()
         {
-            let baseline = top - 12.0 - 20.0 * usize_to_f64(index);
+            let baseline = top - 12.0_f64 - 20.0_f64 * usize_to_f64(index);
             out.push_str(&text(55.0, baseline, 10.0, left));
             out.push_str(&text(205.0, baseline, 10.0, right));
         }
@@ -2124,8 +2162,12 @@ mod structure_tests {
         assert_eq!(table.cells.len(), 6);
         assert_eq!(cell(table, 0, 0).text, "Item");
         assert_eq!(cell(table, 2, 1).text, "8,00");
-        assert!((table.bbox[0] - 50.0).abs() < 1e-6 && (table.bbox[2] - 350.0).abs() < 1e-6);
-        assert!((table.bbox[1] - 640.0).abs() < 1e-6 && (table.bbox[3] - 700.0).abs() < 1e-6);
+        assert!(
+            (table.bbox[0] - 50.0).abs() < 1e-6_f64 && (table.bbox[2] - 350.0).abs() < 1e-6_f64
+        );
+        assert!(
+            (table.bbox[1] - 640.0).abs() < 1e-6_f64 && (table.bbox[3] - 700.0).abs() < 1e-6_f64
+        );
         let pages = pages_of(&bytes, PLAIN);
         assert_eq!(pages, ["Item Valor\nCimento 12,50\nAreia 8,00"]);
         let markdown = pages_of(&bytes, MARKDOWN);
@@ -2138,7 +2180,7 @@ mod structure_tests {
     #[test]
     fn merged_cells_report_spans() {
         let mut content = String::new();
-        for y in [700.0, 680.0, 660.0] {
+        for y in [700.0_f64, 680.0_f64, 660.0_f64] {
             content.push_str(&rule(50.0, y, 350.0, y));
         }
         content.push_str(&rule(50.0, 660.0, 50.0, 700.0));
@@ -2155,7 +2197,9 @@ mod structure_tests {
         let header = cell(table, 0, 0);
         assert_eq!((header.row_span, header.col_span), (1, 2));
         assert_eq!(header.text, "Precos unitarios");
-        assert!((header.bbox[0] - 50.0).abs() < 1e-6 && (header.bbox[2] - 350.0).abs() < 1e-6);
+        assert!(
+            (header.bbox[0] - 50.0).abs() < 1e-6_f64 && (header.bbox[2] - 350.0).abs() < 1e-6_f64
+        );
         assert!(table.cells.iter().all(|cell| cell.col <= 1));
         let markdown = pages_of(&bytes, MARKDOWN);
         assert_eq!(
@@ -2166,7 +2210,10 @@ mod structure_tests {
 
     #[test]
     fn row_spans_cover_missing_horizontal_edges() {
-        let mut content = grid(&[700.0, 680.0, 660.0, 640.0], &[50.0, 200.0, 350.0]);
+        let mut content = grid(
+            &[700.0_f64, 680.0_f64, 660.0_f64, 640.0_f64],
+            &[50.0_f64, 200.0_f64, 350.0_f64],
+        );
         content = content.replace(
             "0.5 w 50 660 m 350 660 l S\n",
             "0.5 w 200 660 m 350 660 l S\n",
@@ -2187,7 +2234,7 @@ mod structure_tests {
     fn borderless(rows: &[(&str, &str, &str)], top: f64) -> String {
         let mut out = String::new();
         for (index, (a, b, c)) in rows.iter().enumerate() {
-            let baseline = top - 14.0 * usize_to_f64(index);
+            let baseline = top - 14.0_f64 * usize_to_f64(index);
             out.push_str(&text(50.0, baseline, 10.0, a));
             out.push_str(&text(200.0, baseline, 10.0, b));
             out.push_str(&text(350.0, baseline, 10.0, c));
@@ -2272,8 +2319,8 @@ mod structure_tests {
     #[test]
     fn markdown_drops_recurring_page_edge_blocks_outside_the_bands() {
         let mut pages = Vec::new();
-        for index in 0..4 {
-            let shift = 30.0 * f64::from(index);
+        for index in 0_i32..4_i32 {
+            let shift = 30.0_f64 * f64::from(index);
             let mut content = String::new();
             content.push_str(&text(50.0, 650.0, 10.0, "FUNDACAO OSWALDO CRUZ"));
             content.push_str(&text(
@@ -2292,7 +2339,7 @@ mod structure_tests {
                 50.0,
                 150.0,
                 10.0,
-                &format!("Portaria 12/2026 pg. {}", index + 1),
+                &format!("Portaria 12/2026 pg. {}", index + 1_i32),
             ));
             pages.push(page(content));
         }
@@ -2375,7 +2422,7 @@ mod structure_tests {
         .iter()
         .enumerate()
         {
-            let baseline = 700.0 - 14.0 * usize_to_f64(index);
+            let baseline = 700.0_f64 - 14.0_f64 * usize_to_f64(index);
             content.push_str(&text(50.0, baseline, 10.0, marker));
             content.push_str(&text(120.0, baseline, 10.0, body));
         }
@@ -2516,12 +2563,12 @@ mod structure_tests {
         assert_eq!(cell(table, 2, 1).text, "8,00");
         let [x0, y0, x1, y1] = table.bbox;
         assert!(
-            (x0 - 100.0).abs() < 1e-6 && (x1 - 160.0).abs() < 1e-6,
+            (x0 - 100.0).abs() < 1e-6_f64 && (x1 - 160.0).abs() < 1e-6_f64,
             "{:?}",
             table.bbox
         );
         assert!(
-            (y0 - 50.0).abs() < 1e-6 && (y1 - 350.0).abs() < 1e-6,
+            (y0 - 50.0).abs() < 1e-6_f64 && (y1 - 350.0).abs() < 1e-6_f64,
             "{:?}",
             table.bbox
         );
@@ -2533,7 +2580,10 @@ mod structure_tests {
 
     #[test]
     fn decorative_rules_and_empty_grids_are_not_tables() {
-        let mut content = grid(&[700.0, 680.0, 660.0], &[50.0, 200.0, 350.0]);
+        let mut content = grid(
+            &[700.0_f64, 680.0_f64, 660.0_f64],
+            &[50.0_f64, 200.0_f64, 350.0_f64],
+        );
         content.push_str(&text(50.0, 600.0, 10.0, "Texto solto"));
         let bytes = document(&[page(content)], &[]);
         assert_eq!(tables_of(&bytes), []);
@@ -2566,8 +2616,8 @@ mod structure_tests {
     #[test]
     fn two_text_columns_are_not_mistaken_for_a_table() {
         let mut content = String::new();
-        for index in 0..8 {
-            let baseline = 700.0 - 12.0 * f64::from(index);
+        for index in 0_i32..8_i32 {
+            let baseline = 700.0_f64 - 12.0_f64 * f64::from(index);
             content.push_str(&text(
                 50.0,
                 baseline,
@@ -2677,10 +2727,18 @@ mod structure_tests {
     #[test]
     fn tables_inside_the_header_band_are_dropped_when_repeated() {
         let mut pages = Vec::new();
-        for index in 0..3 {
-            let mut content = grid(&[780.0, 760.0, 740.0], &[50.0, 250.0, 450.0]);
+        for index in 0_i32..3_i32 {
+            let mut content = grid(
+                &[780.0_f64, 760.0_f64, 740.0_f64],
+                &[50.0_f64, 250.0_f64, 450.0_f64],
+            );
             content.push_str(&text(55.0, 768.0, 9.0, "Orgao"));
-            content.push_str(&text(255.0, 768.0, 9.0, &format!("Pagina {}", index + 1)));
+            content.push_str(&text(
+                255.0,
+                768.0,
+                9.0,
+                &format!("Pagina {}", index + 1_i32),
+            ));
             content.push_str(&text(55.0, 748.0, 9.0, "Edital"));
             content.push_str(&text(255.0, 748.0, 9.0, "12/2026"));
             content.push_str(&text(50.0, 500.0, 10.0, "Corpo do documento"));
@@ -2712,17 +2770,17 @@ mod structure_tests {
         let limits = text_limits();
         let mut state = 0x2545_F491_4F6C_DD1D_u64;
         let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
+            state ^= state << 13_i32;
+            state ^= state >> 7_i32;
+            state ^= state << 17_i32;
             state
         };
-        for _ in 0..300 {
+        for _ in 0_i32..300_i32 {
             let mut bytes = fixture.clone();
-            for _ in 0..=(next() % 6) {
-                let at = usize::try_from(next()).unwrap_or(0) % bytes.len();
+            for _ in 0..=next().rem_euclid(6) {
+                let at = usize::try_from(next()).unwrap_or(0).rem_euclid(bytes.len());
                 if let Some(byte) = bytes.get_mut(at) {
-                    *byte = u8::try_from(next() % 255).unwrap_or(1).max(1);
+                    *byte = u8::try_from(next().rem_euclid(255)).unwrap_or(1).max(1);
                 }
             }
             drop(black_box(document_tables(&bytes, None, &limits)));
@@ -2733,7 +2791,7 @@ mod structure_tests {
     #[test]
     fn page_limit_violations_propagate_instead_of_emptying_pages() {
         let mut content = String::new();
-        for index in 0..20 {
+        for index in 0_i32..20_i32 {
             content.push_str(&text(50.0, 700.0 - f64::from(index) * 20.0, 10.0, "linha"));
         }
         let bytes = document(&[page(text(50.0, 700.0, 10.0, "ok")), page(content)], &[]);
@@ -2756,7 +2814,7 @@ mod structure_tests {
     #[test]
     fn malformed_page_content_still_degrades_to_an_empty_page() {
         let font = "/Resources << /Font << /F1 3 0 R >> >>";
-        let broken = crate::test_pdf::build(&[
+        let broken = build(&[
             (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
             (
                 2,
@@ -2772,20 +2830,14 @@ mod structure_tests {
                     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 5 0 R {font} >>"
                 ),
             ),
-            (
-                5,
-                crate::test_pdf::stream_object("", &text(50.0, 700.0, 10.0, "first")),
-            ),
+            (5, stream_object("", &text(50.0, 700.0, 10.0, "first"))),
             (
                 6,
                 format!(
                     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 7 0 R {font} >>"
                 ),
             ),
-            (
-                7,
-                crate::test_pdf::stream_object("/Filter /FlateDecode", "xxxxx"),
-            ),
+            (7, stream_object("/Filter /FlateDecode", "xxxxx")),
         ]);
         let pages = pages_of(&broken, PLAIN);
         assert_eq!(pages, ["first", ""]);
@@ -2804,7 +2856,7 @@ mod structure_tests {
                 "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents {contents} 0 R /Annots [{annot} 0 R] {font} >>"
             )
         };
-        let bytes = crate::test_pdf::build(&[
+        let bytes = build(&[
             (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
             (
                 2,
@@ -2815,16 +2867,10 @@ mod structure_tests {
                 "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
             ),
             (4, page(5, 6)),
-            (
-                5,
-                crate::test_pdf::stream_object("", &text(50.0, 700.0, 10.0, "Site one")),
-            ),
+            (5, stream_object("", &text(50.0, 700.0, 10.0, "Site one"))),
             (6, link("https://example.com/one")),
             (7, page(8, 9)),
-            (
-                8,
-                crate::test_pdf::stream_object("", &text(50.0, 700.0, 10.0, "Site two")),
-            ),
+            (8, stream_object("", &text(50.0, 700.0, 10.0, "Site two"))),
             (9, link("https://example.com/two")),
         ]);
         let all = pages_of(&bytes, MARKDOWN);
@@ -2837,20 +2883,20 @@ mod structure_tests {
     #[test]
     fn hostile_rulings_stay_bounded() {
         let mut content = String::new();
-        for index in 0..3000 {
-            let y = 10.0 + f64::from(index % 700);
-            let x = 10.0 + f64::from(index % 500);
+        for index in 0_i32..3_000_i32 {
+            let y = 10.0_f64 + f64::from(index.rem_euclid(700_i32));
+            let x = 10.0_f64 + f64::from(index.rem_euclid(500_i32));
             write!(
                 content,
                 "{x} {y} m {} {y} l S {x} {y} m {x} {} l S ",
-                x + 40.0,
-                y + 30.0
+                x + 40.0_f64,
+                y + 30.0_f64
             )
             .unwrap();
         }
         content.push_str(&text(50.0, 700.0, 10.0, "texto"));
         let bytes = document(&[page(content)], &[]);
-        document_tables(&bytes, None, &text_limits()).unwrap();
-        document_text(&bytes, None, &text_limits(), MARKDOWN).unwrap();
+        drop(document_tables(&bytes, None, &text_limits()).unwrap());
+        drop(document_text(&bytes, None, &text_limits(), MARKDOWN).unwrap());
     }
 }

@@ -2,14 +2,14 @@ use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inflate;
 use crate::object::{Dict, Object};
 
-type FilterChain<'a> = (Vec<Vec<u8>>, Vec<Option<&'a Dict>>);
-
 const IMAGE_FILTERS: [&[u8]; 4] = [
     b"DCTDecode",
     b"JPXDecode",
     b"CCITTFaxDecode",
     b"JBIG2Decode",
 ];
+
+type FilterChain<'data> = (Vec<Vec<u8>>, Vec<Option<&'data Dict>>);
 
 pub(crate) fn decode_stream(
     dict: &Dict,
@@ -36,8 +36,8 @@ pub(crate) fn decode_stream(
     let mut data = raw.to_vec();
     for (index, filter) in filters.iter().enumerate() {
         let last = index.saturating_add(1) == filters.len();
-        let parms = parms.get(index).copied().flatten();
-        data = apply_filter(filter, parms, &data, max_output, last)?;
+        let parms_next = parms.get(index).copied().flatten();
+        data = apply_filter(filter, parms_next, &data, max_output, last)?;
     }
     Ok(data)
 }
@@ -282,9 +282,9 @@ fn push_ascii85_group(
         *dst = src;
     }
     let mut value = 0_u32;
-    for i in 0..5 {
+    for index in 0..5 {
         let b = chars
-            .get(i)
+            .get(index)
             .copied()
             .ok_or_else(|| Failure::invalid("ascii85 char"))?;
         if !(0x21..=0x75).contains(&b) {
@@ -482,7 +482,7 @@ fn apply_predictor(parms: Option<&Dict>, data: &mut Vec<u8>, max_output: usize) 
 fn usize_from(parms: Option<&Dict>, key: &[u8], default: usize) -> Outcome<usize> {
     let value = match parms.and_then(|d| d.get(key)) {
         None => return Ok(default),
-        Some(o) => o
+        Some(object) => object
             .as_integer()
             .ok_or_else(|| Failure::invalid("predictor integer"))?,
     };
@@ -605,12 +605,12 @@ fn avg(left: u8, up: u8) -> u8 {
 }
 
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
-    let p = i16::from(a)
+    let estimate = i16::from(a)
         .saturating_add(i16::from(b))
         .saturating_sub(i16::from(c));
-    let pa = (p.saturating_sub(i16::from(a))).abs();
-    let pb = (p.saturating_sub(i16::from(b))).abs();
-    let pc = (p.saturating_sub(i16::from(c))).abs();
+    let pa = (estimate.saturating_sub(i16::from(a))).abs();
+    let pb = (estimate.saturating_sub(i16::from(b))).abs();
+    let pc = (estimate.saturating_sub(i16::from(c))).abs();
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {
@@ -636,12 +636,14 @@ const fn is_ws(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::hint::black_box;
+    use core::hint::black_box;
+    use core::time::Duration;
+    use std::time::Instant;
     fn dict_filter(filter: &[u8], parms: Option<Object>) -> Dict {
         let mut dict = Dict::default();
         dict.insert(b"Filter", Object::Name(filter.to_vec()));
-        if let Some(p) = parms {
-            dict.insert(b"DecodeParms", p);
+        if let Some(decode_parms) = parms {
+            dict.insert(b"DecodeParms", decode_parms);
         }
         dict
     }
@@ -836,15 +838,15 @@ mod tests {
         let dict = dict_filter(b"FlateDecode", None);
         let seed = [0x78_u8, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9];
         let mut state = 0xA5A5_1234_u32;
-        for _ in 0..4096 {
+        for _ in 0_i32..4_096_i32 {
             let mut input = seed;
             for byte in &mut input {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
+                state ^= state << 13_i32;
+                state ^= state >> 17_i32;
+                state ^= state << 5_i32;
                 *byte ^= u8::try_from(state & 0xFF).unwrap();
             }
-            drop(black_box(decode_stream(&dict, &input, 65536, None)));
+            drop(black_box(decode_stream(&dict, &input, 0x0001_0000, None)));
         }
     }
 
@@ -852,12 +854,11 @@ mod tests {
     fn inflate_megabyte_within_budget() {
         let payload = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
         let dict = dict_filter(b"FlateDecode", None);
-        let start = std::time::Instant::now();
-        black_box(decode_stream(&dict, payload, 8 * 1024 * 1024, None).expect("bench"));
+        let start = Instant::now();
+        drop(black_box(
+            decode_stream(&dict, payload, 8 * 1024 * 1024, None).expect("bench"),
+        ));
         let elapsed = start.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "inflate took {elapsed:?}"
-        );
+        assert!(elapsed < Duration::from_secs(5), "inflate took {elapsed:?}");
     }
 }

@@ -1,6 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error;
-use std::fmt::{Display, Write as _};
+extern crate alloc;
+
+use alloc::collections::{BTreeMap, BTreeSet};
+use core::error::Error;
+use core::fmt::{self, LowerHex, Write as _};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -8,7 +10,7 @@ const ENCODING_SIZE: usize = 256;
 const NO_GLYPH: u16 = u16::MAX;
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
-type Sections<'a> = Vec<(&'a str, Vec<&'a str>)>;
+type Sections<'text> = Vec<(&'text str, Vec<&'text str>)>;
 
 fn main() -> BuildResult<()> {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
@@ -50,7 +52,10 @@ fn sections(text: &str) -> Sections<'_> {
     sections
 }
 
-fn section<'a>(sections: &'a Sections<'_>, name: &str) -> BuildResult<&'a [&'a str]> {
+fn section<'table>(
+    sections: &'table Sections<'_>,
+    name: &str,
+) -> BuildResult<&'table [&'table str]> {
     sections
         .iter()
         .find(|(found, _)| *found == name)
@@ -58,13 +63,13 @@ fn section<'a>(sections: &'a Sections<'_>, name: &str) -> BuildResult<&'a [&'a s
         .ok_or_else(|| format!("missing section [{name}]").into())
 }
 
-fn coded_names<'a>(lines: &[&'a str]) -> BuildResult<Vec<Option<&'a str>>> {
+fn coded_names<'text>(lines: &[&'text str]) -> BuildResult<Vec<Option<&'text str>>> {
     let mut table = vec![None; ENCODING_SIZE];
     for line in lines {
-        let (code, name) = line
+        let (digits, name) = line
             .split_once(' ')
             .ok_or_else(|| format!("malformed encoding line `{line}`"))?;
-        let code: usize = code.parse()?;
+        let code: usize = digits.parse()?;
         *table
             .get_mut(code)
             .ok_or_else(|| format!("code out of range in `{line}`"))? = Some(name);
@@ -90,30 +95,30 @@ fn screaming(name: &str) -> String {
     out
 }
 
-fn array<T>(items: &[T]) -> String
+fn array<T>(items: &[T]) -> Result<String, fmt::Error>
 where
-    T: Display,
+    T: LowerHex,
 {
     let mut out = String::from("[");
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        out.push_str(&item.to_string());
+        write!(out, "{item:#x}")?;
     }
     out.push(']');
-    out
+    Ok(out)
 }
 
-fn emit<T>(out: &mut String, name: &str, element: &str, values: &[T]) -> Result<(), std::fmt::Error>
+fn emit<T>(out: &mut String, name: &str, element: &str, values: &[T]) -> Result<(), fmt::Error>
 where
-    T: Display,
+    T: LowerHex,
 {
     writeln!(
         out,
         "pub(crate) static {name}: [{element}; {}] = {};",
         values.len(),
-        array(values)
+        array(values)?
     )
 }
 
@@ -123,14 +128,16 @@ fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let (name, codes) = line
+        let (name, hex) = line
             .split_once(';')
             .ok_or_else(|| format!("malformed glyph list line `{line}`"))?;
-        let codes = codes
+        let codes = hex
             .split_whitespace()
             .map(|code| u32::from_str_radix(code, 16))
             .collect::<Result<Vec<_>, _>>()?;
-        agl.insert(name, codes);
+        if agl.insert(name, codes).is_some() {
+            return Err(format!("duplicate glyph list entry `{name}`").into());
+        }
     }
     Ok(agl)
 }
@@ -146,13 +153,13 @@ fn font_tables(
 ) -> BuildResult<String> {
     let agl = glyph_list(glyphlist)?;
     let mut tables = Vec::new();
-    let mut names: BTreeSet<&str> = agl.keys().copied().collect();
+    let mut known: BTreeSet<&str> = agl.keys().copied().collect();
     for (name, lines) in encodings {
         let table = coded_names(lines)?;
-        names.extend(table.iter().flatten().copied());
+        known.extend(table.iter().flatten().copied());
         tables.push((*name, table));
     }
-    let names: Vec<&str> = names.into_iter().collect();
+    let names: Vec<&str> = known.into_iter().collect();
     let index: BTreeMap<&str, usize> = names
         .iter()
         .enumerate()
@@ -189,9 +196,8 @@ fn font_tables(
     for (name, table) in &tables {
         let row = table
             .iter()
-            .map(|glyph| {
-                glyph
-                    .and_then(|glyph| index.get(glyph))
+            .map(|slot| {
+                slot.and_then(|glyph| index.get(glyph))
                     .map_or(Ok(NO_GLYPH), |found| u16::try_from(*found))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -215,13 +221,14 @@ fn font_tables(
             let (glyph, width) = line
                 .split_once(' ')
                 .ok_or_else(|| format!("malformed width line `{line}`"))?;
-            widths.insert(glyph, width.parse()?);
+            if widths.insert(glyph, width.parse()?).is_some() {
+                return Err(format!("duplicate width for `{glyph}` in [{font}]").into());
+            }
         }
         let row: Vec<u16> = win_ansi
             .iter()
-            .map(|glyph| {
-                glyph
-                    .and_then(|glyph| widths.get(glyph))
+            .map(|slot| {
+                slot.and_then(|glyph| widths.get(glyph))
                     .copied()
                     .unwrap_or(0)
             })
@@ -253,11 +260,11 @@ fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
         section(cff, name)?.iter().map(|glyph| sid(glyph)).collect()
     };
     let mut expert = vec![0_u16; ENCODING_SIZE];
-    for (code, glyph) in coded_names(section(cff, "ExpertEncoding")?)?
+    for (code, entry) in coded_names(section(cff, "ExpertEncoding")?)?
         .into_iter()
         .enumerate()
     {
-        if let (Some(glyph), Some(slot)) = (glyph, expert.get_mut(code)) {
+        if let (Some(glyph), Some(slot)) = (entry, expert.get_mut(code)) {
             *slot = sid(glyph)?;
         }
     }

@@ -1,17 +1,17 @@
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 
 include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinEncoding {
-    WinAnsi,
-    Standard,
-    MacRoman,
-    MacExpert,
-    Symbol,
-    ZapfDingbats,
-    PdfDoc,
     Custom,
+    MacExpert,
+    MacRoman,
+    PdfDoc,
+    Standard,
+    Symbol,
+    WinAnsi,
+    ZapfDingbats,
 }
 
 impl BuiltinEncoding {
@@ -115,7 +115,7 @@ pub(crate) fn encoding_glyph_name(encoding: BuiltinEncoding, code: u8) -> &'stat
 }
 
 pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u32]> {
-    let index = name_index(std::str::from_utf8(name).ok()?)?;
+    let index = name_index(str::from_utf8(name).ok()?)?;
     let start = usize::from(*AGL_STARTS.get(index)?);
     let end = usize::from(*AGL_STARTS.get(index.checked_add(1)?)?);
     AGL_CODEPOINTS

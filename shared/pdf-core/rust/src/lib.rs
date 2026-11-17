@@ -1,3 +1,5 @@
+extern crate alloc;
+
 mod abi;
 mod cff;
 mod cmap;
