@@ -22,6 +22,7 @@ import {
   signPdfSignatureField,
 } from "@signature-kit/pdf/workflow"
 import { createPdfSignatureBuilderStore } from "@signature-kit/pdf/builder-store"
+import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser"
 import { Effect, Redacted } from "effect"
 
 const pdf = await Effect.runPromise(readPdfBlobBytes(file))
@@ -49,6 +50,7 @@ const signedPdf = await Effect.runPromise(
     signatureLength: 16384,
   }).pipe(
     Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make(password) })),
+    Effect.provide(pdfCoreBrowserLayer),
   ),
 )
 ```

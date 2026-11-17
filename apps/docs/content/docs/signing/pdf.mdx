@@ -14,17 +14,26 @@ The PDF module is `@signature-kit/pdf`. It consumes the seam provided by the A1 
 ```
 
 <Callout type="info">
-  `signPdf` requires the `Signatures` service in the requirements channel; `verifyPdf` does not.
+  `signPdf` requires the `Signatures` service and the `PdfCore` engine in the requirements channel; `verifyPdf` requires only `PdfCore`. Provide `pdfCoreFileLayer` on Node and Bun (with the platform layer) or `pdfCoreBrowserLayer` in browsers.
 </Callout>
 
 ## Sign a PDF
 
-`signPdf(input: PdfSigningRequest)` returns an `Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures>` — the bytes of the signed PDF. Provide `Signatures` with `Effect.provide(a1SignaturesLayer(...))`.
+`signPdf(input: PdfSigningRequest)` returns an `Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures | PdfCore>` — the bytes of the signed PDF. Provide `Signatures` with `Effect.provide(a1SignaturesLayer(...))` and the PDF engine with `pdfCoreLayer`. The placeholder is written as an incremental update, so the original bytes (and any earlier signature) stay untouched.
+
+```ts title="pdf-core-layer.ts"
+import * as NodeServices from "@effect/platform-node/NodeServices"
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file"
+import { Layer } from "effect"
+
+export const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
+```
 
 ```ts title="sign-pdf.ts"
 import { signPdf } from "@signature-kit/pdf/sign"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
 import { Effect, Redacted } from "effect"
+import { pdfCoreLayer } from "./pdf-core-layer"
 
 const program = signPdf({
   pdf,                          // Uint8Array — bytes of the original PDF
@@ -39,6 +48,7 @@ const program = signPdf({
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
     }),
   ),
+  Effect.provide(pdfCoreLayer),
 )
 
 const signedPdf = await Effect.runPromise(program)  // signed PDF, pades-ades policy
@@ -162,14 +172,17 @@ The bundled AD-RB object carries `policyOid`, `policyHash`, `policyHashAlgorithm
 
 ## Verify with verifyPdf
 
-`verifyPdf(input: PdfVerificationRequest)` returns an `Effect<PdfVerificationResult, PdfError | CmsError>` — **without** a `Signatures` requirement, so there is no `Effect.provide(...)` here. Optionally pass `trustedRoots` (a list of `Uint8Array`) to validate the chain against your own roots.
+`verifyPdf(input: PdfVerificationRequest)` returns an `Effect<PdfVerificationResult, PdfError | CmsError, PdfCore>` — **without** a `Signatures` requirement; it only needs the PDF engine that parses revisions and signature dictionaries. Optionally pass `trustedRoots` (a list of `Uint8Array`) to validate the chain against your own roots.
 
 ```ts title="verify-pdf.ts"
 import { verifyPdf } from "@signature-kit/pdf/verify"
 import { Effect } from "effect"
+import { pdfCoreLayer } from "./pdf-core-layer"
 
-// verifyPdf does NOT require the Signatures service — there is no .pipe(Effect.provide(...))
-const result = await Effect.runPromise(verifyPdf({ pdf: signedPdf }))
+// verifyPdf does NOT require the Signatures service, only the PDF engine
+const result = await Effect.runPromise(
+  verifyPdf({ pdf: signedPdf }).pipe(Effect.provide(pdfCoreLayer)),
+)
 
 result.valid             // boolean — CMS integrity over the byteRange
 result.chainValid        // boolean — signer chain verified

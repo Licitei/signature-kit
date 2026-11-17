@@ -192,7 +192,9 @@ it("signs a PDF from the home and exposes a verifiable download", async () => {
         const signed = yield* Effect.promise(
           async () => new Uint8Array(await (await fetch(link.href)).arrayBuffer()),
         );
-        const signatures = yield* verifyPdfSignatures({ pdf: signed });
+        const signatures = yield* verifyPdfSignatures({ pdf: signed }).pipe(
+          Effect.provide(pdfCoreBrowserLayer),
+        );
         expect(signatures.at(-1)?.cryptographicValid).toBe(true);
         expect(signatures.at(-1)?.coverageValid).toBe(true);
       }),

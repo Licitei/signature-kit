@@ -14,17 +14,26 @@ O módulo de PDF é `@signature-kit/pdf`. Ele consome a camada fornecida pelo si
 ```
 
 <Callout type="info">
-  `signPdf` exige o serviço `Signatures` no canal de requisitos; `verifyPdf` não.
+  `signPdf` exige o serviço `Signatures` e o motor `PdfCore` no canal de requisitos; `verifyPdf` exige apenas `PdfCore`. Forneça `pdfCoreFileLayer` no Node e no Bun (com a camada da plataforma) ou `pdfCoreBrowserLayer` no navegador.
 </Callout>
 
 ## Assine um PDF
 
-`signPdf(input: PdfSigningRequest)` retorna um `Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures>` — os bytes do PDF assinado. Forneça `Signatures` com `Effect.provide(a1SignaturesLayer(...))`.
+`signPdf(input: PdfSigningRequest)` retorna um `Effect<Uint8Array, PdfError | CmsError | SignatureKitError, Signatures | PdfCore>` — os bytes do PDF assinado. Forneça `Signatures` com `Effect.provide(a1SignaturesLayer(...))` e o motor de PDF com `pdfCoreLayer`. O placeholder é gravado como atualização incremental, então os bytes originais (e qualquer assinatura anterior) ficam intactos.
+
+```ts title="pdf-core-layer.ts"
+import * as NodeServices from "@effect/platform-node/NodeServices"
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file"
+import { Layer } from "effect"
+
+export const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
+```
 
 ```ts title="sign-pdf.ts"
 import { signPdf } from "@signature-kit/pdf/sign"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
 import { Effect, Redacted } from "effect"
+import { pdfCoreLayer } from "./pdf-core-layer"
 
 const program = signPdf({
   pdf,                          // Uint8Array — bytes of the original PDF
@@ -39,6 +48,7 @@ const program = signPdf({
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
     }),
   ),
+  Effect.provide(pdfCoreLayer),
 )
 
 const signedPdf = await Effect.runPromise(program)  // signed PDF, pades-ades policy
@@ -162,14 +172,17 @@ O objeto AD-RB embutido carrega `policyOid`, `policyHash`, `policyHashAlgorithm`
 
 ## Verifique com verifyPdf
 
-`verifyPdf(input: PdfVerificationRequest)` retorna um `Effect<PdfVerificationResult, PdfError | CmsError>` — **sem** o requisito `Signatures`, então não há `Effect.provide(...)` aqui. Opcionalmente, passe `trustedRoots` (uma lista de `Uint8Array`) para validar a cadeia contra suas próprias raízes.
+`verifyPdf(input: PdfVerificationRequest)` retorna um `Effect<PdfVerificationResult, PdfError | CmsError, PdfCore>` — **sem** o requisito `Signatures`; ele só precisa do motor de PDF que lê as revisões e os dicionários de assinatura. Opcionalmente, passe `trustedRoots` (uma lista de `Uint8Array`) para validar a cadeia contra suas próprias raízes.
 
 ```ts title="verify-pdf.ts"
 import { verifyPdf } from "@signature-kit/pdf/verify"
 import { Effect } from "effect"
+import { pdfCoreLayer } from "./pdf-core-layer"
 
-// verifyPdf does NOT require the Signatures service — there is no .pipe(Effect.provide(...))
-const result = await Effect.runPromise(verifyPdf({ pdf: signedPdf }))
+// verifyPdf não exige o serviço Signatures, apenas o motor de PDF
+const result = await Effect.runPromise(
+  verifyPdf({ pdf: signedPdf }).pipe(Effect.provide(pdfCoreLayer)),
+)
 
 result.valid             // boolean — CMS integrity over the byteRange
 result.chainValid        // boolean — signer chain verified

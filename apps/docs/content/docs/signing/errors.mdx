@@ -161,8 +161,11 @@ import { Effect } from "effect"
 import { signXml } from "@signature-kit/xml/sign"
 import { xmlRuntimeLayer } from "@signature-kit/xml/runtime"
 import { signPdf } from "@signature-kit/pdf/sign"
+import type { PdfCore } from "@signature-kit/pdf-core/pdf-core"
+import type { Layer } from "effect"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
 
+declare const pdfCoreLayer: Layer.Layer<PdfCore>
 const layer = a1SignaturesLayer({ pfx, password })
 
 // signXml -> XmlError | SignatureKitError    (xml.* codes)
@@ -178,6 +181,7 @@ const xml = signXml({ xml: source, referenceId: "nfe-1" }).pipe(
 // signPdf -> PdfError | CmsError | SignatureKitError    (pdf.* codes)
 const pdf = signPdf({ pdf: bytes, policy: "pades-icp-brasil" }).pipe(
   Effect.provide(layer),
+  Effect.provide(pdfCoreLayer),
   Effect.catchTag("PdfError", (error) => Effect.fail(`PDF: ${error.code}`)),
 )
 ```

@@ -11,7 +11,7 @@ import { SigningWorkerRequests } from "./signing-config";
 import { makeSigningBatch, signingWorkerHandlersLayer } from "./signing-runtime";
 
 const handlersLayer = signingWorkerHandlersLayer.pipe(
-  Layer.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
+  Layer.provideMerge(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
 );
 
 const domainLayer = SigningModel.layer(Layer.empty).pipe(Layer.provide(Domain.InMemory));
