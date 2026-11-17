@@ -795,6 +795,47 @@ describe("stampPdfRubric", () => {
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
+  it.effect("rejects text outside WinAnsi in rubric lines and badge headers and footers", () =>
+    Effect.gen(function* () {
+      const pdf = yield* createThreePagePdf;
+      const badge = {
+        header: { text: "ASSINADO DIGITALMENTE" },
+        rows: [[{ label: "Signatário", value: "Maria" }]],
+        footer: [{ text: "validar.iti.gov.br" }],
+      };
+      for (const text of ["签名", "Łukasz", "✓ conferido", "assinado 😀"]) {
+        const failures = [
+          yield* Effect.result(
+            stampPdfRubric(pdf, { rect: RUBRIC_RECT, pages: [0], lines: [text] }),
+          ),
+          yield* Effect.result(
+            stampPdfVisibleSignature({
+              pdf,
+              pageIndex: QR_SIGNATURE_RECT.pageIndex,
+              rect: QR_SIGNATURE_RECT,
+              badge: { ...badge, header: { text } },
+            }),
+          ),
+          yield* Effect.result(
+            stampPdfVisibleSignature({
+              pdf,
+              pageIndex: QR_SIGNATURE_RECT.pageIndex,
+              rect: QR_SIGNATURE_RECT,
+              badge: { ...badge, footer: [{ text: "MP 2.200-2/2001" }, { text }] },
+            }),
+          ),
+        ];
+        for (const result of failures) {
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.code).toBe(PdfErrorCodeValue.stampFailed);
+            expect(result.failure.reason).toContain("WinAnsi");
+          }
+        }
+      }
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+
   it.effect("resolves reordered rubric metadata by declared page index", () =>
     Effect.gen(function* () {
       const pdf = yield* createFixturePdf([{ size: [320, 180] }, { size: [600, 1000] }]);

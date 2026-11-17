@@ -4,6 +4,7 @@ import type {
   PdfCoreObjectRef,
   PdfCoreWinAnsiFont,
 } from "@signature-kit/pdf-core/config";
+import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import qrcode from "qrcode-generator";
 import { Effect, Match, Schema } from "effect";
@@ -1616,21 +1617,24 @@ const STAMP_BOLD_FONT = "SigKitHelveticaBold";
 const stampResourceName = (document: PdfCoreDocument, name: string): string =>
   `${name}${document.nextObjectNumber}`;
 
-const stampFailure = (reason: string) => (): PdfError =>
-  new PdfError({
-    code: PdfErrorCodeValue.stampFailed,
-    retryable: false,
-    operation: PdfOperationValue.stamp,
-    reason,
-  });
-
 export const loadPdfStandardFont = (
   baseFont: PdfCoreWinAnsiFont,
 ): Effect.Effect<PdfStandardFont, PdfError, PdfCore> =>
   PdfCore.pipe(
     Effect.flatMap((core) => core.fontMetrics(baseFont)),
     Effect.map(pdfStandardFont),
-    Effect.mapError(stampFailure("Failed to load the standard font metrics for stamping.")),
+    Effect.mapError(
+      (error) =>
+        new PdfError({
+          code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
+            Match.orElse(() => PdfErrorCodeValue.stampFailed),
+          ),
+          retryable: false,
+          operation: PdfOperationValue.stamp,
+          reason: error.reason ?? "Failed to load the standard font metrics for stamping.",
+        }),
+    ),
   );
 
 const loadStampFont = (
@@ -1658,7 +1662,18 @@ const loadStampDocument = (
         geometryCoordinateSystem({ cropBox: page.cropBox, rotate: page.rotate }),
       ),
     })),
-    Effect.mapError(stampFailure(reason)),
+    Effect.mapError(
+      (error) =>
+        new PdfError({
+          code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
+            Match.orElse(() => PdfErrorCodeValue.stampFailed),
+          ),
+          retryable: false,
+          operation: PdfOperationValue.stamp,
+          reason: error.reason ?? reason,
+        }),
+    ),
   );
 
 const pdfLinkUri = (uri: string): string =>
@@ -1743,7 +1758,18 @@ const commitPageDrawings = (
     Effect.flatMap((core) =>
       core.edit(pdf, operations, { mode: forIncrementalUpdate ? "incremental" : "auto" }),
     ),
-    Effect.mapError(stampFailure(reason)),
+    Effect.mapError(
+      (error) =>
+        new PdfError({
+          code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
+            Match.orElse(() => PdfErrorCodeValue.stampFailed),
+          ),
+          retryable: false,
+          operation: PdfOperationValue.stamp,
+          reason: error.reason ?? reason,
+        }),
+    ),
   );
 };
 
@@ -1825,9 +1851,13 @@ const encodableStampText = (
   texts.every((text) => pdfTextEncodable(font.font, text))
     ? Effect.void
     : Effect.fail(
-        stampFailure(
-          "Stamp text contains characters that the standard Helvetica font cannot encode (WinAnsi).",
-        )(),
+        new PdfError({
+          code: PdfErrorCodeValue.stampFailed,
+          retryable: false,
+          operation: PdfOperationValue.stamp,
+          reason:
+            "Stamp text contains characters that the standard Helvetica font cannot encode (WinAnsi).",
+        }),
       );
 
 const hasConflictingRubricModes = (stamp: Omit<PdfRubricStamp, "rect" | "pages">): boolean =>
@@ -1980,10 +2010,7 @@ const stampPdfRubricTargets = (
       });
     }
 
-    const font = yield* loadStampFont(
-      stampResourceName(document, STAMP_REGULAR_FONT),
-      "Helvetica",
-    );
+    const font = yield* loadStampFont(stampResourceName(document, STAMP_REGULAR_FONT), "Helvetica");
     yield* encodableStampText(font, [
       ...(stamp.lines ?? []),
       ...(stamp.initials === undefined ? [] : [deriveSignerInitials(stamp.initials)]),
@@ -2409,7 +2436,21 @@ export const createPdfStampPreview = (
         Effect.flatMap((core) =>
           core.create({ pages: [{ width: valid.width + 4, height: valid.height + 4 }] }),
         ),
-        Effect.mapError(stampFailure("Failed to create the stamp preview document.")),
+        Effect.mapError(
+          (error) =>
+            new PdfError({
+              code: Match.value(error.code).pipe(
+                Match.when(
+                  PdfCoreErrorCodeValue.limitExceeded,
+                  () => PdfErrorCodeValue.limitExceeded,
+                ),
+                Match.orElse(() => PdfErrorCodeValue.stampFailed),
+              ),
+              retryable: false,
+              operation: PdfOperationValue.stamp,
+              reason: error.reason ?? "Failed to create the stamp preview document.",
+            }),
+        ),
         Effect.flatMap((pdf) =>
           stampPdfVisibleSignatures(
             {
@@ -2457,7 +2498,21 @@ export const createIllustrativePdf = (
         const reason = "Failed to create illustrative PDF document.";
         const pdf = yield* PdfCore.pipe(
           Effect.flatMap((core) => core.create({ pages: [{ width: 595, height: 842 }] })),
-          Effect.mapError(stampFailure(reason)),
+          Effect.mapError(
+            (error) =>
+              new PdfError({
+                code: Match.value(error.code).pipe(
+                  Match.when(
+                    PdfCoreErrorCodeValue.limitExceeded,
+                    () => PdfErrorCodeValue.limitExceeded,
+                  ),
+                  Match.orElse(() => PdfErrorCodeValue.stampFailed),
+                ),
+                retryable: false,
+                operation: PdfOperationValue.stamp,
+                reason: error.reason ?? reason,
+              }),
+          ),
         );
         const { document } = yield* loadStampDocument(pdf, reason);
         const font = yield* loadStampFont(

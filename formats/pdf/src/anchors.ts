@@ -324,13 +324,6 @@ export const removePdfLinkAnchors = (
 ): Effect.Effect<Uint8Array, PdfError, PdfCore> => {
   const uris = linkAnchorUris(matchers);
   if (uris.size === 0) return Effect.succeed(pdf);
-  const failure = () =>
-    new PdfError({
-      code: PdfErrorCodeValue.invalidPdf,
-      retryable: false,
-      operation: PdfOperationValue.findTextAnchors,
-      reason: "Failed to remove link anchors from the PDF.",
-    });
   return hasPdfByteRange(pdf).pipe(
     Effect.flatMap((signed) =>
       signed
@@ -354,9 +347,23 @@ export const removePdfLinkAnchors = (
               ),
             ];
             if (annotationPages.length === 0) return pdf;
-            const document = yield* core
-              .document(pdf, { annotationPages })
-              .pipe(Effect.mapError(failure));
+            const document = yield* core.document(pdf, { annotationPages }).pipe(
+              Effect.mapError(
+                (error) =>
+                  new PdfError({
+                    code: Match.value(error.code).pipe(
+                      Match.when(
+                        PdfCoreErrorCodeValue.limitExceeded,
+                        () => PdfErrorCodeValue.limitExceeded,
+                      ),
+                      Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+                    ),
+                    retryable: false,
+                    operation: PdfOperationValue.findTextAnchors,
+                    reason: error.reason ?? "Failed to remove link anchors from the PDF.",
+                  }),
+              ),
+            );
             const operations: Array<PdfCoreEditOperation> = [];
             for (const annotation of document.annotations) {
               if (
@@ -375,7 +382,23 @@ export const removePdfLinkAnchors = (
               });
             }
             if (operations.length === 0) return pdf;
-            return yield* core.edit(pdf, operations).pipe(Effect.mapError(failure));
+            return yield* core.edit(pdf, operations).pipe(
+              Effect.mapError(
+                (error) =>
+                  new PdfError({
+                    code: Match.value(error.code).pipe(
+                      Match.when(
+                        PdfCoreErrorCodeValue.limitExceeded,
+                        () => PdfErrorCodeValue.limitExceeded,
+                      ),
+                      Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+                    ),
+                    retryable: false,
+                    operation: PdfOperationValue.findTextAnchors,
+                    reason: error.reason ?? "Failed to remove link anchors from the PDF.",
+                  }),
+              ),
+            );
           }),
     ),
   );
