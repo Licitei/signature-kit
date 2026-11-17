@@ -457,6 +457,11 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
           "Terms of adhesion",
         ];
         for (let index = 0; index < names.length; index++) {
+          yield* Effect.promise(() =>
+            expect
+              .poll(() => host.querySelector<HTMLAnchorElement>("[data-demo-download]")?.download)
+              .toBe(`${names[index]}.pdf`),
+          );
           const link = host.querySelector<HTMLAnchorElement>("[data-demo-download]");
           if (link === null || !link.href.startsWith("blob:"))
             return expect.fail("Missing example download");
@@ -481,6 +486,11 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
             .toContain("Examples ready"),
         );
         for (let index = names.length - 1; index >= 0; index--) {
+          yield* Effect.promise(() =>
+            expect
+              .poll(() => host.querySelector<HTMLAnchorElement>("[data-demo-download]")?.download)
+              .toBe(`${names[index]}.pdf`),
+          );
           const link = host.querySelector<HTMLAnchorElement>("[data-demo-download]");
           if (link === null || !link.href.startsWith("blob:"))
             return expect.fail("Missing reset download");
@@ -596,6 +606,11 @@ it("releases example URLs and regenerates all documents for the next locale", as
           "Procuração",
           "Termo de adesão",
         ]) {
+          yield* Effect.promise(() =>
+            expect
+              .poll(() => host.querySelector<HTMLAnchorElement>("[data-demo-download]")?.download)
+              .toBe(`${name}.pdf`),
+          );
           const link = host.querySelector<HTMLAnchorElement>("[data-demo-download]");
           if (link === null || !link.href.startsWith("blob:"))
             return expect.fail("Missing localized example");
