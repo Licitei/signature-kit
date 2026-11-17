@@ -23,6 +23,35 @@ fn glyph_name_text() -> &'static str {
         .as_str()
 }
 
+fn glyph_name_ends() -> &'static [u32] {
+    static ENDS: OnceLock<Vec<u32>> = OnceLock::new();
+    ENDS.get_or_init(|| {
+        let mut ends = Vec::with_capacity(GLYPH_NAME_COUNT);
+        let mut end = 0_u32;
+        for len in &GLYPH_NAME_LENS {
+            end = end.saturating_add(u32::from(*len));
+            ends.push(end);
+        }
+        ends
+    })
+    .as_slice()
+}
+
+fn agl_starts() -> &'static [u32] {
+    static STARTS: OnceLock<Vec<u32>> = OnceLock::new();
+    STARTS
+        .get_or_init(|| {
+            let mut starts = Vec::with_capacity(AGL_START_DELTAS.len());
+            let mut start = 0_u32;
+            for delta in &AGL_START_DELTAS {
+                start = start.saturating_add(u32::from(*delta));
+                starts.push(start);
+            }
+            starts
+        })
+        .as_slice()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinEncoding {
     Custom,
@@ -121,17 +150,18 @@ impl Standard14Font {
 }
 
 fn name_at(index: usize) -> Option<&'static str> {
-    let end = usize::from(*GLYPH_NAME_ENDS.get(index)?);
+    let ends = glyph_name_ends();
+    let end = usize::try_from(*ends.get(index)?).ok()?;
     let start = index
         .checked_sub(1)
-        .and_then(|previous| GLYPH_NAME_ENDS.get(previous))
-        .map_or(0, |start| usize::from(*start));
+        .and_then(|previous| ends.get(previous))
+        .map_or(Some(0), |start| usize::try_from(*start).ok())?;
     glyph_name_text().get(start..end)
 }
 
 fn name_index(name: &str) -> Option<usize> {
     let mut low = 0;
-    let mut high = GLYPH_NAME_ENDS.len();
+    let mut high = GLYPH_NAME_COUNT;
     while low < high {
         let middle = low.midpoint(high);
         match name_at(middle)?.cmp(name) {
@@ -166,8 +196,9 @@ pub(crate) fn win_ansi_unicode(code: u8) -> u16 {
 
 pub(crate) fn lookup_agl(name: &[u8]) -> Option<&'static [u16]> {
     let index = name_index(str::from_utf8(name).ok()?)?;
-    let start = usize::from(*AGL_STARTS.get(index)?);
-    let end = usize::from(*AGL_STARTS.get(index.checked_add(1)?)?);
+    let starts = agl_starts();
+    let start = usize::try_from(*starts.get(index)?).ok()?;
+    let end = usize::try_from(*starts.get(index.checked_add(1)?)?).ok()?;
     AGL_CODEPOINTS
         .get(start..end)
         .filter(|codepoints| !codepoints.is_empty())
@@ -179,8 +210,8 @@ mod tests {
 
     #[test]
     fn glyph_names_are_sorted_and_unique() {
-        let names: Vec<_> = (0..GLYPH_NAME_ENDS.len()).filter_map(name_at).collect();
-        assert_eq!(names.len(), GLYPH_NAME_ENDS.len());
+        let names: Vec<_> = (0..GLYPH_NAME_COUNT).filter_map(name_at).collect();
+        assert_eq!(names.len(), GLYPH_NAME_COUNT);
         assert!(names.windows(2).all(|pair| matches!(pair, [a, b] if a < b)));
     }
 
