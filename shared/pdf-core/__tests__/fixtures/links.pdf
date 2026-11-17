@@ -1,136 +1,49 @@
 %PDF-1.7
-%
-
+%âãÏÓ
 1 0 obj
-<<
-/Type /Pages
-/Kids [ 5 0 R ]
-/Count 1
->>
+<</Type /Catalog/Pages 2 0 R>>
 endobj
-
 2 0 obj
-<<
-/Type /Catalog
-/Pages 1 0 R
->>
+<</Type /Pages/Count 1/Kids [3 0 R]>>
 endobj
-
 3 0 obj
-<<
-/Producer <FEFF007300690067006E00610074007500720065002D006B00690074002D007000640066002D0063006F00720065002D0063006F0072007000750073>
-/ModDate (D:20240115103000Z)
-/Creator <FEFF007300690067006E00610074007500720065002D006B00690074002D007000640066002D0063006F00720065002D0063006F0072007000750073>
-/CreationDate (D:20240115103000Z)
-/Title <FEFF007300690067006E00610074007500720065002D006B00690074002D007000640066002D0063006F00720065002D0063006F0072007000750073>
-/Author <FEFF004C006900630069007400650069>
-/Subject <FEFF007000640066002D0063006F00720065002000720065006700720065007300730069006F006E00200063006F0072007000750073>
->>
+<</Type /Page/Parent 2 0 R/MediaBox [0 0 612 792]/Resources <</Font <</F1 4 0 R>>>>/Contents 5 0 R/Annots [6 0 R 7 0 R 8 0 R]>>
 endobj
-
 4 0 obj
-<<
-/Type /Font
-/Subtype /Type1
-/BaseFont /Helvetica
-/Encoding /WinAnsiEncoding
->>
+<</Type /Font/Subtype /Type1/BaseFont /Helvetica/Encoding /WinAnsiEncoding>>
 endobj
-
 5 0 obj
-<<
-/Type /Page
-/Parent 1 0 R
-/Resources <<
-/Font <<
-/Helvetica-7098480789 4 0 R
->>
-/XObject <<
->>
-/ExtGState <<
->>
->>
-/MediaBox [ 0 0 612 792 ]
-/Annots [ 7 0 R 8 0 R 10 0 R ]
-/Contents [ 6 0 R ]
->>
-endobj
-
-6 0 obj
-<<
-/Filter /FlateDecode
-/Length 131
->>
+<</Filter /FlateDecode/Length 97>>
 stream
-xœŠ±
-1DûıŠ­q³—Ì& §9,l„ı‘S-ñûMd`àÍ¼NÂ=ï+­öóã;nçÓÒ¤ä˜Årá ìÒÈ~ ğW›²‰°?i#&–°CBµF*ˆH­·(¨mP1A0EP©Ú¶S§ş¤”4­ö;ù‚ªÓ‘~9o!0
+xœ‰Á	Ã0[ÙrZéö0„<IWAbÉà§ûX63óNØ½cÃã[Pˆ"Ì+­i¨†k•«Ç$šš|ş_‹º~Qia*AZçtUã¢«¸;ÛÂşBîøä	‘´
 endstream
 endobj
-
+6 0 obj
+<</Type /Annot/Subtype /Link/Rect [72 620 280 650]/Border [0 0 0]/A <</S /URI/URI (https://signature-kit.dev/corpus/link-primary)>>>>
+endobj
 7 0 obj
-<<
-/Type /Annot
-/Subtype /Link
-/Rect [ 72 620 280 650 ]
-/Border [ 0 0 0 ]
-/A <<
-/S /URI
-/URI (https://signature-kit.dev/corpus/link-primary)
->>
->>
+<</Type /Annot/Subtype /Link/Rect [72 560 280 590]/Border [0 0 0]/A <</S /URI/URI (https://signature-kit.dev/corpus/link-secondary)>>>>
 endobj
-
 8 0 obj
-<<
-/Type /Annot
-/Subtype /Link
-/Rect [ 72 560 280 590 ]
-/Border [ 0 0 0 ]
-/A <<
-/S /URI
-/URI (https://signature-kit.dev/corpus/link-secondary)
->>
->>
+<</Type /Annot/Subtype /Link/Rect [72 500 280 530]/Border [0 0 0]/A 9 0 R>>
 endobj
-
 9 0 obj
-<<
-/S /URI
-/URI (https://signature-kit.dev/corpus/link-indirect)
->>
+<</S /URI/URI (https://signature-kit.dev/corpus/link-indirect)>>
 endobj
-
-10 0 obj
-<<
-/Type /Annot
-/Subtype /Link
-/Rect [ 72 500 280 530 ]
-/Border [ 0 0 0 ]
-/A 9 0 R
->>
-endobj
-
 xref
-0 11
+0 10
 0000000000 65535 f 
-0000000016 00000 n 
-0000000076 00000 n 
-0000000126 00000 n 
-0000000769 00000 n 
-0000000867 00000 n 
-0000001081 00000 n 
-0000001285 00000 n 
-0000001448 00000 n 
-0000001613 00000 n 
-0000001697 00000 n 
-
+0000000015 00000 n 
+0000000061 00000 n 
+0000000114 00000 n 
+0000000257 00000 n 
+0000000349 00000 n 
+0000000514 00000 n 
+0000000663 00000 n 
+0000000814 00000 n 
+0000000905 00000 n 
 trailer
-<<
-/Size 11
-/Root 2 0 R
-/Info 3 0 R
->>
-
+<</Root 1 0 R/ID [<47EA94572B80B973D1495087CC6B6B6C><47EA94572B80B973D1495087CC6B6B6C>]/Size 10>>
 startxref
-1800
+985
 %%EOF

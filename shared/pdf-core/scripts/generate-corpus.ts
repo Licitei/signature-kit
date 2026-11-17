@@ -23,6 +23,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const PAGE_SIZE: readonly [number, number] = [612, 792];
 const icpSource = join(repoRoot, "validators/iti/__tests__/fixtures/icp-brasil-ad-rb-signed.pdf");
 const encoder = new TextEncoder();
+const CORPUS_CREATION_DATE = new Date(Date.UTC(2026, 0, 1));
 
 const MINIMAL_PNG = Uint8Array.from(
   atob(
@@ -284,7 +285,7 @@ const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
   });
   const body = React.createElement(
     Document,
-    {},
+    { creationDate: CORPUS_CREATION_DATE },
     React.createElement(
       Page,
       { size: "A4", style: styles.page },
@@ -653,7 +654,7 @@ const buildMarkdownHeadingsReact = async (): Promise<Uint8Array> => {
   });
   const body = React.createElement(
     Document,
-    {},
+    { creationDate: CORPUS_CREATION_DATE },
     React.createElement(
       Page,
       { size: "A4", style: styles.page },
