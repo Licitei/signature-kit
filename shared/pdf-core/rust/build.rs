@@ -122,6 +122,37 @@ where
     )
 }
 
+fn zlib_compress_bytes(input: &[u8]) -> BuildResult<Vec<u8>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("python3")
+        .args([
+            "-c",
+            "import sys, zlib; sys.stdout.buffer.write(zlib.compress(sys.stdin.buffer.read(), 9))",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| String::from("python3 stdin unavailable"))?;
+        stdin.write_all(input)?;
+    }
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "python3 zlib failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(output.stdout)
+}
+
 fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
     let mut agl = BTreeMap::new();
     for line in text.lines().map(str::trim) {
@@ -167,11 +198,14 @@ fn font_tables(
         .collect();
 
     let mut out = String::new();
+    let glyph_text = names.concat();
+    let glyph_zlib = zlib_compress_bytes(glyph_text.as_bytes())?;
     writeln!(
         out,
-        "pub(crate) static GLYPH_NAME_TEXT: &str = {:?};",
-        names.concat()
+        "pub(crate) const GLYPH_NAME_TEXT_LEN: usize = {};",
+        glyph_text.len()
     )?;
+    emit(&mut out, "GLYPH_NAME_TEXT_ZLIB", "u8", &glyph_zlib)?;
     let mut end = 0_usize;
     let mut ends = Vec::with_capacity(names.len());
     for name in &names {

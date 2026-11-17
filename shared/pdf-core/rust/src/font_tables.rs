@@ -1,8 +1,27 @@
 use core::cmp::Ordering;
+use std::sync::OnceLock;
+
+use crate::inflate::inflate;
 
 include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
 
 const UNDEFINED_WIN_ANSI: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
+
+fn glyph_name_text() -> &'static str {
+    static DECODED: OnceLock<String> = OnceLock::new();
+    DECODED
+        .get_or_init(|| {
+            inflate(&GLYPH_NAME_TEXT_ZLIB, GLYPH_NAME_TEXT_LEN.saturating_add(1))
+                .ok()
+                .and_then(|bytes| {
+                    (bytes.len() == GLYPH_NAME_TEXT_LEN)
+                        .then(|| String::from_utf8(bytes).ok())
+                        .flatten()
+                })
+                .unwrap_or_default()
+        })
+        .as_str()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinEncoding {
@@ -107,7 +126,7 @@ fn name_at(index: usize) -> Option<&'static str> {
         .checked_sub(1)
         .and_then(|previous| GLYPH_NAME_ENDS.get(previous))
         .map_or(0, |start| usize::from(*start));
-    GLYPH_NAME_TEXT.get(start..end)
+    glyph_name_text().get(start..end)
 }
 
 fn name_index(name: &str) -> Option<usize> {
@@ -188,5 +207,30 @@ mod tests {
         assert_eq!(Standard14Font::Helvetica.widths()[usize::from(b'A')], 667);
         assert_eq!(Standard14Font::TimesRoman.widths()[usize::from(b' ')], 250);
         assert_eq!(Standard14Font::Courier.widths()[usize::from(b'A')], 600);
+    }
+}
+
+#[cfg(test)]
+mod zlib_timing {
+    use super::{GLYPH_NAME_TEXT_LEN, GLYPH_NAME_TEXT_ZLIB, glyph_name_text};
+    use crate::inflate::inflate;
+    use std::time::Instant;
+
+    #[test]
+    fn glyph_zlib_inflates_under_one_millisecond() {
+        let start = Instant::now();
+        let bytes = inflate(&GLYPH_NAME_TEXT_ZLIB, GLYPH_NAME_TEXT_LEN.saturating_add(1)).unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(bytes.len(), GLYPH_NAME_TEXT_LEN);
+        eprintln!(
+            "glyph zlib inflate: {elapsed:?} ({} bytes -> {})",
+            GLYPH_NAME_TEXT_ZLIB.len(),
+            bytes.len()
+        );
+        assert!(
+            elapsed.as_secs_f64() < 0.001,
+            "inflate took {elapsed:?}, budget is 1ms"
+        );
+        let _ = glyph_name_text();
     }
 }
