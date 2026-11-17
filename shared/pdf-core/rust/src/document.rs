@@ -136,6 +136,7 @@ pub(crate) struct Page {
     pub obj_ref: Option<ObjRef>,
     pub dict: Dict,
     pub resources: Dict,
+    pub resources_ref: Option<ObjRef>,
     pub info: PageInfo,
 }
 
@@ -1007,10 +1008,15 @@ impl<'a> Document<'a> {
                     .unwrap_or_default(),
                 None => Dict::default(),
             };
+            let resources_ref = match merged.resources.as_deref() {
+                Some(Object::Ref(reference)) => Some(*reference),
+                _ => None,
+            };
             pages.push(Page {
                 obj_ref,
                 dict: dict.clone(),
                 resources,
+                resources_ref,
                 info: self.page_info(&merged)?,
             });
         }

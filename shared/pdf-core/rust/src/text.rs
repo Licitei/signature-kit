@@ -299,6 +299,7 @@ struct FontEntry {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum FontKey {
     Indirect(ObjRef),
+    Within(ObjRef, u32),
     Inline(u32, u32),
 }
 
@@ -360,6 +361,8 @@ enum Lazy {
 struct Scope {
     id: u32,
     resources: Rc<Object>,
+    origin: Option<ObjRef>,
+    fonts_origin: Option<ObjRef>,
     fonts: Lazy,
     xobjects: Lazy,
     ext_gstates: Lazy,
@@ -367,10 +370,12 @@ struct Scope {
 }
 
 impl Scope {
-    const fn new(id: u32, resources: Rc<Object>) -> Self {
+    const fn new(id: u32, resources: Rc<Object>, origin: Option<ObjRef>) -> Self {
         Self {
             id,
             resources,
+            origin,
+            fonts_origin: None,
             fonts: Lazy::Unset,
             xobjects: Lazy::Unset,
             ext_gstates: Lazy::Unset,
@@ -410,10 +415,13 @@ impl Scope {
             &mut self.xobjects
         };
         if matches!(slot, Lazy::Unset) {
-            let found = self
-                .resources
-                .as_dict()
-                .and_then(|dict| dict.get(key))
+            let entry = self.resources.as_dict().and_then(|dict| dict.get(key));
+            if key == b"Font"
+                && let Some(Object::Ref(reference)) = entry
+            {
+                self.fonts_origin = Some(*reference);
+            }
+            let found = entry
                 .and_then(|entry| document.follow(entry).ok())
                 .filter(|resolved| resolved.as_dict().is_some());
             *slot = found.map_or(Lazy::Missing, Lazy::Found);
@@ -462,7 +470,8 @@ impl Default for PendingRun {
 struct Interpreter<'d, 'a> {
     document: &'d Document<'a>,
     limits: &'d Limits,
-    fonts: HashMap<FontKey, Option<Rc<FontEntry>>>,
+    fonts: FontCache,
+    generation: u32,
     skipped: HashSet<ObjRef>,
     active: Vec<ObjRef>,
     scopes: u32,
@@ -513,10 +522,13 @@ pub(crate) struct PageContent {
     pub rulings: Vec<Ruling>,
 }
 
+type FontCache = HashMap<FontKey, (Option<Rc<FontEntry>>, u32)>;
+
 #[derive(Default)]
 pub(crate) struct Session {
-    fonts: HashMap<FontKey, Option<Rc<FontEntry>>>,
+    fonts: FontCache,
     scopes: u32,
+    generation: u32,
 }
 
 pub(crate) fn extract_page(
@@ -559,13 +571,16 @@ pub(crate) fn extract_content(
         return Ok(PageContent::default());
     }
     let [mx0, my0, mx1, my1] = page.info.crop_box;
+    let previous = session.generation;
+    session.generation = previous.wrapping_add(1);
     if session.fonts.len() > MAX_CACHED_FONTS {
-        session.fonts.clear();
+        session.fonts.retain(|_, (_, used)| *used == previous);
     }
     let mut interpreter = Interpreter {
         document,
         limits,
         fonts: std::mem::take(&mut session.fonts),
+        generation: session.generation,
         skipped: HashSet::new(),
         active: Vec::new(),
         scopes: session.scopes,
@@ -588,6 +603,7 @@ pub(crate) fn extract_content(
     let mut scope = Scope::new(
         interpreter.next_scope(),
         Rc::new(Object::Dict(page.resources.clone())),
+        page.resources_ref,
     );
     let mut state = GState::initial();
     let mut matrices = TextMatrices {
@@ -1014,16 +1030,18 @@ impl Interpreter<'_, '_> {
             .iter()
             .enumerate()
             .find(|(_, (key, _))| key.as_slice() == name)?;
-        let key = if let Object::Ref(reference) = entry {
-            FontKey::Indirect(*reference)
-        } else {
-            FontKey::Inline(scope.id, u32::try_from(index).ok()?)
+        let index = u32::try_from(index).ok()?;
+        let key = match (entry, scope.fonts_origin.or(scope.origin)) {
+            (Object::Ref(reference), _) => FontKey::Indirect(*reference),
+            (_, Some(origin)) => FontKey::Within(origin, index),
+            (_, None) => FontKey::Inline(scope.id, index),
         };
-        if let Some(hit) = self.fonts.get(&key) {
+        if let Some((hit, used)) = self.fonts.get_mut(&key) {
+            *used = self.generation;
             return hit.clone();
         }
         let loaded = self.load_font(entry);
-        self.fonts.insert(key, loaded.clone());
+        self.fonts.insert(key, (loaded.clone(), self.generation));
         loaded
     }
 
@@ -1473,13 +1491,21 @@ impl Interpreter<'_, '_> {
             Err(_) => return Ok(()),
         };
         let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
-        let resources = stream
-            .dict
-            .get(b"Resources")
+        let own = stream.dict.get(b"Resources");
+        let (resources, origin) = match own
             .and_then(|object| self.document.follow(object).ok())
             .filter(|object| object.as_dict().is_some())
-            .unwrap_or_else(|| Rc::clone(&scope.resources));
-        let mut inner_scope = Scope::new(self.next_scope(), resources);
+        {
+            Some(resources) => (
+                resources,
+                match own {
+                    Some(Object::Ref(own_ref)) => Some(*own_ref),
+                    _ => None,
+                },
+            ),
+            None => (Rc::clone(&scope.resources), scope.origin),
+        };
+        let mut inner_scope = Scope::new(self.next_scope(), resources, origin);
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
@@ -2076,6 +2102,79 @@ mod tests {
             assert_eq!(runs[0].item.text, "Again");
         }
         assert_eq!(session.fonts.len(), 1);
+    }
+
+    fn shared_inline_font_pdf() -> Vec<u8> {
+        let content = "BT /F1 10 Tf 20 100 Td (Shared) Tj ET";
+        let form = stream_object(
+            "/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources 5 0 R",
+            "BT /F1 10 Tf 20 200 Td (Form) Tj ET",
+        );
+        build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 /Resources 5 0 R >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 4 0 R >>"
+                    .to_owned(),
+            ),
+            (4, stream_object("", &format!("{content} /X Do"))),
+            (
+                5,
+                format!("<< /Font << /F1 {HELVETICA} >> /XObject << /X 8 0 R >> >>"),
+            ),
+            (
+                6,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 7 0 R >>"
+                    .to_owned(),
+            ),
+            (7, stream_object("", content)),
+            (8, form),
+        ])
+    }
+
+    #[test]
+    fn inline_fonts_in_shared_resources_load_once() {
+        let bytes = shared_inline_font_pdf();
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        let first = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+        let second = extract_runs(&document, &pages[1], &limits, true, &mut session).unwrap();
+        let first_texts: Vec<&str> = first.iter().map(|run| run.item.text.as_str()).collect();
+        assert_eq!(first_texts, ["Shared", "Form"]);
+        assert_eq!(second[0].item.text, "Shared");
+        assert_eq!(session.fonts.len(), 1);
+        assert!(matches!(
+            session.fonts.keys().next(),
+            Some(FontKey::Within(_, 0))
+        ));
+    }
+
+    #[test]
+    fn font_cache_eviction_keeps_fonts_of_the_previous_page() {
+        let bytes = simple_pdf("BT /F1 10 Tf 20 100 Td (Hot) Tj ET");
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+        let (&hot_key, (hot, _)) = session.fonts.iter().next().unwrap();
+        let hot = Rc::clone(hot.as_ref().unwrap());
+        for index in 0..=u32::try_from(MAX_CACHED_FONTS).unwrap() {
+            session
+                .fonts
+                .insert(FontKey::Inline(u32::MAX, index), (None, 0));
+        }
+        let runs = extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap();
+        assert_eq!(runs[0].item.text, "Hot");
+        assert_eq!(session.fonts.len(), 1);
+        let (kept, _) = &session.fonts[&hot_key];
+        assert!(Rc::ptr_eq(kept.as_ref().unwrap(), &hot));
     }
 
     #[test]
