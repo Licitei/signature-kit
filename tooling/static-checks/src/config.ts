@@ -16,6 +16,7 @@ export const skippedSegments: Record<string, true> = {
   dist: true,
   node_modules: true,
   outputs: true,
+  target: true,
 };
 export const skippedSuffixes: readonly string[] = [".d.ts", ".tsbuildinfo", "README.md"];
 
