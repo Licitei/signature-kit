@@ -96,6 +96,7 @@ pub(crate) struct SignatureDictionary {
     pub object_start: usize,
     pub timestamp: bool,
     pub unsigned_placeholder: bool,
+    pub uses_etsi_cades_detached: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -927,6 +928,9 @@ impl<'ctx> Scanner<'ctx> {
             object_start,
             timestamp,
             unsigned_placeholder,
+            uses_etsi_cades_detached: dict
+                .get(b"SubFilter")
+                .is_some_and(|value| value.is_name(b"ETSI.CAdES.detached")),
         });
     }
 

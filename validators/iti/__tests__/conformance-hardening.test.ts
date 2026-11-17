@@ -373,7 +373,7 @@ const restoreSignatureFieldValue = (pdf: Uint8Array) =>
 
 for (const objectStreams of [false, true]) {
   describe(`ITI local conformance hardening (object streams: ${objectStreams})`, () => {
-    it.effect("approves the committed AD-RB fixture with the pinned policy encoding", () =>
+    it.effect("recognizes the pinned policy encoding in the legacy AD-RB fixture", () =>
       Effect.gen(function* () {
         const pdf = yield* fixturePdf;
         const report = yield* validatePdfConformance({ pdf });
@@ -399,8 +399,8 @@ for (const objectStreams of [false, true]) {
           return yield* Effect.die("Fixture policy hash has no algorithm OID.");
         }
 
-        expect(report.approved).toBe(true);
-        expect(report.outcome).toBe("approved");
+        expect(report.approved).toBe(false);
+        expect(report.outcome).toBe("rejected");
         expect(
           report.signatures[0]?.attributes.map((attribute) => [attribute.name, attribute.status]),
         ).toEqual([
@@ -408,7 +408,7 @@ for (const objectStreams of [false, true]) {
           ["IdContentType", "Valid"],
           ["IdAaEtsSigPolicyId", "Valid"],
           ["IdAaSigningCertificateV2", "Valid"],
-          ["SignatureDictionary", "Valid"],
+          ["SignatureDictionary", "Invalid"],
           ["signingTime", "Valid"],
         ]);
         expect(algorithmOid.valueBlock.toString()).toBe(SHA256_OID);

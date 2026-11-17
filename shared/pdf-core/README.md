@@ -102,7 +102,7 @@ A style bit is set when every glyph of the item carries it. It comes from the em
 
 ## Signatures and revisions
 
-`signatures(pdf, analysis)` reports the signature dictionaries of a PDF. Every dictionary carries its kind (`signature` or `documentTimestamp`), its object number and start offset, the exact byte spans of its `/ByteRange` and `/Contents` entries, the parsed byte-range values when they are four non-negative safe integers, and whether it is an unsigned placeholder (`[0 /********** /********** /**********]` with a zero-filled `/Contents`).
+`signatures(pdf, analysis)` reports the signature dictionaries of a PDF. Every dictionary carries its kind (`signature` or `documentTimestamp`), its object number and start offset, the exact byte spans of its `/ByteRange` and `/Contents` entries, the parsed byte-range values when they are four non-negative safe integers, whether its `/SubFilter` is `/ETSI.CAdES.detached`, and whether it is an unsigned placeholder (`[0 /********** /********** /**********]` with a zero-filled `/Contents`).
 
 - `"scan"` scans every indirect object once. `parseFailed`, `streamFailed`, and `streamUncertain` report syntax the scanner could not bound; callers treat them as fail-closed.
 - `"dictionaries"` resolves forward indirect stream lengths from each revision's own number objects before rescanning, and reports `failure: "streamEnd"` when a stream still cannot be bounded.
@@ -225,7 +225,7 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 
 ### Signatures payload (version 1)
 
-Header of 24 bytes, all `u32`: `magic` (`0x47534450`, "PDSG"), `version` (`1`), `failure` (`0` none, then `1`–`10` in the order `streamEnd`, `revisionLengths`, `indirectLengths`, `lengthBudget`, `dictionaryParse`, `revisionStructure`, `crossReferenceStream`, `objectStream`, `traversalBudget`, `invalidByteRange`), `flags` (bit 0 parse failed, bit 1 stream failed, bit 2 stream uncertain, bit 3 limit exceeded), `count`, padding. Then `count` records of 72 bytes: `object_number`, `generation`, `object_start`, `flags` (bit 0 document timestamp, bit 1 has `/ByteRange`, bit 2 has `/Contents`, bit 3 byte-range values valid, bit 4 unsigned placeholder), the `/ByteRange` span and the `/Contents` span (`key_start`, `value_start`, `value_end` each, all `u32`), and the four byte-range values as `f64`.
+Header of 24 bytes, all `u32`: `magic` (`0x47534450`, "PDSG"), `version` (`1`), `failure` (`0` none, then `1`–`10` in the order `streamEnd`, `revisionLengths`, `indirectLengths`, `lengthBudget`, `dictionaryParse`, `revisionStructure`, `crossReferenceStream`, `objectStream`, `traversalBudget`, `invalidByteRange`), `flags` (bit 0 parse failed, bit 1 stream failed, bit 2 stream uncertain, bit 3 limit exceeded), `count`, padding. Then `count` records of 72 bytes: `object_number`, `generation`, `object_start`, `flags` (bit 0 document timestamp, bit 1 has `/ByteRange`, bit 2 has `/Contents`, bit 3 byte-range values valid, bit 4 unsigned placeholder, bit 5 `/SubFilter /ETSI.CAdES.detached`), the `/ByteRange` span and the `/Contents` span (`key_start`, `value_start`, `value_end` each, all `u32`), and the four byte-range values as `f64`.
 
 ### Document payload (version 2)
 

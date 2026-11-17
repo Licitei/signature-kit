@@ -964,6 +964,7 @@ export const makePdfCore = (
                 }),
             ...(contents === undefined ? {} : { contents }),
             unsignedPlaceholder: (recordFlags & 16) !== 0,
+            usesEtsiCadesDetached: (recordFlags & 32) !== 0,
           };
         });
         const failure =

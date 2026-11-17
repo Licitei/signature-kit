@@ -152,6 +152,8 @@ export const addSignaturePlaceholder = (
       (request.policy === "pades-icp-brasil"
         ? DEFAULT_ICP_BRASIL_SIGNATURE_LENGTH
         : DEFAULT_SIGNATURE_LENGTH);
+    const subFilter =
+      request.policy === "pades-icp-brasil" ? "ETSI.CAdES.detached" : "adbe.pkcs7.detached";
     const signingTime = request.signingTime ?? new Date(yield* Clock.currentTimeMillis);
     const signatureRef = { number: document.nextObjectNumber, generation: 0 };
     const widgetRef = { number: document.nextObjectNumber + 1, generation: 0 };
@@ -164,7 +166,7 @@ export const addSignaturePlaceholder = (
         ref: signatureRef,
         contentsLength: signatureLength,
         entries: [
-          "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached",
+          `<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /${subFilter}`,
           `/Reason ${pdfTextString(request.reason ?? "Digital signature")}`,
           `/M ${pdfDate(signingTime)}`,
           `/ContactInfo ${pdfTextString(request.contactInfo ?? "")}`,

@@ -741,7 +741,8 @@ fn encode_signatures(report: &Report) -> Outcome<Writer> {
             | (u32::from(byte_range.is_some()) << 1_i32)
             | (u32::from(contents.is_some()) << 2_i32)
             | (u32::from(dictionary.byte_range_values.is_some()) << 3_i32)
-            | (u32::from(dictionary.unsigned_placeholder) << 4_i32);
+            | (u32::from(dictionary.unsigned_placeholder) << 4_i32)
+            | (u32::from(dictionary.uses_etsi_cades_detached) << 5_i32);
         out.u32(u32::try_from(dictionary.number).unwrap_or(u32::MAX));
         out.u32(u32::try_from(dictionary.generation).unwrap_or(u32::MAX));
         out.u32(saturate(dictionary.object_start));

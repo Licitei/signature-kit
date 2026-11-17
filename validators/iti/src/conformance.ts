@@ -481,14 +481,17 @@ export const validatePdfConformance = (
           signature.startsAtZero &&
           revisionComplete &&
           (!newest || signature.coversFileEnd) &&
-          singleSignerInfo;
+          singleSignerInfo &&
+          signature.usesEtsiCadesDetached;
         const structureMessage = !signature.startsAtZero
           ? "A cobertura ByteRange do PDF não inicia no byte zero."
           : !revisionComplete
             ? "A cobertura ByteRange não termina em uma revisão PDF completa."
             : newest && !signature.coversFileEnd
               ? "O dicionário de assinatura não cobre todo o documento PDF."
-              : "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF.";
+              : !singleSignerInfo
+                ? "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF."
+                : "O dicionário de assinatura deve usar SubFilter ETSI.CAdES.detached para PAdES AD-RB.";
         const signingTime = inspection.signedAttributes.find(
           (attribute) => attribute.type === CmsOid.signingTime,
         );

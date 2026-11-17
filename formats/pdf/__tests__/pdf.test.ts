@@ -593,6 +593,7 @@ ${"x".repeat(1000)}
       ).toBeGreaterThanOrEqual(0);
       expect(indexOfBytes(extracted.signature, SIGNATURE_POLICY_OID_DER)).toBeGreaterThanOrEqual(0);
       expect(text).toContain("/M (D:20260102030405Z)");
+      expect(text).toContain("/SubFilter /ETSI.CAdES.detached");
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 

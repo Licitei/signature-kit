@@ -7,6 +7,7 @@ import { vi } from "vitest";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { ItiRemoteValidationReportSchema, validatePdfWithIti } from "../src/remote";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
+import { signAdRbPdf } from "./pdf-fixture";
 
 const ITI_ENDPOINT = "https://validar.iti.gov.br/arquivo";
 
@@ -35,16 +36,16 @@ const restoreFetch = Effect.sync(() => {
   vi.unstubAllGlobals();
 });
 
-const validateWithItiResponse = (status: number, body: unknown) =>
+const validateWithItiResponse = (status: number, body: unknown, pdf?: Uint8Array) =>
   Effect.gen(function* () {
-    const pdf = yield* readSignedFixture();
+    const source = pdf ?? (yield* readSignedFixture());
     const local = yield* localHttpServer(async () => ({
       status,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }));
     yield* installItiFetchRedirect(local.baseUrl);
-    return yield* validatePdfWithIti({ source: { pdf } }).pipe(
+    return yield* validatePdfWithIti({ source: { pdf: source } }).pipe(
       Effect.provide(Layer.merge(signatureHttpClientLive, pdfCoreTestLayer)),
     );
   }).pipe(Effect.ensuring(restoreFetch));
@@ -93,7 +94,8 @@ describe("ITI remote hardening", () => {
         qtds: [1, 2],
         json: { report: "partial" },
       };
-      const report = yield* validateWithItiResponse(206, partialPayload);
+      const pdf = yield* signAdRbPdf(false);
+      const report = yield* validateWithItiResponse(206, partialPayload, pdf);
       const decoded = yield* Schema.decodeUnknownEffect(ItiRemoteValidationReportSchema)(report);
       expect(report.validator).toBe("iti.remote");
       expect(report.outcome).toBe("partial");
