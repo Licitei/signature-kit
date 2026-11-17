@@ -1301,7 +1301,6 @@ const RENDER_FIXTURES: ReadonlyArray<readonly [string, () => Uint8Array]> = [
   ["optional-content.pdf", buildRenderOptionalContent],
 ];
 
-
 const corruptStartxref = (bytes: Uint8Array): Uint8Array => {
   const needle = encoder.encode("startxref");
   let at = -1;
