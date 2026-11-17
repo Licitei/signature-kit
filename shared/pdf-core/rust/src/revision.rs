@@ -1316,10 +1316,10 @@ impl Structure {
             let Some(previous) = source.previous else {
                 return true;
             };
-            match usize::try_from(previous) {
-                Ok(next) if next < source.offset => offset = next,
-                _ => return false,
-            }
+            let Ok(next) = usize::try_from(previous) else {
+                return false;
+            };
+            offset = next;
         }
     }
 

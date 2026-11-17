@@ -283,7 +283,7 @@ impl Graph {
                 continue;
             };
             let number = u32::try_from(index).unwrap_or(u32::MAX);
-            if layout == Packing::ObjectStreams && !matches!(body.object, Object::Stream(_)) {
+            if layout == Packing::ObjectStreams && packable(&body.object) {
                 packed.push((number, &body.object));
                 continue;
             }
@@ -353,7 +353,7 @@ impl MergeOutput {
                 continue;
             };
             let number = u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX);
-            if layout == Packing::ObjectStreams && !matches!(object, Object::Stream(_)) {
+            if layout == Packing::ObjectStreams && packable(object) {
                 packed.push((number, object));
                 continue;
             }
@@ -858,6 +858,13 @@ fn flatten_page(document: &Document<'_>, page: &Page, drop_widgets: bool) -> Out
         }
     }
     Ok(dict)
+}
+
+fn packable(object: &Object) -> bool {
+    !matches!(object, Object::Stream(_))
+        && object
+            .as_dict()
+            .is_none_or(|dict| dict.get(b"ByteRange").is_none() || dict.get(b"Contents").is_none())
 }
 
 fn pack_object_streams<F>(

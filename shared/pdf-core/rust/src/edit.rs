@@ -8,6 +8,7 @@ use crate::failure::{Failure, Outcome};
 use crate::inspection::{Limits, PageInfo};
 use crate::num::{f64_to_i64, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
+use crate::revision::revision_complete;
 use crate::syntax::{Parser, skip_whitespace_at};
 use crate::write::{Body, Changes, Packing, incremental, rewrite};
 
@@ -641,7 +642,7 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     } else {
         Packing::ObjectStreams
     };
-    let intact = intact_xref(&document);
+    let intact = intact_xref(&document, pdf);
     match flags & MODE_MASK {
         MODE_INCREMENTAL if !intact => Err(Failure::request(
             "incremental update needs an intact cross-reference chain",
@@ -879,8 +880,11 @@ fn image_dict(width: u32, height: u32, color_space: &[u8]) -> Dict {
     dict
 }
 
-fn intact_xref(document: &Document<'_>) -> bool {
-    !document.was_repaired() && document.shift() == 0 && document.startxref().is_some()
+fn intact_xref(document: &Document<'_>, pdf: &[u8]) -> bool {
+    !document.was_repaired()
+        && document.shift() == 0
+        && document.startxref().is_some()
+        && revision_complete(pdf, pdf.len())
 }
 
 fn navigate<'object>(object: &'object Object, path: &[Step]) -> Option<&'object Object> {
@@ -1118,7 +1122,7 @@ mod tests {
     use crate::failure::FailureCode;
     use crate::layout::{TextOptions, document_text, text_limits};
     use crate::object::Resolver;
-    use crate::revision::{Analysis, analyze, revision_complete};
+    use crate::revision::{Analysis, analyze};
     use crate::test_pdf::{build, document, page, stream_object, text};
     use crate::write::merge;
 
@@ -1264,6 +1268,108 @@ mod tests {
         span[..text.len()].copy_from_slice(text.as_bytes());
         pdf[contents.value_start.saturating_add(1)..contents.value_start.saturating_add(9)]
             .copy_from_slice(b"30820101");
+    }
+
+    fn last_position(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .rposition(|window| window == needle)
+            .unwrap()
+    }
+
+    fn self_looping_prev() -> Vec<u8> {
+        let source = sample();
+        let start = last_position(&source, b"startxref").saturating_add(9);
+        let offset = String::from_utf8_lossy(&source[start..])
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned();
+        let trailer = last_position(&source, b"trailer");
+        let open = trailer
+            .saturating_add(last_position(&source[trailer..], b"<<"))
+            .saturating_add(2);
+        let mut out = source[..open].to_vec();
+        out.extend_from_slice(format!(" /Prev {offset}").as_bytes());
+        out.extend_from_slice(&source[open..]);
+        out
+    }
+
+    fn forward_prev() -> Vec<u8> {
+        let source = sample();
+        let start = last_position(&source, b"startxref");
+        let table = last_position(&source[..start], b"xref");
+        let trailer = last_position(&source, b"trailer");
+        let dict_open = trailer.saturating_add(last_position(&source[trailer..], b"<<"));
+        let dict_close = last_position(&source[..start], b">>").saturating_add(2);
+        let entries = String::from_utf8_lossy(
+            &source[dict_open.saturating_add(2)..dict_close.saturating_sub(2)],
+        )
+        .into_owned();
+        let head = format!("xref\n0 0\ntrailer\n<<{entries} /Prev ");
+        let mut probe = head.clone();
+        probe.push_str(&table.to_string());
+        probe.push_str(" >>\n");
+        let mut width = probe.len();
+        let mut section = String::new();
+        for _ in 0_u8..3 {
+            section = format!("{head}{} >>\n", table.saturating_add(width));
+            width = section.len();
+        }
+        let mut out = source[..table].to_vec();
+        out.extend_from_slice(section.as_bytes());
+        out.extend_from_slice(&source[table..start]);
+        out.extend_from_slice(format!("startxref\n{table}\n%%EOF\n").as_bytes());
+        out
+    }
+
+    #[test]
+    fn forward_prev_chains_like_linearized_files_stay_incremental() {
+        let source = forward_prev();
+        assert!(revision_complete(&source, source.len()));
+        assert!(!Document::open(&source, &limits()).unwrap().was_repaired());
+        let info = document_info(&source, None, b"Sig", &limits()).unwrap();
+        let page_number = info.pages[0].reference.unwrap().number;
+        let ops = placeholder_ops(info.next_object_number, page_number, "Sig1");
+        let placed = edit(&source, &ops.finish(MODE_INCREMENTAL), &limits()).unwrap();
+        assert!(placed.starts_with(&source));
+        assert!(revision_complete(&placed, source.len()));
+        assert!(revision_complete(&placed, placed.len()));
+        let scan = analyze(&placed, Analysis::Dictionaries);
+        assert_eq!(scan.dictionaries.len(), 1);
+    }
+
+    #[test]
+    fn auto_mode_rewrites_chains_the_verifier_rejects() {
+        let source = self_looping_prev();
+        assert!(!revision_complete(&source, source.len()));
+        let info = document_info(&source, None, b"Sig", &limits()).unwrap();
+        let page_number = info.pages[0].reference.unwrap().number;
+        let ops = placeholder_ops(info.next_object_number, page_number, "Sig1");
+        edit(&source, &ops.finish(MODE_INCREMENTAL), &limits()).unwrap_err();
+        let placed = edit(&source, &ops.finish(0), &limits()).unwrap();
+        assert!(!placed.starts_with(&source));
+        assert!(revision_complete(&placed, placed.len()));
+        let scan = analyze(&placed, Analysis::Dictionaries);
+        assert_eq!(scan.dictionaries.len(), 1);
+        assert!(scan.dictionaries[0].unsigned_placeholder);
+    }
+
+    #[test]
+    fn object_stream_rewrite_keeps_signature_dictionary_uncompressed() {
+        let source = sample();
+        let info = document_info(&source, None, b"Sig", &limits()).unwrap();
+        let page_number = info.pages[0].reference.unwrap().number;
+        let ops = placeholder_ops(info.next_object_number, page_number, "Sig1");
+        let placed = edit(
+            &source,
+            &ops.finish(MODE_REWRITE | FLAG_OBJECT_STREAMS),
+            &limits(),
+        )
+        .unwrap();
+        let scan = analyze(&placed, Analysis::Dictionaries);
+        assert_eq!(scan.dictionaries.len(), 1);
+        assert!(scan.dictionaries[0].unsigned_placeholder);
     }
 
     #[test]
