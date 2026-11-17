@@ -38,6 +38,7 @@ mod tests {
         document::inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: true,
                 page_indexes: None,
@@ -216,6 +217,7 @@ mod tests {
         let all = document::inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: false,
                 page_indexes: None,
@@ -227,6 +229,7 @@ mod tests {
         let filtered = document::inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: false,
                 page_indexes: Some(vec![0]),
@@ -239,6 +242,7 @@ mod tests {
         let missing = document::inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: false,
                 page_indexes: Some(vec![5]),

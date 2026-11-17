@@ -3,6 +3,7 @@ use crate::num::{f64_to_i64, f64_to_usize};
 use crate::syntax::is_whitespace;
 use crate::text::Session;
 use crate::text::extract_runs;
+use crate::text::{Capture, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1283,7 +1284,18 @@ pub(crate) fn inspect(
             let Some(page) = pages.get(position) else {
                 continue;
             };
-            let items = extract_runs(&document, page, limits, false, &mut session)?.items();
+            let content = if options.runs {
+                let capture = Capture {
+                    split_repositioned: true,
+                    split_style: true,
+                    structure: false,
+                };
+                extract_content(&document, page, limits, capture, &mut session)?
+            } else {
+                extract_runs(&document, page, limits, false, &mut session)?
+            };
+            let items = content.items();
+            let styles = content.styles();
             if items.len() > limits.max_items_per_page {
                 return Err(Failure::limit("page text items exceed limit"));
             }
@@ -1302,6 +1314,7 @@ pub(crate) fn inspect(
                     .ok()
                     .ok_or_else(|| Failure::limit("page index out of range"))?,
                 items,
+                styles,
             });
         }
     }
@@ -1408,6 +1421,7 @@ mod tests {
         inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: true,
                 page_indexes: None,
@@ -1470,6 +1484,51 @@ mod tests {
     }
 
     #[test]
+    fn inspect_runs_split_by_style_and_position_and_report_bold() {
+        use crate::test_pdf::{bold, document, page, text};
+        let content = [
+            bold(28.0, 700.0, 9.0, "17/06/2026 15:39:26"),
+            text(122.0, 700.0, 9.0, "MENSAGEM PREGOEIRO"),
+            "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Marca: ) Tj /F2 9 Tf (ACME) Tj ET\n".to_owned(),
+        ]
+        .concat();
+        let bytes = document(&[page(content)], &[]);
+        let run = |runs: bool| {
+            let inspection = inspect(
+                &bytes,
+                &InspectOptions {
+                    runs,
+                    text: true,
+                    links: false,
+                    page_indexes: None,
+                },
+                &Limits::default(),
+            )
+            .unwrap();
+            let page = inspection.text.into_iter().next().unwrap();
+            let texts: Vec<String> = page
+                .items
+                .iter()
+                .map(|item| item.text.trim().to_owned())
+                .collect();
+            (texts, page.styles)
+        };
+        let (merged, _) = run(false);
+        assert_eq!(merged.len(), 2);
+        let (texts, styles) = run(true);
+        assert_eq!(
+            texts,
+            [
+                "17/06/2026 15:39:26",
+                "MENSAGEM PREGOEIRO",
+                "Marca:",
+                "ACME"
+            ]
+        );
+        assert_eq!(styles, [1, 0, 0, 1]);
+    }
+
+    #[test]
     fn inspect_enforces_limits_and_page_indexes() {
         let bytes = basic_pdf();
         let tiny = Limits {
@@ -1479,6 +1538,7 @@ mod tests {
         let error = inspect(&bytes, &InspectOptions::default(), &tiny).unwrap_err();
         assert_eq!(error.code, FailureCode::LimitExceeded);
         let options = InspectOptions {
+            runs: false,
             text: true,
             links: false,
             page_indexes: Some(vec![5]),
@@ -1486,6 +1546,7 @@ mod tests {
         let error_2 = inspect(&bytes, &options, &Limits::default()).unwrap_err();
         assert_eq!(error_2.code, FailureCode::InvalidPdf);
         let options_2 = InspectOptions {
+            runs: false,
             text: true,
             links: false,
             page_indexes: Some(vec![0, 0]),
@@ -2287,6 +2348,7 @@ mod tests {
             ..Limits::default()
         };
         let options = InspectOptions {
+            runs: false,
             text: true,
             links: true,
             page_indexes: None,

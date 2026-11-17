@@ -33,6 +33,9 @@ impl Default for Limits {
 pub(crate) struct InspectOptions {
     pub links: bool,
     pub page_indexes: Option<Vec<u32>>,
+    /// Split text items wherever the text is repositioned or its font style changes, and
+    /// resolve the bold and italic style of every item (also for non-embedded fonts).
+    pub runs: bool,
     pub text: bool,
 }
 
@@ -61,6 +64,8 @@ pub(crate) struct TextItem {
 pub(crate) struct PageText {
     pub items: Vec<TextItem>,
     pub page_index: u32,
+    /// One style byte per item: bit 0 bold, bit 1 italic.
+    pub styles: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

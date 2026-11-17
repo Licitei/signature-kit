@@ -461,6 +461,13 @@ impl PageContent {
             .collect()
     }
 
+    pub(crate) fn styles(&self) -> Vec<u8> {
+        self.runs
+            .iter()
+            .map(|run| u8::from(run.bold) | (u8::from(run.italic) << 1))
+            .collect()
+    }
+
     pub(crate) fn text_of(&self, run: &Run) -> &str {
         self.text
             .get(widen(run.text.start)..widen(run.text.end))
@@ -2817,6 +2824,7 @@ mod tests {
         inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: false,
                 page_indexes: None,

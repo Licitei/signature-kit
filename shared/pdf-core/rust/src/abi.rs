@@ -24,7 +24,7 @@ use crate::table::Table;
 use crate::write::{Packing, create, merge};
 
 const MAGIC: u32 = 0x4346_4450;
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const HEADER_LEN: usize = 32;
 const PAGE_RECORD_LEN: usize = 72;
 const RESULT_HEADER_LEN: usize = 8;
@@ -33,6 +33,7 @@ const FLAG_LINKS: u32 = 2;
 const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
+const FLAG_RUNS: u32 = 32;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
@@ -339,6 +340,8 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
             out.u32(cursor);
         }
         out.align();
+        out.bytes(&page.styles);
+        out.align();
         for item in &page.items {
             out.bytes(item.text.as_bytes());
         }
@@ -559,6 +562,7 @@ pub(crate) unsafe extern "C" fn pdf_core_inspect(
             text: inner_request.has(FLAG_TEXT),
             links: inner_request.has(FLAG_LINKS),
             page_indexes: inner_request.pages.map(<[u32]>::to_vec),
+            runs: inner_request.has(FLAG_RUNS),
         };
         let inspection = document::inspect(inner_request.pdf, &options, &layout::text_limits())?;
         encode(&inspection)
@@ -1155,6 +1159,8 @@ mod tests {
                 .take(item_count.saturating_add(1))
                 .collect();
             reader.align();
+            let styles = reader.take(item_count).to_vec();
+            reader.align();
             let strings = reader.take(text_len);
             reader.align();
             let units: Vec<u16> = str::from_utf8(strings).unwrap().encode_utf16().collect();
@@ -1171,7 +1177,11 @@ mod tests {
                     .unwrap(),
                 })
                 .collect();
-            PageText { items, page_index }
+            PageText {
+                items,
+                page_index,
+                styles,
+            }
         })
         .take(widen(text_count))
         .collect();
@@ -1213,6 +1223,7 @@ mod tests {
             text: vec![
                 PageText {
                     page_index: 0,
+                    styles: vec![1, 2, 0],
                     items: vec![
                         TextItem {
                             rect: [1.0, 2.0, 3.0, 4.0],
@@ -1234,6 +1245,7 @@ mod tests {
                 PageText {
                     page_index: 1,
                     items: Vec::new(),
+                    styles: Vec::new(),
                 },
             ],
         }
