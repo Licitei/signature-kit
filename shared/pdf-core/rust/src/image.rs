@@ -6,6 +6,8 @@ use crate::object::{Dict, Object, Resolver};
 const MAX_PIXELS: usize = 1 << 26;
 const MAX_OUTPUT_PIXELS: usize = 1 << 24;
 const MAX_FACTOR: usize = 1 << 12;
+const COLOR_CACHE_SLOTS: usize = 1 << 12;
+const NO_KEY: u64 = u64::MAX;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Raster {
@@ -32,8 +34,8 @@ pub(crate) struct ImageContext<'ctx> {
     pub device: (f64, f64),
     pub fill: [u8; 4],
     pub max_bytes: usize,
-    pub named: Option<&'ctx Dict>,
     pub resolver: &'ctx dyn Resolver,
+    pub space: Option<&'ctx ColorSpace>,
 }
 
 pub(crate) struct ImageInput<'input> {
@@ -50,13 +52,47 @@ enum Alpha {
     Plane(Raster, Option<[u8; 3]>),
 }
 
-enum Converter {
+enum Converter<'space> {
     Cmyk([Vec<f64>; 4]),
-    Generic(Box<(ColorSpace, Vec<f64>)>),
+    Generic(Box<Generic<'space>>),
     Gray(Vec<u8>),
     Palette(Vec<[u8; 3]>),
     Rgb([Vec<u8>; 3]),
     Stencil([u8; 4], bool),
+}
+
+struct Generic<'space> {
+    cache: Vec<(u64, [u8; 3])>,
+    decode: Vec<(f64, f64)>,
+    packed: bool,
+    space: &'space ColorSpace,
+    values: Vec<f64>,
+}
+
+impl Generic<'_> {
+    fn pixel(&mut self, row: &[u8], base: usize, bits: u32, scratch: &mut Vec<f64>) -> [u8; 3] {
+        let max = sample_max(bits);
+        let mut key = 0_u64;
+        self.values.clear();
+        for (component, (low, high)) in self.decode.iter().enumerate() {
+            let raw = sample(row, base.saturating_add(component), bits);
+            key = key.rotate_left(lut_bits(bits)) ^ u64::from(raw);
+            self.values.push(low + f64::from(raw) * (high - low) / max);
+        }
+        let slot = usize::try_from(key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52_u32).unwrap_or(0);
+        let cacheable = key != NO_KEY && self.packed;
+        if cacheable
+            && let Some((stored, rgb)) = self.cache.get(slot)
+            && *stored == key
+        {
+            return *rgb;
+        }
+        let rgb = self.space.rgb(&self.values, scratch).map(unit_to_u8);
+        if cacheable && let Some(entry) = self.cache.get_mut(slot) {
+            *entry = (key, rgb);
+        }
+        rgb
+    }
 }
 
 struct Layout {
@@ -258,6 +294,10 @@ const fn lut_bits(bits: u32) -> u32 {
     if bits == 16 { 8 } else { bits }
 }
 
+fn sample_max(bits: u32) -> f64 {
+    f64::from((1_u32 << lut_bits(bits).min(16)).wrapping_sub(1)).max(1.0)
+}
+
 fn component_lut(decode: &[f64], component: usize, bits: u32) -> Vec<f64> {
     let effective = lut_bits(bits);
     let max = (1_u32 << effective).wrapping_sub(1);
@@ -281,7 +321,7 @@ fn byte_lut(decode: &[f64], component: usize, bits: u32) -> Vec<u8> {
         .collect()
 }
 
-fn converter(space: &ColorSpace, decode: &[f64], bits: u32) -> Converter {
+fn converter<'space>(space: &'space ColorSpace, decode: &[f64], bits: u32) -> Converter<'space> {
     match space {
         ColorSpace::Gray => Converter::Gray(byte_lut(decode, 0, bits)),
         ColorSpace::Rgb => Converter::Rgb([
@@ -311,12 +351,39 @@ fn converter(space: &ColorSpace, decode: &[f64], bits: u32) -> Converter {
         ColorSpace::Indexed(_)
         | ColorSpace::Lab(_)
         | ColorSpace::Pattern(_)
-        | ColorSpace::Tinted(_) => Converter::Generic(Box::new((space.clone(), decode.to_vec()))),
+        | ColorSpace::Tinted(_) => {
+            let components = space.components().max(1);
+            let ranges = (0..components)
+                .map(|component| {
+                    (
+                        decode
+                            .get(component.saturating_mul(2))
+                            .copied()
+                            .unwrap_or(0.0_f64),
+                        decode
+                            .get(component.saturating_mul(2).saturating_add(1))
+                            .copied()
+                            .unwrap_or(1.0_f64),
+                    )
+                })
+                .collect();
+            let packed = u32::try_from(components)
+                .ok()
+                .and_then(|count| count.checked_mul(lut_bits(bits)))
+                .is_some_and(|total| total <= 64);
+            Converter::Generic(Box::new(Generic {
+                cache: vec![(NO_KEY, [0; 3]); if packed { COLOR_CACHE_SLOTS } else { 0 }],
+                decode: ranges,
+                packed,
+                space,
+                values: Vec::with_capacity(components),
+            }))
+        }
     }
 }
 
 fn convert_row(
-    converter: &Converter,
+    converter: &mut Converter<'_>,
     row: &[u8],
     layout: &Layout,
     out: &mut [u8],
@@ -377,24 +444,9 @@ fn convert_row(
                     if painted { color[3] } else { 0 },
                 ]
             }
-            Converter::Generic(boxed) => {
-                let (space, decode) = &**boxed;
-                let max = f64::from((1_u32 << lut_bits(bits)).wrapping_sub(1)).max(1.0);
-                let values: Vec<f64> = (0..components)
-                    .map(|component| {
-                        let low = decode
-                            .get(component.saturating_mul(2))
-                            .copied()
-                            .unwrap_or(0.0_f64);
-                        let high = decode
-                            .get(component.saturating_mul(2).saturating_add(1))
-                            .copied()
-                            .unwrap_or(1.0_f64);
-                        low + f64::from(raw(component)) * (high - low) / max
-                    })
-                    .collect();
-                let [red, green, blue] = space.rgb(&values, scratch);
-                [unit_to_u8(red), unit_to_u8(green), unit_to_u8(blue), 255]
+            Converter::Generic(generic) => {
+                let [red, green, blue] = generic.pixel(row, base, bits, scratch);
+                [red, green, blue, 255]
             }
         };
         *pixel = rgb;
@@ -509,7 +561,7 @@ fn matte_of(ctx: &ImageContext<'_>, object: &Object, space: &ColorSpace) -> Opti
     Some(space.rgb(&values, &mut Vec::new()).map(unit_to_u8))
 }
 
-fn decode_alpha(ctx: &ImageContext<'_>, object: &Object) -> Option<Pixels> {
+fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Option<Pixels> {
     let resolved = ctx.resolver.resolve(object).ok()?;
     let stream = resolved.as_stream()?;
     let dict = &stream.dict;
@@ -517,7 +569,7 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object) -> Option<Pixels> {
     let (filter, parms) = image_filter(ctx.resolver, dict);
     let raw = ctx.resolver.stream_data(stream).ok()?;
     let (data, bits) = match filter.as_deref() {
-        None => (raw, bits_of(ctx.resolver, dict, false)?),
+        None => (raw, bits_of(ctx.resolver, dict, stencil)?),
         Some(b"CCITTFaxDecode") => (
             ccitt::decode(
                 &raw,
@@ -535,7 +587,6 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object) -> Option<Pixels> {
         }
         Some(_) => return None,
     };
-    let stencil = flag(ctx.resolver, dict, b"ImageMask");
     let decode = numbers(ctx.resolver, dict, b"Decode");
     let invert = decode.first().is_some_and(|first| *first > 0.5_f64);
     let lut = component_lut(
@@ -588,7 +639,7 @@ fn bits_of(resolver: &dyn Resolver, dict: &Dict, stencil: bool) -> Option<u32> {
 fn alpha_source(ctx: &ImageContext<'_>, dict: &Dict, space: &ColorSpace) -> Alpha {
     let components = space.components().max(1);
     if let Some(smask) = dict.get(b"SMask") {
-        match decode_alpha(ctx, smask) {
+        match decode_alpha(ctx, smask, false) {
             Some(Pixels::Raster(plane)) => return Alpha::Plane(plane, matte_of(ctx, smask, space)),
             Some(Pixels::Jpeg(jpeg)) => return Alpha::Deferred(jpeg),
             None => {}
@@ -619,14 +670,8 @@ fn alpha_source(ctx: &ImageContext<'_>, dict: &Dict, space: &ColorSpace) -> Alph
                     .collect(),
             )
         }
-        Object::Stream(_) => match decode_alpha(ctx, mask) {
-            Some(Pixels::Raster(plane)) => {
-                let mut inverted = plane;
-                for value in &mut inverted.pixels {
-                    *value = 255_u8.saturating_sub(*value);
-                }
-                Alpha::Plane(inverted, None)
-            }
+        Object::Stream(_) => match decode_alpha(ctx, mask, true) {
+            Some(Pixels::Raster(plane)) => Alpha::Plane(plane, None),
             Some(Pixels::Jpeg(_)) | None => Alpha::Opaque,
         },
         Object::Bool(_)
@@ -645,20 +690,28 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
     let dict = input.dict;
     let (width, height) = dimensions(resolver, dict)?;
     let stencil = flag(resolver, dict, b"ImageMask");
+    let fallback = if ctx.space.is_none() && !stencil {
+        dict.get(b"ColorSpace")
+            .and_then(|value| ColorSpace::parse(resolver, value, None))
+            .unwrap_or(ColorSpace::Gray)
+    } else {
+        ColorSpace::Gray
+    };
+    let space = if stencil {
+        &fallback
+    } else {
+        ctx.space.unwrap_or(&fallback)
+    };
     if input.filter == Some(b"DCTDecode") {
         let smask = dict.get(b"SMask");
-        let space = dict
-            .get(b"ColorSpace")
-            .and_then(|value| ColorSpace::parse(resolver, value, ctx.named))
-            .unwrap_or(ColorSpace::Rgb);
         return Some(Decoded {
             image: Pixels::Jpeg(Raster {
                 height: u32::try_from(height).ok()?,
                 pixels: input.data.to_vec(),
                 width: u32::try_from(width).ok()?,
             }),
-            mask: smask.and_then(|object| decode_alpha(ctx, object)),
-            matte: smask.and_then(|object| matte_of(ctx, object, &space)),
+            mask: smask.and_then(|object| decode_alpha(ctx, object, false)),
+            matte: smask.and_then(|object| matte_of(ctx, object, space)),
         });
     }
     let ccitt_data;
@@ -674,13 +727,6 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
         }
         Some(_) => return None,
     };
-    let space = if stencil {
-        ColorSpace::Gray
-    } else {
-        dict.get(b"ColorSpace")
-            .and_then(|value| ColorSpace::parse(resolver, value, ctx.named))
-            .unwrap_or(ColorSpace::Gray)
-    };
     let components = if stencil {
         1
     } else {
@@ -692,13 +738,13 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
     } else {
         space.default_decode(bits)
     };
-    let converter = if stencil {
+    let mut converter = if stencil {
         Converter::Stencil(
             ctx.fill,
             decode.first().is_some_and(|first| *first > 0.5_f64),
         )
     } else {
-        converter(&space, &decode, bits)
+        converter(space, &decode, bits)
     };
     let layout = Layout {
         bits,
@@ -713,7 +759,7 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
     let alpha = if stencil {
         Alpha::Opaque
     } else {
-        alpha_source(ctx, dict, &space)
+        alpha_source(ctx, dict, space)
     };
     let (factor_x, factor_y) = factors(width, height, ctx.device);
     let mut sampler = Downsampler::new(width, height, factor_x, factor_y);
@@ -724,7 +770,7 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
         let row = data
             .get(start..start.saturating_add(layout.row_bytes))
             .unwrap_or_default();
-        convert_row(&converter, row, &layout, &mut row_pixels, &mut scratch);
+        convert_row(&mut converter, row, &layout, &mut row_pixels, &mut scratch);
         apply_alpha(&alpha, row, y, &layout, &mut row_pixels);
         sampler.push_row(&row_pixels);
     }
@@ -734,7 +780,7 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
         Alpha::Deferred(jpeg) => (
             Some(Pixels::Jpeg(jpeg)),
             dict.get(b"SMask")
-                .and_then(|object| matte_of(ctx, object, &space)),
+                .and_then(|object| matte_of(ctx, object, space)),
         ),
         Alpha::ColorKey(_) | Alpha::Opaque | Alpha::Plane(..) => (None, None),
     };
@@ -786,9 +832,130 @@ mod tests {
             device,
             fill: [255, 0, 0, 255],
             max_bytes: 1 << 24,
-            named: None,
             resolver,
+            space: None,
         }
+    }
+
+    fn mask_alphas(mask_entries: Vec<(&str, Object)>) -> Vec<u8> {
+        let resolver = Data(vec![0b0101_0101]);
+        let mut entries = vec![
+            ("Width", Object::Integer(8)),
+            ("Height", Object::Integer(1)),
+            ("ImageMask", Object::Bool(true)),
+        ];
+        entries.extend(mask_entries);
+        let mask = Object::Stream(Stream {
+            data: 0..1,
+            dict: dict(entries),
+        });
+        let image = dict(vec![
+            ("Width", Object::Integer(8)),
+            ("Height", Object::Integer(1)),
+            ("BitsPerComponent", Object::Integer(8)),
+            ("ColorSpace", name("DeviceGray")),
+            ("Mask", mask),
+        ]);
+        let input = ImageInput {
+            data: &[0; 8],
+            dict: &image,
+            filter: None,
+            parms: None,
+        };
+        let raster = rgba(decode_image(
+            &context(&resolver, (8.0_f64, 1.0_f64)),
+            &input,
+        ));
+        raster.pixels.chunks(4).map(|pixel| pixel[3]).collect()
+    }
+
+    #[test]
+    fn explicit_masks_paint_where_samples_are_zero_with_or_without_bits_per_component() {
+        let expected = vec![255, 0, 255, 0, 255, 0, 255, 0];
+        assert_eq!(mask_alphas(Vec::new()), expected);
+        assert_eq!(
+            mask_alphas(vec![("BitsPerComponent", Object::Integer(1))]),
+            expected
+        );
+        assert_eq!(
+            mask_alphas(vec![(
+                "Decode",
+                Object::Array(vec![Object::Integer(1), Object::Integer(0)])
+            )]),
+            vec![0, 255, 0, 255, 0, 255, 0, 255]
+        );
+    }
+
+    #[test]
+    fn stencil_masks_keep_the_fill_colour_opaque() {
+        let resolver = Data(Vec::new());
+        let mask = dict(vec![
+            ("Width", Object::Integer(2)),
+            ("Height", Object::Integer(1)),
+            ("ImageMask", Object::Bool(true)),
+        ]);
+        let input = ImageInput {
+            data: &[0b0100_0000],
+            dict: &mask,
+            filter: None,
+            parms: None,
+        };
+        let mut ctx = context(&resolver, (2.0_f64, 1.0_f64));
+        ctx.fill = [0, 0, 255, 255];
+        let raster = rgba(decode_image(&ctx, &input));
+        assert_eq!(raster.pixels, vec![0, 0, 255, 255, 0, 0, 255, 0]);
+    }
+
+    #[test]
+    fn device_n_images_convert_through_the_tint_cache() {
+        let resolver = Data(Vec::new());
+        let tint = Object::Dict(dict(vec![
+            ("FunctionType", Object::Integer(2)),
+            (
+                "Domain",
+                Object::Array(vec![Object::Integer(0), Object::Integer(1)]),
+            ),
+            ("C0", Object::Array(vec![Object::Integer(0); 4])),
+            (
+                "C1",
+                Object::Array(vec![
+                    Object::Integer(1),
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(0),
+                ]),
+            ),
+            ("N", Object::Integer(1)),
+        ]));
+        let space = ColorSpace::parse(
+            &resolver,
+            &Object::Array(vec![
+                name("DeviceN"),
+                Object::Array(vec![name("Cyan"), name("Spot")]),
+                name("DeviceCMYK"),
+                tint,
+            ]),
+            None,
+        )
+        .unwrap();
+        let image = dict(vec![
+            ("Width", Object::Integer(3)),
+            ("Height", Object::Integer(1)),
+            ("BitsPerComponent", Object::Integer(8)),
+        ]);
+        let input = ImageInput {
+            data: &[255, 0, 0, 0, 255, 0],
+            dict: &image,
+            filter: None,
+            parms: None,
+        };
+        let mut ctx = context(&resolver, (3.0_f64, 1.0_f64));
+        ctx.space = Some(&space);
+        let raster = rgba(decode_image(&ctx, &input));
+        assert_eq!(
+            raster.pixels,
+            vec![0, 255, 255, 255, 255, 255, 255, 255, 0, 255, 255, 255]
+        );
     }
 
     fn rgba(decoded: Option<Decoded>) -> Raster {

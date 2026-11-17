@@ -16,7 +16,8 @@ use crate::shading::{GradientPaint, Shading, parse_shading};
 use crate::syntax::{ContentLexer, ContentToken, Operand};
 use alloc::rc::Rc;
 use core::mem;
-use std::collections::HashMap;
+use core::ops::Deref;
+use std::collections::{HashMap, HashSet};
 
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 const MAX_OPERANDS: usize = 512;
@@ -28,6 +29,13 @@ const MAX_BLOB_BYTES: usize = 384 << 20;
 const MAX_CACHED_FONTS: usize = 1024;
 const MAX_CACHED_OUTLINES: usize = 1 << 16;
 const MAX_CACHED_IMAGE_BYTES: usize = 96 << 20;
+const MAX_CACHED_STREAM_BYTES: usize = 64 << 20;
+const MAX_CACHED_SPACES: usize = 4096;
+const MAX_OUTLINE_WORK: usize = 16_000_000;
+const MAX_MARKED_CONTENT: usize = 1024;
+const MAX_VISIBILITY_DEPTH: usize = 8;
+const BOX_DESCENT: f64 = -0.2;
+const BOX_ASCENT: f64 = 0.8;
 const PLACEHOLDER: [u8; 4] = [217, 217, 217, 255];
 const FALLBACK_SERIF: u8 = 1;
 const FALLBACK_MONO: u8 = 2;
@@ -56,7 +64,18 @@ pub(crate) struct RenderSession {
     images: HashMap<ImageKey, Rc<Decoded>>,
     next_font: u32,
     outlines: HashMap<(u32, u16), Rc<PathData>>,
+    spaces: HashMap<ObjRef, Rc<ColorSpace>>,
+    stream_bytes: usize,
+    streams: HashMap<ObjRef, Rc<[u8]>>,
 }
+
+#[derive(Debug, Default)]
+pub(crate) struct OptionalContent {
+    off: HashSet<ObjRef>,
+    present: bool,
+}
+
+type NamedSpaces = HashMap<usize, (Rc<Object>, HashMap<Vec<u8>, Rc<ColorSpace>>)>;
 
 type ImageKey = (ObjRef, [u8; 4], u32);
 
@@ -150,9 +169,186 @@ struct TextState {
     matrix: Matrix,
 }
 
+#[derive(Default)]
+struct Marked {
+    hidden: usize,
+    overflow: usize,
+    stack: Vec<bool>,
+}
+
+impl Marked {
+    fn pop(&mut self) {
+        if self.overflow > 0 {
+            self.overflow = self.overflow.saturating_sub(1);
+        } else if self.stack.pop() == Some(true) {
+            self.hidden = self.hidden.saturating_sub(1);
+        }
+    }
+
+    fn push(&mut self, hidden: bool) {
+        if self.stack.len() >= MAX_MARKED_CONTENT {
+            self.overflow = self.overflow.saturating_add(1);
+            return;
+        }
+        self.stack.push(hidden);
+        if hidden {
+            self.hidden = self.hidden.saturating_add(1);
+        }
+    }
+}
+
+impl OptionalContent {
+    fn expression(&self, document: &Document<'_>, entry: &Object, depth: usize) -> bool {
+        if depth > MAX_VISIBILITY_DEPTH {
+            return true;
+        }
+        let Ok(resolved) = document.follow(entry) else {
+            return true;
+        };
+        let Some(items) = resolved.as_array() else {
+            return self.state(entry);
+        };
+        let operands = items.get(1..).unwrap_or_default();
+        let next = depth.saturating_add(1);
+        match items.first().and_then(Object::as_name) {
+            Some(b"And") => operands
+                .iter()
+                .all(|item| self.expression(document, item, next)),
+            Some(b"Or") => operands
+                .iter()
+                .any(|item| self.expression(document, item, next)),
+            Some(b"Not") => operands
+                .first()
+                .is_none_or(|item| !self.expression(document, item, next)),
+            _ => true,
+        }
+    }
+
+    pub(crate) fn load(document: &Document<'_>) -> Self {
+        let mut content = Self::default();
+        let Ok(Some(catalog)) = document.catalog() else {
+            return content;
+        };
+        let Some(properties) = catalog
+            .as_dict()
+            .and_then(|dict| dict.get(b"OCProperties"))
+            .and_then(|value| document.follow(value).ok())
+        else {
+            return content;
+        };
+        let Some(dict) = properties.as_dict() else {
+            return content;
+        };
+        content.present = true;
+        let config = dict.get(b"D").and_then(|value| document.follow(value).ok());
+        let config_dict = config.as_deref().and_then(Object::as_dict);
+        let refs = |holder: Option<&Dict>, key: &[u8]| -> Vec<ObjRef> {
+            holder
+                .and_then(|inner| inner.get(key))
+                .and_then(|value| document.follow(value).ok())
+                .and_then(|value| {
+                    value.as_array().map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| {
+                                if let Object::Ref(reference) = item {
+                                    Some(*reference)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                })
+                .unwrap_or_default()
+        };
+        let base_off = config_dict
+            .and_then(|inner| inner.get(b"BaseState"))
+            .and_then(Object::as_name)
+            == Some(b"OFF");
+        if base_off {
+            content.off = refs(Some(dict), b"OCGs").into_iter().collect();
+            for reference in refs(config_dict, b"ON") {
+                let _: bool = content.off.remove(&reference);
+            }
+        } else {
+            content.off = refs(config_dict, b"OFF").into_iter().collect();
+        }
+        content
+    }
+
+    fn state(&self, entry: &Object) -> bool {
+        match entry {
+            Object::Ref(reference) => !self.off.contains(reference),
+            Object::Array(_)
+            | Object::Bool(_)
+            | Object::Dict(_)
+            | Object::Integer(_)
+            | Object::Name(_)
+            | Object::Null
+            | Object::Real(_)
+            | Object::Stream(_)
+            | Object::String(_) => true,
+        }
+    }
+
+    fn visible(&self, document: &Document<'_>, entry: &Object, depth: usize) -> bool {
+        if !self.present || depth > MAX_VISIBILITY_DEPTH {
+            return true;
+        }
+        let Ok(resolved) = document.follow(entry) else {
+            return true;
+        };
+        let Some(dict) = resolved.as_dict() else {
+            return true;
+        };
+        if dict.get(b"Type").and_then(Object::as_name) != Some(b"OCMD") {
+            return self.state(entry);
+        }
+        if let Some(expression) = dict.get(b"VE") {
+            return self.expression(document, expression, depth.saturating_add(1));
+        }
+        let Some(members) = dict.get(b"OCGs") else {
+            return true;
+        };
+        let states: Vec<bool> = match document.follow(members).ok().as_deref() {
+            Some(Object::Array(items)) => items.iter().map(|item| self.state(item)).collect(),
+            Some(_) => vec![self.state(members)],
+            None => Vec::new(),
+        };
+        if states.is_empty() {
+            return true;
+        }
+        match dict.get(b"P").and_then(Object::as_name) {
+            Some(b"AllOn") => states.iter().all(|on| *on),
+            Some(b"AnyOff") => states.iter().any(|on| !*on),
+            Some(b"AllOff") => states.iter().all(|on| !*on),
+            _ => states.iter().any(|on| *on),
+        }
+    }
+}
+
+enum View<'object> {
+    Borrowed(&'object Object),
+    Shared(Rc<Object>),
+}
+
+impl Deref for View<'_> {
+    type Target = Object;
+
+    fn deref(&self) -> &Object {
+        match self {
+            Self::Borrowed(object) => object,
+            Self::Shared(object) => object,
+        }
+    }
+}
+
 struct Renderer<'doc, 'data> {
     active: Vec<ObjRef>,
+    box_glyph: Option<u32>,
     budget: usize,
+    content: &'doc OptionalContent,
     decoded: String,
     document: &'doc Document<'data>,
     emitted: Emitted,
@@ -162,11 +358,29 @@ struct Renderer<'doc, 'data> {
     images: HashMap<ImageKey, ImageRef>,
     limits: &'doc Limits,
     list: DisplayList,
+    named_spaces: NamedSpaces,
     next_glyph: u32,
+    operator_limit: usize,
     operators: usize,
+    outline_work: usize,
     scale: f64,
     session: &'doc mut RenderSession,
     truncated: bool,
+}
+
+struct PageTarget<'run, 'data> {
+    content: &'run OptionalContent,
+    document: &'run Document<'data>,
+    limits: &'run Limits,
+    operator_limit: usize,
+    page: &'run Page,
+    scale: f64,
+}
+
+struct PageSelection<'pages> {
+    operator_limit: usize,
+    page_indexes: Option<&'pages [u32]>,
+    scale: f64,
 }
 
 impl GState {
@@ -198,7 +412,7 @@ impl GState {
 }
 
 impl Renderer<'_, '_> {
-    fn add_image(&mut self, decoded: &Decoded) -> ImageRef {
+    fn add_image(&mut self, decoded: &Decoded, interpolate: bool) -> ImageRef {
         let (jpeg, raster) = match &decoded.image {
             Pixels::Jpeg(raster) => (true, raster),
             Pixels::Raster(raster) => (false, raster),
@@ -218,6 +432,7 @@ impl Renderer<'_, '_> {
         ImageRef {
             blob: self.list.blob(raster.pixels.clone()),
             height: raster.height,
+            interpolate,
             jpeg,
             mask,
             mask_height,
@@ -248,6 +463,7 @@ impl Renderer<'_, '_> {
             let flags = dict.get(b"F").and_then(Object::as_integer).unwrap_or(0);
             if flags & (2 | 32) != 0
                 || dict.get(b"Subtype").and_then(Object::as_name) == Some(b"Popup")
+                || dict.get(b"OC").is_some_and(|marker| self.hidden(marker))
             {
                 continue;
             }
@@ -391,8 +607,21 @@ impl Renderer<'_, '_> {
         }
     }
 
+    fn box_glyph(&mut self) -> u32 {
+        if let Some(id) = self.box_glyph {
+            return id;
+        }
+        let id = self.next_glyph;
+        self.next_glyph = self.next_glyph.saturating_add(1);
+        let mut path = PathData::default();
+        path.rect(0.0, BOX_DESCENT, 1.0, BOX_ASCENT - BOX_DESCENT);
+        self.list.glyph_define(id, &path);
+        self.box_glyph = Some(id);
+        id
+    }
+
     fn color_operator(
-        &self,
+        &mut self,
         code: &[u8],
         operands: &[Operand<'_>],
         frame: &Frame,
@@ -400,7 +629,6 @@ impl Renderer<'_, '_> {
     ) {
         let stroke = code.first().is_some_and(u8::is_ascii_uppercase);
         let lower: &[u8] = &code.to_ascii_lowercase();
-        let named = self.named_color_spaces(frame);
         let mut scratch = Vec::new();
         let values: Vec<f64> = operands.iter().filter_map(Operand::as_number).collect();
         let (space, paint) = match lower {
@@ -411,22 +639,15 @@ impl Renderer<'_, '_> {
                 let space = operands
                     .last()
                     .and_then(Operand::as_name)
-                    .and_then(|name| {
-                        ColorSpace::parse(
-                            self.document,
-                            &Object::Name(name.to_vec()),
-                            named.as_deref().and_then(Object::as_dict),
-                        )
-                    })
-                    .unwrap_or(ColorSpace::Gray);
+                    .and_then(|name| self.named_space(name, frame))
+                    .unwrap_or_else(|| Rc::new(ColorSpace::Gray));
                 let initial = space.initial();
                 let rgb = space.rgb(&initial, &mut scratch).map(unit_to_u8);
-                let rc = Rc::new(space);
                 if stroke {
-                    state.stroke_space = Rc::clone(&rc);
+                    state.stroke_space = space;
                     state.stroke = Paint::solid(opaque(rgb));
                 } else {
-                    state.fill_space = Rc::clone(&rc);
+                    state.fill_space = space;
                     state.fill = Paint::solid(opaque(rgb));
                 }
                 return;
@@ -464,6 +685,14 @@ impl Renderer<'_, '_> {
         }
     }
 
+    const fn count_operator(&mut self) -> bool {
+        self.operators = self.operators.saturating_add(1);
+        if self.operators > self.operator_limit || self.list.ops.len() > MAX_OPS_BYTES {
+            self.truncated = true;
+        }
+        !self.truncated
+    }
+
     fn define_glyph(&mut self, font: &RenderFont, gid: u16) -> Option<u32> {
         let key = (font.id, gid);
         if let Some(found) = self.glyph_ids.get(&key) {
@@ -476,12 +705,14 @@ impl Renderer<'_, '_> {
             let built = font
                 .font
                 .program()
-                .and_then(|program| program.outline(gid, &mut path));
+                .and_then(|program| program.outline(gid, &mut path, &mut self.outline_work));
+            let exhausted = built.is_none() && self.outline_work == 0;
             if built.is_none() {
                 path.clear();
             }
+            self.truncated |= exhausted;
             let shared = Rc::new(path);
-            if self.session.outlines.len() < MAX_CACHED_OUTLINES {
+            if !exhausted && self.session.outlines.len() < MAX_CACHED_OUTLINES {
                 drop(self.session.outlines.insert(key, Rc::clone(&shared)));
             }
             shared
@@ -506,7 +737,8 @@ impl Renderer<'_, '_> {
         frame: &Frame,
         state: &GState,
     ) {
-        let fill = Self::fill_rgba(state);
+        let fill = opaque(rgb_of(state.fill.color));
+        let interpolate = dict_flag(dict, b"Interpolate");
         let [a, b, c, d, _, _] = state.ctm;
         let device = (
             (a * a + b * b).sqrt() * self.scale,
@@ -537,7 +769,7 @@ impl Renderer<'_, '_> {
         if let Some(inner) = key
             && let Some(cached) = self.session.images.get(&inner).map(Rc::clone)
         {
-            let image = self.add_image(&cached);
+            let image = self.add_image(&cached, interpolate);
             let _: Option<ImageRef> = self.images.insert(inner, image);
             self.list.image(&image, alpha);
             return;
@@ -550,14 +782,14 @@ impl Renderer<'_, '_> {
                 owned.as_slice()
             }
         };
-        let named = self.named_color_spaces(frame);
+        let space = self.image_space(dict, frame);
         let (filter, parms) = image_filter(self.document, dict);
         let context = ImageContext {
             device,
             fill,
             max_bytes: self.limits.max_decoded_stream_bytes,
-            named: named.as_deref().and_then(Object::as_dict),
             resolver: self.document,
+            space: space.as_deref(),
         };
         let input = ImageInput {
             data,
@@ -581,7 +813,7 @@ impl Renderer<'_, '_> {
             return;
         };
         let shared = Rc::new(found);
-        let image = self.add_image(&shared);
+        let image = self.add_image(&shared, interpolate);
         if let Some(inner) = key {
             let _: Option<ImageRef> = self.images.insert(inner, image);
             let size = decoded_bytes(&shared);
@@ -593,11 +825,6 @@ impl Renderer<'_, '_> {
         self.list.image(&image, alpha);
     }
 
-    const fn fill_rgba(state: &GState) -> [u8; 4] {
-        let [red, green, blue, _] = state.fill.color;
-        [red, green, blue, unit_to_u8(state.fill_alpha)]
-    }
-
     fn form(
         &mut self,
         stream: &Stream,
@@ -606,7 +833,7 @@ impl Renderer<'_, '_> {
         frame: &Frame,
         depth: usize,
     ) -> Outcome<()> {
-        if depth >= MAX_FORM_DEPTH {
+        if depth >= MAX_FORM_DEPTH || !self.count_operator() {
             return Ok(());
         }
         if let Some(inner) = reference {
@@ -615,7 +842,7 @@ impl Renderer<'_, '_> {
             }
             self.active.push(inner);
         }
-        let data = self.document.stream_data(stream).unwrap_or_default();
+        let data = self.stream_bytes(stream, reference);
         let matrix = matrix_of(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&matrix, &state.ctm);
@@ -661,6 +888,28 @@ impl Renderer<'_, '_> {
             7 => GLYPH_CLIP,
             _ => 0,
         }
+    }
+
+    fn hidden(&self, entry: &Object) -> bool {
+        !self.content.visible(self.document, entry, 0)
+    }
+
+    fn image_space(&mut self, dict: &Dict, frame: &Frame) -> Option<Rc<ColorSpace>> {
+        let entry = dict.get(b"ColorSpace")?;
+        if let Object::Name(name) = entry {
+            return self.named_space(name, frame);
+        }
+        if let Object::Ref(reference) = entry
+            && let Some(found) = self.session.spaces.get(reference)
+        {
+            return Some(Rc::clone(found));
+        }
+        let named = self.named_color_spaces(frame);
+        let named_dict = named.as_deref().and_then(Object::as_dict);
+        if let Object::Ref(reference) = entry {
+            return self.ref_space(*reference, named_dict);
+        }
+        ColorSpace::parse(self.document, entry, named_dict).map(Rc::new)
     }
 
     fn inline_image(&mut self, dict: Dict, data: &[u8], frame: &Frame, state: &GState) {
@@ -774,9 +1023,62 @@ impl Renderer<'_, '_> {
         Some(render_font)
     }
 
+    fn marked_hidden(&self, operands: &[Operand<'_>], frame: &Frame) -> bool {
+        let start = operands.len().saturating_sub(2);
+        let (Some(tag), Some(properties)) =
+            (operands.get(start), operands.get(start.saturating_add(1)))
+        else {
+            return false;
+        };
+        if tag.as_name() != Some(b"OC") {
+            return false;
+        }
+        match properties {
+            Operand::Name(name) => self
+                .resource_entry(frame, b"Properties", name)
+                .is_some_and(|entry| self.hidden(&entry)),
+            Operand::Object(object) => self.hidden(object),
+            Operand::Array(_)
+            | Operand::Bool(_)
+            | Operand::Hex(_)
+            | Operand::Integer(_)
+            | Operand::Literal(_)
+            | Operand::Null
+            | Operand::Real(_) => false,
+        }
+    }
+
     fn named_color_spaces(&self, frame: &Frame) -> Option<Rc<Object>> {
         let entry = frame.resources.as_dict()?.get(b"ColorSpace")?;
         self.document.follow(entry).ok()
+    }
+
+    fn named_space(&mut self, name: &[u8], frame: &Frame) -> Option<Rc<ColorSpace>> {
+        if let Some(device) = ColorSpace::parse(self.document, &Object::Name(name.to_vec()), None) {
+            return Some(Rc::new(device));
+        }
+        let key = Rc::as_ptr(&frame.resources).addr();
+        if let Some((_, spaces)) = self.named_spaces.get(&key)
+            && let Some(found) = spaces.get(name)
+        {
+            return Some(Rc::clone(found));
+        }
+        let named = self.named_color_spaces(frame)?;
+        let dict = named.as_dict()?;
+        let entry = dict.get(name)?;
+        let space = if let Object::Ref(reference) = entry {
+            self.ref_space(*reference, Some(dict))?
+        } else {
+            Rc::new(ColorSpace::parse(self.document, entry, Some(dict))?)
+        };
+        drop(
+            self.named_spaces
+                .entry(key)
+                .or_insert_with(|| (Rc::clone(&frame.resources), HashMap::new()))
+                .1
+                .insert(name.to_vec(), Rc::clone(&space)),
+        );
+        Some(space)
     }
 
     fn paint_path(
@@ -786,12 +1088,13 @@ impl Renderer<'_, '_> {
         fill: Option<u8>,
         stroke: bool,
         clip: Option<u8>,
+        visible: bool,
     ) {
         if path.is_empty() {
             return;
         }
-        let fill_visible = fill.is_some() && !state.fill_space.is_invisible();
-        let stroke_visible = stroke && !state.stroke_space.is_invisible();
+        let fill_visible = visible && fill.is_some() && !state.fill_space.is_invisible();
+        let stroke_visible = visible && stroke && !state.stroke_space.is_invisible();
         if fill_visible || stroke_visible || clip.is_some() {
             self.sync_transform(&state.ctm);
             self.list.path(path);
@@ -926,12 +1229,30 @@ impl Renderer<'_, '_> {
         Some([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
     }
 
+    fn ref_space(&mut self, reference: ObjRef, named: Option<&Dict>) -> Option<Rc<ColorSpace>> {
+        if let Some(found) = self.session.spaces.get(&reference) {
+            return Some(Rc::clone(found));
+        }
+        let space = Rc::new(ColorSpace::parse(
+            self.document,
+            &Object::Ref(reference),
+            named,
+        )?);
+        if self.session.spaces.len() < MAX_CACHED_SPACES {
+            drop(self.session.spaces.insert(reference, Rc::clone(&space)));
+        }
+        Some(space)
+    }
+
     fn resource(&self, frame: &Frame, category: &[u8], name: &[u8]) -> Option<Rc<Object>> {
-        let entries = self
-            .document
-            .follow(frame.resources.as_dict()?.get(category)?)
-            .ok()?;
-        self.document.follow(entries.as_dict()?.get(name)?).ok()
+        self.document
+            .follow(&self.resource_entry(frame, category, name)?)
+            .ok()
+    }
+
+    fn resource_entry(&self, frame: &Frame, category: &[u8], name: &[u8]) -> Option<Object> {
+        let entries = self.view(frame.resources.as_dict()?.get(category)?)?;
+        entries.as_dict()?.get(name).cloned()
     }
 
     fn restore(&mut self) {
@@ -956,6 +1277,7 @@ impl Renderer<'_, '_> {
         let mut path = PathData::default();
         let mut current = (0.0_f64, 0.0_f64);
         let mut clip: Option<u8> = None;
+        let mut marked = Marked::default();
         let mut text = TextState {
             clip: false,
             line: IDENTITY,
@@ -977,11 +1299,10 @@ impl Renderer<'_, '_> {
                 }
                 Ok(ContentToken::Operator(name)) => name,
             };
-            self.operators = self.operators.saturating_add(1);
-            if self.operators > MAX_OPERATORS || self.list.ops.len() > MAX_OPS_BYTES {
-                self.truncated = true;
+            if !self.count_operator() {
                 break;
             }
+            let visible = marked.hidden == 0;
             match code {
                 b"q" => {
                     if stack.len() >= MAX_STATE_STACK {
@@ -1055,30 +1376,26 @@ impl Renderer<'_, '_> {
                 | b"scn" | b"SCN" => {
                     self.color_operator(code, &operands, frame, state);
                 }
-                b"S" => self.paint_path(&mut path, state, None, true, clip.take()),
-                b"s" => {
-                    path.close();
-                    self.paint_path(&mut path, state, None, true, clip.take());
-                }
-                b"f" | b"F" => {
-                    self.paint_path(&mut path, state, Some(RULE_NONZERO), false, clip.take());
-                }
-                b"f*" => self.paint_path(&mut path, state, Some(RULE_EVENODD), false, clip.take()),
-                b"B" => self.paint_path(&mut path, state, Some(RULE_NONZERO), true, clip.take()),
-                b"B*" => self.paint_path(&mut path, state, Some(RULE_EVENODD), true, clip.take()),
-                b"b" => {
-                    path.close();
-                    self.paint_path(&mut path, state, Some(RULE_NONZERO), true, clip.take());
-                }
-                b"b*" => {
-                    path.close();
-                    self.paint_path(&mut path, state, Some(RULE_EVENODD), true, clip.take());
-                }
-                b"n" => {
+                b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" | b"n" => {
+                    if matches!(code, b"s" | b"b" | b"b*") {
+                        path.close();
+                    }
+                    let fill = match code {
+                        b"f" | b"F" | b"B" | b"b" => Some(RULE_NONZERO),
+                        b"f*" | b"B*" | b"b*" => Some(RULE_EVENODD),
+                        _ => None,
+                    };
+                    let stroke = matches!(code, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
                     let rule = clip.take();
-                    self.paint_path(&mut path, state, None, false, rule);
+                    self.paint_path(&mut path, state, fill, stroke, rule, visible);
                     path.clear();
                 }
+                b"BMC" => marked.push(false),
+                b"BDC" => {
+                    let hide = self.marked_hidden(&operands, frame);
+                    marked.push(hide);
+                }
+                b"EMC" => marked.pop(),
                 b"W" => clip = Some(RULE_NONZERO),
                 b"W*" => clip = Some(RULE_EVENODD),
                 b"BT" => {
@@ -1182,7 +1499,7 @@ impl Renderer<'_, '_> {
                         .and_then(|operand| operand.string(&mut scratch))
                     {
                         let owned = bytes.to_vec();
-                        self.show(&owned, frame, state, &mut text, depth)?;
+                        self.show(&owned, frame, state, &mut text, depth, visible)?;
                     }
                 }
                 b"'" | b"\"" => {
@@ -1205,7 +1522,7 @@ impl Renderer<'_, '_> {
                         .and_then(|operand| operand.string(&mut scratch))
                     {
                         let owned = bytes.to_vec();
-                        self.show(&owned, frame, state, &mut text, depth)?;
+                        self.show(&owned, frame, state, &mut text, depth, visible)?;
                     }
                 }
                 b"TJ" => {
@@ -1221,7 +1538,9 @@ impl Renderer<'_, '_> {
                             .collect();
                         for part in parts {
                             match part {
-                                Ok(bytes) => self.show(&bytes, frame, state, &mut text, depth)?,
+                                Ok(bytes) => {
+                                    self.show(&bytes, frame, state, &mut text, depth, visible)?;
+                                }
                                 Err(adjust) => {
                                     let vertical = state
                                         .font
@@ -1239,19 +1558,21 @@ impl Renderer<'_, '_> {
                     }
                 }
                 b"Do" => {
-                    if let Some(name) = operands.last().and_then(Operand::as_name) {
+                    if visible && let Some(name) = operands.last().and_then(Operand::as_name) {
                         let owned = name.to_vec();
                         self.xobject(&owned, frame, state, depth)?;
                     }
                 }
                 b"sh" => {
-                    if let Some(name) = operands.last().and_then(Operand::as_name) {
+                    if visible && let Some(name) = operands.last().and_then(Operand::as_name) {
                         let owned = name.to_vec();
                         self.shade(&owned, frame, state);
                     }
                 }
                 b"EI" => {
-                    if let Some((dict, image_data)) = lexer.take_inline_image() {
+                    if let Some((dict, image_data)) = lexer.take_inline_image()
+                        && visible
+                    {
                         self.inline_image(dict, image_data, frame, state);
                     }
                 }
@@ -1318,6 +1639,7 @@ impl Renderer<'_, '_> {
         state: &GState,
         text: &mut TextState,
         depth: usize,
+        visible: bool,
     ) -> Outcome<()> {
         let Some(font) = state.font.clone() else {
             return Ok(());
@@ -1338,14 +1660,16 @@ impl Renderer<'_, '_> {
             0.0_f64,
             state.rise,
         ];
-        let modes = Self::glyph_modes(state);
+        let modes = if visible { Self::glyph_modes(state) } else { 0 };
         if modes & GLYPH_CLIP != 0 {
             text.clip = true;
         }
         let start = text.matrix;
         let mut total = 0.0_f64;
-        if modes != 0 && !matches!(font.face, Face::Fallback(_)) {
+        if modes != 0 {
             self.sync_transform(&state.ctm);
+        }
+        if modes != 0 && !matches!(font.face, Face::Fallback(_)) {
             if modes & GLYPH_FILL != 0 {
                 self.sync_paint(state, false);
             }
@@ -1355,6 +1679,9 @@ impl Renderer<'_, '_> {
             }
         }
         for glyph in &glyphs {
+            if self.truncated {
+                break;
+            }
             let metrics = vertical.then(|| font.font.vertical_metrics(glyph.code));
             let origin = metrics.map_or(text.matrix, |inner| {
                 translate(-inner.origin_x * size, -inner.origin_y * size, &text.matrix)
@@ -1403,7 +1730,16 @@ impl Renderer<'_, '_> {
                             )?;
                         }
                     }
-                    Face::Fallback(_) => {}
+                    Face::Fallback(_) => {
+                        if modes & GLYPH_CLIP != 0 && glyph.advance > 0.0_f64 {
+                            let id = self.box_glyph();
+                            let matrix = multiply(
+                                &[glyph.advance, 0.0_f64, 0.0_f64, 1.0_f64, 0.0_f64, 0.0_f64],
+                                &placement,
+                            );
+                            self.list.glyph(GLYPH_CLIP, id, &matrix);
+                        }
+                    }
                 }
             }
             let word = if glyph.is_word_space {
@@ -1444,6 +1780,22 @@ impl Renderer<'_, '_> {
         self.glyphs = glyphs;
         self.decoded = decoded;
         Ok(())
+    }
+
+    fn stream_bytes(&mut self, stream: &Stream, reference: Option<ObjRef>) -> Rc<[u8]> {
+        if let Some(inner) = reference
+            && let Some(found) = self.session.streams.get(&inner)
+        {
+            return Rc::clone(found);
+        }
+        let data: Rc<[u8]> = Rc::from(self.document.stream_data(stream).unwrap_or_default());
+        if let Some(inner) = reference
+            && self.session.stream_bytes.saturating_add(data.len()) <= MAX_CACHED_STREAM_BYTES
+        {
+            self.session.stream_bytes = self.session.stream_bytes.saturating_add(data.len());
+            drop(self.session.streams.insert(inner, Rc::clone(&data)));
+        }
+        data
     }
 
     fn sync_line(&mut self, state: &GState) {
@@ -1539,16 +1891,16 @@ impl Renderer<'_, '_> {
         }
     }
 
+    fn view<'object>(&self, object: &'object Object) -> Option<View<'object>> {
+        if matches!(object, Object::Ref(_)) {
+            self.document.follow(object).ok().map(View::Shared)
+        } else {
+            Some(View::Borrowed(object))
+        }
+    }
+
     fn xobject(&mut self, name: &[u8], frame: &Frame, state: &GState, depth: usize) -> Outcome<()> {
-        let Some(entries) = frame
-            .resources
-            .as_dict()
-            .and_then(|dict| dict.get(b"XObject"))
-            .and_then(|value| self.document.follow(value).ok())
-        else {
-            return Ok(());
-        };
-        let Some(entry) = entries.as_dict().and_then(|dict| dict.get(name)).cloned() else {
+        let Some(entry) = self.resource_entry(frame, b"XObject", name) else {
             return Ok(());
         };
         let reference = if let Object::Ref(inner) = entry {
@@ -1562,6 +1914,13 @@ impl Renderer<'_, '_> {
         let Some(stream) = object.as_stream() else {
             return Ok(());
         };
+        if stream
+            .dict
+            .get(b"OC")
+            .is_some_and(|marker| self.hidden(marker))
+        {
+            return Ok(());
+        }
         match stream.dict.get(b"Subtype").and_then(Object::as_name) {
             Some(b"Form") => self.form(stream, reference, state, frame, depth),
             Some(b"Image") => {
@@ -1748,6 +2107,10 @@ const fn opaque(rgb: [u8; 3]) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], 255]
 }
 
+const fn rgb_of(rgba: [u8; 4]) -> [u8; 3] {
+    [rgba[0], rgba[1], rgba[2]]
+}
+
 fn dict_flag(dict: &Dict, key: &[u8]) -> bool {
     matches!(dict.get(key), Some(Object::Bool(true)))
 }
@@ -1793,6 +2156,25 @@ pub(crate) fn render_pages(
     scale: f64,
     limits: &Limits,
 ) -> Outcome<Vec<RenderedPage>> {
+    render_document(
+        bytes,
+        &PageSelection {
+            operator_limit: MAX_OPERATORS,
+            page_indexes,
+            scale,
+        },
+        limits,
+        &mut RenderSession::default(),
+    )
+}
+
+fn render_document(
+    bytes: &[u8],
+    selection: &PageSelection<'_>,
+    limits: &Limits,
+    session: &mut RenderSession,
+) -> Outcome<Vec<RenderedPage>> {
+    let scale = selection.scale;
     if bytes.len() > limits.max_pdf_bytes {
         return Err(Failure::limit("pdf exceeds size limit"));
     }
@@ -1801,14 +2183,22 @@ pub(crate) fn render_pages(
     }
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
-    let selected = select_pages(pages.len(), page_indexes)?;
-    let mut session = RenderSession::default();
+    let selected = select_pages(pages.len(), selection.page_indexes)?;
+    let content = OptionalContent::load(&document);
     let mut rendered = Vec::with_capacity(selected.len());
     for position in selected {
         let Some(page) = pages.get(position) else {
             continue;
         };
-        let list = render_page(&document, page, scale, limits, &mut session)?;
+        let target = PageTarget {
+            content: &content,
+            document: &document,
+            limits,
+            operator_limit: selection.operator_limit,
+            page,
+            scale,
+        };
+        let list = render_page(&target, session)?;
         rendered.push(RenderedPage {
             list,
             page_index: u32::try_from(position)
@@ -1821,42 +2211,41 @@ pub(crate) fn render_pages(
     Ok(rendered)
 }
 
-fn render_page(
-    document: &Document<'_>,
-    page: &Page,
-    scale: f64,
-    limits: &Limits,
-    session: &mut RenderSession,
-) -> Outcome<DisplayList> {
-    let content = document.content(page).unwrap_or_default();
-    let resources = Rc::new(Object::Dict(page.resources.clone()));
+fn render_page(target: &PageTarget<'_, '_>, session: &mut RenderSession) -> Outcome<DisplayList> {
+    let data = target.document.content(target.page).unwrap_or_default();
+    let resources = Rc::new(Object::Dict(target.page.resources.clone()));
     let frame = Frame {
         base: IDENTITY,
         resources,
     };
     let mut renderer = Renderer {
         active: Vec::new(),
-        budget: limits.max_decoded_stream_bytes,
+        box_glyph: None,
+        budget: target.limits.max_decoded_stream_bytes,
+        content: target.content,
         decoded: String::new(),
-        document,
+        document: target.document,
         emitted: Emitted::default(),
         emitted_stack: Vec::new(),
         glyph_ids: HashMap::new(),
         glyphs: Vec::new(),
         images: HashMap::new(),
-        limits,
+        limits: target.limits,
         list: DisplayList::default(),
+        named_spaces: HashMap::new(),
         next_glyph: 0,
+        operator_limit: target.operator_limit,
         operators: 0,
-        scale,
+        outline_work: MAX_OUTLINE_WORK,
+        scale: target.scale,
         session,
         truncated: false,
     };
     let mut state = GState::initial();
     renderer.save();
-    renderer.run(&content, &frame, &mut state, 0)?;
+    renderer.run(&data, &frame, &mut state, 0)?;
     renderer.restore();
-    renderer.annotations(page, &frame)?;
+    renderer.annotations(target.page, &frame)?;
     Ok(renderer.list)
 }
 
@@ -1882,6 +2271,7 @@ mod tests {
         GlyphDefine(u32, usize),
         Gradient(u8, u8),
         Image(bool, u32, u32, u32),
+        ImageMeta(u8, u8),
         Join(u8),
         LineWidth(f32),
         Miter(f32),
@@ -1992,13 +2382,14 @@ mod tests {
                 }
                 OP_IMAGE => {
                     let flags = reader.u8();
-                    let _alpha = reader.u8();
+                    let alpha = reader.u8();
                     let blob = u32::try_from(reader.u32()).unwrap();
                     let width = u32::try_from(reader.u32()).unwrap();
                     let height = u32::try_from(reader.u32()).unwrap();
                     let _mask = reader.take(12);
                     let _matte = reader.take(4);
-                    Op::Image(flags & 1 == 1, blob, width, height)
+                    ops.push(Op::Image(flags & 1 == 1, blob, width, height));
+                    Op::ImageMeta(flags, alpha)
                 }
                 OP_SHADE | OP_FILL_GRADIENT | OP_STROKE_GRADIENT => {
                     let flags = reader.u8();
@@ -2316,5 +2707,239 @@ mod tests {
             assert!(x1 > x0 && y1 > y0);
         }
         assert!(pages.iter().any(|rendered| rendered.rotate != 0_i32));
+    }
+
+    fn catalog_pdf(
+        catalog: &str,
+        resources: &str,
+        content: &str,
+        extra: &[(u32, String)],
+    ) -> Vec<u8> {
+        let mut objects = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {catalog} >>")),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources {resources} >>"
+                ),
+            ),
+            (4, stream_object("", content)),
+        ];
+        objects.extend_from_slice(extra);
+        build(&objects)
+    }
+
+    #[test]
+    fn stencil_masks_apply_the_fill_alpha_once() {
+        let pages = render_pages(
+            &page_pdf(
+                "<< /ExtGState << /G0 << /ca 0.5 >> >> >>",
+                "q /G0 gs 1 0 0 rg 8 0 0 1 0 0 cm BI /W 8 /H 1 /IM true /F /AHx ID 0F> EI Q",
+                &[],
+            ),
+            None,
+            1.0,
+            &Limits::default(),
+        )
+        .unwrap();
+        let ops = decode(&pages[0].list);
+        assert!(ops.contains(&Op::ImageMeta(0, 128)), "{ops:?}");
+        let alphas: Vec<u8> = pages[0].list.blobs[0]
+            .chunks(4)
+            .map(|pixel| pixel[3])
+            .collect();
+        assert_eq!(alphas, vec![255, 255, 255, 255, 0, 0, 0, 0]);
+        assert_eq!(&pages[0].list.blobs[0][..3], &[255, 0, 0]);
+    }
+
+    #[test]
+    fn image_interpolation_is_carried_to_the_display_list() {
+        let ops = render(&page_pdf(
+            "<< >>",
+            "q 50 0 0 50 0 0 cm BI /W 2 /H 1 /CS /G /BPC 8 /I true /F /AHx ID 00ff> EI Q q 50 0 0 50 60 0 cm BI /W 2 /H 1 /CS /G /BPC 8 /F /AHx ID ff00> EI Q",
+            &[],
+        ));
+        let metas: Vec<&Op> = ops
+            .iter()
+            .filter(|op| matches!(op, Op::ImageMeta(..)))
+            .collect();
+        assert_eq!(metas, vec![&Op::ImageMeta(8, 255), &Op::ImageMeta(0, 255)]);
+    }
+
+    fn optional_content_page(config: &str) -> Vec<Op> {
+        let form = stream_object(
+            "/Type /XObject /Subtype /Form /BBox [0 0 50 50] /OC 5 0 R",
+            "1 1 0 rg 0 0 10 10 re f",
+        );
+        render(&catalog_pdf(
+            &format!("/OCProperties << /OCGs [5 0 R 6 0 R] /D {config} >>"),
+            "<< /Properties << /Off 5 0 R /On 6 0 R /Both 7 0 R /Either 8 0 R >> /XObject << /Fm0 9 0 R >> >>",
+            "/OC /Off BDC 1 0 0 rg 0 0 10 10 re f EMC /OC /On BDC 0 1 0 rg 0 0 10 10 re f EMC /OC /Both BDC 0 0 1 rg 0 0 10 10 re f EMC /OC /Either BDC 0 1 1 rg 0 0 10 10 re f EMC /Fm0 Do /Span BMC 1 0 1 rg 0 0 10 10 re f EMC",
+            &[
+                (5, "<< /Type /OCG /Name (Off) >>".to_owned()),
+                (6, "<< /Type /OCG /Name (On) >>".to_owned()),
+                (
+                    7,
+                    "<< /Type /OCMD /OCGs [5 0 R 6 0 R] /P /AllOn >>".to_owned(),
+                ),
+                (
+                    8,
+                    "<< /Type /OCMD /VE [/Or 5 0 R [/Not 5 0 R]] >>".to_owned(),
+                ),
+                (9, form),
+            ],
+        ))
+    }
+
+    #[test]
+    fn optional_content_that_is_off_is_not_painted() {
+        for config in ["<< /OFF [5 0 R] >>", "<< /BaseState /OFF /ON [6 0 R] >>"] {
+            let ops = optional_content_page(config);
+            assert!(balanced(&ops));
+            let fills: Vec<&Op> = ops
+                .iter()
+                .filter(|op| matches!(op, Op::FillColor(..)))
+                .collect();
+            assert_eq!(
+                fills,
+                vec![
+                    &Op::FillColor([0, 255, 0, 255]),
+                    &Op::FillColor([0, 255, 255, 255]),
+                    &Op::FillColor([255, 0, 255, 255]),
+                ],
+                "{config}"
+            );
+        }
+        let plain = render(&page_pdf(
+            "<< /Properties << /Off 5 0 R >> >>",
+            "/OC /Off BDC 1 0 0 rg 0 0 10 10 re f EMC",
+            &[(5, "<< /Type /OCG /Name (Off) >>".to_owned())],
+        ));
+        assert!(plain.contains(&Op::FillColor([255, 0, 0, 255])));
+    }
+
+    #[test]
+    fn clip_render_modes_with_standard_fonts_clip_to_glyph_boxes() {
+        let ops = render(&document(
+            &[page(
+                "BT /F1 12 Tf 7 Tr 10 10 Td (AB) Tj ET 0 0 1 rg 0 0 100 100 re f".to_owned(),
+            )],
+            &[],
+        ));
+        let boxes = ops
+            .iter()
+            .filter(|op| matches!(op, Op::Glyph(GLYPH_CLIP, _)))
+            .count();
+        assert_eq!(boxes, 2);
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::GlyphDefine(_, verbs) if *verbs == 5))
+        );
+        let clip = ops.iter().position(|op| *op == Op::TextClip).unwrap();
+        let fill = ops
+            .iter()
+            .position(|op| *op == Op::Fill(RULE_NONZERO))
+            .unwrap();
+        assert!(clip < fill);
+        assert!(!ops.iter().any(|op| matches!(op, Op::Text(..))));
+    }
+
+    #[test]
+    fn type3_fan_out_is_bounded_by_the_operator_budget() {
+        let fan =
+            |next: char| format!("0 0 d0 BT /T 1 Tf ({}) Tj ET", next.to_string().repeat(200));
+        let bytes = page_pdf(
+            "<< /Font << /T 5 0 R >> >>",
+            "BT /T 10 Tf 10 10 Td (a) Tj ET",
+            &[
+                (
+                    5,
+                    "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a 6 0 R /b 7 0 R /c 8 0 R /d 9 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b /c /d] >> /FirstChar 97 /LastChar 100 /Widths [1000 1000 1000 1000] /Resources << /Font << /T 5 0 R >> >> >>".to_owned(),
+                ),
+                (6, stream_object("", &fan('b'))),
+                (7, stream_object("", &fan('c'))),
+                (8, stream_object("", &fan('d'))),
+                (9, stream_object("", "")),
+            ],
+        );
+        let limit = 50_000;
+        let mut session = RenderSession::default();
+        let pages = render_document(
+            &bytes,
+            &PageSelection {
+                operator_limit: limit,
+                page_indexes: None,
+                scale: 1.0,
+            },
+            &Limits::default(),
+            &mut session,
+        )
+        .unwrap();
+        let ops = decode(&pages[0].list);
+        assert!(balanced(&ops));
+        let saves = ops.iter().filter(|op| **op == Op::Save).count();
+        assert!(saves > 1000, "{saves}");
+        assert!(saves <= limit, "{saves}");
+    }
+
+    #[test]
+    fn form_streams_and_colour_spaces_are_decoded_once_per_document() {
+        let form = stream_object(
+            "/Type /XObject /Subtype /Form /BBox [0 0 50 50]",
+            "/CS0 cs 1 scn 0 0 10 10 re f",
+        );
+        let resources = "<< /ColorSpace << /CS0 6 0 R >> /XObject << /Fm0 5 0 R >> >>";
+        let bytes = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_owned()),
+            (
+                3,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 7 0 R /Resources {resources} >>"),
+            ),
+            (
+                4,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 7 0 R /Resources {resources} >>"),
+            ),
+            (5, form),
+            (
+                6,
+                "[/Separation /Spot /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [1 0 0 0] /N 1 >>]".to_owned(),
+            ),
+            (7, stream_object("", "/Fm0 Do /Fm0 Do")),
+        ]);
+        let mut session = RenderSession::default();
+        let pages = render_document(
+            &bytes,
+            &PageSelection {
+                operator_limit: MAX_OPERATORS,
+                page_indexes: None,
+                scale: 1.0,
+            },
+            &Limits::default(),
+            &mut session,
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        let form_ref = ObjRef {
+            number: 5,
+            generation: 0,
+        };
+        let space_ref = ObjRef {
+            number: 6,
+            generation: 0,
+        };
+        assert_eq!(session.streams.len(), 1);
+        assert!(session.streams.contains_key(&form_ref));
+        assert!(session.spaces.contains_key(&space_ref));
+        for page in &pages {
+            let ops = decode(&page.list);
+            assert_eq!(
+                ops.iter()
+                    .filter(|op| **op == Op::FillColor([0, 255, 255, 255]))
+                    .count(),
+                2
+            );
+        }
     }
 }

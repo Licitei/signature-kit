@@ -6,6 +6,7 @@ use core::str;
 const MAX_COMPONENT_DEPTH: usize = 8;
 const MAX_POINTS: usize = 1 << 16;
 const MAX_COMPONENTS: usize = 64;
+const MAX_GLYPH_PARTS: usize = 512;
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 const EEXEC_KEY: u16 = 55665;
 const CHARSTRING_KEY: u16 = 4330;
@@ -25,7 +26,9 @@ struct Outline<'run> {
     budget: usize,
     data: &'run [u8],
     locate: &'run dyn Fn(u16) -> Option<(usize, usize)>,
+    parts: usize,
     path: &'run mut PathData,
+    work: &'run mut usize,
 }
 
 impl Outline<'_> {
@@ -100,6 +103,8 @@ impl Outline<'_> {
         if depth > MAX_COMPONENT_DEPTH {
             return None;
         }
+        self.parts = self.parts.checked_sub(1)?;
+        charge(self.work, 1)?;
         let Some((start, end)) = (self.locate)(gid) else {
             return Some(());
         };
@@ -177,6 +182,7 @@ impl Outline<'_> {
         }
         let count = ends.last()?.checked_add(1)?;
         self.budget = self.budget.checked_sub(count)?;
+        charge(self.work, count)?;
         let instructions_at = 10_usize.checked_add(contours.checked_mul(2)?)?;
         let instructions = usize::from(read_u16(data, instructions_at)?);
         let mut position = instructions_at.checked_add(2)?.checked_add(instructions)?;
@@ -253,7 +259,7 @@ impl Type1Glyphs {
         self.matrix
     }
 
-    pub(crate) fn outline(&self, gid: u16, path: &mut PathData) -> Option<()> {
+    pub(crate) fn outline(&self, gid: u16, path: &mut PathData, work: &mut usize) -> Option<()> {
         let (_, code) = self.charstrings.get(usize::from(gid))?;
         let mut machine = Type1Machine {
             flex: None,
@@ -267,7 +273,9 @@ impl Type1Glyphs {
             x: 0.0,
             y: 0.0,
         };
-        let _: bool = machine.run(code, 0)?;
+        let outcome = machine.run(code, 0);
+        charge(work, machine.steps)?;
+        let _: bool = outcome?;
         machine.close();
         Some(())
     }
@@ -522,6 +530,15 @@ impl Type1Machine<'_> {
     }
 }
 
+pub(crate) const fn charge(work: &mut usize, amount: usize) -> Option<()> {
+    let Some(left) = work.checked_sub(amount) else {
+        *work = 0;
+        return None;
+    };
+    *work = left;
+    Some(())
+}
+
 fn read_u16(data: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_be_bytes([
         *data.get(at)?,
@@ -589,12 +606,15 @@ pub(crate) fn truetype_outline(
     locate: &dyn Fn(u16) -> Option<(usize, usize)>,
     gid: u16,
     path: &mut PathData,
+    work: &mut usize,
 ) -> Option<()> {
     let mut outline = Outline {
         budget: MAX_POINTS,
         data,
         locate,
+        parts: MAX_GLYPH_PARTS,
         path,
+        work,
     };
     outline.glyph(gid, &IDENTITY, 0)
 }
@@ -804,6 +824,10 @@ mod tests {
     use super::*;
     use crate::display::{VERB_CLOSE, VERB_LINE, VERB_MOVE, VERB_QUAD};
 
+    const fn unlimited() -> usize {
+        usize::MAX
+    }
+
     fn pack(glyphs: &[Vec<u8>]) -> (Vec<u8>, Vec<(usize, usize)>) {
         let mut data = Vec::new();
         let mut ranges = Vec::new();
@@ -852,7 +876,7 @@ mod tests {
         let (data, ranges) = pack(&[square]);
         let locate = |gid: u16| ranges.get(usize::from(gid)).copied();
         let mut path = PathData::default();
-        truetype_outline(&data, &locate, 0, &mut path).unwrap();
+        truetype_outline(&data, &locate, 0, &mut path, &mut unlimited()).unwrap();
         assert_eq!(
             path.verbs,
             vec![VERB_MOVE, VERB_LINE, VERB_QUAD, VERB_QUAD, VERB_CLOSE]
@@ -876,14 +900,55 @@ mod tests {
         let (data, ranges) = pack(&[base, composite, looping]);
         let locate = |gid: u16| ranges.get(usize::from(gid)).copied();
         let mut path = PathData::default();
-        truetype_outline(&data, &locate, 1, &mut path).unwrap();
+        truetype_outline(&data, &locate, 1, &mut path, &mut unlimited()).unwrap();
         assert_eq!(&path.coords[..2], &[50.0, 7.0]);
         let mut cyclic = PathData::default();
-        assert!(truetype_outline(&data, &locate, 2, &mut cyclic).is_none());
+        assert!(truetype_outline(&data, &locate, 2, &mut cyclic, &mut unlimited()).is_none());
         let mut truncated = PathData::default();
         let (short, short_ranges) = pack(&[vec![0, 1, 0]]);
         let locate_short = |gid: u16| short_ranges.get(usize::from(gid)).copied();
-        assert!(truetype_outline(&short, &locate_short, 0, &mut truncated).is_none());
+        assert!(
+            truetype_outline(&short, &locate_short, 0, &mut truncated, &mut unlimited()).is_none()
+        );
+    }
+
+    fn fan_out(child: u16) -> Vec<u8> {
+        let mut glyph = vec![0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0];
+        for index in 0..MAX_COMPONENTS {
+            let more = if index.saturating_add(1) < MAX_COMPONENTS {
+                0x0020_u16
+            } else {
+                0
+            };
+            glyph.extend_from_slice(&(0x0002_u16 | more).to_be_bytes());
+            glyph.extend_from_slice(&child.to_be_bytes());
+            glyph.extend_from_slice(&[0, 0]);
+        }
+        glyph
+    }
+
+    #[test]
+    fn composite_fan_out_is_bounded_per_glyph_and_per_page() {
+        let mut glyphs: Vec<Vec<u8>> = (1..=8_u16).map(fan_out).collect();
+        glyphs.push(Vec::new());
+        let (data, ranges) = pack(&glyphs);
+        let locate = |gid: u16| {
+            let (start, end) = ranges.get(usize::from(gid)).copied()?;
+            (end > start).then_some((start, end))
+        };
+        let mut work = usize::MAX;
+        let mut path = PathData::default();
+        assert!(truetype_outline(&data, &locate, 0, &mut path, &mut work).is_none());
+        assert!(usize::MAX.saturating_sub(work) <= MAX_GLYPH_PARTS);
+        let base = simple_glyph(&[(0, 0, true), (10, 0, true), (10, 10, true)], &[2]);
+        let (single, single_ranges) = pack(&[base]);
+        let locate_single = |gid: u16| single_ranges.get(usize::from(gid)).copied();
+        let mut page = 7_usize;
+        let mut first = PathData::default();
+        truetype_outline(&single, &locate_single, 0, &mut first, &mut page).unwrap();
+        assert_eq!(page, 3);
+        let mut second = PathData::default();
+        assert!(truetype_outline(&single, &locate_single, 0, &mut second, &mut page).is_none());
     }
 
     fn encrypt(plain: &[u8], key: u16) -> Vec<u8> {
@@ -947,7 +1012,9 @@ mod tests {
             let gid = glyphs.gid(b"square").unwrap();
             assert!(glyphs.gid(b"missing").is_none());
             let mut path = PathData::default();
-            glyphs.outline(gid, &mut path).unwrap();
+            let mut work = usize::MAX;
+            glyphs.outline(gid, &mut path, &mut work).unwrap();
+            assert!(work < usize::MAX);
             assert_eq!(
                 path.verbs,
                 vec![VERB_MOVE, VERB_LINE, VERB_LINE, VERB_LINE, VERB_CLOSE],
@@ -973,6 +1040,14 @@ mod tests {
             subrs: vec![vec![139, 10]],
         };
         let mut path = PathData::default();
-        assert!(looping.outline(0, &mut path).is_none());
+        let mut work = usize::MAX;
+        assert!(looping.outline(0, &mut path, &mut work).is_none());
+        assert!(usize::MAX.saturating_sub(work) <= MAX_TYPE1_STEPS.saturating_add(1));
+        let mut exhausted = 0_usize;
+        assert!(
+            looping
+                .outline(0, &mut PathData::default(), &mut exhausted)
+                .is_none()
+        );
     }
 }

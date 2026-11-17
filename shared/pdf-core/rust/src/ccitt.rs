@@ -393,7 +393,13 @@ fn decode_2d(
     let mut a0: Option<usize> = None;
     let mut black = false;
     let mut search = 0_usize;
+    let limit = columns.saturating_add(2);
+    let mut previous: Option<usize> = None;
     loop {
+        if line.len() > limit || (a0.is_some() && a0 <= previous) {
+            return None;
+        }
+        previous = a0;
         let start = a0.unwrap_or(0);
         if a0.is_some() && start >= columns {
             return Some(());
@@ -621,5 +627,19 @@ mod tests {
         }
         let truncated = decode(GROUP4.get(..20).unwrap(), &params(-1, false), 1 << 20).unwrap();
         assert_eq!(truncated.len(), WIDTH.div_ceil(8) * HEIGHT);
+    }
+
+    #[test]
+    fn stalled_two_dimensional_rows_stop_without_growing_the_line() {
+        let stalled: Vec<u8> = [0x49_u8, 0x24, 0x92].repeat(1000);
+        let mut bits = Bits {
+            data: &stalled,
+            position: 0,
+        };
+        let reference = [5_usize, 10, 20, 20];
+        let mut line = Vec::new();
+        assert!(decode_2d(&mut bits, 20, &reference, &mut line).is_none());
+        assert!(line.len() <= 22, "line grew to {}", line.len());
+        assert!(bits.position < 64);
     }
 }

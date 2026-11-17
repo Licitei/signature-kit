@@ -1,6 +1,7 @@
 use crate::num::{bounded, f64_to_i64, f64_to_usize, i64_to_f64, parse_decimal, usize_to_f64};
 use crate::object::{Dict, Object, Resolver};
 use core::f64::consts::{FRAC_PI_2, LN_10, PI};
+use core::ops::{Deref, DerefMut};
 
 const MAX_DEPTH: usize = 6;
 const MAX_OUTPUTS: usize = 32;
@@ -149,6 +150,46 @@ struct Value {
     value: f64,
 }
 
+struct Stack {
+    items: [Value; MAX_STACK],
+    len: usize,
+}
+
+impl Stack {
+    const fn new() -> Self {
+        Self {
+            items: [Value::real(0.0); MAX_STACK],
+            len: 0,
+        }
+    }
+
+    fn pop(&mut self) -> Option<Value> {
+        self.len = self.len.checked_sub(1)?;
+        self.items.get(self.len).copied()
+    }
+
+    fn push(&mut self, value: Value) {
+        if let Some(slot) = self.items.get_mut(self.len) {
+            *slot = value;
+            self.len = self.len.saturating_add(1);
+        }
+    }
+}
+
+impl Deref for Stack {
+    type Target = [Value];
+
+    fn deref(&self) -> &[Value] {
+        self.items.get(..self.len).unwrap_or_default()
+    }
+}
+
+impl DerefMut for Stack {
+    fn deref_mut(&mut self) -> &mut [Value] {
+        self.items.get_mut(..self.len).unwrap_or_default()
+    }
+}
+
 impl Value {
     const fn flag(state: bool) -> Self {
         Self {
@@ -215,7 +256,7 @@ impl Exponential {
 
 impl PostScript {
     fn eval(&self, inputs: &[f64], out: &mut Vec<f64>) {
-        let mut stack: Vec<Value> = Vec::with_capacity(16);
+        let mut stack = Stack::new();
         for (index, input) in inputs.iter().enumerate() {
             let (low, high) = pair(&self.domain, index).unwrap_or((*input, *input));
             stack.push(Value::real(bounded(*input, low.min(high), high.max(low))));
@@ -465,7 +506,7 @@ fn parse_sampled(
             .flat_map(|dim| [0.0_f64, usize_to_f64(dim.saturating_sub(1))])
             .collect();
     }
-    let max = usize_to_f64((1_usize << bits.min(32)).saturating_sub(1));
+    let max = sample_max(bits);
     let mut samples = Vec::with_capacity(total);
     let mut reader = BitReader { data, position: 0 };
     for _ in 0..total {
@@ -481,6 +522,16 @@ fn parse_sampled(
         samples,
         size,
     })
+}
+
+fn sample_max(bits: usize) -> f64 {
+    u32::try_from(bits)
+        .ok()
+        .and_then(|shift| 1_u32.checked_shl(shift))
+        .map_or_else(
+            || f64::from(u32::MAX),
+            |value| f64::from(value.wrapping_sub(1)),
+        )
 }
 
 fn ps_tokens(data: &[u8]) -> Vec<&[u8]> {
@@ -628,21 +679,21 @@ fn atan2_degrees(numerator: f64, denominator: f64) -> f64 {
     radians.to_degrees()
 }
 
-fn pop_number(stack: &mut Vec<Value>) -> f64 {
+fn pop_number(stack: &mut Stack) -> f64 {
     stack.pop().map_or(0.0, Value::number)
 }
 
-fn pop_int(stack: &mut Vec<Value>) -> i64 {
+fn pop_int(stack: &mut Stack) -> i64 {
     f64_to_i64(pop_number(stack))
 }
 
-fn push(stack: &mut Vec<Value>, value: Value) {
+fn push(stack: &mut Stack, value: Value) {
     if stack.len() < MAX_STACK {
         stack.push(value);
     }
 }
 
-fn run_program(program: &[PsOp], stack: &mut Vec<Value>) {
+fn run_program(program: &[PsOp], stack: &mut Stack) {
     let mut pc = 0_usize;
     let mut steps = 0_usize;
     while let Some(op) = program.get(pc) {
@@ -668,7 +719,7 @@ fn run_program(program: &[PsOp], stack: &mut Vec<Value>) {
     clippy::too_many_lines,
     reason = "one flat dispatch over the PostScript calculator operator set reads best as a single match"
 )]
-fn run_operator(code: u8, stack: &mut Vec<Value>) {
+fn run_operator(code: u8, stack: &mut Stack) {
     match code {
         PS_ABS | PS_NEG | PS_CEILING | PS_FLOOR | PS_ROUND | PS_TRUNCATE | PS_SQRT | PS_SIN
         | PS_COS | PS_LN | PS_LOG | PS_CVR | PS_CVI | PS_EXP | PS_ATAN => {
@@ -813,9 +864,10 @@ fn run_operator(code: u8, stack: &mut Vec<Value>) {
                 .unwrap_or(0)
                 .min(stack.len());
             let start = stack.len().saturating_sub(count);
-            let copied: Vec<Value> = stack.get(start..).unwrap_or_default().to_vec();
-            for value in copied {
-                push(stack, value);
+            for index in start..start.saturating_add(count) {
+                if let Some(value) = stack.get(index).copied() {
+                    push(stack, value);
+                }
             }
         }
         PS_INDEX => {
@@ -963,6 +1015,29 @@ mod tests {
         assert!((eval(&function, &[0.25_f64])[0] - 0.5).abs() < 1e-6_f64);
         assert!((eval(&function, &[0.5_f64])[0] - 1.0).abs() < 1e-6_f64);
         assert!(eval(&function, &[1.0_f64])[0].abs() < 1e-6_f64);
+    }
+
+    #[test]
+    fn sampled_functions_scale_32_bit_samples_without_shift_overflow() {
+        assert!((sample_max(32) - f64::from(u32::MAX)).abs() < 0.5_f64);
+        assert!((sample_max(8) - 255.0_f64).abs() < f64::EPSILON);
+        assert!((sample_max(1) - 1.0_f64).abs() < f64::EPSILON);
+        let data = [0_u8, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF];
+        let resolver = Bytes(data.to_vec());
+        let object = Object::Stream(Stream {
+            data: 0..8,
+            dict: dict(vec![
+                ("FunctionType", Object::Integer(0)),
+                ("Domain", array(&[0.0_f64, 1.0_f64])),
+                ("Range", array(&[0.0_f64, 1.0_f64])),
+                ("Size", Object::Array(vec![Object::Integer(2)])),
+                ("BitsPerSample", Object::Integer(32)),
+            ]),
+        });
+        let function = Function::parse(&resolver, &object).unwrap();
+        assert!(eval(&function, &[0.0_f64])[0].abs() < 1e-9_f64);
+        assert!((eval(&function, &[1.0_f64])[0] - 1.0_f64).abs() < 1e-9_f64);
+        assert!((eval(&function, &[0.5_f64])[0] - 0.5_f64).abs() < 1e-6_f64);
     }
 
     #[test]

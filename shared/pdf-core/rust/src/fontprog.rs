@@ -586,14 +586,14 @@ impl FontProgram {
         })
     }
 
-    pub(crate) fn outline(&self, gid: u16, path: &mut PathData) -> Option<()> {
+    pub(crate) fn outline(&self, gid: u16, path: &mut PathData, work: &mut usize) -> Option<()> {
         match &self.outlines {
             Outlines::TrueType(outlines) => {
                 let locate = |glyph: u16| glyph_range(&self.data, outlines, glyph);
-                truetype_outline(&self.data, &locate, gid, path)
+                truetype_outline(&self.data, &locate, gid, path, work)
             }
-            Outlines::Cff(cff) => cff.outline(self.data.get(self.cff_start..)?, gid, path),
-            Outlines::Type1(_) => self.type1_glyphs()?.outline(gid, path),
+            Outlines::Cff(cff) => cff.outline(self.data.get(self.cff_start..)?, gid, path, work),
+            Outlines::Type1(_) => self.type1_glyphs()?.outline(gid, path, work),
             Outlines::None => None,
         }
     }

@@ -1,6 +1,7 @@
 use crate::display::PathData;
 use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
+use crate::glyph::charge;
 use crate::num::{f64_to_f32, f64_to_i64, parse_decimal};
 use core::array;
 use core::mem;
@@ -43,7 +44,7 @@ pub(crate) struct CffFont {
     custom_strings: Vec<Vec<u8>>,
     encoding: BuiltinEncoding,
     fd_select: Vec<u8>,
-    font_matrix: [f64; 6],
+    font_matrix: Option<[f64; 6]>,
     global_subrs: Index,
     glyph_count: usize,
     privates: Vec<PrivateDict>,
@@ -164,9 +165,13 @@ impl CffFont {
     }
 
     pub(crate) fn font_matrix(&self, gid: u16) -> [f64; 6] {
-        match self.private_for(gid).and_then(|private| private.matrix) {
-            Some(inner) if self.cid_keyed => multiply(&inner, &self.font_matrix),
-            Some(_) | None => self.font_matrix,
+        match (
+            self.private_for(gid).and_then(|private| private.matrix),
+            self.font_matrix,
+        ) {
+            (Some(inner), Some(top)) if self.cid_keyed => multiply(&inner, &top),
+            (Some(inner), None) if self.cid_keyed => inner,
+            (_, top) => top.unwrap_or(DEFAULT_MATRIX),
         }
     }
 
@@ -207,7 +212,13 @@ impl CffFont {
         self.cid_keyed
     }
 
-    pub(crate) fn outline(&self, bytes: &[u8], gid: u16, path: &mut PathData) -> Option<()> {
+    pub(crate) fn outline(
+        &self,
+        bytes: &[u8],
+        gid: u16,
+        path: &mut PathData,
+        work: &mut usize,
+    ) -> Option<()> {
         let mut machine = Type2 {
             bytes,
             font: self,
@@ -221,7 +232,9 @@ impl CffFont {
             x: 0.0,
             y: 0.0,
         };
-        machine.glyph(gid, 0)
+        let outcome = machine.glyph(gid, 0);
+        charge(work, machine.steps)?;
+        outcome
     }
 
     pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
@@ -276,7 +289,7 @@ impl CffFont {
             custom_strings,
             encoding,
             fd_select,
-            font_matrix: dict_matrix(&top).unwrap_or(DEFAULT_MATRIX),
+            font_matrix: dict_matrix(&top),
             global_subrs,
             glyph_count,
             privates,
@@ -1303,6 +1316,36 @@ pub(crate) mod tests {
         assert_eq!(font.gid_for_cid(20), Some(2));
         assert_eq!(font.gid_for_cid(21), None);
         assert_eq!(font.glyph_name(1), None);
+    }
+
+    #[test]
+    fn cid_keyed_font_matrix_applies_the_top_matrix_only_when_present() {
+        let mut charset = vec![0_u8];
+        charset.extend_from_slice(&sid(500));
+        let mut font = CffFont::parse(&build(&Layout {
+            names: vec![],
+            charset,
+            charset_id: 0,
+            encoding: vec![],
+            encoding_id: 0,
+            cid_keyed: true,
+            glyphs: 2,
+        }))
+        .expect("cff");
+        let close = |left: [f64; 6], right: [f64; 6]| {
+            left.iter()
+                .zip(right)
+                .all(|(first, second)| (first - second).abs() < 1e-12_f64)
+        };
+        assert!(close(font.font_matrix(1), DEFAULT_MATRIX));
+        let scale = |value: f64| [value, 0.0_f64, 0.0_f64, value, 0.0_f64, 0.0_f64];
+        font.privates = vec![PrivateDict {
+            matrix: Some(scale(0.002_f64)),
+            subrs: None,
+        }];
+        assert!(close(font.font_matrix(1), scale(0.002_f64)));
+        font.font_matrix = Some(scale(1000.0_f64));
+        assert!(close(font.font_matrix(1), scale(2.0_f64)));
     }
 
     #[test]

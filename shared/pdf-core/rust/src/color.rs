@@ -187,13 +187,10 @@ impl Tinted {
             let tint = components.first().copied().unwrap_or(0.0_f64);
             return [1.0 - tint, 1.0 - tint, 1.0 - tint];
         };
-        let mut output = Vec::new();
+        let mut output = mem::take(scratch);
         function.eval(components, &mut output);
-        scratch.clear();
-        scratch.extend_from_slice(&output);
-        let alternate = mem::take(scratch);
-        let rgb = self.alternate.rgb(&alternate, scratch);
-        *scratch = alternate;
+        let rgb = self.alternate.rgb(&output, scratch);
+        *scratch = output;
         rgb
     }
 }

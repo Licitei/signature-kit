@@ -102,6 +102,7 @@ pub(crate) struct Gradient<'stops> {
 pub(crate) struct ImageRef {
     pub blob: u32,
     pub height: u32,
+    pub interpolate: bool,
     pub jpeg: bool,
     pub mask: u32,
     pub mask_height: u32,
@@ -186,7 +187,8 @@ impl DisplayList {
         self.ops.push(
             u8::from(image.jpeg)
                 | (u8::from(image.mask_jpeg) << 1_u8)
-                | (u8::from(image.matte.is_some()) << 2_u8),
+                | (u8::from(image.matte.is_some()) << 2_u8)
+                | (u8::from(image.interpolate) << 3_u8),
         );
         self.ops.push(alpha);
         for value in [
