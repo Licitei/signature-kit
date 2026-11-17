@@ -31,6 +31,10 @@
       "types": "./dist/file.d.ts",
       "import": "./dist/file.js"
     },
+    "./canvas": {
+      "types": "./dist/canvas.d.ts",
+      "import": "./dist/canvas.js"
+    },
     "./pdf-core.wasm": "./dist/pdf-core.wasm"
   },
   "publishConfig": {
@@ -43,7 +47,6 @@
     "effect": "4.1.0"
   },
   "devDependencies": {
-    "@llamaindex/liteparse-wasm": "^2.16.0",
     "@react-pdf/renderer": "4.9.0",
     "pdfjs-dist": "6.3.289",
     "react": "19.3.1"

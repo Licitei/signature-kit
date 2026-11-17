@@ -344,8 +344,8 @@ npm-published; apps consume the shadcn registry copies they own.
   writes, and reset `busy` in the same Effect program that owns the batch. Do not
   add `@tanstack/react-pacer`/`@tanstack/react-store` unless a package feature
   genuinely requires them.
-- **Best-guess placement stays pure geometry.** Do not spin up pdf.js/LiteParse
-  per document just to place the default signature rectangle. Use the parsed
+- **Best-guess placement stays pure geometry.** Do not render pages through
+  pdf-core or pdf.js per document just to place the default signature rectangle. Use the parsed
   `pageDims` already owned by `@signature-kit/pdf` and run the placement queue at
   concurrency 1 so focus/progress paints per document without racing.
 - **Rubric queues never stamp the main signature page.** "Rubric every page"
@@ -382,7 +382,7 @@ npm-published; apps consume the shadcn registry copies they own.
   prepare-and-sign workflows, rubric placement, Effect queues, batch preparation,
   and signing behavior live in `@signature-kit/pdf` (or the owning format
   package). Browser-specific adapters such as the `@signature-kit/pdf-core` WASM
-  layers and the LiteParse thumbnail worker still belong behind
+  layers and its canvas page painter still belong behind
   `@signature-kit/pdf` exports; docs imports those capabilities and shows the
   flow instead of reimplementing them.
 - Use external apps (e.g. `app-licitei-next`) only to discover product needs; never

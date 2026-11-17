@@ -87,10 +87,12 @@ describe("PdfCore.text", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("returns an empty string for pages without a text layer", () =>
+  it.effect("recovers text when startxref is corrupt but the body is intact", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      expect(yield* core.text(readFixture("broken-xref.pdf"))).toEqual([""]);
+      expect(yield* core.text(readFixture("broken-xref.pdf"))).toEqual([
+        "PDF válido com startxref corrompido.",
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 

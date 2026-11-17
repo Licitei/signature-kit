@@ -23,7 +23,7 @@
     "test": "bun run test:rust && bun run --cwd apps/docs foldkit:build && vitest run --exclude '**/*.browser.test.*' --exclude '**/*.integration.test.*' --exclude '**/*.performance.test.*' --exclude 'tooling/integration-tests/**'",
     "test:validar-iti": "SIGNATURE_KIT_ITI_VALIDATE=1 vitest run --config tooling/vitest/live.config.ts validators",
     "test:integration:server": "nx run @tooling/integration-tests:test:server",
-    "test:integration:browser": "vitest run --no-file-parallelism --config tooling/vitest/browser.config.ts signers formats && vitest run --no-file-parallelism --config apps/docs/vitest.browser.config.ts apps/docs",
+    "test:integration:browser": "vitest run --no-file-parallelism --config tooling/vitest/browser.config.ts shared signers formats && vitest run --no-file-parallelism --config apps/docs/vitest.browser.config.ts apps/docs",
     "test:performance": "vitest run .performance.test",
     "test:live:remote-signers": "SIGNATURE_KIT_LIVE_REMOTE_SIGNERS=1 vitest run --config tooling/vitest/live.config.ts signers",
     "site:dev": "bun --cwd apps/docs dev",

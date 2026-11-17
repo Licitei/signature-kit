@@ -16,14 +16,16 @@ import {
   objectSource,
   pdfStringEntry,
 } from "./pdf-fixtures";
-import { LiteParseWorkerFactory, renderPdfPagesBrowser } from "../src/liteparse-browser";
-import type { LiteParseWorker } from "../src/liteparse-browser";
 import {
-  MAX_LITEPARSE_PAGE_COUNT,
-  LiteParseWorkerRequestSchema,
-} from "../src/liteparse-browser-protocol";
+  pdfPageRendererLayer,
+  pdfPageRendererWorkerLayer,
+  renderPdfPagesBrowser,
+} from "@signature-kit/pdf/render-browser";
+import type { PdfPageRenderer } from "@signature-kit/pdf/render-browser";
+import type { PdfError } from "@signature-kit/pdf/config";
+import type { PdfCoreError } from "@signature-kit/pdf-core/config";
 import { resolveSignatureWidgetPlacement } from "../src/placement";
-import { Effect, Layer, Redacted, Result, Schema } from "effect";
+import { Effect, Layer, Redacted, Result } from "effect";
 
 const PASSWORD = Redacted.make("changeit");
 const latin1 = new TextDecoder("latin1");
@@ -45,78 +47,6 @@ const createTemplate = () =>
       },
     ],
     roles: [{ id: "signer-1", label: "Cliente", email: "ana@example.com", required: true }],
-  });
-
-const blockingLiteParseWorkerLayer = (onStart: () => void, onTerminate: () => void) =>
-  Layer.succeed(LiteParseWorkerFactory, {
-    timeoutMillis: 100,
-    create: () =>
-      Effect.sync((): LiteParseWorker => {
-        const script = [
-          'self.addEventListener("message", (event) => {',
-          '  event.ports[0].postMessage("started");',
-          "  const deadline = Date.now() + 10000;",
-          "  while (Date.now() < deadline) {}",
-          '  self.postMessage({ kind: "success", result: { screenshots: [] } });',
-          "});",
-        ].join("\n");
-        const url = URL.createObjectURL(new Blob([script], { type: "text/javascript" }));
-        const worker = new Worker(url);
-        const channel = new MessageChannel();
-        channel.port1.addEventListener("message", onStart, { once: true });
-        channel.port1.start();
-        return {
-          post: (request) => worker.postMessage(request, [channel.port2]),
-          subscribe: (onMessage, onError) => {
-            const messageListener = (event: MessageEvent<unknown>): void => onMessage(event.data);
-            const errorListener = (): void => onError();
-            worker.addEventListener("message", messageListener);
-            worker.addEventListener("error", errorListener);
-            return () => {
-              worker.removeEventListener("message", messageListener);
-              worker.removeEventListener("error", errorListener);
-            };
-          },
-          terminate: () => {
-            onTerminate();
-            channel.port1.close();
-            worker.terminate();
-            URL.revokeObjectURL(url);
-          },
-        };
-      }),
-  });
-
-const successfulLiteParseWorkerLayer = (onCreate: () => void, onTerminate: () => void) =>
-  Layer.succeed(LiteParseWorkerFactory, {
-    timeoutMillis: 100,
-    create: () =>
-      Effect.sync((): LiteParseWorker => {
-        onCreate();
-        let onMessage: ((message: unknown) => void) | undefined;
-        return {
-          post: (request) => {
-            queueMicrotask(() =>
-              onMessage?.({
-                kind: "success",
-                result: {
-                  screenshots: Array.from({ length: request.pageCount }, (_, pageIndex) => ({
-                    pageNum: pageIndex + 1,
-                    imageBytes: [1],
-                  })),
-                },
-              }),
-            );
-          },
-          subscribe: (nextMessage) => {
-            onMessage = nextMessage;
-            return () => {
-              if (onMessage === nextMessage) onMessage = undefined;
-            };
-          },
-          terminate: onTerminate,
-        };
-      }),
   });
 
 if (typeof document === "undefined") {
@@ -189,68 +119,106 @@ if (typeof document === "undefined") {
       expect(anchors[0]?.x).toBeCloseTo(32, 0);
     }, 20_000);
 
-    it("rejects invalid LiteParse page counts in the worker protocol", async () => {
-      for (const pageCount of [
-        Number.NaN,
-        Number.POSITIVE_INFINITY,
-        -1,
-        0.5,
-        MAX_LITEPARSE_PAGE_COUNT + 1,
-        1_000_000_000,
-      ]) {
-        const result = await Effect.runPromise(
-          Effect.result(
-            Schema.decodeUnknownEffect(LiteParseWorkerRequestSchema)({
-              pdf: new Uint8Array([1]),
-              pageCount,
-            }),
-          ),
-        );
-        expect(Result.isFailure(result)).toBe(true);
-      }
-    });
-
-    it("rejects invalid LiteParse page counts before worker startup and supports the cap", async () => {
-      let creations = 0;
-      let terminations = 0;
-      const layer = successfulLiteParseWorkerLayer(
-        () => {
-          creations += 1;
-        },
-        () => {
-          terminations += 1;
-        },
+    it("renders every page to PNG thumbnails in the render worker", async () => {
+      const pdf = await Effect.runPromise(createPdf);
+      const pages = await Effect.runPromise(
+        renderPdfPagesBrowser(pdf).pipe(Effect.provide(pdfPageRendererWorkerLayer())),
       );
-
-      for (const pageCount of [
-        Number.NaN,
-        Number.POSITIVE_INFINITY,
-        -1,
-        0.5,
-        MAX_LITEPARSE_PAGE_COUNT + 1,
-        1_000_000_000,
-      ]) {
-        const result = await Effect.runPromise(
-          Effect.result(
-            renderPdfPagesBrowser(new Uint8Array([1]), pageCount).pipe(Effect.provide(layer)),
-          ),
-        );
-        expect(Result.isFailure(result)).toBe(true);
-        if (Result.isFailure(result)) {
-          expect(result.failure.code).toBe("pdf.INVALID_PDF");
-          expect(result.failure.operation).toBe("pdf.parse");
-        }
+      expect(pages).toHaveLength(1);
+      expect(pages[0]?.pageIndex).toBe(0);
+      expect(pages[0]?.width).toBe(Math.ceil((320 * 150) / 72));
+      expect(pages[0]?.height).toBe(Math.ceil((180 * 150) / 72));
+      expect(pages[0]?.image.type).toBe("image/png");
+      const bitmap = await createImageBitmap(pages[0]?.image ?? new Blob());
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext("2d");
+      if (context === null) return expect.fail("2D context unavailable");
+      context.drawImage(bitmap, 0, 0);
+      const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+      let dark = 0;
+      for (let index = 0; index < pixels.length; index += 4) {
+        if ((pixels[index] ?? 255) < 96) dark += 1;
       }
-      expect(creations).toBe(0);
-
-      const rendered = await Effect.runPromise(
-        renderPdfPagesBrowser(new Uint8Array([1]), MAX_LITEPARSE_PAGE_COUNT).pipe(
-          Effect.provide(layer),
+      expect(dark).toBeGreaterThan(200);
+      const scaled = await Effect.runPromise(
+        renderPdfPagesBrowser(pdf, { pageIndexes: [0], scale: 1 }).pipe(
+          Effect.provide(pdfPageRendererLayer.pipe(Layer.provide(pdfCoreBrowserLayer))),
         ),
       );
-      expect(rendered).toHaveLength(MAX_LITEPARSE_PAGE_COUNT);
-      expect(creations).toBe(1);
-      expect(terminations).toBe(1);
+      expect(scaled[0]?.width).toBe(320);
+    }, 20_000);
+
+    it("rejects invalid render options and unreadable PDFs with typed errors", async () => {
+      const layers: ReadonlyArray<Layer.Layer<PdfPageRenderer, PdfError | PdfCoreError>> = [
+        pdfPageRendererWorkerLayer(),
+        pdfPageRendererLayer.pipe(Layer.provide(pdfCoreBrowserLayer)),
+      ];
+      for (const layer of layers) {
+        for (const options of [{ scale: 0 }, { scale: 9 }, { pageIndexes: [-1] }]) {
+          const result = await Effect.runPromise(
+            Effect.result(
+              renderPdfPagesBrowser(new Uint8Array([1]), options).pipe(Effect.provide(layer)),
+            ),
+          );
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.code).toBe("pdf.INVALID_PDF");
+            expect(result.failure.operation).toBe("pdf.page.render");
+            expect(result.failure.schemaName).toBe("PdfPageRenderOptions");
+          }
+        }
+        const unreadable = await Effect.runPromise(
+          Effect.result(
+            renderPdfPagesBrowser(new Uint8Array([1, 2, 3])).pipe(Effect.provide(layer)),
+          ),
+        );
+        expect(Result.isFailure(unreadable)).toBe(true);
+        if (Result.isFailure(unreadable)) {
+          expect(unreadable.failure.code).toBe("pdf.INVALID_PDF");
+          expect(unreadable.failure.operation).toBe("pdf.page.render");
+        }
+      }
+    }, 20_000);
+
+    it("stops a render worker that exceeds the time limit and replaces it", async () => {
+      const pdf = await Effect.runPromise(createPdf);
+      const stalled = URL.createObjectURL(
+        new Blob(["self.onmessage = () => { for (;;) {} };"], { type: "text/javascript" }),
+      );
+      const created: Array<string> = [];
+      const layer = pdfPageRendererWorkerLayer({ timeoutMillis: 1500 }, () => {
+        const kind = created.length === 0 ? "stalled" : "real";
+        created.push(kind);
+        return kind === "stalled"
+          ? new Worker(stalled)
+          : new Worker(new URL("../dist/render.worker.js", import.meta.url), { type: "module" });
+      });
+      const outcome = await Effect.runPromise(
+        Effect.gen(function* () {
+          const started = performance.now();
+          const timedOut = yield* Effect.flip(renderPdfPagesBrowser(pdf, { pageIndexes: [0] }));
+          const elapsed = performance.now() - started;
+          const recovered = yield* renderPdfPagesBrowser(pdf, { pageIndexes: [0], scale: 1 });
+          return { timedOut, elapsed, recovered };
+        }).pipe(Effect.provide(layer)),
+      );
+      URL.revokeObjectURL(stalled);
+      expect(outcome.timedOut.code).toBe("pdf.RENDER_TIMEOUT");
+      expect(outcome.timedOut.operation).toBe("pdf.page.render");
+      expect(outcome.elapsed).toBeLessThan(10_000);
+      expect(created).toEqual(["stalled", "real"]);
+      expect(outcome.recovered[0]?.width).toBe(320);
+    }, 30_000);
+
+    it("rejects invalid render worker options", async () => {
+      const failure = await Effect.runPromise(
+        Effect.flip(
+          renderPdfPagesBrowser(new Uint8Array([1])).pipe(
+            Effect.provide(pdfPageRendererWorkerLayer({ timeoutMillis: 0 })),
+          ),
+        ),
+      );
+      expect(failure.schemaName).toBe("PdfPageRendererWorkerOptions");
     });
 
     it("resolves normal placement and rejects non-advancing automatic grids", async () => {
@@ -311,36 +279,5 @@ if (typeof document === "undefined") {
         expect(denseGridResult.failure.code).toBe("pdf.SIGNATURE_PLACEMENT_FAILED");
       }
     });
-
-    it("terminates a blocking LiteParse worker at the timeout", async () => {
-      let started = false;
-      let terminations = 0;
-      const startedAt = performance.now();
-      const result = await Effect.runPromise(
-        Effect.result(
-          renderPdfPagesBrowser(new Uint8Array([1]), 1).pipe(
-            Effect.provide(
-              blockingLiteParseWorkerLayer(
-                () => {
-                  started = true;
-                },
-                () => {
-                  terminations += 1;
-                },
-              ),
-            ),
-          ),
-        ),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("pdf.PDF_LOAD_FAILED");
-        expect(result.failure.retryable).toBe(true);
-      }
-      expect(performance.now() - startedAt).toBeLessThan(1000);
-      expect(started).toBe(true);
-      expect(terminations).toBe(1);
-    }, 10_000);
   });
 }

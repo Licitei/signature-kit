@@ -4,7 +4,15 @@
       "pageNum": 1,
       "width": 612,
       "height": 792,
-      "textItems": []
+      "textItems": [
+        {
+          "text": "PDF válido com startxref corrompido.",
+          "x": 72,
+          "y": 80.66,
+          "width": 198.048,
+          "height": 14.028
+        }
+      ]
     }
   ]
 }

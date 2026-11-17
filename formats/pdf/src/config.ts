@@ -42,6 +42,7 @@ export const PdfErrorCodeSchema = Schema.Literals([
   "pdf.FILE_READ_FAILED",
   "pdf.PDF_LOAD_FAILED",
   "pdf.LIMIT_EXCEEDED",
+  "pdf.RENDER_TIMEOUT",
 ]);
 export type PdfErrorCode = (typeof PdfErrorCodeSchema)["Type"];
 
@@ -64,6 +65,7 @@ export const PdfErrorCodeValue = {
   fileReadFailed: "pdf.FILE_READ_FAILED",
   pdfLoadFailed: "pdf.PDF_LOAD_FAILED",
   limitExceeded: "pdf.LIMIT_EXCEEDED",
+  renderTimeout: "pdf.RENDER_TIMEOUT",
 } satisfies Record<string, PdfErrorCode>;
 
 export type PdfErrorMessageLocale = ErrorMessageLocale;
@@ -93,6 +95,7 @@ export const pdfErrorMessages = {
     "pdf.FILE_READ_FAILED": "Failed to read the PDF file.",
     "pdf.PDF_LOAD_FAILED": "Failed to load the PDF document.",
     "pdf.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
+    "pdf.RENDER_TIMEOUT": "Rendering the PDF pages took too long and was stopped.",
   },
   "pt-BR": {
     "pdf.INVALID_PDF": "Documento PDF inválido.",
@@ -113,6 +116,7 @@ export const pdfErrorMessages = {
     "pdf.FILE_READ_FAILED": "Não foi possível ler o arquivo PDF.",
     "pdf.PDF_LOAD_FAILED": "Não foi possível carregar o documento PDF.",
     "pdf.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",
+    "pdf.RENDER_TIMEOUT": "A renderização das páginas do PDF demorou demais e foi interrompida.",
   },
 } satisfies Record<PdfErrorMessageLocale, Record<PdfErrorCode, string>>;
 
@@ -139,6 +143,7 @@ export const PdfOperationSchema = Schema.Literals([
   "pdf.builder.create-template-from-bytes",
   "pdf.builder.create-state-from-bytes",
   "pdf.sign.field",
+  "pdf.page.render",
 ]);
 export type PdfOperation = (typeof PdfOperationSchema)["Type"];
 
@@ -165,6 +170,7 @@ export const PdfOperationValue = {
   createTemplateFromBytes: "pdf.builder.create-template-from-bytes",
   createBuilderStateFromBytes: "pdf.builder.create-state-from-bytes",
   signField: "pdf.sign.field",
+  renderPages: "pdf.page.render",
 } satisfies Record<string, PdfOperation>;
 
 export const PdfSchemaNameSchema = Schema.Literals([
@@ -189,6 +195,8 @@ export const PdfSchemaNameSchema = Schema.Literals([
   "PdfVerificationRequest",
   "PdfMergeDocuments",
   "PdfIllustrativeDocumentInput",
+  "PdfPageRenderOptions",
+  "PdfPageRendererWorkerOptions",
 ]);
 export type PdfSchemaName = (typeof PdfSchemaNameSchema)["Type"];
 export const PdfSchemaNameValue = {
@@ -213,6 +221,8 @@ export const PdfSchemaNameValue = {
   pdfVerificationRequest: "PdfVerificationRequest",
   pdfMergeDocuments: "PdfMergeDocuments",
   pdfIllustrativeDocumentInput: "PdfIllustrativeDocumentInput",
+  pdfPageRenderOptions: "PdfPageRenderOptions",
+  pdfPageRendererWorkerOptions: "PdfPageRendererWorkerOptions",
 } satisfies Record<string, PdfSchemaName>;
 
 export class PdfError extends Schema.TaggedError<PdfError, { readonly brand: unique symbol }>()(
@@ -1027,3 +1037,22 @@ export const PdfStampPreviewInputSchema = Schema.Struct({
   height: positiveFiniteNumber,
 });
 export type PdfStampPreviewInput = (typeof PdfStampPreviewInputSchema)["Type"];
+
+export const MAX_PDF_RENDER_SCALE = 8;
+export const PdfPageRenderOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(
+    Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 0xffff_ffff }))),
+  ),
+  scale: Schema.optional(
+    positiveFiniteNumber.check(Schema.isLessThanOrEqualTo(MAX_PDF_RENDER_SCALE)),
+  ),
+});
+export type PdfPageRenderOptions = (typeof PdfPageRenderOptionsSchema)["Type"];
+
+export const DEFAULT_PDF_RENDER_TIMEOUT_MILLIS = 30_000;
+export const PdfPageRendererWorkerOptionsSchema = Schema.Struct({
+  timeoutMillis: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 600_000 })),
+  ),
+});
+export type PdfPageRendererWorkerOptions = (typeof PdfPageRendererWorkerOptionsSchema)["Type"];

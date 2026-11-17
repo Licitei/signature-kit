@@ -1,5 +1,9 @@
+use crate::display::PathData;
 use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
+use crate::glyph::charge;
+use crate::num::{f64_to_f32, f64_to_i64, parse_decimal};
+use core::array;
 use core::mem;
 include!(concat!(env!("OUT_DIR"), "/cff_tables.rs"));
 
@@ -12,6 +16,17 @@ const OP_CHARSET: u16 = 15;
 const OP_ENCODING: u16 = 16;
 const OP_CHARSTRINGS: u16 = 17;
 const OP_ROS: u16 = 0x0C1E;
+const OP_PRIVATE: u16 = 18;
+const OP_SUBRS: u16 = 19;
+const OP_FONT_MATRIX: u16 = 0x0C07;
+const OP_FD_ARRAY: u16 = 0x0C24;
+const OP_FD_SELECT: u16 = 0x0C25;
+const MAX_FONT_DICTS: usize = 256;
+const MAX_STACK: usize = 48;
+const MAX_CALL_DEPTH: usize = 10;
+const MAX_STEPS: usize = 50_000;
+const MAX_SEAC_DEPTH: usize = 2;
+const DEFAULT_MATRIX: [f64; 6] = [0.001, 0.0, 0.0, 0.001, 0.0, 0.0];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum BuiltinEncoding {
@@ -23,13 +38,25 @@ enum BuiltinEncoding {
 #[derive(Clone, Debug)]
 pub(crate) struct CffFont {
     charset: Vec<u16>,
+    charstrings: Index,
     cid_index: Vec<(u16, u16)>,
     cid_keyed: bool,
     custom_strings: Vec<Vec<u8>>,
     encoding: BuiltinEncoding,
+    fd_select: Vec<u8>,
+    font_matrix: Option<[f64; 6]>,
+    global_subrs: Index,
     glyph_count: usize,
+    privates: Vec<PrivateDict>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PrivateDict {
+    matrix: Option<[f64; 6]>,
+    subrs: Option<Index>,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct Index {
     count: usize,
     data: usize,
@@ -39,6 +66,16 @@ struct Index {
 }
 
 impl Index {
+    const fn empty(position: usize) -> Self {
+        Self {
+            count: 0,
+            data: position,
+            end: position,
+            off_size: 0,
+            offsets: position,
+        }
+    }
+
     fn get<'data>(&self, bytes: &'data [u8], item: usize) -> Option<&'data [u8]> {
         if item >= self.count {
             return None;
@@ -127,6 +164,17 @@ impl CffFont {
         }
     }
 
+    pub(crate) fn font_matrix(&self, gid: u16) -> [f64; 6] {
+        match (
+            self.private_for(gid).and_then(|private| private.matrix),
+            self.font_matrix,
+        ) {
+            (Some(inner), Some(top)) if self.cid_keyed => multiply(&inner, &top),
+            (Some(inner), None) if self.cid_keyed => inner,
+            (_, top) => top.unwrap_or(DEFAULT_MATRIX),
+        }
+    }
+
     pub(crate) fn gid_for_cid(&self, cid: u16) -> Option<u16> {
         if !self.cid_keyed {
             return (usize::from(cid) < self.glyph_count).then_some(cid);
@@ -136,6 +184,17 @@ impl CffFont {
             .binary_search_by_key(&cid, |(key, _)| *key)
             .ok()?;
         self.cid_index.get(position).map(|(_, gid)| *gid)
+    }
+
+    fn gid_for_standard_code(&self, code: f64) -> Option<u16> {
+        let byte = u8::try_from(f64_to_i64(code)).ok()?;
+        let name = encoding_glyph_name(FontEncoding::Standard, byte);
+        if name.is_empty() || self.cid_keyed {
+            return None;
+        }
+        (0..self.glyph_count)
+            .filter_map(|gid| u16::try_from(gid).ok())
+            .find(|gid| self.glyph_name(*gid) == Some(name.as_bytes()))
     }
 
     pub(crate) const fn glyph_count(&self) -> usize {
@@ -153,6 +212,31 @@ impl CffFont {
         self.cid_keyed
     }
 
+    pub(crate) fn outline(
+        &self,
+        bytes: &[u8],
+        gid: u16,
+        path: &mut PathData,
+        work: &mut usize,
+    ) -> Option<()> {
+        let mut machine = Type2 {
+            bytes,
+            font: self,
+            local: self.private_for(gid).and_then(|private| private.subrs),
+            path,
+            open: false,
+            stack: Vec::with_capacity(MAX_STACK),
+            stems: 0,
+            steps: 0,
+            width_parsed: false,
+            x: 0.0,
+            y: 0.0,
+        };
+        let outcome = machine.glyph(gid, 0);
+        charge(work, machine.steps)?;
+        outcome
+    }
+
     pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
         if *bytes.first()? != 1 {
             return None;
@@ -162,18 +246,15 @@ impl CffFont {
         let top_dicts = Index::parse(bytes, names.end)?;
         let strings = Index::parse(bytes, top_dicts.end)?;
         let top = parse_dict(top_dicts.get(bytes, 0)?);
-        let operand = |op: u16| {
-            top.iter()
-                .find(|(key, _)| *key == op)
-                .and_then(|(_, values)| values.first().copied())
-        };
-        let charstrings = usize::try_from(operand(OP_CHARSTRINGS)?).ok()?;
-        let glyph_count = Index::parse(bytes, charstrings)?.count;
+        let offset = |op: u16| dict_offset(&top, op);
+        let charstrings_offset = usize::try_from(offset(OP_CHARSTRINGS)?).ok()?;
+        let charstrings = Index::parse(bytes, charstrings_offset)?;
+        let glyph_count = charstrings.count;
         if glyph_count == 0 || glyph_count > MAX_GLYPHS {
             return None;
         }
         let cid_keyed = top.iter().any(|(key, _)| *key == OP_ROS);
-        let charset_offset = operand(OP_CHARSET).unwrap_or(0_i32);
+        let charset_offset = offset(OP_CHARSET).unwrap_or(0_i32);
         let charset = read_charset(bytes, charset_offset, glyph_count, cid_keyed)?;
         let mut custom_strings = Vec::new();
         for item in 0..strings.count.min(MAX_CUSTOM_STRINGS) {
@@ -182,7 +263,7 @@ impl CffFont {
         let encoding = if cid_keyed {
             BuiltinEncoding::Table(Vec::new())
         } else {
-            read_encoding(bytes, operand(OP_ENCODING).unwrap_or(0_i32), &charset)?
+            read_encoding(bytes, offset(OP_ENCODING).unwrap_or(0_i32), &charset)?
         };
         let mut cid_index = Vec::new();
         if cid_keyed {
@@ -193,14 +274,35 @@ impl CffFont {
                 .collect();
             cid_index.sort_by_key(|(cid, _)| *cid);
         }
+        let global_subrs =
+            Index::parse(bytes, strings.end).unwrap_or_else(|| Index::empty(strings.end));
+        let (privates, fd_select) = if cid_keyed {
+            read_font_dicts(bytes, &top, glyph_count)
+        } else {
+            (vec![read_private(bytes, &top)], Vec::new())
+        };
         Some(Self {
             charset,
+            charstrings,
             cid_index,
             cid_keyed,
             custom_strings,
             encoding,
+            fd_select,
+            font_matrix: dict_matrix(&top),
+            global_subrs,
             glyph_count,
+            privates,
         })
+    }
+
+    fn private_for(&self, gid: u16) -> Option<&PrivateDict> {
+        if self.cid_keyed {
+            let fd = self.fd_select.get(usize::from(gid)).copied().unwrap_or(0);
+            self.privates.get(usize::from(fd))
+        } else {
+            self.privates.first()
+        }
     }
 
     fn sid_name(&self, sid: u16) -> Option<&[u8]> {
@@ -211,6 +313,431 @@ impl CffFont {
                 .custom_strings
                 .get(sid_usize.checked_sub(CFF_STANDARD_STRINGS.len())?)
                 .map(Vec::as_slice),
+        }
+    }
+}
+
+struct Type2<'run> {
+    bytes: &'run [u8],
+    font: &'run CffFont,
+    local: Option<Index>,
+    open: bool,
+    path: &'run mut PathData,
+    stack: Vec<f64>,
+    stems: usize,
+    steps: usize,
+    width_parsed: bool,
+    x: f64,
+    y: f64,
+}
+
+impl Type2<'_> {
+    fn arg(&self, index: usize) -> f64 {
+        self.stack.get(index).copied().unwrap_or(0.0)
+    }
+
+    fn call(&mut self, global: bool, depth: usize) -> Option<bool> {
+        let index = if global {
+            self.font.global_subrs
+        } else {
+            self.local?
+        };
+        let raw = f64_to_i64(self.stack.pop()?);
+        let biased =
+            usize::try_from(raw.checked_add(i64::try_from(subr_bias(index.count)).ok()?)?).ok()?;
+        let code = index.get(self.bytes, biased)?;
+        self.run(code, depth.saturating_add(1))
+    }
+
+    fn close(&mut self) {
+        if self.open {
+            self.path.close();
+            self.open = false;
+        }
+    }
+
+    fn curve(&mut self, dxa: f64, dya: f64, dxb: f64, dyb: f64, dxc: f64, dyc: f64) {
+        let x1 = self.x + dxa;
+        let y1 = self.y + dya;
+        let x2 = x1 + dxb;
+        let y2 = y1 + dyb;
+        self.x = x2 + dxc;
+        self.y = y2 + dyc;
+        self.path.cubic([x1, y1, x2, y2, self.x, self.y]);
+        self.open = true;
+    }
+
+    fn curve_at(&mut self, index: usize) {
+        let [a, b, c, d, e, f] =
+            [0, 1, 2, 3, 4, 5].map(|offset| self.arg(index.saturating_add(offset)));
+        self.curve(a, b, c, d, e, f);
+    }
+
+    fn escape(&mut self, code: u8) {
+        let arg = |index: usize| self.stack.get(index).copied().unwrap_or(0.0_f64);
+        match code {
+            35 => {
+                let values: [f64; 12] = array::from_fn(arg);
+                self.curve(
+                    values[0], values[1], values[2], values[3], values[4], values[5],
+                );
+                self.curve(
+                    values[6], values[7], values[8], values[9], values[10], values[11],
+                );
+            }
+            34 => {
+                let values: [f64; 7] = array::from_fn(arg);
+                self.curve(values[0], 0.0, values[1], values[2], values[3], 0.0);
+                self.curve(values[4], 0.0, values[5], -values[2], values[6], 0.0);
+            }
+            36 => {
+                let values: [f64; 9] = array::from_fn(arg);
+                self.curve(values[0], values[1], values[2], values[3], values[4], 0.0);
+                self.curve(
+                    values[5],
+                    0.0,
+                    values[6],
+                    values[7],
+                    values[8],
+                    -(values[1] + values[3] + values[7]),
+                );
+            }
+            37 => {
+                let values: [f64; 11] = array::from_fn(arg);
+                let dx = values[0] + values[2] + values[4] + values[6] + values[8];
+                let dy = values[1] + values[3] + values[5] + values[7] + values[9];
+                let (dx6, dy6) = if dx.abs() > dy.abs() {
+                    (values[10], -dy)
+                } else {
+                    (-dx, values[10])
+                };
+                self.curve(
+                    values[0], values[1], values[2], values[3], values[4], values[5],
+                );
+                self.curve(values[6], values[7], values[8], values[9], dx6, dy6);
+            }
+            9 | 14 | 26 => {
+                if let Some(top) = self.stack.last_mut() {
+                    *top = match code {
+                        9 => top.abs(),
+                        14 => -*top,
+                        _ => top.max(0.0).sqrt(),
+                    };
+                }
+                return;
+            }
+            10 | 11 | 12 | 24 => {
+                let right = self.stack.pop().unwrap_or(0.0_f64);
+                let left = self.stack.pop().unwrap_or(0.0_f64);
+                let value = match code {
+                    10 => left + right,
+                    11 => left - right,
+                    12 if right != 0.0_f64 => left / right,
+                    24 => left * right,
+                    _ => 0.0_f64,
+                };
+                self.stack.push(value);
+                return;
+            }
+            18 => {
+                let _: Option<f64> = self.stack.pop();
+                return;
+            }
+            27 => {
+                if let Some(top) = self.stack.last().copied()
+                    && self.stack.len() < MAX_STACK
+                {
+                    self.stack.push(top);
+                }
+                return;
+            }
+            28 => {
+                let len = self.stack.len();
+                if len >= 2 {
+                    self.stack
+                        .swap(len.saturating_sub(1), len.saturating_sub(2));
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.stack.clear();
+    }
+
+    fn glyph(&mut self, gid: u16, seac: usize) -> Option<()> {
+        let code = self.font.charstrings.get(self.bytes, usize::from(gid))?;
+        let _: bool = self.run_glyph(code, seac)?;
+        self.close();
+        Some(())
+    }
+
+    fn line(&mut self, dx: f64, dy: f64) {
+        self.x += dx;
+        self.y += dy;
+        self.path.line(self.x, self.y);
+        self.open = true;
+    }
+
+    fn move_by(&mut self, dx: f64, dy: f64) {
+        self.close();
+        self.x += dx;
+        self.y += dy;
+        self.path.move_to(self.x, self.y);
+        self.open = true;
+    }
+
+    fn number(&mut self, code: &[u8], position: &mut usize, byte: u8) -> Option<()> {
+        let value = match byte {
+            28 => {
+                let value = read_u16(code, *position)?.cast_signed();
+                *position = position.checked_add(2)?;
+                f64::from(value)
+            }
+            32..=246 => f64::from(i32::from(byte).saturating_sub(139)),
+            247..=250 => {
+                let next = i32::from(*code.get(*position)?);
+                *position = position.checked_add(1)?;
+                f64::from(
+                    i32::from(byte)
+                        .saturating_sub(247)
+                        .saturating_mul(256)
+                        .saturating_add(next)
+                        .saturating_add(108),
+                )
+            }
+            251..=254 => {
+                let next = i32::from(*code.get(*position)?);
+                *position = position.checked_add(1)?;
+                f64::from(
+                    251_i32
+                        .saturating_sub(i32::from(byte))
+                        .saturating_mul(256)
+                        .saturating_sub(next)
+                        .saturating_sub(108),
+                )
+            }
+            _ => {
+                let value = read_u32(code, *position)?.cast_signed();
+                *position = position.checked_add(4)?;
+                f64::from(value) / 65_536.0_f64
+            }
+        };
+        if self.stack.len() < MAX_STACK {
+            self.stack.push(value);
+        }
+        Some(())
+    }
+
+    fn operator(&mut self, code: u8) {
+        let count = self.stack.len();
+        match code {
+            1 | 3 | 18 | 23 => {
+                self.take_width(0);
+                self.stems = self.stems.saturating_add(self.stack.len() >> 1_u32);
+            }
+            21 => {
+                self.take_width(0);
+                let len = self.stack.len();
+                let dx = self.arg(len.saturating_sub(2));
+                let dy = self.arg(len.saturating_sub(1));
+                self.move_by(dx, dy);
+            }
+            22 | 4 => {
+                self.take_width(1);
+                let delta = self.arg(self.stack.len().saturating_sub(1));
+                if code == 22 {
+                    self.move_by(delta, 0.0);
+                } else {
+                    self.move_by(0.0, delta);
+                }
+            }
+            5 => {
+                let mut index = 0_usize;
+                while index.saturating_add(1) < count {
+                    self.line(self.arg(index), self.arg(index.saturating_add(1)));
+                    index = index.saturating_add(2);
+                }
+            }
+            6 | 7 => {
+                for index in 0..count {
+                    let horizontal = (index & 1 == 0) == (code == 6);
+                    let delta = self.arg(index);
+                    if horizontal {
+                        self.line(delta, 0.0);
+                    } else {
+                        self.line(0.0, delta);
+                    }
+                }
+            }
+            8 | 24 => {
+                let mut index = 0_usize;
+                let curve_end = if code == 24 {
+                    count.saturating_sub(2)
+                } else {
+                    count
+                };
+                while index.saturating_add(6) <= curve_end {
+                    self.curve_at(index);
+                    index = index.saturating_add(6);
+                }
+                if code == 24 && index.saturating_add(2) <= count {
+                    self.line(self.arg(index), self.arg(index.saturating_add(1)));
+                }
+            }
+            25 => {
+                let mut index = 0_usize;
+                while index.saturating_add(8) <= count {
+                    self.line(self.arg(index), self.arg(index.saturating_add(1)));
+                    index = index.saturating_add(2);
+                }
+                if index.saturating_add(6) <= count {
+                    self.curve_at(index);
+                }
+            }
+            26 | 27 => {
+                let mut index = count & 1;
+                let mut first = if index == 1 { self.arg(0) } else { 0.0_f64 };
+                while index.saturating_add(4) <= count {
+                    let [a, b, c, d] =
+                        [0, 1, 2, 3].map(|offset| self.arg(index.saturating_add(offset)));
+                    if code == 27 {
+                        self.curve(a, first, b, c, d, 0.0);
+                    } else {
+                        self.curve(first, a, b, c, 0.0, d);
+                    }
+                    first = 0.0_f64;
+                    index = index.saturating_add(4);
+                }
+            }
+            30 | 31 => {
+                let mut index = 0_usize;
+                let mut horizontal = code == 31;
+                while index.saturating_add(4) <= count {
+                    let [a, b, c, d] =
+                        [0, 1, 2, 3].map(|offset| self.arg(index.saturating_add(offset)));
+                    let last = if count.saturating_sub(index) == 5 {
+                        self.arg(index.saturating_add(4))
+                    } else {
+                        0.0_f64
+                    };
+                    if horizontal {
+                        self.curve(a, 0.0, b, c, last, d);
+                    } else {
+                        self.curve(0.0, a, b, c, d, last);
+                    }
+                    horizontal = !horizontal;
+                    index = index.saturating_add(4);
+                }
+            }
+            _ => {}
+        }
+        self.stack.clear();
+    }
+
+    fn run(&mut self, code: &[u8], depth: usize) -> Option<bool> {
+        if depth > MAX_CALL_DEPTH {
+            return None;
+        }
+        let mut position = 0_usize;
+        while let Some(&byte) = code.get(position) {
+            position = position.saturating_add(1);
+            self.steps = self.steps.saturating_add(1);
+            if self.steps > MAX_STEPS {
+                return None;
+            }
+            if byte == 28 || byte >= 32 {
+                self.number(code, &mut position, byte)?;
+                continue;
+            }
+            match byte {
+                10 | 29 => {
+                    if self.call(byte == 29, depth)? {
+                        return Some(true);
+                    }
+                }
+                11 => return Some(false),
+                14 => {
+                    self.take_width(0);
+                    if self.stack.len() >= 4 {
+                        let accent = self.arg(3);
+                        let base = self.arg(2);
+                        let dx = self.arg(0);
+                        let dy = self.arg(1);
+                        self.stack.clear();
+                        self.seac(base, accent, dx, dy)?;
+                    }
+                    self.close();
+                    return Some(true);
+                }
+                12 => {
+                    let escape = *code.get(position)?;
+                    position = position.saturating_add(1);
+                    self.escape(escape);
+                }
+                19 | 20 => {
+                    self.take_width(0);
+                    self.stems = self.stems.saturating_add(self.stack.len() >> 1_u32);
+                    self.stack.clear();
+                    position = position.saturating_add(self.stems.div_ceil(8));
+                }
+                _ => self.operator(byte),
+            }
+        }
+        Some(false)
+    }
+
+    fn run_glyph(&mut self, code: &[u8], seac: usize) -> Option<bool> {
+        if seac > MAX_SEAC_DEPTH {
+            return None;
+        }
+        self.run(code, 0)
+    }
+
+    fn seac(&mut self, base: f64, accent: f64, dx: f64, dy: f64) -> Option<()> {
+        let base_gid = self.font.gid_for_standard_code(base)?;
+        let accent_gid = self.font.gid_for_standard_code(accent)?;
+        self.close();
+        let mut nested = Type2 {
+            bytes: self.bytes,
+            font: self.font,
+            local: self.local,
+            open: false,
+            path: &mut *self.path,
+            stack: Vec::with_capacity(MAX_STACK),
+            stems: 0,
+            steps: self.steps,
+            width_parsed: true,
+            x: 0.0,
+            y: 0.0,
+        };
+        nested.glyph(base_gid, 1)?;
+        let start = nested.path.coords.len();
+        nested.x = 0.0_f64;
+        nested.y = 0.0_f64;
+        nested.stems = 0;
+        nested.glyph(accent_gid, 1)?;
+        let offsets = [dx, dy];
+        for (index, value) in nested
+            .path
+            .coords
+            .get_mut(start..)
+            .unwrap_or_default()
+            .iter_mut()
+            .enumerate()
+        {
+            *value += f64_to_f32(offsets.get(index & 1).copied().unwrap_or(0.0_f64));
+        }
+        self.steps = nested.steps;
+        Some(())
+    }
+
+    fn take_width(&mut self, normal_odd: usize) {
+        if self.width_parsed {
+            return;
+        }
+        self.width_parsed = true;
+        if self.stack.len() & 1 != normal_odd & 1 && !self.stack.is_empty() {
+            let _: f64 = self.stack.remove(0);
         }
     }
 }
@@ -333,9 +860,9 @@ fn read_encoding(bytes: &[u8], offset: i32, charset: &[u16]) -> Option<BuiltinEn
     Some(BuiltinEncoding::Table(table))
 }
 
-fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
-    let mut entries: Vec<(u16, Vec<i32>)> = Vec::new();
-    let mut operands: Vec<i32> = Vec::new();
+fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<f64>)> {
+    let mut entries: Vec<(u16, Vec<f64>)> = Vec::new();
+    let mut operands: Vec<f64> = Vec::new();
     let mut position = 0_usize;
     while let Some(&byte) = bytes.get(position) {
         position = position.saturating_add(1);
@@ -356,31 +883,45 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
             28 => {
                 let value = read_u16(bytes, position).map(|value| i32::from(value.cast_signed()));
                 position = position.saturating_add(2);
-                push_operand(&mut operands, value.unwrap_or(0_i32));
+                push_operand(&mut operands, f64::from(value.unwrap_or(0_i32)));
             }
             29 => {
                 let value = read_u32(bytes, position).map(u32::cast_signed);
                 position = position.saturating_add(4);
-                push_operand(&mut operands, value.unwrap_or(0_i32));
+                push_operand(&mut operands, f64::from(value.unwrap_or(0_i32)));
             }
             30 => {
-                while let Some(&pair) = bytes.get(position) {
+                let mut text: Vec<u8> = Vec::new();
+                'nibbles: while let Some(&pair) = bytes.get(position) {
                     position = position.saturating_add(1);
-                    if pair & 0x0F == 0x0F || pair >> 4_i32 == 0x0F {
-                        break;
+                    for nibble in [pair >> 4_i32, pair & 0x0F] {
+                        match nibble {
+                            0..=9 => text.push(b'0'.saturating_add(nibble)),
+                            0x0A => text.push(b'.'),
+                            0x0B => text.push(b'E'),
+                            0x0C => text.extend_from_slice(b"E-"),
+                            0x0E => text.push(b'-'),
+                            0x0F => break 'nibbles,
+                            _ => {}
+                        }
                     }
                 }
-                push_operand(&mut operands, 0);
+                push_operand(&mut operands, parse_decimal(&text).unwrap_or(0.0_f64));
             }
-            32..=246 => push_operand(&mut operands, i32::from(byte).saturating_sub(139)),
+            32..=246 => push_operand(
+                &mut operands,
+                f64::from(i32::from(byte).saturating_sub(139)),
+            ),
             247..=250 => {
                 let next = i32::from(bytes.get(position).copied().unwrap_or(0));
                 position = position.saturating_add(1);
                 push_operand(
                     &mut operands,
-                    (((i32::from(byte).saturating_sub(247)).saturating_mul(256))
-                        .saturating_add(next))
-                    .saturating_add(108),
+                    f64::from(
+                        (((i32::from(byte).saturating_sub(247)).saturating_mul(256))
+                            .saturating_add(next))
+                        .saturating_add(108),
+                    ),
                 );
             }
             251..=254 => {
@@ -388,11 +929,13 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
                 position = position.saturating_add(1);
                 push_operand(
                     &mut operands,
-                    251_i32
-                        .saturating_sub(i32::from(byte))
-                        .saturating_mul(256)
-                        .saturating_sub(next)
-                        .saturating_sub(108),
+                    f64::from(
+                        251_i32
+                            .saturating_sub(i32::from(byte))
+                            .saturating_mul(256)
+                            .saturating_sub(next)
+                            .saturating_sub(108),
+                    ),
                 );
             }
             _ => {}
@@ -401,7 +944,108 @@ fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<i32>)> {
     entries
 }
 
-fn push_operand(operands: &mut Vec<i32>, value: i32) {
+fn dict_values(dict: &[(u16, Vec<f64>)], op: u16) -> Option<&[f64]> {
+    dict.iter()
+        .find(|(key, _)| *key == op)
+        .map(|(_, values)| values.as_slice())
+}
+
+fn dict_offset(dict: &[(u16, Vec<f64>)], op: u16) -> Option<i32> {
+    let value = *dict_values(dict, op)?.first()?;
+    i32::try_from(f64_to_i64(value)).ok()
+}
+
+fn dict_matrix(dict: &[(u16, Vec<f64>)]) -> Option<[f64; 6]> {
+    let values = dict_values(dict, OP_FONT_MATRIX)?;
+    let matrix: [f64; 6] = values.get(..6)?.try_into().ok()?;
+    matrix
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(matrix)
+}
+
+fn read_private(bytes: &[u8], dict: &[(u16, Vec<f64>)]) -> PrivateDict {
+    let matrix = dict_matrix(dict);
+    let subrs = dict_values(dict, OP_PRIVATE).and_then(|values| {
+        let size = usize::try_from(f64_to_i64(*values.first()?)).ok()?;
+        let offset = usize::try_from(f64_to_i64(*values.get(1)?)).ok()?;
+        let private = parse_dict(bytes.get(offset..offset.checked_add(size)?)?);
+        let relative = usize::try_from(dict_offset(&private, OP_SUBRS)?).ok()?;
+        Index::parse(bytes, offset.checked_add(relative)?)
+    });
+    PrivateDict { matrix, subrs }
+}
+
+fn read_font_dicts(
+    bytes: &[u8],
+    top: &[(u16, Vec<f64>)],
+    glyph_count: usize,
+) -> (Vec<PrivateDict>, Vec<u8>) {
+    let mut privates = Vec::new();
+    if let Some(array) = dict_offset(top, OP_FD_ARRAY)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .and_then(|offset| Index::parse(bytes, offset))
+    {
+        for item in 0..array.count.min(MAX_FONT_DICTS) {
+            let dict = array.get(bytes, item).map(parse_dict).unwrap_or_default();
+            privates.push(read_private(bytes, &dict));
+        }
+    }
+    let select = dict_offset(top, OP_FD_SELECT)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .and_then(|offset| read_fd_select(bytes, offset, glyph_count))
+        .unwrap_or_default();
+    (privates, select)
+}
+
+fn read_fd_select(bytes: &[u8], offset: usize, glyph_count: usize) -> Option<Vec<u8>> {
+    let format = *bytes.get(offset)?;
+    let start = offset.checked_add(1)?;
+    match format {
+        0 => Some(bytes.get(start..start.checked_add(glyph_count)?)?.to_vec()),
+        3 => {
+            let ranges = usize::from(read_u16(bytes, start)?);
+            let mut select = vec![0_u8; glyph_count];
+            let mut position = start.checked_add(2)?;
+            for _ in 0..ranges {
+                let first = usize::from(read_u16(bytes, position)?);
+                let fd = *bytes.get(position.checked_add(2)?)?;
+                let next = usize::from(read_u16(bytes, position.checked_add(3)?)?);
+                if let Some(slots) = select.get_mut(first..next.min(glyph_count)) {
+                    slots.fill(fd);
+                }
+                position = position.checked_add(3)?;
+            }
+            Some(select)
+        }
+        _ => None,
+    }
+}
+
+fn multiply(first: &[f64; 6], second: &[f64; 6]) -> [f64; 6] {
+    let [a1, b1, c1, d1, e1, f1] = *first;
+    let [a2, b2, c2, d2, e2, f2] = *second;
+    [
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    ]
+}
+
+const fn subr_bias(count: usize) -> usize {
+    if count < 1240 {
+        107
+    } else if count < 33900 {
+        1131
+    } else {
+        0x8000
+    }
+}
+
+fn push_operand(operands: &mut Vec<f64>, value: f64) {
     if operands.len() < MAX_OPERANDS {
         operands.push(value);
     }
@@ -672,6 +1316,36 @@ pub(crate) mod tests {
         assert_eq!(font.gid_for_cid(20), Some(2));
         assert_eq!(font.gid_for_cid(21), None);
         assert_eq!(font.glyph_name(1), None);
+    }
+
+    #[test]
+    fn cid_keyed_font_matrix_applies_the_top_matrix_only_when_present() {
+        let mut charset = vec![0_u8];
+        charset.extend_from_slice(&sid(500));
+        let mut font = CffFont::parse(&build(&Layout {
+            names: vec![],
+            charset,
+            charset_id: 0,
+            encoding: vec![],
+            encoding_id: 0,
+            cid_keyed: true,
+            glyphs: 2,
+        }))
+        .expect("cff");
+        let close = |left: [f64; 6], right: [f64; 6]| {
+            left.iter()
+                .zip(right)
+                .all(|(first, second)| (first - second).abs() < 1e-12_f64)
+        };
+        assert!(close(font.font_matrix(1), DEFAULT_MATRIX));
+        let scale = |value: f64| [value, 0.0_f64, 0.0_f64, value, 0.0_f64, 0.0_f64];
+        font.privates = vec![PrivateDict {
+            matrix: Some(scale(0.002_f64)),
+            subrs: None,
+        }];
+        assert!(close(font.font_matrix(1), scale(0.002_f64)));
+        font.font_matrix = Some(scale(1000.0_f64));
+        assert!(close(font.font_matrix(1), scale(2.0_f64)));
     }
 
     #[test]

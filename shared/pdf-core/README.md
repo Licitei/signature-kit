@@ -1,6 +1,6 @@
 # @signature-kit/pdf-core
 
-In-house PDF engine compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text, analyzes signature revisions, and writes PDFs (incremental updates, full rewrites, page merges) without any third-party PDF library. The Rust crate lives in `rust/` and has zero external dependencies; TypeScript talks to it through a tiny C ABI (no wasm-bindgen).
+In-house PDF engine compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text, renders pages, analyzes signature revisions, and writes PDFs (incremental updates, full rewrites, page merges) without any third-party PDF library. The Rust crate lives in `rust/` and has zero external dependencies; TypeScript talks to it through a tiny C ABI (no wasm-bindgen).
 
 ## Install
 
@@ -14,6 +14,7 @@ bun add @signature-kit/pdf-core effect
 - `@signature-kit/pdf-core/pdf-core` — the `PdfCore` service, `makePdfCore(module)`, and `pdfCoreLayer(module)`.
 - `@signature-kit/pdf-core/browser` — `pdfCoreBrowserLayer`: fetches `pdf-core.wasm` next to the module, compiles it with `WebAssembly.compileStreaming`, and falls back to `WebAssembly.compile` when the response is not served as `application/wasm`.
 - `@signature-kit/pdf-core/file` — `pdfCoreFileLayer`: reads `pdf-core.wasm` through the Effect `FileSystem` and `Path` services. The caller provides the Node or Bun platform layer.
+- `@signature-kit/pdf-core/canvas` — browser painter for render display lists: `paintDisplayList`, `prepareDisplayListImages`, `renderDisplayListImage`, `displayListViewport`, and `displayListImageBlobs`. It uses Canvas 2D (`OffscreenCanvas`, `Path2D`, `createImageBitmap`), so it runs in windows and workers.
 - `@signature-kit/pdf-core/pdf-core.wasm` — the compiled module for bundlers and custom loaders.
 
 `WebAssembly`, `fetch`, `TextEncoder`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
@@ -111,30 +112,50 @@ PNG input is bounded to 16 MiB, 16 Mi pixels, 64 MiB of decoded scanlines and 4,
 
 `merge(sources, options)` copies pages into a new document: each source may select `pageIndexes`; inherited boxes, rotation, and resources are materialized, references to pages that are not copied become `null`, and `dropWidgets` removes widget annotations. `deflate(bytes)` returns a zlib stream.
 
+## Rendering
+
+`renderPages` turns pages into compact display lists; the browser painter draws them with Canvas 2D, so JPEG decoding and anti-aliased rasterization stay in the browser and the wasm module stays small.
+
+```ts
+import { renderDisplayListImage } from "@signature-kit/pdf-core/canvas";
+
+const lists = yield * core.renderPages(pdf, { pageIndexes: [0], scale: 150 / 72 });
+const thumbnail = yield * renderDisplayListImage(lists[0]); // { pageIndex, width, height, image: Blob }
+```
+
+`scale` is device pixels per PDF point (default `150 / 72`, i.e. 150 DPI). Each display list carries `pageIndex`, `view` (crop box clipped to the media box), `rotate`, `scale`, the `ops` bytes, and `blobs`. `scale` also bounds image work: images larger than their device footprint are box-filtered down in Rust before they cross the wasm boundary. `renderDisplayListImage(list, { scale, type, quality })` paints into an `OffscreenCanvas` on a white background and encodes a `Blob` (`type` is `image/png` by default, or `image/jpeg` / `image/webp` with an optional `quality`); a page whose canvas would exceed 16 384 px per side or 16 384² px in area is painted at the largest scale that fits, so `width`/`height` report the clamped size. `paintDisplayList(context, list, images, scale)` returns an `Effect` that paints into any 2D context and fails with `pdfCore.PAINT_FAILED` when the display list is malformed (truncated operands, unknown opcodes or path verbs) or the canvas rejects an operation. `prepareDisplayListImages(list)` decodes the page images into a map keyed by blob index; it requires a `Scope`, and every `ImageBitmap` it creates is closed when that scope closes (including when a later image fails).
+
+PNG stays the default encoding: on 60 pages of five public tenders at 150 DPI in Chromium, PNG took 38 ms per page, JPEG (quality 0.92) 35 ms per page but lossy (a mean error of 3 levels on ink pixels), and WebP (quality 0.92) 376 ms per page. Images are drawn with smoothing only when they are downscaled or carry `/Interpolate true`, so upscaled 1-bit scans, QR codes and barcodes stay crisp.
+
+Covered: paths (`m l c v y h re`), fill, stroke and even-odd rules, clipping (`W W*`), line width, cap, join, miter limit and dash patterns (lines thinner than one device pixel are drawn one pixel wide), `cm`, `q`/`Q`, DeviceGray/RGB/CMYK, CalGray/CalRGB, ICCBased (by `/N` or `/Alternate`), Lab, Indexed, Separation and DeviceN through their tint transforms (sampled, exponential, stitching and bounded PostScript calculator functions), ExtGState `LW LC LJ ML D CA ca BM Font`, Form XObjects clipped to their `/BBox`, image XObjects and inline images (Flate, LZW, RunLength, ASCIIHex, ASCII85 and raw samples decoded to RGBA in Rust with 1/2/4/8/16 bits per component, `/Decode` arrays, stencil masks, `/SMask` with `/Matte`, colour-key and stencil `/Mask`; DCT JPEG bytes are passed to the browser decoder; CCITT Group 3 and Group 4 are decoded in Rust), axial and radial shadings for `sh` and shading patterns, embedded TrueType, CFF (including CID-keyed), OpenType CFF and Type 1 (eexec) glyph outlines drawn as cached glyph paths, Type 3 glyph procedures, text render modes 0–7 (3 is invisible, 4–7 clip), and the normal appearance stream of every annotation that is not hidden, no-view or a popup. Non-embedded fonts are drawn with `fillText` in a mapped sans, serif or monospace family stretched to the PDF `/Widths`.
+
+Approximations and gaps: JPX and JBIG2 images are drawn as a neutral grey placeholder; function-based and mesh shadings fill with their `/Background` (function-based ones with the colour at the domain centre); tiling patterns fill with the first non-white colour of the tile; ExtGState soft masks and transparency-group isolation/knockout are ignored; optional content honours the default configuration (`/D` with `/OFF`, `/ON` and `/BaseState`) for OCGs and OCMDs (`/P` policies and `/VE` expressions) in `BDC /OC` marked content, Form and image XObjects and annotations, while usage-based states and `/AS` arrays are not applied; clip render modes (4–7) with non-embedded fonts clip to one box per glyph (advance width wide, from 0.2 em below to 0.8 em above the baseline) instead of the glyph outline; a gradient painted on text uses its middle colour. Hostile input is bounded: content streams share the decoded-stream byte budget, a page stops after 4 000 000 operators or 96 MiB of display list, decoded images are capped at 64 Mi pixels (16 Mi after downsampling) and 384 MiB per page, Form XObject and Type 3 nesting stops at 16 levels with cycle detection and every Form or Type 3 glyph invocation counts as an operator, graphics-state and marked-content nesting stop at 256 and 1 024 levels, and glyph outlines are capped at 512 composite parts per glyph and 16 M units of outline work (points, parts and charstring steps) per page. Decoded Form XObject and Type 3 glyph streams (up to 64 MiB) and parsed colour spaces (with their Indexed lookups and tint functions) are cached per document. A page that hits a budget is returned truncated instead of failing.
+
 ## Errors
 
-Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.INVALID_PDF`, `pdfCore.ENCRYPTED_PDF`, `pdfCore.LIMIT_EXCEEDED`, `pdfCore.UNSUPPORTED_FEATURE`, and `pdfCore.INVALID_OPTIONS`. Invalid edit operations (malformed PDF syntax, missing targets, impossible incremental updates) fail with `pdfCore.INVALID_OPTIONS`. `pdfCoreErrorMessages` carries `en-US` and `pt-BR` copy.
+Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.INVALID_PDF`, `pdfCore.ENCRYPTED_PDF`, `pdfCore.LIMIT_EXCEEDED`, `pdfCore.UNSUPPORTED_FEATURE`, `pdfCore.INVALID_OPTIONS`, and `pdfCore.PAINT_FAILED` (the browser could not create a canvas, decode an image, or encode the page image). Invalid edit operations (malformed PDF syntax, missing targets, impossible incremental updates) fail with `pdfCore.INVALID_OPTIONS`. `pdfCoreErrorMessages` carries `en-US` and `pt-BR` copy.
 
 ## Wasm ABI
 
-The module exports `memory` and thirteen functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
+The module exports `memory` and fourteen functions. There is no global mutable state; every buffer is owned by the caller and released with `pdf_core_free`.
 
-| Export                                                                                                   | Contract                                                                              |
-| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `pdf_core_alloc(len) -> ptr`                                                                             | 8-byte aligned block of `len` bytes, or `0` when out of memory.                       |
-| `pdf_core_free(ptr, len)`                                                                                | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`. |
-| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                          | Returns a result block, or `0` when out of memory.                                    |
-| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                             | Returns a text result block, or `0` when out of memory.                               |
-| `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                           | Returns a tables result block, or `0` when out of memory.                             |
-| `pdf_core_signatures(pdf_ptr, pdf_len, mode) -> result_ptr`                                              | Signature analysis; `mode` `0` scan, `1` dictionaries, `2` verification.              |
-| `pdf_core_revision_complete(pdf_ptr, pdf_len, end) -> u32`                                               | `1` when the first `end` bytes are a complete revision, else `0`.                     |
-| `pdf_core_document(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, prefix_ptr, prefix_len) -> result_ptr` | Document description; `flags` bit 2 selects annotation pages.                         |
-| `pdf_core_edit(pdf_ptr, pdf_len, ops_ptr, ops_len) -> result_ptr`                                        | Applies an edit payload; the result payload is the new PDF.                           |
-| `pdf_core_merge(payload_ptr, payload_len, flags) -> result_ptr`                                          | Merges sources; `flags` bit 0 drops widgets, bit 1 packs object streams.              |
-| `pdf_core_deflate(data_ptr, data_len) -> result_ptr`                                                     | The result payload is a zlib stream.                                                  |
-| `pdf_core_create(sizes_ptr, sizes_len) -> result_ptr`                                                    | `sizes_len` `f64` values, width and height per page; the payload is the new PDF.      |
-| `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                               |
-| `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                   |
+| Export                                                                                                   | Contract                                                                                                         |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `pdf_core_alloc(len) -> ptr`                                                                             | 8-byte aligned block of `len` bytes, or `0` when out of memory.                                                  |
+| `pdf_core_free(ptr, len)`                                                                                | Releases a block returned by `pdf_core_alloc`, `pdf_core_inspect` or `pdf_core_text`.                            |
+| `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                          | Returns a result block, or `0` when out of memory.                                                               |
+| `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                             | Returns a text result block, or `0` when out of memory.                                                          |
+| `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                           | Returns a tables result block, or `0` when out of memory.                                                        |
+| `pdf_core_render(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, scale: f64) -> result_ptr`               | Returns a render result block, or `0` when out of memory. `scale` is device pixels per point, `0 < scale <= 64`. |
+| `pdf_core_signatures(pdf_ptr, pdf_len, mode) -> result_ptr`                                              | Signature analysis; `mode` `0` scan, `1` dictionaries, `2` verification.                                         |
+| `pdf_core_revision_complete(pdf_ptr, pdf_len, end) -> u32`                                               | `1` when the first `end` bytes are a complete revision, else `0`.                                                |
+| `pdf_core_document(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, prefix_ptr, prefix_len) -> result_ptr` | Document description; `flags` bit 2 selects annotation pages.                                                    |
+| `pdf_core_edit(pdf_ptr, pdf_len, ops_ptr, ops_len) -> result_ptr`                                        | Applies an edit payload; the result payload is the new PDF.                                                      |
+| `pdf_core_merge(payload_ptr, payload_len, flags) -> result_ptr`                                          | Merges sources; `flags` bit 0 drops widgets, bit 1 packs object streams.                                         |
+| `pdf_core_deflate(data_ptr, data_len) -> result_ptr`                                                     | The result payload is a zlib stream.                                                                             |
+| `pdf_core_create(sizes_ptr, sizes_len) -> result_ptr`                                                    | `sizes_len` `f64` values, width and height per page; the payload is the new PDF.                                 |
+| `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
+| `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
 `flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`).
 
@@ -188,6 +209,40 @@ Little-endian and unaligned: `magic` (`0x44455044`, "PDED"), `version` (`1`), `f
 
 `count`, then per source `pdf_len` and `page_count` (`0xFFFFFFFF` for every page) followed by that many page indexes, then the PDFs back to back.
 
+### Render payload (version 1)
+
+`pdf_core_render` uses the same result block and status codes; only `flags` bit 2 applies. Header of 16 bytes: `magic` (`0x4C524450`, "PDRL"), `version` (`1`), `page_count`, padding (all `u32`). Then one section per page, 8-byte aligned: `page_index` (`u32`), `rotate` (`i32`), `ops_len` (`u32`), `blob_count` (`u32`), `view` (4 × `f64`), `section_len` (`u32`, from the section start to the next section), padding (`u32`); the `ops_len` op bytes, padded to 8; `blob_count` × (`offset`, `len`) `u32` pairs relative to the blob data, padded to 8; the blob data, each blob padded to 8.
+
+Ops are a byte code followed by little-endian operands (`f32` numbers, `u32` counts and ids). A matrix is 6 × `f32`; a path is `u32` verb count, verbs (`0` move 2, `1` line 2, `2` cubic 6, `3` close 0, `4` quadratic 4 coordinates), `u32` coordinate count, `f32` coordinates. Paths and images are in PDF user space under the last `TRANSFORM`; the painter maps user space to device pixels from `view`, `rotate` and the scale.
+
+| Code | Op                | Operands                                                                                                                                                                                                                       |
+| ---- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1    | `SAVE`            | —                                                                                                                                                                                                                              |
+| 2    | `RESTORE`         | —                                                                                                                                                                                                                              |
+| 3    | `TRANSFORM`       | matrix (absolute CTM)                                                                                                                                                                                                          |
+| 4    | `PATH`            | path (becomes the current path)                                                                                                                                                                                                |
+| 5    | `FILL`            | `u8` rule (`0` non-zero, `1` even-odd)                                                                                                                                                                                         |
+| 6    | `STROKE`          | —                                                                                                                                                                                                                              |
+| 7    | `CLIP`            | `u8` rule                                                                                                                                                                                                                      |
+| 8    | `FILL_COLOR`      | 4 × `u8` RGBA                                                                                                                                                                                                                  |
+| 9    | `STROKE_COLOR`    | 4 × `u8` RGBA                                                                                                                                                                                                                  |
+| 10   | `LINE_WIDTH`      | `f32`                                                                                                                                                                                                                          |
+| 11   | `LINE_CAP`        | `u8`                                                                                                                                                                                                                           |
+| 12   | `LINE_JOIN`       | `u8`                                                                                                                                                                                                                           |
+| 13   | `MITER`           | `f32`                                                                                                                                                                                                                          |
+| 14   | `DASH`            | `u32` count, `f32` lengths, `f32` phase                                                                                                                                                                                        |
+| 15   | `BLEND`           | `u8` PDF blend mode (`0` Normal … `15` Luminosity)                                                                                                                                                                             |
+| 16   | `GLYPH_DEFINE`    | `u32` id, path in glyph space                                                                                                                                                                                                  |
+| 17   | `GLYPH`           | `u8` modes (`1` fill, `2` stroke, `4` add to text clip), `u32` id, matrix (glyph space to user space)                                                                                                                          |
+| 18   | `TEXT_CLIP`       | — (clip with the glyphs collected since the last `TEXT_CLIP`)                                                                                                                                                                  |
+| 19   | `TEXT`            | `u8` flags (`1` serif, `2` monospace, `4` bold, `8` italic, `16` fill, `32` stroke), matrix (em space to user space), `f32` advance in em, `u32` length, UTF-8 text                                                            |
+| 20   | `IMAGE`           | `u8` flags (`1` JPEG, `2` JPEG soft mask, `4` matte, `8` interpolate), `u8` alpha, `u32` blob, width, height, mask blob (`0xFFFFFFFF` none), mask width, mask height, 4 × `u8` matte RGB + padding; drawn into the unit square |
+| 21   | `SHADE`           | gradient: `u8` flags (`1` radial, `2` extend start, `4` extend end), 6 × `f32` coordinates (`x0 y0 x1 y1` or `x0 y0 r0 x1 y1 r1`), `u32` stop count, stops (`f32` offset, 4 × `u8` RGBA)                                       |
+| 22   | `FILL_GRADIENT`   | gradient flags and coordinates, matrix (pattern space to page space), stops; later fills use it until the next fill colour                                                                                                     |
+| 23   | `STROKE_GRADIENT` | same as `FILL_GRADIENT` for strokes                                                                                                                                                                                            |
+
+Raw image blobs are RGBA (`width × height × 4`); stencil masks carry the opaque fill colour and the fill alpha travels only in the `IMAGE` alpha operand; raw mask blobs are 8-bit alpha (`mask width × mask height`); JPEG blobs are the stream bytes after any non-image filters.
+
 ## Development
 
 ```sh
@@ -197,7 +252,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target) and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1 MiB.
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target) and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1.5 MiB (about 425 KB gzipped today).
 
 ## License
 

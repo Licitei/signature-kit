@@ -165,12 +165,16 @@ impl<'data> Parser<'data> {
         out
     }
 
-    fn inline_image(&mut self) -> Outcome<ContentToken<'data>> {
+    fn inline_image(&mut self) -> Outcome<InlineImage> {
         let mut length: Option<usize> = None;
+        let mut dict = Dict::default();
         loop {
             self.skip_whitespace();
             let Some(byte) = self.peek() else {
-                return Ok(ContentToken::Operator(b"EI"));
+                return Ok(InlineImage {
+                    dict,
+                    data: self.pos..self.pos,
+                });
             };
             if self.keyword_here(b"ID") {
                 self.pos = self.pos.saturating_add(2);
@@ -178,7 +182,10 @@ impl<'data> Parser<'data> {
             }
             if self.keyword_here(b"EI") {
                 self.pos = self.pos.saturating_add(2);
-                return Ok(ContentToken::Operator(b"EI"));
+                return Ok(InlineImage {
+                    dict,
+                    data: self.pos..self.pos,
+                });
             }
             if byte == b'/' {
                 let key = self.name();
@@ -191,6 +198,7 @@ impl<'data> Parser<'data> {
                         if key == b"L" || key == b"Length" {
                             length = value.as_integer().and_then(|raw| usize::try_from(raw).ok());
                         }
+                        dict.insert(&key, value);
                     }
                     Err(reject @ Reject::TooDeep) => return Err(reject.into_failure()),
                     Err(Reject::Garbage) => {}
@@ -207,8 +215,22 @@ impl<'data> Parser<'data> {
                 self.pos = self.pos.saturating_add(1);
             }
         }
+        let start = self.pos;
         self.pos = inline_image_end(self.data, self.pos, length);
-        Ok(ContentToken::Operator(b"EI"))
+        let mut end = self.pos.saturating_sub(2).max(start);
+        if end > start
+            && self
+                .data
+                .get(end.saturating_sub(1))
+                .copied()
+                .is_some_and(is_whitespace)
+        {
+            end = end.saturating_sub(1);
+        }
+        Ok(InlineImage {
+            dict,
+            data: start..end,
+        })
     }
 
     fn keyword_here(&self, keyword: &[u8]) -> bool {
@@ -579,7 +601,14 @@ pub(crate) enum ContentToken<'data> {
     Operator(&'data [u8]),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InlineImage {
+    pub data: Range<usize>,
+    pub dict: Dict,
+}
+
 pub(crate) struct ContentLexer<'data> {
+    inline: Option<InlineImage>,
     parser: Parser<'data>,
     spare: Vec<Vec<Operand<'data>>>,
 }
@@ -666,6 +695,7 @@ impl<'data> ContentLexer<'data> {
 
     pub(crate) const fn new(data: &'data [u8]) -> Self {
         Self {
+            inline: None,
             parser: Parser::new(data, 0, CONTENT_NESTING, false),
             spare: Vec::new(),
         }
@@ -693,6 +723,12 @@ impl<'data> ContentLexer<'data> {
             items.clear();
             self.spare.push(items);
         }
+    }
+
+    pub(crate) fn take_inline_image(&mut self) -> Option<(Dict, &'data [u8])> {
+        let image = self.inline.take()?;
+        let data = self.parser.data.get(image.data).unwrap_or_default();
+        Some((image.dict, data))
     }
 
     fn value(&mut self, depth: usize) -> Parsed<Operand<'data>> {
@@ -750,7 +786,12 @@ impl<'data> Iterator for ContentLexer<'data> {
                     b"true" => ContentToken::Operand(Operand::Bool(true)),
                     b"false" => ContentToken::Operand(Operand::Bool(false)),
                     b"null" => ContentToken::Operand(Operand::Null),
-                    b"BI" => return Some(parser.inline_image()),
+                    b"BI" => {
+                        return Some(parser.inline_image().map(|image| {
+                            self.inline = Some(image);
+                            ContentToken::Operator(b"EI")
+                        }));
+                    }
                     _ => ContentToken::Operator(run),
                 }
             }

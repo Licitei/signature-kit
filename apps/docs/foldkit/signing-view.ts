@@ -17,11 +17,11 @@ import {
   placePdfSignatureFieldsBatch,
 } from "@signature-kit/pdf/builder-store";
 import {
-  liteParseWorkerBrowserLayer,
   pdfHandwritingBrowserLayer,
   PdfHandwriting,
+  pdfPageRendererWorkerLayer,
   renderPdfPagesBrowser,
-} from "@signature-kit/pdf/liteparse-browser";
+} from "@signature-kit/pdf/render-browser";
 import type {
   PdfPrepareAndSignInput,
   PdfSignatureBadge,
@@ -46,6 +46,11 @@ import { captureDocsEvent } from "../lib/posthog/client";
 import { makeSigningBatch, makeSigningWorkerSession } from "./signing-runtime";
 
 export const SigningMounted = Schema.TaggedStruct("SigningMounted", {});
+const pageRendererLayer = () =>
+  pdfPageRendererWorkerLayer(
+    {},
+    () => new Worker(new URL("./render.worker.ts", import.meta.url), { type: "module" }),
+  );
 const cleanups = new Set<() => void>();
 if (import.meta.hot !== undefined)
   import.meta.hot.dispose(() => {
@@ -322,15 +327,13 @@ const SigningMount = Mount.define("SigningMount", {
                         name: file.name,
                         pdf: bytes,
                       }).pipe(Effect.provide(pdfCoreBrowserLayer));
-                      const pages = yield* renderPdfPagesBrowser(bytes, document.pages.length).pipe(
-                        Effect.provide(liteParseWorkerBrowserLayer),
-                      );
-                      const images = yield* Effect.forEach(pages, (image) =>
+                      const pages = yield* renderPdfPagesBrowser(bytes, {
+                        pageIndexes: document.pages.map((_, pageIndex) => pageIndex),
+                      });
+                      const images = yield* Effect.forEach(pages, (page) =>
                         Effect.gen(function* () {
                           const url = yield* Effect.sync(() => {
-                            const created = URL.createObjectURL(
-                              new Blob([new Uint8Array(image.imageBytes)], { type: "image/png" }),
-                            );
+                            const created = URL.createObjectURL(page.image);
                             staged.urls.add(created);
                             return created;
                           });
@@ -340,7 +343,7 @@ const SigningMount = Mount.define("SigningMount", {
                       );
                       return { file, document, images };
                     }),
-                  );
+                  ).pipe(Effect.provide(Layer.merge(pdfCoreBrowserLayer, pageRendererLayer())));
                   yield* Effect.sync(() => {
                     if (closed || generation !== previewGeneration) return;
                     entries = loaded.map((item) => ({
@@ -651,16 +654,13 @@ const SigningMount = Mount.define("SigningMount", {
                         stampRects: [rect],
                         ...appearance,
                       });
-                      const images = yield* renderPdfPagesBrowser(
-                        visualPdf,
-                        entry.document.pages.length,
-                      ).pipe(Effect.provide(liteParseWorkerBrowserLayer));
-                      const urls = yield* Effect.forEach(images, (image) =>
+                      const images = yield* renderPdfPagesBrowser(visualPdf, {
+                        pageIndexes: entry.document.pages.map((_, pageIndex) => pageIndex),
+                      });
+                      const urls = yield* Effect.forEach(images, (page) =>
                         Effect.gen(function* () {
                           const url = yield* Effect.sync(() => {
-                            const created = URL.createObjectURL(
-                              new Blob([new Uint8Array(image.imageBytes)], { type: "image/png" }),
-                            );
+                            const created = URL.createObjectURL(page.image);
                             staged.urls.add(created);
                             return created;
                           });
@@ -687,7 +687,15 @@ const SigningMount = Mount.define("SigningMount", {
                     say(pt ? "Prévia pronta." : "Preview ready.");
                     drawPreview();
                   });
-                }).pipe(Effect.provide(pdfHandwritingBrowserLayer("600 64px 'Caveat Variable'"))),
+                }).pipe(
+                  Effect.provide(
+                    Layer.mergeAll(
+                      pdfHandwritingBrowserLayer("600 64px 'Caveat Variable'"),
+                      pdfCoreBrowserLayer,
+                      pageRendererLayer(),
+                    ),
+                  ),
+                ),
               ).pipe(
                 Effect.catch((error) =>
                   Effect.sync(() => {

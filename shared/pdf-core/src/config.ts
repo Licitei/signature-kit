@@ -7,6 +7,7 @@ export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.LIMIT_EXCEEDED",
   "pdfCore.UNSUPPORTED_FEATURE",
   "pdfCore.INVALID_OPTIONS",
+  "pdfCore.PAINT_FAILED",
 ]);
 export type PdfCoreErrorCode = (typeof PdfCoreErrorCodeSchema)["Type"];
 
@@ -17,6 +18,7 @@ export const PdfCoreErrorCodeValue = {
   limitExceeded: "pdfCore.LIMIT_EXCEEDED",
   unsupportedFeature: "pdfCore.UNSUPPORTED_FEATURE",
   invalidOptions: "pdfCore.INVALID_OPTIONS",
+  paintFailed: "pdfCore.PAINT_FAILED",
 } satisfies Record<string, PdfCoreErrorCode>;
 
 export const PdfCoreErrorMessageLocaleSchema = Schema.Literals(["en-US", "pt-BR"]);
@@ -35,6 +37,7 @@ export const pdfCoreErrorMessages = {
     "pdfCore.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
     "pdfCore.UNSUPPORTED_FEATURE": "The PDF document uses an unsupported feature.",
     "pdfCore.INVALID_OPTIONS": "Invalid PDF inspection options.",
+    "pdfCore.PAINT_FAILED": "The PDF page could not be painted.",
   },
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
@@ -43,6 +46,7 @@ export const pdfCoreErrorMessages = {
     "pdfCore.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",
     "pdfCore.UNSUPPORTED_FEATURE": "O documento PDF usa um recurso não suportado.",
     "pdfCore.INVALID_OPTIONS": "Opções de inspeção de PDF inválidas.",
+    "pdfCore.PAINT_FAILED": "Não foi possível desenhar a página do PDF.",
   },
 } satisfies Record<PdfCoreErrorMessageLocale, Record<PdfCoreErrorCode, string>>;
 
@@ -51,6 +55,8 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.inspect",
   "pdfCore.text",
   "pdfCore.tables",
+  "pdfCore.render",
+  "pdfCore.paint",
   "pdfCore.signatures",
   "pdfCore.revision",
   "pdfCore.document",
@@ -67,6 +73,8 @@ export const PdfCoreOperationValue = {
   inspect: "pdfCore.inspect",
   text: "pdfCore.text",
   tables: "pdfCore.tables",
+  render: "pdfCore.render",
+  paint: "pdfCore.paint",
   signatures: "pdfCore.signatures",
   revision: "pdfCore.revision",
   document: "pdfCore.document",
@@ -86,6 +94,9 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreText",
   "PdfCoreTablesOptions",
   "PdfCoreTables",
+  "PdfCoreRenderOptions",
+  "PdfCoreDisplayLists",
+  "PdfCorePaintOptions",
   "PdfCoreSignatureReport",
   "PdfCoreDocumentOptions",
   "PdfCoreDocument",
@@ -105,6 +116,9 @@ export const PdfCoreSchemaNameValue = {
   text: "PdfCoreText",
   tablesOptions: "PdfCoreTablesOptions",
   tables: "PdfCoreTables",
+  renderOptions: "PdfCoreRenderOptions",
+  displayLists: "PdfCoreDisplayLists",
+  paintOptions: "PdfCorePaintOptions",
   signatureReport: "PdfCoreSignatureReport",
   documentOptions: "PdfCoreDocumentOptions",
   document: "PdfCoreDocument",
@@ -157,6 +171,29 @@ export const PdfCoreTablesOptionsSchema = Schema.Struct({
 });
 export type PdfCoreTablesOptions = (typeof PdfCoreTablesOptionsSchema)["Type"];
 
+export const PDF_CORE_DEFAULT_RENDER_SCALE = 150 / 72;
+const renderScaleSchema = Schema.Finite.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(64),
+);
+
+export const PdfCoreRenderOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+  scale: Schema.optional(renderScaleSchema),
+});
+export type PdfCoreRenderOptions = (typeof PdfCoreRenderOptionsSchema)["Type"];
+
+export const PdfCoreImageTypeSchema = Schema.Literals(["image/png", "image/webp", "image/jpeg"]);
+export type PdfCoreImageType = (typeof PdfCoreImageTypeSchema)["Type"];
+export const PDF_CORE_DEFAULT_PAGE_IMAGE_TYPE: PdfCoreImageType = "image/png";
+
+export const PdfCorePaintOptionsSchema = Schema.Struct({
+  scale: Schema.optional(renderScaleSchema),
+  type: Schema.optional(PdfCoreImageTypeSchema),
+  quality: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+});
+export type PdfCorePaintOptions = (typeof PdfCorePaintOptionsSchema)["Type"];
+
 export const PdfCoreTextSchema = Schema.Array(Schema.String);
 export type PdfCoreText = (typeof PdfCoreTextSchema)["Type"];
 
@@ -189,6 +226,19 @@ export type PdfCoreTable = (typeof PdfCoreTableSchema)["Type"];
 
 export const PdfCoreTablesSchema = Schema.Array(PdfCoreTableSchema);
 export type PdfCoreTables = (typeof PdfCoreTablesSchema)["Type"];
+
+export const PdfCoreDisplayListSchema = Schema.Struct({
+  pageIndex: pageIndexSchema,
+  view: PdfCoreBoxSchema,
+  rotate: Schema.Int,
+  scale: renderScaleSchema,
+  ops: Schema.instanceOf(Uint8Array),
+  blobs: Schema.Array(Schema.instanceOf(Uint8Array)),
+});
+export type PdfCoreDisplayList = (typeof PdfCoreDisplayListSchema)["Type"];
+
+export const PdfCoreDisplayListsSchema = Schema.Array(PdfCoreDisplayListSchema);
+export type PdfCoreDisplayLists = (typeof PdfCoreDisplayListsSchema)["Type"];
 
 export const PdfCorePageSchema = Schema.Struct({
   mediaBox: PdfCoreBoxSchema,
@@ -233,6 +283,16 @@ const isInspectFunction = (
   pagesLength: number,
 ) => number => typeof value === "function" && value.length === 5;
 const isTextFunction = isInspectFunction;
+const isRenderFunction = (
+  value: unknown,
+): value is (
+  pdfPointer: number,
+  pdfLength: number,
+  flags: number,
+  pagesPointer: number,
+  pagesLength: number,
+  scale: number,
+) => number => typeof value === "function" && value.length === 6;
 const isBufferFunction = (value: unknown): value is (pointer: number, length: number) => number =>
   typeof value === "function" && value.length === 2;
 const isSignaturesFunction = (
@@ -266,6 +326,7 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
   pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
   pdf_core_tables: Schema.declare(isTextFunction, { identifier: "pdf_core_tables" }),
+  pdf_core_render: Schema.declare(isRenderFunction, { identifier: "pdf_core_render" }),
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {
     identifier: "pdf_core_revision_complete",
