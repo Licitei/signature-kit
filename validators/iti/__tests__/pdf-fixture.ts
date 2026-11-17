@@ -9,7 +9,10 @@ const hexText = (text: string): string =>
     .join("")
     .toUpperCase();
 
-export const createTextPdf = (text: string): Effect.Effect<Uint8Array, never, PdfCore> =>
+export const createTextPdf = (
+  text: string,
+  options: { readonly objectStreams: boolean } = { objectStreams: false },
+): Effect.Effect<Uint8Array, never, PdfCore> =>
   Effect.gen(function* () {
     const core = yield* PdfCore;
     const created = yield* core.create({ pages: [{ width: 300, height: 200 }] });
@@ -37,7 +40,7 @@ export const createTextPdf = (text: string): Effect.Effect<Uint8Array, never, Pd
           compress: true,
         },
       ],
-      { mode: "rewrite" },
+      { mode: "rewrite", objectStreams: options.objectStreams },
     );
   }).pipe(Effect.orDie);
 

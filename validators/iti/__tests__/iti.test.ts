@@ -3,11 +3,14 @@ import { readFile } from "node:fs/promises";
 import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
 import { vi } from "vitest";
+import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { CmsOid } from "@signature-kit/cms/config";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { extractPdfSignature } from "@signature-kit/pdf/byte-range";
-import { Effect, Layer, Result, Schema } from "effect";
+import { signPdf } from "@signature-kit/pdf/sign";
+import { Effect, Layer, Redacted, Result, Schema } from "effect";
+import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { validatePdfConformance } from "../src/conformance";
 import { validatePdfWithIti } from "../src/remote";
@@ -157,7 +160,8 @@ const restoreFetch = Effect.sync(() => {
   vi.unstubAllGlobals();
 });
 
-const createPdf = createTextPdf("SignatureKit ITI validation fixture");
+const createPdf = (objectStreams: boolean) =>
+  createTextPdf("SignatureKit ITI validation fixture", { objectStreams });
 
 const expectedAdRbPolicyOid = POLICY_OID;
 
@@ -232,17 +236,42 @@ describe("ITI local conformance", () => {
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
-  it.effect("returns a rejected report for an unsigned PDF", () =>
-    Effect.gen(function* () {
-      const pdf = yield* createPdf;
-      const report = yield* validatePdfConformance({ pdf });
+  for (const objectStreams of [false, true]) {
+    it.effect(
+      `returns a rejected report for an unsigned PDF (object streams: ${objectStreams})`,
+      () =>
+        Effect.gen(function* () {
+          const pdf = yield* createPdf(objectStreams);
+          const report = yield* validatePdfConformance({ pdf });
+          const source = new TextDecoder("latin1").decode(pdf);
 
-      expect(report.approved).toBe(false);
-      expect(report.outcome).toBe("rejected");
-      expect(report.signatureCount).toBe(0);
-      expect(report.signatures).toEqual([]);
-    }).pipe(Effect.provide(pdfCoreTestLayer)),
-  );
+          expect(source.includes("/Type /ObjStm")).toBe(objectStreams);
+          expect(source.includes("/Type /XRef")).toBe(objectStreams);
+          expect(report.approved).toBe(false);
+          expect(report.outcome).toBe("rejected");
+          expect(report.signatureCount).toBe(0);
+          expect(report.signatures).toEqual([]);
+        }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect(`approves a freshly signed AD-RB PDF (object streams: ${objectStreams})`, () =>
+      Effect.gen(function* () {
+        const pfx = yield* readA1Fixture("ecnpj");
+        const signed = yield* signPdf({
+          pdf: yield* createPdf(objectStreams),
+          policy: "pades-icp-brasil",
+          signatureLength: 32768,
+          reason: "SignatureKit ITI validation fixture",
+        }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make("changeit") })));
+        const report = yield* validatePdfConformance({ pdf: signed });
+
+        expect(report.approved).toBe(true);
+        expect(report.outcome).toBe("approved");
+        expect(report.signatureCount).toBe(1);
+        expect(report.signatures[0]?.signatureType).toBe("PA_PAdES_AD_RB_v1_1");
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+  }
 });
 
 describe("ITI remote client", () => {
