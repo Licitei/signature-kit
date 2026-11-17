@@ -313,11 +313,26 @@ fn cff_tables(cff: &Sections<'_>) -> BuildResult<String> {
         }
     }
     let mut out = String::new();
+    let string_text = strings.concat();
+    let string_zlib = zlib_compress_bytes(string_text.as_bytes())?;
     writeln!(
         out,
-        "pub(crate) static CFF_STANDARD_STRINGS: [&str; {}] = {strings:?};",
+        "pub(crate) const CFF_STANDARD_STRING_COUNT: usize = {};",
         strings.len()
     )?;
+    writeln!(
+        out,
+        "pub(crate) const CFF_STANDARD_STRING_TEXT_LEN: usize = {};",
+        string_text.len()
+    )?;
+    emit(&mut out, "CFF_STANDARD_STRING_TEXT_ZLIB", "u8", &string_zlib)?;
+    let mut end = 0_usize;
+    let mut ends = Vec::with_capacity(strings.len());
+    for name in strings {
+        end = end.saturating_add(name.len());
+        ends.push(u16::try_from(end)?);
+    }
+    emit(&mut out, "CFF_STANDARD_STRING_ENDS", "u16", &ends)?;
     emit(
         &mut out,
         "CFF_EXPERT_CHARSET",

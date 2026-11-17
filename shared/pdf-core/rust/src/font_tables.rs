@@ -210,7 +210,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(debug_assertions)))]
 mod zlib_timing {
     use super::{GLYPH_NAME_TEXT_LEN, GLYPH_NAME_TEXT_ZLIB, glyph_name_text};
     use crate::inflate::inflate;

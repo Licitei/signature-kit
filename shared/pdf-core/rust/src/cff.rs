@@ -2,10 +2,40 @@ use crate::display::PathData;
 use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
 use crate::glyph::charge;
+use crate::inflate::inflate;
 use crate::num::{f64_to_f32, f64_to_i64, parse_decimal};
 use core::array;
 use core::mem;
+use std::sync::OnceLock;
 include!(concat!(env!("OUT_DIR"), "/cff_tables.rs"));
+
+fn cff_standard_string_text() -> &'static str {
+    static DECODED: OnceLock<String> = OnceLock::new();
+    DECODED
+        .get_or_init(|| {
+            inflate(
+                &CFF_STANDARD_STRING_TEXT_ZLIB,
+                CFF_STANDARD_STRING_TEXT_LEN.saturating_add(1),
+            )
+            .ok()
+            .and_then(|bytes| {
+                (bytes.len() == CFF_STANDARD_STRING_TEXT_LEN)
+                    .then(|| String::from_utf8(bytes).ok())
+                    .flatten()
+            })
+            .unwrap_or_default()
+        })
+        .as_str()
+}
+
+fn cff_standard_string(index: usize) -> Option<&'static str> {
+    let end = usize::from(*CFF_STANDARD_STRING_ENDS.get(index)?);
+    let start = index
+        .checked_sub(1)
+        .and_then(|previous| CFF_STANDARD_STRING_ENDS.get(previous))
+        .map_or(0, |value| usize::from(*value));
+    cff_standard_string_text().get(start..end)
+}
 
 const MAX_GLYPHS: usize = 0xFFFF;
 const MAX_DICT_ENTRIES: usize = 256;
@@ -307,13 +337,12 @@ impl CffFont {
 
     fn sid_name(&self, sid: u16) -> Option<&[u8]> {
         let sid_usize = usize::from(sid);
-        match CFF_STANDARD_STRINGS.get(sid_usize) {
-            Some(name) => Some(name.as_bytes()),
-            None => self
-                .custom_strings
-                .get(sid_usize.checked_sub(CFF_STANDARD_STRINGS.len())?)
-                .map(Vec::as_slice),
+        if sid_usize < CFF_STANDARD_STRING_COUNT {
+            return cff_standard_string(sid_usize).map(str::as_bytes);
         }
+        self.custom_strings
+            .get(sid_usize.checked_sub(CFF_STANDARD_STRING_COUNT)?)
+            .map(Vec::as_slice)
     }
 }
 
