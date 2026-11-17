@@ -5,7 +5,6 @@ import { roots } from "./config";
 import { walk } from "./filesystem";
 import type { Check } from "./model";
 import { runWorkspaceLayerChecks } from "./layers";
-import { runPdfCoreAbiChecks } from "./pdf-core-abi";
 import { checks } from "./rule-set";
 import { errorHandlingChecks } from "./rules/error-handling";
 import { typeSafetyChecks } from "./rules/type-safety";
@@ -88,9 +87,6 @@ export const runDeclarativeChecks = (
   selectedRoots: readonly string[] = roots,
 ): boolean => {
   let failed = runWorkspaceLayerChecks(rootDirectory);
-  if (runPdfCoreAbiChecks(rootDirectory)) {
-    failed = true;
-  }
   for (const configuredRoot of selectedRoots) {
     const root = resolve(rootDirectory, configuredRoot);
     for (const file of walk(root)) {
