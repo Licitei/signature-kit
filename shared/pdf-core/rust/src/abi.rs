@@ -24,7 +24,7 @@ use crate::table::Table;
 use crate::write::{Packing, create, merge};
 
 const MAGIC: u32 = 0x4346_4450;
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const HEADER_LEN: usize = 32;
 const PAGE_RECORD_LEN: usize = 72;
 const RESULT_HEADER_LEN: usize = 8;
@@ -33,6 +33,7 @@ const FLAG_LINKS: u32 = 2;
 const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
+const FLAG_RUNS: u32 = 32;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
@@ -340,6 +341,10 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
         }
         out.align();
         for item in &page.items {
+            out.bytes(&[item.style]);
+        }
+        out.align();
+        for item in &page.items {
             out.bytes(item.text.as_bytes());
         }
         out.align();
@@ -559,6 +564,7 @@ pub(crate) unsafe extern "C" fn pdf_core_inspect(
             text: inner_request.has(FLAG_TEXT),
             links: inner_request.has(FLAG_LINKS),
             page_indexes: inner_request.pages.map(<[u32]>::to_vec),
+            runs: inner_request.has(FLAG_RUNS),
         };
         let inspection = document::inspect(inner_request.pdf, &options, &layout::text_limits())?;
         encode(&inspection)
@@ -1155,6 +1161,8 @@ mod tests {
                 .take(item_count.saturating_add(1))
                 .collect();
             reader.align();
+            let styles = reader.take(item_count).to_vec();
+            reader.align();
             let strings = reader.take(text_len);
             reader.align();
             let units: Vec<u16> = str::from_utf8(strings).unwrap().encode_utf16().collect();
@@ -1165,6 +1173,7 @@ mod tests {
                 .map(|(index, (rect, font_size))| TextItem {
                     rect: *rect,
                     font_size: *font_size,
+                    style: styles[index],
                     text: String::from_utf16(
                         &units[offsets[index]..offsets[index.saturating_add(1)]],
                     )
@@ -1217,16 +1226,19 @@ mod tests {
                         TextItem {
                             rect: [1.0, 2.0, 3.0, 4.0],
                             font_size: 11.0,
+                            style: 1,
                             text: "Hello".to_owned(),
                         },
                         TextItem {
                             rect: [5.0, 6.0, 7.0, 8.0],
                             font_size: 9.5,
+                            style: 2,
                             text: "mundo \u{2014} a\u{e7}\u{e3}o \u{1d11e}".to_owned(),
                         },
                         TextItem {
                             rect: [0.0; 4],
                             font_size: 0.0,
+                            style: 0,
                             text: String::new(),
                         },
                     ],

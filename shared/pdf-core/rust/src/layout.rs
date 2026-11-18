@@ -13,7 +13,7 @@ use crate::markdown::{
 use crate::table::{
     Cell, Rule, Table, column_of, merge_row, render_markdown, render_text, ruled_grids,
 };
-use crate::text::{Capture, PageContent, Session, extract_content};
+use crate::text::{Capture, PageContent, Reposition, Session, extract_content};
 
 const CELL_GAP: f64 = 1.75;
 const INTRA_WORD_SCALE: f64 = 4.0;
@@ -1398,7 +1398,7 @@ fn single_page(
     mode: Mode,
 ) -> Outcome<PageLayout> {
     let capture = Capture {
-        split_repositioned: true,
+        reposition: Reposition::Split,
         structure: true,
         split_style: mode.markdown,
     };
@@ -1687,6 +1687,7 @@ mod tests {
             item: TextItem {
                 rect: [x, baseline - 2.24, x + width, baseline + 9.45],
                 font_size: SIZE,
+                style: 0,
                 text: text.to_owned(),
             },
             direction: (1.0, 0.0),
@@ -1700,6 +1701,7 @@ mod tests {
             item: TextItem {
                 rect,
                 font_size: SIZE,
+                style: 0,
                 text: text.to_owned(),
             },
             direction,
@@ -1989,6 +1991,7 @@ mod tests {
                 item: TextItem {
                     rect: [0.0_f64; 4],
                     font_size: 0.0,
+                    style: 0,
                     text: "x".to_owned(),
                 },
                 direction: (f64::NAN, 0.0_f64),

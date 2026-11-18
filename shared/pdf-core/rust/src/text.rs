@@ -369,6 +369,7 @@ struct PendingRun {
     bounds: [f64; 4],
     dir: (f64, f64),
     end: (f64, f64),
+    ink_end: (f64, f64),
     italic: bool,
     open: bool,
     size: f64,
@@ -384,6 +385,7 @@ impl Default for PendingRun {
             size: 0.0,
             dir: (1.0, 0.0),
             end: (0.0, 0.0),
+            ink_end: (0.0, 0.0),
             bold: false,
             italic: false,
         }
@@ -436,8 +438,16 @@ pub(crate) struct Ruling {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Reposition {
+    #[default]
+    Join,
+    Split,
+    SplitGapped,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Capture {
-    pub split_repositioned: bool,
+    pub reposition: Reposition,
     pub split_style: bool,
     pub structure: bool,
 }
@@ -456,6 +466,7 @@ impl PageContent {
             .map(|run| TextItem {
                 rect: run.rect,
                 font_size: run.font_size,
+                style: u8::from(run.bold) | (u8::from(run.italic) << 1_u8),
                 text: self.text_of(run).to_owned(),
             })
             .collect()
@@ -567,6 +578,7 @@ impl Interpreter<'_, '_> {
         self.pending.size = size;
         self.pending.dir = direction;
         self.pending.end = end;
+        self.pending.ink_end = end;
     }
 
     fn descendant(&self, font: &Dict) -> Option<Rc<Object>> {
@@ -1093,9 +1105,13 @@ impl Interpreter<'_, '_> {
                     (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
                 );
                 let mut join = self.join(origin, direction, effective_size);
-                if self.capture.split_repositioned
-                    && repositioned
+                if repositioned
                     && matches!(join, Join::Same | Join::Spaced)
+                    && match self.capture.reposition {
+                        Reposition::Join => false,
+                        Reposition::Split => true,
+                        Reposition::SplitGapped => !self.touches_ink(origin, effective_size),
+                    }
                 {
                     join = Join::Split;
                 }
@@ -1114,6 +1130,7 @@ impl Interpreter<'_, '_> {
                         self.merge_bounds(bounds);
                         self.pending.bold &= style.0;
                         self.pending.italic &= style.1;
+                        self.pending.ink_end = end;
                     }
                     self.pending.end = end;
                 } else {
@@ -1468,6 +1485,13 @@ impl Interpreter<'_, '_> {
         true
     }
 
+    fn touches_ink(&self, origin: (f64, f64), size: f64) -> bool {
+        let (ux, uy) = self.pending.dir;
+        let along =
+            (origin.0 - self.pending.ink_end.0) * ux + (origin.1 - self.pending.ink_end.1) * uy;
+        along >= -BACK_GAP * size && along <= SPACE_GAP * size
+    }
+
     fn vertical_metrics(&self, font: &Dict) -> (f64, f64) {
         let direct = font
             .get(b"FontDescriptor")
@@ -1638,21 +1662,6 @@ fn is_italic_name(name: &[u8]) -> bool {
     ]
     .iter()
     .any(|needle| name.windows(needle.len()).any(|window| window == *needle))
-}
-
-pub(crate) fn extract_runs(
-    document: &Document<'_>,
-    page: &Page,
-    limits: &Limits,
-    split_repositioned: bool,
-    session: &mut Session,
-) -> Outcome<PageContent> {
-    let capture = Capture {
-        split_repositioned,
-        structure: false,
-        split_style: false,
-    };
-    extract_content(document, page, limits, capture, session)
 }
 
 pub(crate) fn extract_content(
@@ -1982,6 +1991,25 @@ mod tests {
         )
     }
 
+    fn extract_runs(
+        document: &Document<'_>,
+        page: &Page,
+        limits: &Limits,
+        split_repositioned: bool,
+        session: &mut Session,
+    ) -> Outcome<PageContent> {
+        let capture = Capture {
+            reposition: if split_repositioned {
+                Reposition::Split
+            } else {
+                Reposition::Join
+            },
+            structure: false,
+            split_style: false,
+        };
+        extract_content(document, page, limits, capture, session)
+    }
+
     fn extract_with(bytes: &[u8], limits: &Limits) -> Outcome<Vec<TextItem>> {
         let document = Document::open(bytes, limits)?;
         let pages = document.pages()?;
@@ -2258,7 +2286,7 @@ mod tests {
         let document = Document::open(bytes, &limits).unwrap();
         let pages = document.pages().unwrap();
         let capture = Capture {
-            split_repositioned: true,
+            reposition: Reposition::Split,
             structure: true,
             split_style: false,
         };
@@ -2369,7 +2397,7 @@ mod tests {
         let document = Document::open(bytes, &limits).unwrap();
         let pages = document.pages().unwrap();
         let capture = Capture {
-            split_repositioned: true,
+            reposition: Reposition::Split,
             structure: false,
             split_style: false,
         };
@@ -2452,7 +2480,7 @@ mod tests {
         let document = Document::open(&bytes, &limits).unwrap();
         let pages = document.pages().unwrap();
         let capture = Capture {
-            split_repositioned: true,
+            reposition: Reposition::Split,
             structure: true,
             split_style: false,
         };
@@ -2817,6 +2845,7 @@ mod tests {
         inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: false,
                 page_indexes: None,

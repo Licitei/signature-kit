@@ -33,6 +33,7 @@ impl Default for Limits {
 pub(crate) struct InspectOptions {
     pub links: bool,
     pub page_indexes: Option<Vec<u32>>,
+    pub runs: bool,
     pub text: bool,
 }
 
@@ -54,6 +55,7 @@ pub(crate) struct LinkInfo {
 pub(crate) struct TextItem {
     pub font_size: f64,
     pub rect: [f64; 4],
+    pub style: u8,
     pub text: String,
 }
 

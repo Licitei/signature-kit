@@ -2,7 +2,7 @@ use crate::num::widen;
 use crate::num::{f64_to_i64, f64_to_usize};
 use crate::syntax::is_whitespace;
 use crate::text::Session;
-use crate::text::extract_runs;
+use crate::text::{Capture, Reposition, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -1283,7 +1283,17 @@ pub(crate) fn inspect(
             let Some(page) = pages.get(position) else {
                 continue;
             };
-            let items = extract_runs(&document, page, limits, false, &mut session)?.items();
+            let capture = Capture {
+                reposition: if options.runs {
+                    Reposition::SplitGapped
+                } else {
+                    Reposition::Join
+                },
+                split_style: options.runs,
+                structure: false,
+            };
+            let content = extract_content(&document, page, limits, capture, &mut session)?;
+            let items = content.items();
             if items.len() > limits.max_items_per_page {
                 return Err(Failure::limit("page text items exceed limit"));
             }
@@ -1408,6 +1418,7 @@ mod tests {
         inspect(
             bytes,
             &InspectOptions {
+                runs: false,
                 text: true,
                 links: true,
                 page_indexes: None,
@@ -1470,6 +1481,88 @@ mod tests {
     }
 
     #[test]
+    fn inspect_runs_split_by_style_and_position_and_report_bold() {
+        use crate::test_pdf::{bold, document, page, text};
+        let content = [
+            bold(28.0, 700.0, 9.0, "17/06/2026 15:39:26"),
+            text(122.0, 700.0, 9.0, "MENSAGEM PREGOEIRO"),
+            "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Marca: ) Tj /F2 9 Tf (ACME) Tj ET\n".to_owned(),
+            text(28.0, 660.0, 9.0, "AB"),
+            text(40.006, 660.0, 9.0, "CD"),
+            text(28.0, 640.0, 9.0, "EF"),
+            text(39.004, 640.0, 9.0, "    "),
+            text(49.0, 640.0, 9.0, "GH"),
+        ]
+        .concat();
+        let bytes = document(&[page(content)], &[]);
+        let run = |runs: bool| {
+            let inspection = inspect(
+                &bytes,
+                &InspectOptions {
+                    runs,
+                    text: true,
+                    links: false,
+                    page_indexes: None,
+                },
+                &Limits::default(),
+            )
+            .unwrap();
+            let page = inspection.text.into_iter().next().unwrap();
+            let texts: Vec<String> = page
+                .items
+                .iter()
+                .map(|item| item.text.trim().to_owned())
+                .collect();
+            let styles: Vec<u8> = page.items.iter().map(|item| item.style).collect();
+            (texts, styles)
+        };
+        let (merged, _) = run(false);
+        assert_eq!(merged.len(), 4);
+        let (texts, styles) = run(true);
+        assert_eq!(
+            texts,
+            [
+                "17/06/2026 15:39:26",
+                "MENSAGEM PREGOEIRO",
+                "Marca:",
+                "ACME",
+                "ABCD",
+                "EF",
+                "GH"
+            ]
+        );
+        assert_eq!(styles, [1, 0, 0, 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn inspect_runs_keep_kerning_split_same_pen_words_and_bold_stroked_text() {
+        use crate::test_pdf::{document, page};
+        let content = [
+            "BT /F1 9 Tf 1 0 0 1 28 700 Tm [(Ka) -400 (Kb)] TJ ET\n",
+            "BT /F1 9 Tf 1 0 0 1 28 680 Tm (Rua ) Tj 1 0 0 1 47.008 680 Tm (Principal) Tj ET\n",
+            "BT /F1 9 Tf 2 Tr 1 0 0 1 28 660 Tm (Forte) Tj ET\n",
+        ]
+        .concat();
+        let bytes = document(&[page(content)], &[]);
+        let inspection = inspect(
+            &bytes,
+            &InspectOptions {
+                runs: true,
+                text: true,
+                links: false,
+                page_indexes: None,
+            },
+            &Limits::default(),
+        )
+        .unwrap();
+        let page = inspection.text.into_iter().next().unwrap();
+        let texts: Vec<&str> = page.items.iter().map(|item| item.text.as_str()).collect();
+        assert_eq!(texts, ["Ka Kb", "Rua", "Principal", "Forte"]);
+        let styles: Vec<u8> = page.items.iter().map(|item| item.style).collect();
+        assert_eq!(styles, [0, 0, 0, 1]);
+    }
+
+    #[test]
     fn inspect_enforces_limits_and_page_indexes() {
         let bytes = basic_pdf();
         let tiny = Limits {
@@ -1479,6 +1572,7 @@ mod tests {
         let error = inspect(&bytes, &InspectOptions::default(), &tiny).unwrap_err();
         assert_eq!(error.code, FailureCode::LimitExceeded);
         let options = InspectOptions {
+            runs: false,
             text: true,
             links: false,
             page_indexes: Some(vec![5]),
@@ -1486,6 +1580,7 @@ mod tests {
         let error_2 = inspect(&bytes, &options, &Limits::default()).unwrap_err();
         assert_eq!(error_2.code, FailureCode::InvalidPdf);
         let options_2 = InspectOptions {
+            runs: false,
             text: true,
             links: false,
             page_indexes: Some(vec![0, 0]),
@@ -2287,6 +2382,7 @@ mod tests {
             ..Limits::default()
         };
         let options = InspectOptions {
+            runs: false,
             text: true,
             links: true,
             page_indexes: None,
