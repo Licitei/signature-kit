@@ -1368,6 +1368,7 @@ mod tests {
             let start = self.data.len();
             self.data.extend_from_slice(bytes);
             let stream = Stream {
+                decrypted: None,
                 dict,
                 data: start..self.data.len(),
             };

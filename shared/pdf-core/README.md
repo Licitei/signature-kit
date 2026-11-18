@@ -165,6 +165,12 @@ Covered: paths (`m l c v y h re`), fill, stroke and even-odd rules, clipping (`W
 
 Approximations and gaps: JPX and JBIG2 images are drawn as a neutral grey placeholder; function-based and mesh shadings fill with their `/Background` (function-based ones with the colour at the domain centre); tiling patterns fill with the first non-white colour of the tile; ExtGState soft masks and transparency-group isolation/knockout are ignored; optional content honours the default configuration (`/D` with `/OFF`, `/ON` and `/BaseState`) for OCGs and OCMDs (`/P` policies and `/VE` expressions) in `BDC /OC` marked content, Form and image XObjects and annotations, while usage-based states and `/AS` arrays are not applied; clip render modes (4–7) with non-embedded fonts clip to one box per glyph (advance width wide, from 0.2 em below to 0.8 em above the baseline) instead of the glyph outline; a gradient painted on text uses its middle colour. Hostile input is bounded: content streams share the decoded-stream byte budget, a page stops after 4 000 000 operators or 96 MiB of display list, decoded images are capped at 64 Mi pixels (16 Mi after downsampling) and 384 MiB per page, Form XObject and Type 3 nesting stops at 16 levels with cycle detection and every Form or Type 3 glyph invocation counts as an operator, graphics-state and marked-content nesting stop at 256 and 1 024 levels, and glyph outlines are capped at 512 composite parts per glyph and 16 M units of outline work (points, parts and charstring steps) per page. Decoded Form XObject and Type 3 glyph streams (up to 64 MiB) and parsed colour spaces (with their Indexed lookups and tint functions) are cached per document. A page that hits a budget is returned truncated instead of failing.
 
+## Encrypted PDFs
+
+`inspect`, `text`, `tables`, `document`, `renderPages`, and `merge` accept Standard Security PDFs whose user password is empty. The supported algorithms are RC4 (40-bit or up to 128-bit, revisions 2–4), AESV2 (revision 4), and AESV3 (revisions 5–6). PDFs that require a nonempty opening password fail with `pdfCore.ENCRYPTED_PDF`.
+
+`merge` writes an unencrypted PDF. When `edit` receives an encrypted PDF it uses a full rewrite in `auto` or `rewrite` mode, producing an unencrypted PDF. This lets a first signature cover the rewritten bytes. Rewriting changes the original bytes and invalidates any existing signatures. An explicit `incremental` edit fails with `pdfCore.ENCRYPTED_PDF`.
+
 ## Errors
 
 Failures use `PdfCoreError` with the codes `pdfCore.WASM_LOAD_FAILED`, `pdfCore.INVALID_PDF`, `pdfCore.ENCRYPTED_PDF`, `pdfCore.LIMIT_EXCEEDED`, `pdfCore.UNSUPPORTED_FEATURE`, `pdfCore.INVALID_OPTIONS`, and `pdfCore.PAINT_FAILED` (the browser could not create a canvas, decode an image, or encode the page image). Invalid edit operations (malformed PDF syntax, missing targets, impossible incremental updates) fail with `pdfCore.INVALID_OPTIONS`. `pdfCoreErrorMessages` carries `en-US` and `pt-BR` copy.
@@ -286,7 +292,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1072 KiB (about 413 KB gzipped today).
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1104 KiB.
 
 ## License
 

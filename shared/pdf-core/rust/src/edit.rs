@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use crate::deflate::zlib_compress;
 use crate::document::{Document, Page, decode_text_string};
-use crate::failure::{Failure, Outcome};
+use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::{Limits, PageInfo};
 use crate::num::{f64_to_i64, unsigned_decimal, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
@@ -562,6 +562,7 @@ impl Store<'_, '_> {
         self.set_body(
             reference,
             Object::Stream(Stream {
+                decrypted: None,
                 data: 0..0,
                 dict: stream_dict,
             }),
@@ -666,6 +667,13 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     let flags = reader.u32()?;
     let count = reader.u32()?;
     let document = Document::open(pdf, limits)?;
+    let mode = flags & MODE_MASK;
+    if mode == MODE_INCREMENTAL && document.is_encrypted() {
+        return Err(Failure::new(
+            FailureCode::EncryptedPdf,
+            "incremental editing of encrypted PDFs is not supported",
+        ));
+    }
     let mut store = Store {
         changed: Changes::default(),
         document: &document,
@@ -690,8 +698,8 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     } else {
         Packing::ObjectStreams
     };
-    let intact = intact_xref(&document, pdf);
-    match flags & MODE_MASK {
+    let intact = !document.is_encrypted() && intact_xref(&document, pdf);
+    match mode {
         MODE_INCREMENTAL if !intact => Err(Failure::request(
             "incremental update needs an intact cross-reference chain",
         )),
@@ -1178,7 +1186,6 @@ fn standard_font(name: &[u8]) -> Outcome<Object> {
 )]
 mod tests {
     use super::*;
-    use crate::failure::FailureCode;
     use crate::layout::{TextOptions, document_text, text_limits};
     use crate::object::Resolver;
     use crate::revision::{Analysis, analyze};

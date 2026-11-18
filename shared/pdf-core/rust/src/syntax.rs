@@ -1082,7 +1082,11 @@ pub(crate) fn parse_indirect_object(
         let end = object_tail(data, range.end);
         return Ok(IndirectObject {
             obj_ref,
-            object: Object::Stream(Stream { dict, data: range }),
+            object: Object::Stream(Stream {
+                dict,
+                data: range,
+                decrypted: None,
+            }),
             end,
         });
     }

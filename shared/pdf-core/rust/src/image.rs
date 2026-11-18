@@ -846,6 +846,7 @@ mod tests {
         ];
         entries.extend(mask_entries);
         let mask = Object::Stream(Stream {
+            decrypted: None,
             data: 0..1,
             dict: dict(entries),
         });
@@ -1066,6 +1067,7 @@ mod tests {
     fn soft_masks_and_color_keys_set_alpha() {
         let resolver = Data(vec![0, 128]);
         let smask = Object::Stream(Stream {
+            decrypted: None,
             data: 0..2,
             dict: dict(vec![
                 ("Width", Object::Integer(2)),
