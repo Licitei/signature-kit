@@ -96,6 +96,7 @@ const signatureReport = (
       (error) =>
         new PdfError({
           code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.encryptedPdf, () => PdfErrorCodeValue.encryptedPdf),
             Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
             Match.orElse(() => PdfErrorCodeValue.pdfLoadFailed),
           ),
@@ -156,8 +157,9 @@ export const hasPdfByteRange = (pdf: Uint8Array): Effect.Effect<boolean, PdfErro
 
 export const hasPdfSignatureDictionaryEffect = (
   pdf: Uint8Array,
+  operation: PdfOperation,
 ): Effect.Effect<boolean, PdfError, PdfCore> =>
-  signatureDictionaries(pdf, "dictionaries", PdfOperationValue.mergeDocuments).pipe(
+  signatureDictionaries(pdf, "dictionaries", operation).pipe(
     Effect.map((dictionaries) => dictionaries.length > 0),
   );
 

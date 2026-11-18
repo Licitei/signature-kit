@@ -1,9 +1,10 @@
 import type { CmsError } from "@signature-kit/cms/config";
+import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import type { SignatureKitError, Signatures } from "@signature-kit/signatures";
 import { signPdf as signPdfDocument } from "./sign.js";
 import { findPdfTextAnchors, removePdfLinkAnchors } from "./anchors.js";
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import {
   autoPlacePdfSignatureField,
   createPdfSignatureBuilderStateFromTemplate,
@@ -112,11 +113,17 @@ const loadPdfSignatureDocumentWithPages = (
       PdfCore.pipe(
         Effect.flatMap((core) => core.document(valid.pdf)),
         Effect.mapError(
-          () =>
+          (error) =>
             new PdfError({
-              code: PdfErrorCodeValue.pdfLoadFailed,
+              code: Match.value(error.code).pipe(
+                Match.when(
+                  PdfCoreErrorCodeValue.encryptedPdf,
+                  () => PdfErrorCodeValue.encryptedPdf,
+                ),
+                Match.orElse(() => PdfErrorCodeValue.pdfLoadFailed),
+              ),
               retryable: false,
-              reason: "PDF bytes could not be parsed for page dimensions.",
+              reason: error.reason ?? "PDF bytes could not be parsed for page dimensions.",
               operation: PdfOperationValue.loadDocument,
             }),
         ),

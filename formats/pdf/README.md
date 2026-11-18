@@ -27,7 +27,7 @@ bun add @signature-kit/a1
 - `@signature-kit/pdf/builder` — pure signature-field builder operations.
 - `@signature-kit/pdf/builder-store` — external builder store and placement queue helpers.
 - `@signature-kit/pdf/byte-range` — placeholder preparation and signature extraction helpers built on `PdfCore.signatures`; `hasPdfByteRange`, `hasPdfSignatureDictionary`, and `isCompletePdfRevision` are Effects that require `PdfCore`.
-- `@signature-kit/pdf/merge` — `mergePdfs`; it copies pages only and intentionally drops source AcroForms, outlines, metadata, and attachments.
+- `@signature-kit/pdf/merge` — `mergePdfs` and `extractPdfPages` copy pages and drop source AcroForms, outlines, metadata, and attachments.
 - `@signature-kit/pdf/render-browser` — browser-only page thumbnails: `renderPdfPagesBrowser(pdf, { pageIndexes?, scale? })` returns one PNG `Blob` per page (`pageIndex`, `width`, `height`, `image`; default scale 150 DPI) through the `PdfPageRenderer` service. Provide `pdfPageRendererWorkerLayer({ timeoutMillis? }, create?)` so pages render in a dedicated Web Worker (`render.worker.js`, or the worker returned by `create`) in batches of 16 pages; each worker request has a time limit (default 30 000 ms), and a request that exceeds it terminates and replaces the worker and fails with `pdf.RENDER_TIMEOUT`. Interrupting a render also replaces the busy worker. `pdfPageRendererLayer` renders on the current thread from `PdfCore` (use it inside workers), and `PdfRenderRequests` with `pdfPageRendererHandlersLayer` serve the worker side for applications that bundle their own worker entry. The module also exports a handwriting service with an explicitly supplied browser font.
 
 `signatureLength` is CMS byte capacity: a value of `n` reserves exactly `n` bytes, represented by `2n` hexadecimal digits in `/Contents`.
@@ -98,9 +98,25 @@ declare const trustedRoots: Uint8Array[];
 const verification = verifyPdfSignatures({ pdf, trustedRoots });
 ```
 
+## Merge and extract PDF pages
+
+```ts
+import { extractPdfPages, mergePdfs } from "@signature-kit/pdf/merge";
+
+declare const signedPdfs: Uint8Array[];
+declare const unsignedPdf: Uint8Array;
+
+const preview = mergePdfs(signedPdfs, { signedSources: "flatten" });
+const excerpt = extractPdfPages(unsignedPdf, [0, 2, 4]);
+```
+
+Both operations require `PdfCore` and reject signed or document-timestamp sources by default. Pass `{ signedSources: "flatten" }` to `mergePdfs` to create an **unsigned preview**. It strips form widgets and the source `/AcroForm` and `/SigFlags`. Stamps already drawn into page content remain visible. Keep the source PDFs for signature verification.
+
+`extractPdfPages` takes a non-empty list of zero-based page indexes and preserves the order of their first appearances. An index outside the source document fails with `pdf.INVALID_PDF`.
+
 ## Errors and i18n
 
-PDF failures use the `PdfError` code catalog and `pdfErrorMessages`; CMS and signer failures can also surface from signing workflows. Applications can render localized copy through `@signature-kit/i18n` with the catalogs for every package they call.
+Operations that encounter password-protected PDFs report `pdf.ENCRYPTED_PDF`. PDF failures use the `PdfError` code catalog and `pdfErrorMessages`; CMS and signer failures can also surface from signing workflows. Applications can render localized copy through `@signature-kit/i18n` with the catalogs for every package they call.
 
 Docs: <https://signaturekit.dev/en-US/docs/signing/pdf>.
 

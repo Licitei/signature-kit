@@ -19,6 +19,7 @@ import * as pdfByteRange from "../src/byte-range";
 import { concatBytes, encodeAscii, indexOfBytes } from "../src/bytes";
 import {
   PdfByteRangeSchema,
+  PdfOperationValue,
   PdfSigningRequestSchema,
   PdfVerificationResultSchema,
 } from "../src/config";
@@ -530,7 +531,9 @@ describe("PDF signature dictionary parsing", () => {
 
         expect(yield* hasPdfByteRange(pdf.pdf)).toBe(true);
         expect(yield* hasPdfSignatureDictionary(pdf.pdf)).toBe(true);
-        expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(true);
+        expect(
+          yield* hasPdfSignatureDictionaryEffect(pdf.pdf, PdfOperationValue.mergeDocuments),
+        ).toBe(true);
         expect(signatures).toHaveLength(1);
       }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
@@ -687,7 +690,9 @@ describe("PDF signature dictionary parsing", () => {
       ]);
       const extraction = yield* Effect.result(extractPdfSignatures(pdf.pdf));
 
-      expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(true);
+      expect(
+        yield* hasPdfSignatureDictionaryEffect(pdf.pdf, PdfOperationValue.mergeDocuments),
+      ).toBe(true);
       expect(Result.isFailure(extraction)).toBe(true);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
@@ -697,7 +702,9 @@ describe("PDF signature dictionary parsing", () => {
       const pdf = createRawSignaturePdf("XObject");
       const extraction = yield* Effect.result(extractPdfSignatures(pdf.pdf));
 
-      expect(yield* hasPdfSignatureDictionaryEffect(pdf.pdf)).toBe(false);
+      expect(
+        yield* hasPdfSignatureDictionaryEffect(pdf.pdf, PdfOperationValue.mergeDocuments),
+      ).toBe(false);
       expect(Result.isFailure(extraction)).toBe(true);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );

@@ -25,6 +25,7 @@ const positiveFiniteNumber = Schema.Number.check(Schema.isFinite(), Schema.isGre
 
 export const PdfErrorCodeSchema = Schema.Literals([
   "pdf.INVALID_PDF",
+  "pdf.ENCRYPTED_PDF",
   "pdf.INVALID_BUILDER_INPUT",
   "pdf.PLACEHOLDER_NOT_FOUND",
   "pdf.SIGNATURE_PLACEMENT_FAILED",
@@ -48,6 +49,7 @@ export type PdfErrorCode = (typeof PdfErrorCodeSchema)["Type"];
 
 export const PdfErrorCodeValue = {
   invalidPdf: "pdf.INVALID_PDF",
+  encryptedPdf: "pdf.ENCRYPTED_PDF",
   invalidBuilderInput: "pdf.INVALID_BUILDER_INPUT",
   placeholderNotFound: "pdf.PLACEHOLDER_NOT_FOUND",
   signaturePlacementFailed: "pdf.SIGNATURE_PLACEMENT_FAILED",
@@ -78,6 +80,7 @@ export type PdfErrorMessages = (typeof PdfErrorMessagesSchema)["Type"];
 export const pdfErrorMessages = {
   "en-US": {
     "pdf.INVALID_PDF": "Invalid PDF document.",
+    "pdf.ENCRYPTED_PDF": "The PDF is encrypted. Remove its password protection and try again.",
     "pdf.INVALID_BUILDER_INPUT": "Invalid PDF signature builder input.",
     "pdf.PLACEHOLDER_NOT_FOUND": "PDF signature placeholder was not found.",
     "pdf.SIGNATURE_PLACEMENT_FAILED": "PDF signature placement failed.",
@@ -99,6 +102,7 @@ export const pdfErrorMessages = {
   },
   "pt-BR": {
     "pdf.INVALID_PDF": "Documento PDF inválido.",
+    "pdf.ENCRYPTED_PDF": "O PDF está criptografado. Remova a proteção por senha e tente novamente.",
     "pdf.INVALID_BUILDER_INPUT": "Entrada inválida para o builder de assinatura PDF.",
     "pdf.PLACEHOLDER_NOT_FOUND": "Placeholder de assinatura PDF não encontrado.",
     "pdf.SIGNATURE_PLACEMENT_FAILED": "Não foi possível posicionar a assinatura PDF.",
@@ -138,6 +142,7 @@ export const PdfOperationSchema = Schema.Literals([
   "pdf.blob.read",
   "pdf.document.load",
   "pdf.document.merge",
+  "pdf.document.extract-pages",
   "pdf.text-anchor.find",
   "pdf.workflow.prepare-and-sign",
   "pdf.builder.create-template-from-bytes",
@@ -165,6 +170,7 @@ export const PdfOperationValue = {
   readBlobBytes: "pdf.blob.read",
   loadDocument: "pdf.document.load",
   mergeDocuments: "pdf.document.merge",
+  extractPages: "pdf.document.extract-pages",
   findTextAnchors: "pdf.text-anchor.find",
   prepareAndSign: "pdf.workflow.prepare-and-sign",
   createTemplateFromBytes: "pdf.builder.create-template-from-bytes",
@@ -194,6 +200,8 @@ export const PdfSchemaNameSchema = Schema.Literals([
   "PdfSignatureBestGuessPlacementInput",
   "PdfVerificationRequest",
   "PdfMergeDocuments",
+  "PdfMergeOptions",
+  "PdfExtractPagesInput",
   "PdfIllustrativeDocumentInput",
   "PdfPageRenderOptions",
   "PdfPageRendererWorkerOptions",
@@ -220,6 +228,8 @@ export const PdfSchemaNameValue = {
   pdfSignatureBestGuessPlacementInput: "PdfSignatureBestGuessPlacementInput",
   pdfVerificationRequest: "PdfVerificationRequest",
   pdfMergeDocuments: "PdfMergeDocuments",
+  pdfMergeOptions: "PdfMergeOptions",
+  pdfExtractPagesInput: "PdfExtractPagesInput",
   pdfIllustrativeDocumentInput: "PdfIllustrativeDocumentInput",
   pdfPageRenderOptions: "PdfPageRenderOptions",
   pdfPageRendererWorkerOptions: "PdfPageRendererWorkerOptions",
@@ -565,6 +575,19 @@ export type PdfTextAnchorSearchInput = (typeof PdfTextAnchorSearchInputSchema)["
 
 export const PdfMergeDocumentsSchema = Schema.NonEmptyArray(Schema.Uint8Array);
 export type PdfMergeDocuments = (typeof PdfMergeDocumentsSchema)["Type"];
+
+export const PdfMergeOptionsSchema = Schema.Struct({
+  signedSources: Schema.optional(Schema.Literals(["flatten"])),
+});
+export type PdfMergeOptions = (typeof PdfMergeOptionsSchema)["Type"];
+
+export const PdfExtractPagesInputSchema = Schema.Struct({
+  pdf: Schema.Uint8Array,
+  pageIndexes: Schema.NonEmptyArray(
+    nonNegativeInteger.check(Schema.isLessThanOrEqualTo(0xffff_ffff)),
+  ),
+});
+export type PdfExtractPagesInput = (typeof PdfExtractPagesInputSchema)["Type"];
 
 export const PdfVisibleStampQrSchema = Schema.Struct({
   text: nonEmptyString,

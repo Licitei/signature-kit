@@ -1,10 +1,12 @@
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Redacted, Result } from "effect";
 import { readA1Fixture } from "../../../tooling/testing/fixtures";
 import { PdfErrorCodeValue, PdfOperationValue } from "../src/config";
-import { mergePdfs } from "../src/merge";
+import { extractPdfPages, mergePdfs } from "../src/merge";
 import { signPdf } from "../src/sign";
+import { stampPdfVisibleSignature } from "../src/stamp";
 import { verifyPdf } from "../src/verify";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
 import {
@@ -109,11 +111,17 @@ const mergedAnnotationState = (pdf: Uint8Array) =>
   );
 
 describe("PDF merge signed and AcroForm boundaries", () => {
-  it.effect("rejects a cryptographically signed source before merge", () =>
+  it.effect("requires an explicit opt-in to copy a cryptographically signed source", () =>
     Effect.gen(function* () {
       const pfx = yield* readA1Fixture("ecnpj");
       const source = yield* createPdf();
-      const signed = yield* signPdf({ pdf: source, policy: "pades-icp-brasil" }).pipe(
+      const stamped = yield* stampPdfVisibleSignature({
+        pdf: source,
+        pageIndex: 0,
+        rect: { pageIndex: 0, x: 20, y: 20, width: 130, height: 35 },
+        lines: ["Signed document"],
+      });
+      const signed = yield* signPdf({ pdf: stamped, policy: "pades-icp-brasil" }).pipe(
         Effect.provide(a1SignaturesLayer({ pfx, password: PASSWORD })),
       );
       const verification = yield* verifyPdf({ pdf: signed });
@@ -125,6 +133,29 @@ describe("PDF merge signed and AcroForm boundaries", () => {
         expect(result.failure.code).toBe(PdfErrorCodeValue.invalidBuilderInput);
         expect(result.failure.operation).toBe(PdfOperationValue.mergeDocuments);
       }
+
+      const extraction = yield* Effect.flip(extractPdfPages(signed, [0]));
+      expect(extraction).toMatchObject({
+        code: PdfErrorCodeValue.invalidBuilderInput,
+        operation: PdfOperationValue.extractPages,
+      });
+
+      const original = signed.slice();
+      const preview = yield* mergePdfs([signed, source], { signedSources: "flatten" });
+      const state = yield* mergedAnnotationState(preview);
+      const core = yield* PdfCore;
+      const pages = yield* core.text(preview);
+      const signatures = yield* core.signatures(preview, "dictionaries");
+      expect(signed).toStrictEqual(original);
+      expect(state).toStrictEqual({
+        annotations: [],
+        hasAcroForm: false,
+        hasSignatureObject: false,
+      });
+      expect(pdfSource(preview)).not.toMatch(/\/SigFlags\b/u);
+      expect(signatures.dictionaries).toStrictEqual([]);
+      expect(pages).toHaveLength(2);
+      expect(pages[0]).toContain("Signed document");
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
 
