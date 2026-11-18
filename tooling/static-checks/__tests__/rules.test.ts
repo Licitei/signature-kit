@@ -230,6 +230,25 @@ const result = await Effect.runPromise(program);
     ).toBe(true);
   });
 
+  it.each([
+    ["shared/pdf-core/src/promise.ts", false],
+    ["shared/pdf-core/src/node.ts", false],
+    ["shared/pdf-core/src/pdf-core.ts", true],
+  ])("limits Promise entry run escapes and node imports to their modules (%s)", (path, flagged) => {
+    const run = `
+// effect-boundary: promise entry point [allow-run: rejects with the tagged error]
+const client = Effect.runPromise(program);
+`;
+    expect(anyCheckMatchesSource(effectBoundaryChecks, path, run)).toBe(flagged);
+    expect(
+      anyCheckMatchesSource(
+        effectBoundaryChecks,
+        path,
+        'import { readFile } from "node:fs/promises";',
+      ),
+    ).toBe(path !== "shared/pdf-core/src/node.ts");
+  });
+
   it("requires a reasoned provide marker immediately before a React provide call", () => {
     expect(
       anyCheckMatchesSource(

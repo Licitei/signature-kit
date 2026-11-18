@@ -41,6 +41,8 @@
       "@signature-kit/pdf-core/pdf-core": ["../../shared/pdf-core/src/pdf-core.ts"],
       "@signature-kit/pdf-core/browser": ["../../shared/pdf-core/src/browser.ts"],
       "@signature-kit/pdf-core/file": ["../../shared/pdf-core/src/file.ts"],
+      "@signature-kit/pdf-core/promise": ["../../shared/pdf-core/src/promise.ts"],
+      "@signature-kit/pdf-core/node": ["../../shared/pdf-core/src/node.ts"],
       "@signature-kit/pdf-core/canvas": ["../../shared/pdf-core/src/canvas.ts"],
       "@signature-kit/http": ["../../core/http/src/http.ts"],
       "@signature-kit/signatures": ["../../core/signatures/src/signatures.ts"],

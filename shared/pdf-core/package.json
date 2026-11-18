@@ -31,6 +31,14 @@
       "types": "./dist/file.d.ts",
       "import": "./dist/file.js"
     },
+    "./promise": {
+      "types": "./dist/promise.d.ts",
+      "import": "./dist/promise.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js"
+    },
     "./canvas": {
       "types": "./dist/canvas.d.ts",
       "import": "./dist/canvas.js"
