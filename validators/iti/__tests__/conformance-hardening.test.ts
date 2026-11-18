@@ -373,7 +373,28 @@ const restoreSignatureFieldValue = (pdf: Uint8Array) =>
 
 for (const objectStreams of [false, true]) {
   describe(`ITI local conformance hardening (object streams: ${objectStreams})`, () => {
-    it.effect("approves the committed AD-RB fixture with the pinned policy encoding", () =>
+    it.effect("approves an AD-RB PDF signed with PBAD.PAdES", () =>
+      Effect.gen(function* () {
+        const { pdf, signingKey } = yield* createSignedPades(objectStreams);
+        const original = "/ETSI.CAdES.detached";
+        const replacement = "/PBAD.PAdES".padEnd(original.length);
+        const rewritten = Buffer.from(
+          Buffer.from(pdf).toString("latin1").replace(original, replacement),
+          "latin1",
+        );
+        const { signature, signedData, subFilter } = yield* extractPdfSignature(rewritten);
+        expect(subFilter).toBe("PBAD.PAdES");
+        const cms = yield* resignCms(signature, signedData, signingKey, () => undefined);
+        const report = yield* validatePdfConformance({
+          pdf: replaceCmsContents(rewritten, signature, cms),
+        });
+
+        expect(report.approved).toBe(true);
+        expect(report.signatures[0]?.structure.status).toBe("Valid");
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
+    it.effect("recognizes the pinned policy encoding in the legacy AD-RB fixture", () =>
       Effect.gen(function* () {
         const pdf = yield* fixturePdf;
         const report = yield* validatePdfConformance({ pdf });
@@ -399,8 +420,8 @@ for (const objectStreams of [false, true]) {
           return yield* Effect.die("Fixture policy hash has no algorithm OID.");
         }
 
-        expect(report.approved).toBe(true);
-        expect(report.outcome).toBe("approved");
+        expect(report.approved).toBe(false);
+        expect(report.outcome).toBe("rejected");
         expect(
           report.signatures[0]?.attributes.map((attribute) => [attribute.name, attribute.status]),
         ).toEqual([
@@ -408,7 +429,7 @@ for (const objectStreams of [false, true]) {
           ["IdContentType", "Valid"],
           ["IdAaEtsSigPolicyId", "Valid"],
           ["IdAaSigningCertificateV2", "Valid"],
-          ["SignatureDictionary", "Valid"],
+          ["SignatureDictionary", "Invalid"],
           ["signingTime", "Valid"],
         ]);
         expect(algorithmOid.valueBlock.toString()).toBe(SHA256_OID);

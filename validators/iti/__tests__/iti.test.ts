@@ -3,19 +3,17 @@ import { readFile } from "node:fs/promises";
 import * as asn1js from "asn1js";
 import * as pkijs from "pkijs";
 import { vi } from "vitest";
-import { a1SignaturesLayer } from "@signature-kit/a1/signer";
 import { CmsOid } from "@signature-kit/cms/config";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { extractPdfSignature } from "@signature-kit/pdf/byte-range";
-import { signPdf } from "@signature-kit/pdf/sign";
-import { Effect, Layer, Redacted, Result, Schema } from "effect";
-import { readA1Fixture } from "../../../tooling/testing/fixtures";
+import { verifyPdf } from "@signature-kit/pdf/verify";
+import { Effect, Layer, Result, Schema } from "effect";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { validatePdfConformance } from "../src/conformance";
 import { validatePdfWithIti } from "../src/remote";
 import { pdfCoreTestLayer } from "./pdf-core-layer";
-import { createTextPdf } from "./pdf-fixture";
+import { createTextPdf, signAdRbPdf } from "./pdf-fixture";
 
 const ITI_ENDPOINT = "https://validar.iti.gov.br/arquivo";
 const POLICY_OID = "2.16.76.1.7.1.11.1.1";
@@ -166,22 +164,28 @@ const createPdf = (objectStreams: boolean) =>
 const expectedAdRbPolicyOid = POLICY_OID;
 
 describe("ITI local conformance", () => {
-  it.effect("approves an ICP-Brasil PAdES AD-RB signed PDF", () =>
+  it.effect("rejects the legacy SubFilter even when the AD-RB CMS is valid", () =>
     Effect.gen(function* () {
       const signed = yield* readItiFixture("icp-brasil-ad-rb-signed.pdf");
+      const verification = yield* verifyPdf({ pdf: signed });
       const report = yield* validatePdfConformance({ pdf: signed });
       const signature = report.signatures[0];
 
+      expect(verification.valid).toBe(true);
       expect(report.validator).toBe("iti.conformance");
-      expect(report.approved).toBe(true);
-      expect(report.outcome).toBe("approved");
+      expect(report.approved).toBe(false);
+      expect(report.outcome).toBe("rejected");
       expect(report.signatureCount).toBe(1);
       expect(signature).toBeDefined();
       if (signature === undefined) return;
       expect(signature.signatureType).toBe("PA_PAdES_AD_RB_v1_1");
       expect(signature.policyOid).toBe(expectedAdRbPolicyOid);
       expect(signature.certificationPath).toBe("not_checked");
-      expect(signature.structure.status).toBe("Valid");
+      expect(signature.structure).toEqual({
+        status: "Invalid",
+        message:
+          "O dicionário de assinatura deve usar SubFilter ETSI.CAdES.detached ou PBAD.PAdES para PAdES AD-RB.",
+      });
       expect(signature.cipher.status).toBe("Valid");
       expect(signature.digest.status).toBe("Valid");
       expect(signature.attributes.map((attribute) => [attribute.name, attribute.status])).toEqual([
@@ -189,7 +193,7 @@ describe("ITI local conformance", () => {
         ["IdContentType", "Valid"],
         ["IdAaEtsSigPolicyId", "Valid"],
         ["IdAaSigningCertificateV2", "Valid"],
-        ["SignatureDictionary", "Valid"],
+        ["SignatureDictionary", "Invalid"],
         ["signingTime", "Valid"],
       ]);
     }).pipe(Effect.provide(pdfCoreTestLayer)),
@@ -256,19 +260,16 @@ describe("ITI local conformance", () => {
 
     it.effect(`approves a freshly signed AD-RB PDF (object streams: ${objectStreams})`, () =>
       Effect.gen(function* () {
-        const pfx = yield* readA1Fixture("ecnpj");
-        const signed = yield* signPdf({
-          pdf: yield* createPdf(objectStreams),
-          policy: "pades-icp-brasil",
-          signatureLength: 32768,
-          reason: "SignatureKit ITI validation fixture",
-        }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make("changeit") })));
+        const signed = yield* signAdRbPdf(objectStreams);
+        const extracted = yield* extractPdfSignature(signed);
         const report = yield* validatePdfConformance({ pdf: signed });
 
+        expect(extracted.subFilter).toBe("ETSI.CAdES.detached");
         expect(report.approved).toBe(true);
         expect(report.outcome).toBe("approved");
         expect(report.signatureCount).toBe(1);
         expect(report.signatures[0]?.signatureType).toBe("PA_PAdES_AD_RB_v1_1");
+        expect(report.signatures[0]?.structure.status).toBe("Valid");
       }).pipe(Effect.provide(pdfCoreTestLayer)),
     );
   }
@@ -308,7 +309,7 @@ describe("ITI remote client", () => {
 
   it.effect("maps a decoded 200 verifierReport into the remote report", () =>
     Effect.gen(function* () {
-      const signed = yield* readItiFixture("icp-brasil-ad-rb-signed.pdf");
+      const signed = yield* signAdRbPdf(false).pipe(Effect.provide(pdfCoreTestLayer));
       const local = yield* localHttpServer(async () => ({
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -334,7 +335,7 @@ describe("ITI remote client", () => {
     "derives approved/outcome from remote verifierReport while keeping local conformance",
     () =>
       Effect.gen(function* () {
-        const signed = yield* readItiFixture("icp-brasil-ad-rb-signed.pdf");
+        const signed = yield* signAdRbPdf(false).pipe(Effect.provide(pdfCoreTestLayer));
         const local = yield* localHttpServer(async () => ({
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -362,7 +363,7 @@ describe("ITI remote client", () => {
 
   it.effect("maps unknown remote verdicts to unknown outcome while keeping local conformance", () =>
     Effect.gen(function* () {
-      const signed = yield* readItiFixture("icp-brasil-ad-rb-signed.pdf");
+      const signed = yield* signAdRbPdf(false).pipe(Effect.provide(pdfCoreTestLayer));
       const local = yield* localHttpServer(async () => ({
         status: 200,
         headers: { "Content-Type": "application/json" },

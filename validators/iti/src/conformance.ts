@@ -18,7 +18,7 @@ import { PdfErrorCodeValue } from "@signature-kit/pdf/config";
 import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { loadPdfSignatureDocument } from "@signature-kit/pdf/workflow";
 import * as asn1js from "asn1js";
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import * as pkijs from "pkijs";
 
 const ITI_PROVIDER = "iti";
@@ -28,6 +28,8 @@ export const ItiOperation = {
 } satisfies Record<string, string>;
 const ITI_PADES_AD_RB_POLICY_OID = IcpBrasilPadesPolicy.adRbV11.policyOid;
 const ITI_PADES_AD_RB_SIGNATURE_TYPE = "PA_PAdES_AD_RB_v1_1";
+const ItiAdRbSubFilterSchema = Schema.Literals(["ETSI.CAdES.detached", "PBAD.PAdES"]);
+const isAdRbSubFilter = Schema.is(ItiAdRbSubFilterSchema);
 
 export const ItiConformanceOutcomeSchema = Schema.Literals(["approved", "rejected"]);
 export type ItiConformanceOutcome = (typeof ItiConformanceOutcomeSchema)["Type"];
@@ -477,18 +479,40 @@ export const validatePdfConformance = (
         const revisionComplete = yield* isCompletePdfRevision(valid.pdf, byteRangeEnd).pipe(
           Effect.orElseSucceed(() => false),
         );
-        const structureValid =
-          signature.startsAtZero &&
-          revisionComplete &&
-          (!newest || signature.coversFileEnd) &&
-          singleSignerInfo;
-        const structureMessage = !signature.startsAtZero
-          ? "A cobertura ByteRange do PDF não inicia no byte zero."
-          : !revisionComplete
-            ? "A cobertura ByteRange não termina em uma revisão PDF completa."
-            : newest && !signature.coversFileEnd
-              ? "O dicionário de assinatura não cobre todo o documento PDF."
-              : "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF.";
+        const structureMessage = Match.value({
+          startsAtZero: signature.startsAtZero,
+          revisionComplete,
+          coversRequiredBytes: !newest || signature.coversFileEnd,
+          singleSignerInfo,
+          subFilterAccepted: isAdRbSubFilter(signature.subFilter),
+        }).pipe(
+          Match.when(
+            { startsAtZero: false },
+            () => "A cobertura ByteRange do PDF não inicia no byte zero.",
+          ),
+          Match.when(
+            { revisionComplete: false },
+            () => "A cobertura ByteRange não termina em uma revisão PDF completa.",
+          ),
+          Match.when(
+            { coversRequiredBytes: false },
+            () => "O dicionário de assinatura não cobre todo o documento PDF.",
+          ),
+          Match.when(
+            { singleSignerInfo: false },
+            () => "O CMS deve conter exatamente um SignerInfo por dicionário de assinatura PDF.",
+          ),
+          Match.when(
+            { subFilterAccepted: false },
+            () =>
+              `O dicionário de assinatura deve usar SubFilter ${ItiAdRbSubFilterSchema.literals.join(" ou ")} para PAdES AD-RB.`,
+          ),
+          Match.orElse(() => undefined),
+        );
+        const structure: ItiCheck =
+          structureMessage === undefined
+            ? validCheck
+            : { status: "Invalid", message: structureMessage };
         const signingTime = inspection.signedAttributes.find(
           (attribute) => attribute.type === CmsOid.signingTime,
         );
@@ -524,13 +548,7 @@ export const validatePdfConformance = (
                 message:
                   "A assinatura não contém IdAaSigningCertificateV2 vinculado ao certificado do signatário.",
               },
-          structureValid
-            ? { name: ItiAttributeNameValue.signatureDictionary, status: "Valid" }
-            : {
-                name: ItiAttributeNameValue.signatureDictionary,
-                status: "Invalid",
-                message: structureMessage,
-              },
+          { name: ItiAttributeNameValue.signatureDictionary, ...structure },
           signingTime === undefined
             ? { name: ItiAttributeNameValue.signingTime, status: "Valid" }
             : {
@@ -550,7 +568,7 @@ export const validatePdfConformance = (
         return {
           signerCommonName: inspection.signerCommonName,
           signatureType: ITI_PADES_AD_RB_SIGNATURE_TYPE,
-          structure: structureValid ? validCheck : { status: "Invalid", message: structureMessage },
+          structure,
           cipher: cmsVerification.valid
             ? validCheck
             : { status: "Invalid", message: "A cifra assimétrica da assinatura CMS é inválida." },

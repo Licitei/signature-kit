@@ -1,6 +1,9 @@
 import type { PdfCoreEditOperations } from "@signature-kit/pdf-core/config";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
-import { Effect } from "effect";
+import { a1SignaturesLayer } from "@signature-kit/a1/signer";
+import { signPdf } from "@signature-kit/pdf/sign";
+import { Effect, Redacted } from "effect";
+import { readA1Fixture } from "../../../tooling/testing/fixtures";
 
 const encoder = new TextEncoder();
 
@@ -43,6 +46,17 @@ export const createTextPdf = (
       { mode: "rewrite", objectStreams: options.objectStreams },
     );
   }).pipe(Effect.orDie);
+
+export const signAdRbPdf = (objectStreams: boolean) =>
+  Effect.gen(function* () {
+    const pfx = yield* readA1Fixture("ecnpj");
+    return yield* signPdf({
+      pdf: yield* createTextPdf("SignatureKit ITI validation fixture", { objectStreams }),
+      policy: "pades-icp-brasil",
+      signatureLength: 32768,
+      reason: "SignatureKit ITI validation fixture",
+    }).pipe(Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make("changeit") })));
+  });
 
 export const appendIncrementalObjects = (
   pdf: Uint8Array,

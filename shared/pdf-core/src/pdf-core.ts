@@ -133,9 +133,9 @@ const TEXT_PAGE_HEADER_BYTES = 16;
 const TEXT_ITEM_FLOATS = 5;
 const MAX_UINT32 = 0xffff_ffff;
 const SIGNATURES_MAGIC = 0x4753_4450;
-const SIGNATURES_VERSION = 1;
+const SIGNATURES_VERSION = 2;
 const SIGNATURES_HEADER_BYTES = 24;
-const SIGNATURE_RECORD_BYTES = 72;
+const SIGNATURE_RECORD_BYTES = 80;
 const DOCUMENT_MAGIC = 0x4944_4450;
 const DOCUMENT_VERSION = 2;
 const DOCUMENT_HEADER_BYTES = 32;
@@ -946,6 +946,17 @@ export const makePdfCore = (
           const recordFlags = view.getUint32(at + 12, true);
           const byteRange = span(view, at + 16, (recordFlags & 2) !== 0);
           const contents = span(view, at + 28, (recordFlags & 4) !== 0);
+          const subFilterOffset = view.getUint32(at + 72, true);
+          const subFilter =
+            subFilterOffset === 0
+              ? undefined
+              : utf8.decode(
+                  new Uint8Array(
+                    block.memory,
+                    block.pointer + base + subFilterOffset,
+                    view.getUint32(at + 76, true),
+                  ),
+                );
           return {
             kind: (recordFlags & 1) !== 0 ? "documentTimestamp" : "signature",
             objectNumber: view.getUint32(at, true),
@@ -964,6 +975,7 @@ export const makePdfCore = (
                 }),
             ...(contents === undefined ? {} : { contents }),
             unsignedPlaceholder: (recordFlags & 16) !== 0,
+            ...(subFilter === undefined ? {} : { subFilter }),
           };
         });
         const failure =

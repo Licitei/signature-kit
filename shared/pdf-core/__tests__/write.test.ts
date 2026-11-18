@@ -115,6 +115,7 @@ describe("PdfCore write path", () => {
       expect(report.dictionaries).toHaveLength(1);
       expect(report.dictionaries[0]?.unsignedPlaceholder).toBe(true);
       expect(report.dictionaries[0]?.kind).toBe("signature");
+      expect(report.dictionaries[0]?.subFilter).toBe("adbe.pkcs7.detached");
       expect(yield* core.revisionComplete(signed, pdf.byteLength)).toBe(true);
       expect(yield* core.revisionComplete(signed, signed.byteLength)).toBe(true);
       expect(yield* core.revisionComplete(signed, signed.byteLength - 3)).toBe(false);
