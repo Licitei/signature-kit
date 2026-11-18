@@ -4,7 +4,7 @@ import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import type { SignatureKitError, Signatures } from "@signature-kit/signatures";
 import { signPdf as signPdfDocument } from "./sign.js";
 import { findPdfTextAnchors, removePdfLinkAnchors } from "./anchors.js";
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import {
   autoPlacePdfSignatureField,
   createPdfSignatureBuilderStateFromTemplate,
@@ -115,10 +115,13 @@ const loadPdfSignatureDocumentWithPages = (
         Effect.mapError(
           (error) =>
             new PdfError({
-              code:
-                error.code === PdfCoreErrorCodeValue.encryptedPdf
-                  ? PdfErrorCodeValue.encryptedPdf
-                  : PdfErrorCodeValue.pdfLoadFailed,
+              code: Match.value(error.code).pipe(
+                Match.when(
+                  PdfCoreErrorCodeValue.encryptedPdf,
+                  () => PdfErrorCodeValue.encryptedPdf,
+                ),
+                Match.orElse(() => PdfErrorCodeValue.pdfLoadFailed),
+              ),
               retryable: false,
               reason: error.reason ?? "PDF bytes could not be parsed for page dimensions.",
               operation: PdfOperationValue.loadDocument,

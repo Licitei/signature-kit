@@ -1,7 +1,7 @@
 import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
 import type { PdfCoreMergeSources } from "@signature-kit/pdf-core/config";
 import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import { hasPdfSignatureDictionaryEffect } from "./byte-range.js";
 import {
   PdfError,
@@ -43,10 +43,15 @@ const copyPages = Effect.fn(function* (
     Effect.mapError(
       (error) =>
         new PdfError({
-          code:
-            error.code === PdfCoreErrorCodeValue.encryptedPdf
-              ? PdfErrorCodeValue.encryptedPdf
-              : PdfErrorCodeValue.invalidPdf,
+          code: Match.value(error.code).pipe(
+            Match.when(PdfCoreErrorCodeValue.encryptedPdf, () => PdfErrorCodeValue.encryptedPdf),
+            Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
+            Match.when(
+              PdfCoreErrorCodeValue.invalidOptions,
+              () => PdfErrorCodeValue.invalidBuilderInput,
+            ),
+            Match.orElse(() => PdfErrorCodeValue.invalidPdf),
+          ),
           retryable: false,
           operation,
           reason: error.reason ?? "Failed to copy PDF pages.",

@@ -156,7 +156,7 @@ export const hasPdfByteRange = (pdf: Uint8Array): Effect.Effect<boolean, PdfErro
 
 export const hasPdfSignatureDictionaryEffect = (
   pdf: Uint8Array,
-  operation: PdfOperation = PdfOperationValue.mergeDocuments,
+  operation: PdfOperation,
 ): Effect.Effect<boolean, PdfError, PdfCore> =>
   signatureDictionaries(pdf, "dictionaries", operation).pipe(
     Effect.map((dictionaries) => dictionaries.length > 0),

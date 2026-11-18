@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
 import { Effect, Result } from "effect";
 import { PdfErrorCodeValue, PdfOperationValue, PdfSchemaNameValue } from "../src/config";
 import { extractPdfPages, mergePdfs } from "../src/merge";
@@ -165,6 +166,23 @@ describe("PDF merge and text-anchor input boundaries", () => {
         [300, 150],
         [400, 200],
       ]);
+    }).pipe(Effect.provide(pdfCoreTestLayer)),
+  );
+  it.effect("reports the PDF core page count limit when copying a large source", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const page = { width: 200, height: 100 };
+      const half = yield* core.create({
+        pages: [page, ...Array.from({ length: 5_000 }, () => page)],
+      });
+      const source = yield* core.merge([{ pdf: half }, { pdf: half }]);
+      const error = yield* Effect.flip(mergePdfs([source], { signedSources: "flatten" }));
+
+      expect(error).toMatchObject({
+        code: PdfErrorCodeValue.limitExceeded,
+        operation: PdfOperationValue.mergeDocuments,
+        reason: "page count exceeds limit",
+      });
     }).pipe(Effect.provide(pdfCoreTestLayer)),
   );
   it.effect("extracts non-consecutive pages in selection order and ignores repeats", () =>
