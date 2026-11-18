@@ -7,6 +7,7 @@ import { CmsOid } from "@signature-kit/cms/config";
 import { SignatureKitErrorCodeValue } from "@signature-kit/signatures";
 import { signatureHttpClientLive } from "@signature-kit/http";
 import { extractPdfSignature } from "@signature-kit/pdf/byte-range";
+import { verifyPdf } from "@signature-kit/pdf/verify";
 import { Effect, Layer, Result, Schema } from "effect";
 import { localHttpServer } from "../../../tooling/testing/local-http";
 import { validatePdfConformance } from "../src/conformance";
@@ -166,9 +167,11 @@ describe("ITI local conformance", () => {
   it.effect("rejects the legacy SubFilter even when the AD-RB CMS is valid", () =>
     Effect.gen(function* () {
       const signed = yield* readItiFixture("icp-brasil-ad-rb-signed.pdf");
+      const verification = yield* verifyPdf({ pdf: signed });
       const report = yield* validatePdfConformance({ pdf: signed });
       const signature = report.signatures[0];
 
+      expect(verification.valid).toBe(true);
       expect(report.validator).toBe("iti.conformance");
       expect(report.approved).toBe(false);
       expect(report.outcome).toBe("rejected");
@@ -181,7 +184,7 @@ describe("ITI local conformance", () => {
       expect(signature.structure).toEqual({
         status: "Invalid",
         message:
-          "O dicionário de assinatura deve usar SubFilter ETSI.CAdES.detached para PAdES AD-RB.",
+          "O dicionário de assinatura deve usar SubFilter ETSI.CAdES.detached ou PBAD.PAdES para PAdES AD-RB.",
       });
       expect(signature.cipher.status).toBe("Valid");
       expect(signature.digest.status).toBe("Valid");
@@ -258,8 +261,10 @@ describe("ITI local conformance", () => {
     it.effect(`approves a freshly signed AD-RB PDF (object streams: ${objectStreams})`, () =>
       Effect.gen(function* () {
         const signed = yield* signAdRbPdf(objectStreams);
+        const extracted = yield* extractPdfSignature(signed);
         const report = yield* validatePdfConformance({ pdf: signed });
 
+        expect(extracted.subFilter).toBe("ETSI.CAdES.detached");
         expect(report.approved).toBe(true);
         expect(report.outcome).toBe("approved");
         expect(report.signatureCount).toBe(1);

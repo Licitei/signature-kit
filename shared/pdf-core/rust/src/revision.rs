@@ -94,9 +94,9 @@ pub(crate) struct SignatureDictionary {
     pub generation: u64,
     pub number: u64,
     pub object_start: usize,
+    pub sub_filter: Option<String>,
     pub timestamp: bool,
     pub unsigned_placeholder: bool,
-    pub uses_etsi_cades_detached: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -181,6 +181,14 @@ impl Value {
 
     fn is_name(&self, expected: &[u8]) -> bool {
         matches!(self, Self::Name(name) if name.as_slice() == expected)
+    }
+
+    fn name_string(&self) -> Option<String> {
+        if let Self::Name(name) = self {
+            Some(name.iter().copied().map(char::from).collect())
+        } else {
+            None
+        }
     }
 
     fn safe_integer(&self) -> Option<i64> {
@@ -926,11 +934,9 @@ impl<'ctx> Scanner<'ctx> {
             generation: key.generation,
             number: key.number,
             object_start,
+            sub_filter: dict.get(b"SubFilter").and_then(Value::name_string),
             timestamp,
             unsigned_placeholder,
-            uses_etsi_cades_detached: dict
-                .get(b"SubFilter")
-                .is_some_and(|value| value.is_name(b"ETSI.CAdES.detached")),
         });
     }
 
@@ -1600,6 +1606,26 @@ impl Resolver<'_> {
         Ok(value)
     }
 
+    fn resolve_sub_filter(&mut self, signature: Key) -> Option<String> {
+        let dictionary = self.resolve(&Value::Ref(signature)).ok()??;
+        let Value::Ref(mut key) = *dictionary.get(b"SubFilter")? else {
+            return None;
+        };
+        let mut visited = KeySet::default();
+        for _ in 0..MAX_FIELD_DEPTH {
+            if !visited.insert(key) {
+                return None;
+            }
+            let resolved = self.resolve(&Value::Ref(key)).ok()??;
+            if let Value::Ref(next) = *resolved {
+                key = next;
+            } else {
+                return resolved.name_string();
+            }
+        }
+        None
+    }
+
     const fn spend(&mut self) -> Result<(), Reason> {
         if *self.budget == 0 {
             return Err(Reason::TraversalBudget);
@@ -1859,11 +1885,11 @@ fn decode_name(raw: &[u8]) -> Vec<u8> {
         let high = raw
             .get(index.saturating_add(1))
             .copied()
-            .and_then(upper_hex);
+            .and_then(hex_digit);
         let low = raw
             .get(index.saturating_add(2))
             .copied()
-            .and_then(upper_hex);
+            .and_then(hex_digit);
         if byte == b'#'
             && let (Some(first), Some(second)) = (high, low)
         {
@@ -2451,10 +2477,11 @@ fn to_object(value: &Value) -> Option<Object> {
     })
 }
 
-const fn upper_hex(byte: u8) -> Option<u8> {
+const fn hex_digit(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte.wrapping_sub(b'0')),
         b'A'..=b'F' => Some(byte.wrapping_sub(b'A').wrapping_add(10)),
+        b'a'..=b'f' => Some(byte.wrapping_sub(b'a').wrapping_add(10)),
         _ => None,
     }
 }
@@ -2485,7 +2512,7 @@ fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
     let definitions = scan.definitions.as_slice();
     let mut budget = MAX_REVISION_WORK;
     let mut reachable: Vec<SignatureDictionary> = Vec::new();
-    for (terminal, dictionaries) in by_revision {
+    for (terminal, mut dictionaries) in by_revision {
         let found = reachable_signatures(
             pdf,
             &structure,
@@ -2493,6 +2520,7 @@ fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
             definitions,
             revisions.as_ref(),
             &mut budget,
+            &mut dictionaries,
         )?;
         for dictionary in dictionaries {
             if found.contains(Key {
@@ -2513,6 +2541,7 @@ fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
             definitions,
             revisions.as_ref(),
             &mut budget,
+            &mut [],
         )?;
         if invalid.iter().any(|dictionary| {
             found.contains(Key {
@@ -2533,6 +2562,7 @@ fn reachable_signatures(
     definitions: &[Definition],
     revisions: Option<&RevisionNumbers>,
     budget: &mut usize,
+    dictionaries: &mut [SignatureDictionary],
 ) -> Result<KeySet, Reason> {
     let mut resolver = Resolver {
         budget,
@@ -2576,6 +2606,15 @@ fn reachable_signatures(
     };
     for field in list.as_array().unwrap_or_default() {
         walk.visit(Some(field), false, 0)?;
+    }
+    for dictionary in dictionaries {
+        let key = Key {
+            generation: dictionary.generation,
+            number: dictionary.number,
+        };
+        if dictionary.sub_filter.is_none() && walk.reachable.contains(key) {
+            dictionary.sub_filter = walk.resolver.resolve_sub_filter(key);
+        }
     }
     Ok(walk.reachable)
 }
@@ -2963,13 +3002,19 @@ mod tests {
     }
 
     fn compressed_field_pdf(malformed: bool) -> Vec<u8> {
-        let object_stream = zlib_compress(b"6 0 << /FT /Sig /V 8 0 R >>");
+        let field = "<< /FT /Sig /V 8 0 R >>";
+        let index = format!("6 0 9 {} ", field.len().saturating_add(1));
+        let object_stream =
+            zlib_compress(format!("{index}{field} /Example#2fSubFilter").as_bytes());
         with_byte_range(|byte_range_text| {
             let mut out = b"%PDF-1.7\n".to_vec();
             let mut offsets: Vec<(usize, usize)> = Vec::new();
-            for (number, body) in base_objects(byte_range_text) {
+            for (number, mut body) in base_objects(byte_range_text) {
                 if number == 6 {
                     continue;
+                }
+                if number == 8 {
+                    body = body.replace("/Type /Sig", "/Type /Sig /SubFilter 9 0 R");
                 }
                 offsets.push((usize::try_from(number).unwrap(), out.len()));
                 out.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
@@ -2977,7 +3022,8 @@ mod tests {
             offsets.push((10, out.len()));
             out.extend_from_slice(
                 format!(
-                    "10 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter /FlateDecode /Length {} >>\nstream\n",
+                    "10 0 obj\n<< /Type /ObjStm /N 2 /First {} /Filter /FlateDecode /Length {} >>\nstream\n",
+                    index.len(),
                     object_stream.len()
                 )
                 .as_bytes(),
@@ -2990,7 +3036,8 @@ mod tests {
             for (number, offset) in &offsets {
                 rows[*number] = entry(1, *offset, 0);
             }
-            rows[6] = entry(2, 10, u16::from(malformed));
+            rows[6] = entry(2, 10, if malformed { 2 } else { 0 });
+            rows[9] = entry(2, 10, 1);
             rows[11] = entry(1, xref_offset, 0);
             out.extend_from_slice(
                 b"11 0 obj\n<< /Type /XRef /Size 12 /Root 1 0 R /W [1 4 2] /Index [0 12] /Length 84 >>\nstream\n",
@@ -3164,10 +3211,14 @@ mod tests {
     }
 
     #[test]
-    fn resolves_compressed_signature_fields() {
+    fn resolves_compressed_signature_fields_and_sub_filter() {
         let report = verify(&compressed_field_pdf(false));
         assert_eq!(report.failure, None);
         assert_eq!(regular(&report), 1);
+        assert_eq!(
+            report.dictionaries[0].sub_filter.as_deref(),
+            Some("Example/SubFilter")
+        );
         let malformed = verify(&compressed_field_pdf(true));
         assert_eq!(malformed.failure, Some(Reason::ObjectStream));
     }

@@ -49,8 +49,8 @@ const RENDER_HEADER_LEN: usize = 16;
 const RENDER_PAGE_HEADER_LEN: usize = 56;
 const ALIGNMENT: usize = 8;
 const SIGNATURES_MAGIC: u32 = 0x4753_4450;
-const SIGNATURES_VERSION: u32 = 1;
-const SIGNATURE_RECORD_LEN: usize = 72;
+const SIGNATURES_VERSION: u32 = 2;
+const SIGNATURE_RECORD_LEN: usize = 80;
 const DOCUMENT_MAGIC: u32 = 0x4944_4450;
 const DOCUMENT_VERSION: u32 = 2;
 const DOCUMENT_PAGE_RECORD_LEN: usize = 80;
@@ -719,14 +719,13 @@ fn encode_signatures(report: &Report) -> Outcome<Writer> {
         | (u32::from(report.flags.stream_failed) << 1_i32)
         | (u32::from(report.flags.stream_uncertain) << 2_i32)
         | (u32::from(report.flags.limit) << 3_i32);
-    let mut out = Writer::with_capacity(
-        24_usize.saturating_add(
-            report
-                .dictionaries
-                .len()
-                .saturating_mul(SIGNATURE_RECORD_LEN),
-        ),
+    let mut sub_filter_offset = 24_usize.saturating_add(
+        report
+            .dictionaries
+            .len()
+            .saturating_mul(SIGNATURE_RECORD_LEN),
     );
+    let mut out = Writer::with_capacity(sub_filter_offset);
     out.u32(SIGNATURES_MAGIC);
     out.u32(SIGNATURES_VERSION);
     out.u32(report.failure.map_or(0, u32::from));
@@ -741,8 +740,7 @@ fn encode_signatures(report: &Report) -> Outcome<Writer> {
             | (u32::from(byte_range.is_some()) << 1_i32)
             | (u32::from(contents.is_some()) << 2_i32)
             | (u32::from(dictionary.byte_range_values.is_some()) << 3_i32)
-            | (u32::from(dictionary.unsigned_placeholder) << 4_i32)
-            | (u32::from(dictionary.uses_etsi_cades_detached) << 5_i32);
+            | (u32::from(dictionary.unsigned_placeholder) << 4_i32);
         out.u32(u32::try_from(dictionary.number).unwrap_or(u32::MAX));
         out.u32(u32::try_from(dictionary.generation).unwrap_or(u32::MAX));
         out.u32(saturate(dictionary.object_start));
@@ -753,7 +751,23 @@ fn encode_signatures(report: &Report) -> Outcome<Writer> {
             out.u32(span.map_or(0, |found| saturate(found.value_end)));
         }
         out.boxed(&dictionary.byte_range_values.unwrap_or_default());
+        if let Some(name) = &dictionary.sub_filter {
+            out.u32(len32(sub_filter_offset)?);
+            out.u32(len32(name.len())?);
+            sub_filter_offset = sub_filter_offset.saturating_add(name.len());
+        } else {
+            out.u32(0);
+            out.u32(0);
+        }
     }
+    for name in report
+        .dictionaries
+        .iter()
+        .filter_map(|dictionary| dictionary.sub_filter.as_ref())
+    {
+        out.bytes(name.as_bytes());
+    }
+    out.align();
     out.done()
 }
 

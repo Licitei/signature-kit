@@ -373,6 +373,27 @@ const restoreSignatureFieldValue = (pdf: Uint8Array) =>
 
 for (const objectStreams of [false, true]) {
   describe(`ITI local conformance hardening (object streams: ${objectStreams})`, () => {
+    it.effect("approves an AD-RB PDF signed with PBAD.PAdES", () =>
+      Effect.gen(function* () {
+        const { pdf, signingKey } = yield* createSignedPades(objectStreams);
+        const original = "/ETSI.CAdES.detached";
+        const replacement = "/PBAD.PAdES".padEnd(original.length);
+        const rewritten = Buffer.from(
+          Buffer.from(pdf).toString("latin1").replace(original, replacement),
+          "latin1",
+        );
+        const { signature, signedData, subFilter } = yield* extractPdfSignature(rewritten);
+        expect(subFilter).toBe("PBAD.PAdES");
+        const cms = yield* resignCms(signature, signedData, signingKey, () => undefined);
+        const report = yield* validatePdfConformance({
+          pdf: replaceCmsContents(rewritten, signature, cms),
+        });
+
+        expect(report.approved).toBe(true);
+        expect(report.signatures[0]?.structure.status).toBe("Valid");
+      }).pipe(Effect.provide(pdfCoreTestLayer)),
+    );
+
     it.effect("recognizes the pinned policy encoding in the legacy AD-RB fixture", () =>
       Effect.gen(function* () {
         const pdf = yield* fixturePdf;

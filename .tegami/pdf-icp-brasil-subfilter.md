@@ -1,10 +1,12 @@
 ---
 packages:
-  "@signature-kit/pdf-core": patch
-  "@signature-kit/pdf": patch
-  "@signature-kit/iti": patch
+  "@signature-kit/pdf-core": minor
+  "@signature-kit/pdf": minor
+  "@signature-kit/iti": minor
 ---
 
 ## Declare the ETSI SubFilter for ICP-Brasil PAdES
 
-Signing with `policy: "pades-icp-brasil"` writes `/SubFilter /ETSI.CAdES.detached`. Generic CMS signing still writes `/adbe.pkcs7.detached`. The local AD-RB conformance check reports a missing or different SubFilter as invalid, including in documents signed with the previous SubFilter.
+Signing with `policy: "pades-icp-brasil"` now writes `/SubFilter /ETSI.CAdES.detached`. Local AD-RB validation accepts `ETSI.CAdES.detached` and `PBAD.PAdES` and rejects older signatures with `adbe.pkcs7.detached`. Generic CMS signing still writes `adbe.pkcs7.detached`.
+
+Signature dictionary reports and extracted PDF signatures now expose the optional `subFilter` name in place of `usesEtsiCadesDetached`.

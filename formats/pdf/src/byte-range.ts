@@ -42,7 +42,7 @@ export const ExtractedPdfSignatureSchema = Schema.Struct({
   signatureCount: Schema.Finite,
   startsAtZero: Schema.Boolean,
   coversFileEnd: Schema.Boolean,
-  usesEtsiCadesDetached: Schema.Boolean,
+  subFilter: Schema.optional(Schema.String),
 });
 export type ExtractedPdfSignature = (typeof ExtractedPdfSignatureSchema)["Type"];
 
@@ -467,7 +467,7 @@ const extractPdfSignatureFromDictionary = (
       signatureCount,
       startsAtZero: byteRange[0] === 0,
       coversFileEnd: rangeEnd === pdf.byteLength,
-      usesEtsiCadesDetached: dictionary.usesEtsiCadesDetached,
+      ...(dictionary.subFilter === undefined ? {} : { subFilter: dictionary.subFilter }),
     };
   });
 

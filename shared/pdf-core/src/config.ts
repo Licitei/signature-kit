@@ -393,7 +393,7 @@ export const PdfCoreSignatureDictionarySchema = Schema.Struct({
   ),
   contents: Schema.optional(PdfCoreFieldSpanSchema),
   unsignedPlaceholder: Schema.Boolean,
-  usesEtsiCadesDetached: Schema.Boolean,
+  subFilter: Schema.optional(Schema.String),
 });
 export type PdfCoreSignatureDictionary = (typeof PdfCoreSignatureDictionarySchema)["Type"];
 
