@@ -1,6 +1,6 @@
 {
   "name": "@signature-kit/pdf",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -78,7 +78,7 @@
     "@effect/platform-browser": "4.1.0",
     "@signature-kit/cms": "^0.2.1",
     "@signature-kit/i18n": "^0.1.0",
-    "@signature-kit/pdf-core": "^0.1.0",
+    "@signature-kit/pdf-core": "^0.2.0",
     "@signature-kit/signatures": "^0.3.0",
     "effect": "4.1.0",
     "qrcode-generator": "^2.0.4"

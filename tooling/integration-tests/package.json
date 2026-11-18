@@ -1,6 +1,6 @@
 {
   "name": "@tooling/integration-tests",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -10,8 +10,8 @@
   "dependencies": {
     "@effect/vitest": "4.1.0",
     "@signature-kit/a1": "^0.4.0",
-    "@signature-kit/pdf": "^0.5.0",
-    "@signature-kit/pdf-core": "^0.1.0",
+    "@signature-kit/pdf": "^0.6.0",
+    "@signature-kit/pdf-core": "^0.2.0",
     "@signature-kit/signatures": "^0.3.0",
     "@signature-kit/xml": "^0.2.1",
     "effect": "4.1.0",
