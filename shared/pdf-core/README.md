@@ -167,7 +167,7 @@ Approximations and gaps: JPX and JBIG2 images are drawn as a neutral grey placeh
 
 ## Encrypted PDFs
 
-`inspect`, `text`, `tables`, `document`, `renderPages`, and `merge` accept Standard Security PDFs whose user password is empty. The supported algorithms are RC4 (40-bit or up to 128-bit, revisions 2–4), AESV2 (revision 4), and AESV3 (revision 6). PDFs that require a nonempty opening password fail with `pdfCore.ENCRYPTED_PDF`.
+`inspect`, `text`, `tables`, `document`, `renderPages`, and `merge` accept Standard Security PDFs whose user password is empty. The supported algorithms are RC4 (40-bit or up to 128-bit, revisions 2–4), AESV2 (revision 4), and AESV3 (revisions 5–6). PDFs that require a nonempty opening password fail with `pdfCore.ENCRYPTED_PDF`.
 
 `merge` writes an unencrypted PDF. When `edit` receives an encrypted PDF it uses a full rewrite in `auto` or `rewrite` mode, producing an unencrypted PDF. This lets a first signature cover the rewritten bytes. Rewriting changes the original bytes and invalidates any existing signatures. An explicit `incremental` edit fails with `pdfCore.ENCRYPTED_PDF`.
 

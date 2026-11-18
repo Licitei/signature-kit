@@ -40,14 +40,22 @@ impl Encryption {
         }
         let version = dict.get(b"V")?.as_integer()?;
         let revision = dict.get(b"R")?.as_integer()?;
-        let permissions = i32::try_from(dict.get(b"P")?.as_integer()?).ok()?;
+        let flags = dict.get(b"P")?.as_integer()?;
+        let permissions = i32::try_from(flags)
+            .or_else(|_| u32::try_from(flags).map(u32::cast_signed))
+            .ok()?;
         let encrypt_metadata = !matches!(dict.get(b"EncryptMetadata"), Some(Object::Bool(false)));
         let key = match (version, revision) {
-            (1, 2) | (2, 3) | (4, 4) => {
+            (1 | 2, 2 | 3) | (4, 4) => {
                 let id = trailer.get(b"ID")?.as_array()?.first()?.as_string()?;
-                legacy_key(dict, id, revision, permissions, encrypt_metadata)?
+                let len = if version == 1 || revision == 2 {
+                    5
+                } else {
+                    legacy_key_length(dict, version)?
+                };
+                legacy_key(dict, id, revision, len, permissions, encrypt_metadata)?
             }
-            (5, 6) => revision_six_key(dict, permissions, encrypt_metadata)?.to_vec(),
+            (5, 5 | 6) => aes256_key(dict, revision, permissions, encrypt_metadata)?.to_vec(),
             _ => return None,
         };
         let stream = default_cipher(dict, b"StmF", version)?;
@@ -68,17 +76,13 @@ impl Encryption {
         })
     }
 
-    fn decrypt_bytes(&self, data: &mut Vec<u8>, cipher: Cipher, reference: ObjRef) -> Outcome<()> {
+    fn decrypt_bytes(&self, data: &mut Vec<u8>, cipher: Cipher, reference: ObjRef) {
         match cipher {
-            Cipher::Identity => return Ok(()),
-            Cipher::Rc4 => {
-                rc4(data, &self.object_key(reference, false));
-                return Ok(());
-            }
+            Cipher::Identity => (),
+            Cipher::Rc4 => rc4(data, &self.object_key(reference, false)),
             Cipher::Aes128 => decrypt_aes(data, &self.object_key(reference, true)),
             Cipher::Aes256 => decrypt_aes(data, &self.key),
         }
-        .ok_or_else(|| Failure::new(FailureCode::EncryptedPdf, "invalid encrypted PDF object"))
     }
 
     pub(crate) fn decrypt_object(
@@ -95,9 +99,9 @@ impl Encryption {
                 return Ok(());
             }
             self.decrypt_stream(stream, reference, bytes)?;
-            self.decrypt_strings(&mut stream.dict, reference)?;
+            self.decrypt_strings(&mut stream.dict, reference);
         } else {
-            self.decrypt_value(object, reference)?;
+            self.decrypt_value(object, reference);
         }
         Ok(())
     }
@@ -121,30 +125,28 @@ impl Encryption {
             .get(stream.data.clone())
             .ok_or_else(|| Failure::invalid("stream data out of range"))?
             .to_vec();
-        self.decrypt_bytes(&mut data, cipher, reference)?;
+        self.decrypt_bytes(&mut data, cipher, reference);
         stream.decrypted = Some(Rc::from(data));
         Ok(())
     }
 
-    fn decrypt_strings(&self, dict: &mut Dict, reference: ObjRef) -> Outcome<()> {
+    fn decrypt_strings(&self, dict: &mut Dict, reference: ObjRef) {
         let signature = name_is(dict, b"Type", b"Sig")
             || name_is(dict, b"Type", b"DocTimeStamp")
             || dict.get(b"ByteRange").is_some();
         for (key, value) in &mut dict.entries {
             if !signature || key != b"Contents" {
-                self.decrypt_value(value, reference)?;
+                self.decrypt_value(value, reference);
             }
         }
-        Ok(())
     }
 
-    fn decrypt_value(&self, object: &mut Object, reference: ObjRef) -> Outcome<()> {
+    fn decrypt_value(&self, object: &mut Object, reference: ObjRef) {
         match object {
             Object::Array(items) => {
                 for item in items {
-                    self.decrypt_value(item, reference)?;
+                    self.decrypt_value(item, reference);
                 }
-                Ok(())
             }
             Object::Dict(dict) => self.decrypt_strings(dict, reference),
             Object::String(data) => self.decrypt_bytes(data, self.string, reference),
@@ -154,7 +156,7 @@ impl Encryption {
             | Object::Null
             | Object::Real(_)
             | Object::Ref(_)
-            | Object::Stream(_) => Ok(()),
+            | Object::Stream(_) => (),
         }
     }
 
@@ -191,23 +193,23 @@ fn crypt_filter(filters: Option<&Dict>, name: &[u8], version: i64) -> Option<Cip
     }
 }
 
-fn decrypt_aes(data: &mut Vec<u8>, key: &[u8]) -> Option<()> {
-    let (iv, ciphertext) = data.split_first_chunk_mut::<16>()?;
-    aes_cbc(ciphertext, key, *iv, true)?;
-    let pad = usize::from(*ciphertext.last()?);
-    let end = ciphertext.len().checked_sub(pad)?;
-    if pad == 0
-        || pad > 16
-        || !ciphertext
-            .get(end..)?
-            .iter()
-            .all(|&byte| usize::from(byte) == pad)
-    {
-        return None;
+fn decrypt_aes(data: &mut Vec<u8>, key: &[u8]) {
+    let Some((iv, ciphertext)) = data.split_first_chunk_mut::<16>() else {
+        return;
+    };
+    if aes_cbc(ciphertext, key, *iv, true).is_none() {
+        return;
     }
-    data.copy_within(16..end.saturating_add(16), 0);
-    data.truncate(end);
-    Some(())
+    let len = ciphertext.len();
+    let pad = usize::from(ciphertext.last().copied().unwrap_or_default());
+    let end = len.saturating_sub(pad);
+    let valid_pad = (1..=16).contains(&pad)
+        && ciphertext.get(end..).is_some_and(|tail| {
+            tail.len() == pad && tail.iter().all(|&byte| usize::from(byte) == pad)
+        });
+    let decrypted_len = if valid_pad { end } else { len };
+    data.copy_within(16..decrypted_len.saturating_add(16), 0);
+    data.truncate(decrypted_len);
 }
 
 fn default_cipher(dict: &Dict, key: &[u8], version: i64) -> Option<Cipher> {
@@ -221,24 +223,50 @@ fn default_cipher(dict: &Dict, key: &[u8], version: i64) -> Option<Cipher> {
     crypt_filter(dict.get(b"CF").and_then(Object::as_dict), name, version)
 }
 
+fn legacy_key_length(dict: &Dict, version: i64) -> Option<usize> {
+    let bits = match dict.get(b"Length") {
+        Some(length) => length.as_integer()?,
+        None if version == 4 => {
+            let length = dict
+                .get(b"StmF")
+                .and_then(Object::as_name)
+                .and_then(|name| {
+                    dict.get(b"CF")?
+                        .as_dict()?
+                        .get(name)?
+                        .as_dict()?
+                        .get(b"Length")
+                });
+            match length {
+                Some(value) => {
+                    let length_value = value.as_integer()?;
+                    if length_value <= 16 {
+                        length_value.checked_mul(8)?
+                    } else {
+                        length_value
+                    }
+                }
+                None => 128,
+            }
+        }
+        None => 40,
+    };
+    if !(40..=128).contains(&bits) || bits & 7 != 0 {
+        return None;
+    }
+    usize::try_from(bits >> 3_i32).ok()
+}
+
 fn legacy_key(
     dict: &Dict,
     id: &[u8],
     revision: i64,
+    len: usize,
     permissions: i32,
     encrypt_metadata: bool,
 ) -> Option<Vec<u8>> {
     let owner: &[u8; 32] = dict.get(b"O")?.as_string()?.try_into().ok()?;
     let user: &[u8; 32] = dict.get(b"U")?.as_string()?.try_into().ok()?;
-    let len = if revision == 2 {
-        5
-    } else {
-        let bits = dict.get(b"Length").map_or(Some(40), Object::as_integer)?;
-        if !(40..=128).contains(&bits) || bits & 7 != 0 {
-            return None;
-        }
-        usize::try_from(bits >> 3_i32).ok()?
-    };
     let mut input = PASSWORD_PADDING.to_vec();
     input.extend(owner);
     input.extend(permissions.to_le_bytes());
@@ -337,16 +365,28 @@ fn revision_six_hash(salt: [u8; 8]) -> Option<[u8; 32]> {
     None
 }
 
-fn revision_six_key(dict: &Dict, permissions: i32, encrypt_metadata: bool) -> Option<[u8; 32]> {
+fn aes256_key(
+    dict: &Dict,
+    revision: i64,
+    permissions: i32,
+    encrypt_metadata: bool,
+) -> Option<[u8; 32]> {
     let user = dict.get(b"U")?.as_string()?;
     let (expected, salts) = user.split_first_chunk::<32>()?;
     let (validation_salt, rest) = salts.split_first_chunk::<8>()?;
-    let key_salt = rest.try_into().ok()?;
-    if &revision_six_hash(*validation_salt)? != expected {
+    let key_salt = rest.first_chunk::<8>()?;
+    let hash = |salt: [u8; 8]| {
+        if revision == 5 {
+            Some(sha256(&salt))
+        } else {
+            revision_six_hash(salt)
+        }
+    };
+    if &hash(*validation_salt)? != expected {
         return None;
     }
     let mut key: [u8; 32] = dict.get(b"UE")?.as_string()?.try_into().ok()?;
-    aes_cbc(&mut key, &revision_six_hash(key_salt)?, [0; 16], true)?;
+    aes_cbc(&mut key, &hash(*key_salt)?, [0; 16], true)?;
     let mut perms: [u8; 16] = dict.get(b"Perms")?.as_string()?.try_into().ok()?;
     aes_cbc(&mut perms, &key, [0; 16], true)?;
     let metadata_flag = if encrypt_metadata { b'T' } else { b'F' };

@@ -1,4 +1,7 @@
 import { Buffer } from "node:buffer";
+import { createCipheriv } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
@@ -10,8 +13,47 @@ import { PdfCore } from "../dist/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const id = "<31415926535897932384626433832795>";
+const encryptedTrailer = ` /Encrypt 7 0 R /ID [${id}${id}]`;
 const contents =
   "1 w 20 120 200 40 re S 120 120 m 120 160 l S 20 140 m 220 140 l S BT /F1 12 Tf 30 147 Td (Item) Tj 100 0 Td (Price) Tj -100 -20 Td (Book) Tj 100 0 Td (10) Tj ET";
+
+const stream = (data: Buffer, entries: string): string =>
+  `<< /Length ${data.length}${entries} >>\nstream\n${data.toString("latin1")}\nendstream`;
+
+const link = (uri: string): string =>
+  `<< /Type /Annot /Subtype /Link /Rect [0 0 40 40] /A << /S /URI /URI ${uri} >> >>`;
+
+const pageObjects = (content: Buffer, uri: string, streamFilters: string): Array<string> => [
+  "<< /Type /Catalog /Pages 2 0 R >>",
+  "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+  "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [4 0 R] >>",
+  link(uri),
+  stream(content, streamFilters),
+  "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+];
+
+const indirect = (number: number, body: string): string => `${number} 0 obj\n${body}\nendobj\n`;
+
+const xrefTablePdf = (
+  objects: ReadonlyArray<string>,
+  trailer = "",
+  omittedObject?: number,
+): Buffer => {
+  let result = "%PDF-1.7\n";
+  const offsets = objects.map((body, index) => {
+    const offset = result.length;
+    result += indirect(index + 1, body);
+    return index + 1 === omittedObject
+      ? "0000000000 00000 f \n"
+      : `${String(offset).padStart(10, "0")} 00000 n \n`;
+  });
+  const xref = result.length;
+  const size = objects.length + 1;
+  result += `xref\n0 ${size}\n0000000000 65535 f \n`;
+  result += offsets.join("");
+  result += `trailer\n<< /Size ${size} /Root 1 0 R${trailer} >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(result, "latin1");
+};
 
 const pdf = (
   content: Buffer,
@@ -19,28 +61,56 @@ const pdf = (
   encryption?: string,
   streamFilters = encryption === undefined ? "" : " /Filter /FlateDecode",
 ): Uint8Array => {
+  const objects = pageObjects(content, uri, streamFilters);
+  return encryption === undefined
+    ? xrefTablePdf(objects)
+    : xrefTablePdf([...objects, encryption], encryptedTrailer);
+};
+
+const r5Dictionary =
+  "<< /Filter /Standard /V 5 /R 5 /Length 256 /P -4 /CF << /StdCF << /CFM /AESV3 /Length 32 >> >> /StmF /StdCF /StrF /StdCF /O <e4d6d5b2a2947349dbbc4249299f3041858d7d89ba6346419647c0a029dcba5d03030303030303030404040404040404> /OE <932a9f5784cb9df715be698c54c55a24e074e8f744c91f93311811d23ce2d560> /U <04abc8821a06e5a30937967d11ad10221cb5ac3b5273e434f1284ee87129a06101010101010101010202020202020202> /UE <cc5f7293e47e8dc660b3a972b87100e86a48123ee4da35816d7f8dd8b68983b3> /Perms <c9182b8a74a17d69a434f7ea9ff44b68> >>";
+
+const aes256 = (data: Buffer, padding = true): Buffer => {
+  const iv = Buffer.alloc(16, 0x19);
+  const cipher = createCipheriv("aes-256-cbc", Buffer.alloc(32, 0x3a), iv);
+  cipher.setAutoPadding(padding);
+  return Buffer.concat([iv, cipher.update(data), cipher.final()]);
+};
+
+const xrefRow = (type: number, offset: number, index: number): Buffer => {
+  const row = Buffer.alloc(7);
+  row.writeUInt8(type);
+  row.writeUInt32BE(offset, 1);
+  row.writeUInt16BE(index, 5);
+  return row;
+};
+
+const encryptedObjectStreamPdf = (): Buffer => {
+  const uri = "(https://example.test)";
+  const filters = " /Filter /FlateDecode";
+  const members = aes256(deflateSync(`4 0 ${link(uri)}`));
   const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [4 0 R] >>",
-    `<< /Type /Annot /Subtype /Link /Rect [0 0 40 40] /A << /S /URI /URI ${uri} >> >>`,
-    `<< /Length ${content.length}${streamFilters} >>\nstream\n${content.toString("latin1")}\nendstream`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ...pageObjects(aes256(deflateSync(contents)), uri, filters),
+    r5Dictionary,
+    stream(members, ` /Type /ObjStm /N 1 /First 4${filters}`),
   ];
-  if (encryption !== undefined) objects.push(encryption);
-  let result = "%PDF-1.7\n";
-  const offsets = objects.map((body, index) => {
-    const offset = result.length;
-    result += `${index + 1} 0 obj\n${body}\nendobj\n`;
-    return offset;
+  let body = "%PDF-1.7\n";
+  const rows = objects.map((object, index) => {
+    const number = index + 1;
+    if (number === 4) return xrefRow(2, 8, 0);
+    const row = xrefRow(1, body.length, 0);
+    body += indirect(number, object);
+    return row;
   });
-  const xref = result.length;
-  const size = objects.length + 1;
-  const encrypt = encryption === undefined ? "" : ` /Encrypt 7 0 R /ID [${id}${id}]`;
-  result += `xref\n0 ${size}\n0000000000 65535 f \n`;
-  result += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
-  result += `trailer\n<< /Size ${size} /Root 1 0 R${encrypt} >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(result, "latin1");
+  const startxref = body.length;
+  const xref = deflateSync(
+    Buffer.concat([xrefRow(0, 0, 65535), ...rows, xrefRow(1, startxref, 0)]),
+  );
+  body += indirect(
+    9,
+    stream(xref, ` /Type /XRef /Size 10 /Root 1 0 R /W [1 4 2]${encryptedTrailer}${filters}`),
+  );
+  return Buffer.from(`${body}startxref\n${startxref}\n%%EOF\n`, "latin1");
 };
 
 const vectors = {
@@ -117,6 +187,190 @@ describe("PdfCore encrypted PDFs", () => {
       }).pipe(Effect.provide(layer)),
     );
   }
+
+  it.effect("reads both legacy version and revision combinations", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const v2r2 = vectors.r2;
+      const input = fixture({ ...v2r2, dictionary: v2r2.dictionary.replace("/V 1", "/V 2") });
+      expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
+      const v1r3 = pdf(
+        Buffer.from(
+          "70acb5db8efca1750e1733017bd83ec5efbeb71f4a779b94b84782327a9f8a0b46af9e",
+          "hex",
+        ),
+        "<dd1fdb0e451e3a10d58da4e127696658157854ba>",
+        "<< /Filter /Standard /V 1 /R 3 /P -4 /O <61840a4e66456bd408feb9a45fc05fce6d8f57574f1350bf0362c1836240898c> /U <7d96333c226e3ca7101c067ccaa2cc4000000000000000000000000000000000> >>",
+        "",
+      );
+      const expected = pdf(
+        Buffer.from("BT /F1 12 Tf 30 147 Td (Item) Tj ET"),
+        "(https://example.test)",
+      );
+      expect(yield* core.inspect(v1r3, options)).toEqual(yield* core.inspect(expected, options));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("accepts unsigned permissions and rejects values outside 32 bits", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const vector = vectors.r2;
+      const withPermissions = (flags: number) =>
+        fixture({ ...vector, dictionary: vector.dictionary.replace("/P -4", `/P ${flags}`) });
+      expect(yield* core.inspect(withPermissions(4294967292), options)).toEqual(
+        yield* core.inspect(plain, options),
+      );
+      for (const flags of [-2147483649, 4294967296]) {
+        const failure = yield* Effect.flip(core.inspect(withPermissions(flags), options));
+        expect(failure.code).toBe(PdfCoreErrorCodeValue.encryptedPdf);
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("derives the V4 key length from bytes, bits, or the default", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const vector = vectors.r4aes;
+      const expected = yield* core.inspect(plain, options);
+      for (const filterLength of [" /Length 16", " /Length 128", ""]) {
+        const dictionary = vector.dictionary
+          .replace(" /Length 128", "")
+          .replace(" /Length 16", filterLength);
+        expect(yield* core.inspect(fixture({ ...vector, dictionary }), options)).toEqual(expected);
+      }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads R6 password entries padded out to 127 bytes", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const vector = vectors.r6;
+      const dictionary = vector.dictionary.replaceAll(
+        /(\/[OU] <[\da-f]{96})>/g,
+        (_, entry: string) => `${entry}${"00".repeat(79)}>`,
+      );
+      expect(yield* core.inspect(fixture({ ...vector, dictionary }), options)).toEqual(
+        yield* core.inspect(plain, options),
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads a clear xref stream and decrypts its R5 object stream once", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const input = encryptedObjectStreamPdf();
+      const expected = yield* core.inspect(plain, options);
+      expect(yield* core.inspect(input, options)).toEqual(expected);
+      const merged = yield* core.merge([{ pdf: input }]);
+      expect(yield* core.inspect(merged, options)).toEqual(expected);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("rebuilds an xref table missing its encryption entry", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const vector = vectors.r4aes;
+      const objects = pageObjects(
+        Buffer.from(vector.content, "hex"),
+        vector.uri,
+        " /Filter /FlateDecode",
+      );
+      const expected = yield* core.inspect(plain, options);
+      const input = xrefTablePdf([...objects, vector.dictionary], encryptedTrailer, 7);
+      expect(yield* core.inspect(input, options)).toEqual(expected);
+      const failure = yield* Effect.flip(
+        core.inspect(xrefTablePdf(objects, encryptedTrailer), options),
+      );
+      expect(failure.code).toBe(PdfCoreErrorCodeValue.encryptedPdf);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("preserves clear metadata when EncryptMetadata is false", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const vector = vectors.r4rc4;
+      const objects = pageObjects(
+        Buffer.from(vector.content, "hex"),
+        vector.uri,
+        " /Filter /FlateDecode",
+      );
+      objects[0] = "<< /Type /Catalog /Pages 2 0 R /Metadata 8 0 R >>";
+      const metadata = "<metadata>Clear text</metadata>";
+      const input = xrefTablePdf(
+        [
+          ...objects,
+          vector.dictionary,
+          stream(Buffer.from(metadata), " /Type /Metadata /Subtype /XML"),
+        ],
+        encryptedTrailer,
+      );
+      expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
+      const rewritten = yield* core.edit(input, [], { mode: "rewrite" });
+      expect(Buffer.from(rewritten).includes(metadata)).toBe(true);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps the bytes of an explicit Identity stream and removes the Crypt filter", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const vector = vectors.r4rc4;
+      const input = pdf(
+        deflateSync(contents),
+        vector.uri,
+        vector.dictionary,
+        " /Filter [/Crypt /FlateDecode] /DecodeParms [<< /Name /Identity >> null]",
+      );
+      const expected = yield* core.inspect(plain, options);
+      expect(yield* core.inspect(input, options)).toEqual(expected);
+      const merged = yield* core.merge([{ pdf: input }]);
+      expect(Buffer.from(merged).includes("/Crypt")).toBe(false);
+      expect(yield* core.inspect(merged, options)).toEqual(expected);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps empty and malformed AES strings and preserves bytes with invalid padding", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const badPadding = Buffer.from("Invalid padding!");
+      const objects = pageObjects(
+        aes256(deflateSync(contents)),
+        `<${aes256(Buffer.from("https://example.test")).toString("hex")}>`,
+        " /Filter /FlateDecode",
+      );
+      objects[0] = "<< /Type /Catalog /Pages 2 0 R /Lang () /Malformed (short) /Metadata 8 0 R >>";
+      const input = xrefTablePdf(
+        [
+          ...objects,
+          r5Dictionary,
+          stream(aes256(badPadding, false), " /Type /Metadata /Subtype /XML"),
+        ],
+        encryptedTrailer,
+      );
+      expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
+      const rewritten = Buffer.from(yield* core.edit(input, [], { mode: "rewrite" }));
+      expect(rewritten.includes("/Lang ()")).toBe(true);
+      expect(rewritten.includes("/Malformed (short)")).toBe(true);
+      expect(rewritten.includes(badPadding)).toBe(true);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("leaves signature Contents untouched when rewriting an encrypted PDF", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const input = readFileSync(new URL("./fixtures/encryption/signed.pdf", import.meta.url));
+      const report = yield* core.signatures(input, "dictionaries");
+      expect(report.failure).toBeUndefined();
+      const signature = report.dictionaries[0];
+      const span = signature?.contents;
+      if (span === undefined) return yield* Effect.die("Missing signature contents in fixture");
+      expect(signature?.unsignedPlaceholder).toBe(false);
+      const contentsToken = input.toString("ascii", span.valueStart, span.valueEnd);
+      expect(contentsToken.startsWith("<30")).toBe(true);
+      const rewritten = Buffer.from(yield* core.edit(input, [], { mode: "rewrite" }));
+      expect(rewritten.includes(`/Contents ${contentsToken}`)).toBe(true);
+      expect(rewritten.includes("/Encrypt")).toBe(false);
+    }).pipe(Effect.provide(layer)),
+  );
 
   it.effect("removes an explicit crypt filter when merging its decrypted stream", () =>
     Effect.gen(function* () {

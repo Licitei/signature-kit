@@ -1017,9 +1017,14 @@ impl<'data> Document<'data> {
         let encryption = match setting {
             Object::Null => return Ok(()),
             Object::Dict(dict) => Encryption::authenticate(dict, &trailer, None),
-            Object::Ref(reference) => self
-                .encryption_dictionary(*reference)
-                .and_then(|dict| Encryption::authenticate(&dict, &trailer, Some(*reference))),
+            Object::Ref(reference) => match self.encryption_dictionary(*reference) {
+                Some(dict) => Encryption::authenticate(&dict, &trailer, Some(*reference)),
+                None if !self.repaired.get() => {
+                    drop(trailer);
+                    return self.rebuild();
+                }
+                None => None,
+            },
             Object::Array(_)
             | Object::Bool(_)
             | Object::Integer(_)
