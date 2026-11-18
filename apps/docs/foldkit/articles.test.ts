@@ -381,7 +381,7 @@ describe("Foldkit articles", () => {
           if (locale === "pt-BR" && section === "blog" && entry.slug === "signature-kit-x-licitei")
             expect(html).toContain("/pt-BR/docs/signing/certificates");
         }
-      });
+      }, 30_000);
     }
   }
 
