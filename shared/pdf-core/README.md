@@ -19,6 +19,15 @@ bun add @signature-kit/pdf-core effect
 
 `WebAssembly`, `fetch`, `TextEncoder`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
 
+## Bundling
+
+`pdfCoreFileLayer` reads `new URL("./pdf-core.wasm", import.meta.url)` through the file system. The npm package ships `dist/pdf-core.wasm` next to `dist/file.js`. When deploying a server bundle, keep the package external and ship its files together so the relative URL still points to the Wasm file.
+
+- **Nitro 3 / Vercel.** With the `vercel` preset, include `traceDeps: ["@signature-kit/pdf-core"]` in the Nitro config (or the `nitro({ ... })` Vite plugin options). Check that the traced package in the function output includes `dist/pdf-core.wasm`. [Nitro dependency tracing](https://nitro.build/config/build#tracedeps)
+- **Next.js.** Use the Node.js runtime and add `"@signature-kit/pdf-core"` to `serverExternalPackages`. For a traced deployment, check the route's trace and, if necessary, add `"./node_modules/@signature-kit/pdf-core/dist/pdf-core.wasm"` to `outputFileTracingIncludes` for the routes that use the layer. [External packages](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverExternalPackages) · [Output file tracing](https://nextjs.org/docs/app/api-reference/config/next-config-js/output)
+- **esbuild.** Use `--platform=node --format=esm --external:@signature-kit/pdf-core` and deploy the installed package with the bundle. The external flag also covers the `/file` subpath. [esbuild external](https://esbuild.github.io/api/#external)
+- **Vite.** For client and worker builds, use `pdfCoreBrowserLayer`. Vite 8's static asset handling rewrites its `new URL("./pdf-core.wasm", import.meta.url)` to the emitted Wasm asset in production, including when imported by the A1 worker. For a Vite SSR server using the file layer, keep the package external and ship the installed files. [Vite asset handling](https://vite.dev/guide/assets.html#new-url-url-import-meta-url)
+
 ## Example
 
 ```ts
