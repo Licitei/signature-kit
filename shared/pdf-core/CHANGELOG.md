@@ -26,7 +26,7 @@ The 40 ms model delays each read and permits up to four concurrent range reads. 
 
 Disabling read-ahead raised lazy rounds from 3/5 to 5/8 at p50/p90 on both corpora. Reducing the probe to 32 KiB raised p90 from five to six on both. In one-change-at-a-time runs on the 30 primary files and 30 evenly spaced extra files, serializing the two probes added one round to every file. Serializing known cross-reference reads added one round to one file, and serializing dependency ranges added up to two rounds to eight files. Disabling the linearized shortcut, delaying indirect-length lookup, and probing an object stream header first resulted in the same round counts on that sample.
 
-In fresh processes, p50/p90 was 46.37/84.51 ms lazy and 46.26/104.03 ms full on `pdfs`, and 44.57/66.93 ms lazy and 36.13/70.06 ms full on `editais-extra`. Shared parsing and size-optimized Rust code generation brought the release Wasm from 1,163,114 to 841,262 bytes under the existing 1,130,496-byte test limit.
+In fresh processes, p50/p90 was 46.37/84.51 ms lazy and 46.26/104.03 ms full on `pdfs`, and 44.57/66.93 ms lazy and 36.13/70.06 ms full on `editais-extra`. The release Wasm keeps `opt-level = 3`: the lazy planner adds about 39 KB (1,125,410 → 1,164,368 bytes), so the Wasm budget test moves from 1104 KiB to 1144 KiB. Building with `opt-level = "s"` would shrink the module to 841,262 bytes but makes full-load Markdown extraction 9.6% slower (2.47 → 2.71 ms/page on the 30 editais), so it was not adopted.
 
 ## @signature-kit/pdf-core@0.2.0
 
