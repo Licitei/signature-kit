@@ -1,6 +1,14 @@
-import "./signing.css";
 import * as Domain from "@alchemy.run/domain";
-import { Button, Checkbox, Fieldset, Input, Progress, Select } from "@foldkit/ui";
+import {
+  Button,
+  Disclosure,
+  Fieldset,
+  FileDrop,
+  Input,
+  Progress,
+  RadioGroup,
+  Switch,
+} from "@foldkit/ui";
 import type { A1CertificateProfile } from "@signature-kit/a1/config";
 import { isSafePdfStampPng } from "@signature-kit/pdf/stamp";
 import { errorMessage } from "@signature-kit/i18n";
@@ -37,13 +45,18 @@ import {
 } from "@signature-kit/pdf/config";
 import { cmsErrorMessages } from "@signature-kit/cms/config";
 import { SigningModel } from "@signature-kit/signing-domain";
-import { Effect, Fiber, Layer, Result, Schema } from "effect";
-import type { Attribute } from "foldkit/html";
+import * as stylex from "@stylexjs/stylex";
+import { Effect, Fiber, Layer, Option, Result, Schema } from "effect";
+import { Update } from "foldkit";
+import type { Attribute, Html } from "foldkit/html";
 import { defineView } from "foldkit/submodel";
 import { defineMessageUnion } from "foldkit/message";
 import * as Mount from "foldkit/mount";
 import { captureDocsEvent } from "../lib/posthog/client";
 import { makeSigningBatch, makeSigningWorkerSession } from "./signing-runtime";
+import { shell } from "./styles/shell";
+import { signing } from "./styles/signing";
+import { sx } from "./styles/sx";
 
 export const SigningMounted = Schema.TaggedStruct("SigningMounted", {});
 const pageRendererLayer = () =>
@@ -89,7 +102,30 @@ const SigningMount = Mount.define("SigningMount", {
           const removeLogo = element.querySelector<HTMLButtonElement>("[data-remove-logo]");
           const loadIdentity = element.querySelector<HTMLButtonElement>("[data-load-identity]");
           const identityStatus = element.querySelector<HTMLElement>("[data-identity]");
-          const rubricSource = element.querySelector<HTMLSelectElement>("[name=rubricSource]");
+          const rubricSource = element.querySelector<HTMLInputElement>("[name=rubricSource]");
+          const bridgeDrop = (input: HTMLInputElement | null) => {
+            const zone = input?.closest("label");
+            if (input == null || zone == null) return () => undefined;
+            const onDrop = (event: DragEvent) => {
+              const dropped = event.dataTransfer?.files;
+              if (dropped === undefined || dropped.length === 0) return;
+              const current = input.files;
+              const same =
+                current !== null &&
+                current.length === dropped.length &&
+                Array.from(dropped).every((file, index) => file === current.item(index));
+              if (same) return;
+              const transfer = new DataTransfer();
+              for (const file of Array.from(dropped)) transfer.items.add(file);
+              input.files = transfer.files;
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            };
+            zone.addEventListener("drop", onDrop);
+            return () => zone.removeEventListener("drop", onDrop);
+          };
+          const unbridgePfx = bridgeDrop(pfx);
+          const unbridgePdf = bridgeDrop(pdf);
+          const unbridgeLogo = bridgeDrop(logo);
           const rubricText = element.querySelector<HTMLInputElement>("[name=rubricText]");
           const pt = element.getAttribute("data-locale") === "pt-BR";
           const locale = pt ? "pt-BR" : "en-US";
@@ -163,10 +199,13 @@ const SigningMount = Mount.define("SigningMount", {
               selectedPage = entries[selectedDocument]?.rect?.pageIndex ?? 0;
               drawPreview();
             });
+            const bar = document.createElement("div");
+            bar.className = stylex.props(signing.previewBar).className ?? "";
             const label = document.createElement("p");
+            label.className = stylex.props(signing.previewLabel).className ?? "";
             label.textContent = `${pt ? "Página" : "Page"} ${selectedPage + 1} / ${entry.document.pages.length}`;
             const canvas = document.createElement("div");
-            canvas.className = "signing-page";
+            canvas.className = `signing-page ${stylex.props(signing.documentPage).className ?? ""}`;
             canvas.tabIndex = 0;
             canvas.setAttribute("role", "button");
             canvas.setAttribute(
@@ -179,10 +218,11 @@ const SigningMount = Mount.define("SigningMount", {
             const img = document.createElement("img");
             img.src = image;
             img.alt = `${entry.file.name} — ${label.textContent}`;
+            img.className = stylex.props(signing.pageImage).className ?? "";
             canvas.append(img);
             if (entry.rect !== undefined && entry.rect.pageIndex === selectedPage) {
               const marker = document.createElement("div");
-              marker.className = "signing-rectangle";
+              marker.className = `signing-rectangle ${stylex.props(signing.rectangle).className ?? ""}`;
               marker.style.left = `${(entry.rect.x / page.width) * 100}%`;
               marker.style.top = `${(entry.rect.y / page.height) * 100}%`;
               marker.style.width = `${(entry.rect.width / page.width) * 100}%`;
@@ -257,7 +297,10 @@ const SigningMount = Mount.define("SigningMount", {
               });
               loadPreview();
             });
-            preview.append(select, remove, label, canvas);
+            select.className = stylex.props(signing.control, signing.previewSelect).className ?? "";
+            remove.className = stylex.props(shell.ghost).className ?? "";
+            bar.append(select, label, remove);
+            preview.append(bar, canvas);
             if (focused) canvas.focus();
           };
           const say = (text: string) => {
@@ -797,7 +840,7 @@ const SigningMount = Mount.define("SigningMount", {
                 if (control !== cancel) control.disabled = locked;
               });
             for (const group of form?.querySelectorAll<HTMLFieldSetElement>("fieldset") ?? [])
-              group.inert = locked;
+              group.inert = locked && (cancel === null || !group.contains(cancel));
             if (preview !== null) preview.inert = locked;
             preview?.querySelector(".signing-page")?.setAttribute("aria-disabled", String(locked));
           };
@@ -1005,6 +1048,7 @@ const SigningMount = Mount.define("SigningMount", {
                         );
                         urls.add(url);
                         const link = document.createElement("a");
+                        link.className = stylex.props(signing.download).className ?? "";
                         link.href = url;
                         link.download = `${pt ? "assinado" : "signed"}-${files[Number(result.id)]?.name ?? "document.pdf"}`;
                         link.textContent = link.download;
@@ -1143,6 +1187,9 @@ const SigningMount = Mount.define("SigningMount", {
             auto?.removeEventListener("click", placeAutomatically);
             form?.removeEventListener("submit", submit);
             cancel?.removeEventListener("click", stop);
+            unbridgePfx();
+            unbridgePdf();
+            unbridgeLogo();
             for (const fiber of fibers) Effect.runForkWith(runtimeContext)(Fiber.interrupt(fiber));
             for (const url of urls) URL.revokeObjectURL(url);
             urls.clear();
@@ -1157,37 +1204,92 @@ const SigningMount = Mount.define("SigningMount", {
     }),
 });
 
+const RubricSource = Schema.Literals(["certificate", "text"]);
+const RubricRadios = RadioGroup.create<typeof RubricSource.Type>();
+const rubricSources = ["certificate", "text"] satisfies ReadonlyArray<typeof RubricSource.Type>;
+const FileTarget = Schema.Literals(["pfx", "pdf", "logo"]);
+
 export const SigningFormModel = Schema.Struct({
+  appearance: Schema.Boolean,
   identity: Schema.Boolean,
   date: Schema.Boolean,
   rubric: Schema.Boolean,
+  rubricSource: RubricSource,
+  rubricGroup: RadioGroup.Model,
+  pfx: FileDrop.Model,
+  pdf: FileDrop.Model,
+  logo: FileDrop.Model,
 });
 export type SigningFormModel = typeof SigningFormModel.Type;
 export const Message = defineMessageUnion({
   SigningMounted: {},
+  AppearanceToggled: { open: Schema.Boolean },
   IdentityToggled: { checked: Schema.Boolean },
   DateToggled: { checked: Schema.Boolean },
   RubricToggled: { checked: Schema.Boolean },
+  GotFileMessage: { targetId: FileTarget, message: FileDrop.Message },
+  GotRubricSourceMessage: { message: RadioGroup.Message },
 });
 export type Message = typeof Message.Type;
 export const signingFormInit = (): SigningFormModel => ({
+  appearance: false,
   identity: true,
   date: true,
   rubric: false,
+  rubricSource: "certificate",
+  rubricGroup: RadioGroup.init({ id: "signing-rubric-source" }),
+  pfx: FileDrop.init({ id: "signing-pfx" }),
+  pdf: FileDrop.init({ id: "signing-pdf" }),
+  logo: FileDrop.init({ id: "signing-logo" }),
+});
+const foldRubricSource = Update.foldChild({
+  update: RubricRadios.update,
+  read: (model: SigningFormModel) => Option.some(model.rubricGroup),
+  write: (model, rubricGroup) => ({ ...model, rubricGroup }),
+  toParentMessage: (message) => Message.GotRubricSourceMessage({ message }),
+  foldOutMessage: RadioGroup.OutMessage.match({
+    Selected:
+      ({ value }) =>
+      (model: SigningFormModel) => {
+        const decoded = Schema.decodeUnknownOption(RubricSource)(value);
+        return Option.match(decoded, {
+          onNone: () => ({ model }),
+          onSome: (rubricSource) => ({ model: { ...model, rubricSource } }),
+        });
+      },
+  }),
 });
 export const signingFormUpdate = (model: SigningFormModel, message: Message) =>
   Message.match(message, {
     SigningMounted: () => ({ model }),
+    AppearanceToggled: ({ open }) => ({ model: { ...model, appearance: open } }),
     IdentityToggled: ({ checked }) => ({ model: { ...model, identity: checked } }),
     DateToggled: ({ checked }) => ({ model: { ...model, date: checked } }),
     RubricToggled: ({ checked }) => ({ model: { ...model, rubric: checked } }),
+    GotFileMessage: ({ targetId, message: dropped }) => {
+      const next = FileDrop.update(
+        targetId === "pfx" ? model.pfx : targetId === "pdf" ? model.pdf : model.logo,
+        dropped,
+      );
+      return {
+        model:
+          targetId === "pfx"
+            ? { ...model, pfx: next.model }
+            : targetId === "pdf"
+              ? { ...model, pdf: next.model }
+              : { ...model, logo: next.model },
+      };
+    },
+    GotRubricSourceMessage: ({ message: selected }) => ({
+      model: foldRubricSource(model, selected).model,
+    }),
   });
 
 export const signingFormView = defineView<
   SigningFormModel,
   Message,
-  { readonly locale: "pt-BR" | "en-US" }
->((model, { locale }, h) => {
+  { readonly locale: "pt-BR" | "en-US"; readonly embedded: boolean }
+>((model, { locale, embedded }, h) => {
   const pt = locale === "pt-BR";
   const input = (
     id: string,
@@ -1200,39 +1302,136 @@ export const signingFormView = defineView<
         id: `signing-${id}`,
         name: id,
         type,
-        toView: (attributes) => h.label([], [label, h.input([...attributes.input, ...extra])]),
+        toView: (attributes) =>
+          h.label(
+            [...sx(h, signing.label)],
+            [
+              label,
+              h.input([
+                ...attributes.input,
+                ...extra,
+                ...sx(h, type === "color" ? signing.color : signing.control),
+              ]),
+            ],
+          ),
       },
       h,
     );
-  const button = (label: string, attribute: string, type: "button" | "submit" = "button") =>
+  const button = (
+    label: string,
+    attribute: string,
+    type: "button" | "submit" = "button",
+    tone: "primary" | "ghost" = "ghost",
+  ) =>
     Button.view(
       {
         type,
         toView: (attributes) =>
-          h.button([...attributes.button, h.Attribute(attribute, "")], [label]),
+          h.button(
+            [
+              ...attributes.button,
+              h.Attribute(attribute, ""),
+              ...sx(h, tone === "primary" ? shell.primary : shell.ghost),
+            ],
+            [label],
+          ),
       },
       h,
     );
-  const checkbox = (
+  const toggle = (
     id: string,
+    data: string,
     label: string,
     checked: boolean,
     onToggle: (checked: boolean) => Message,
   ) =>
-    Checkbox.view(
-      {
-        id: `signing-${id}`,
-        isChecked: checked,
-        onToggle,
-        toView: (attributes) =>
-          h.div(
-            [h.Class("signing-toggle")],
-            [
+    h.div(
+      [...sx(h, "signing-toggle", signing.switchRow)],
+      [
+        h.span([], [label]),
+        Switch.view(
+          {
+            id,
+            isChecked: checked,
+            onToggle,
+            toView: (attributes) =>
               h.button(
-                [...attributes.checkbox, h.Attribute(`data-${id}`, "")],
-                [checked ? "✓" : ""],
+                [
+                  ...attributes.button,
+                  h.Attribute(data, ""),
+                  ...sx(h, signing.switchButton, checked && signing.switchOn),
+                ],
+                [h.span([...sx(h, signing.knob, checked && signing.knobOn)])],
               ),
-              h.span(attributes.label, [label]),
+          },
+          h,
+        ),
+      ],
+    );
+  const fileDrop = (
+    drop: FileDrop.Model,
+    name: "pfx" | "pdf" | "logo",
+    label: string,
+    hint: string,
+    accept: ReadonlyArray<string>,
+    multiple = false,
+  ) =>
+    h.submodel({
+      slotId: drop.id,
+      model: drop,
+      view: FileDrop.view,
+      viewInputs: {
+        accept,
+        multiple,
+        toView: ({ root, input: fileInput }) =>
+          h.label(
+            [...root, ...sx(h, signing.drop, drop.isDragOver && signing.dropOver)],
+            [
+              h.strong([], [label]),
+              h.span([], [hint]),
+              h.input([
+                ...fileInput.filter((child) => {
+                  const attribute = child.attribute;
+                  if (typeof attribute !== "object" || attribute === null || !("_tag" in attribute))
+                    return true;
+                  return attribute._tag !== "OnFileChange";
+                }),
+                h.Name(name === "logo" ? "stampLogo" : name),
+                ...sx(h, signing.fileInput),
+              ]),
+            ],
+          ),
+      },
+      toParentMessage: (message) => Message.GotFileMessage({ targetId: name, message }),
+    });
+  const field = (
+    id: string,
+    legend: string,
+    area: "certificate" | "document" | "place" | "sign",
+    children: ReadonlyArray<Html | null>,
+  ) =>
+    Fieldset.view(
+      {
+        id,
+        toView: (attributes) =>
+          h.fieldset(
+            [
+              ...attributes.fieldset,
+              ...sx(
+                h,
+                signing.card,
+                area === "certificate"
+                  ? signing.areaCertificate
+                  : area === "document"
+                    ? signing.areaDocument
+                    : area === "place"
+                      ? signing.areaPlace
+                      : signing.areaSign,
+              ),
+            ],
+            [
+              h.legend([...attributes.legend, ...sx(h, signing.legend)], [legend]),
+              h.div([...sx(h, signing.fields)], children),
             ],
           ),
       },
@@ -1240,128 +1439,220 @@ export const signingFormView = defineView<
     );
   return h.section(
     [
-      h.Class("docs-content"),
+      ...sx(h, "docs-content", signing.page),
       h.Attribute("data-locale", locale),
       h.Attribute("data-ph-no-capture", ""),
       h.Attribute("data-analytics-sensitive", ""),
       h.OnMount(Mount.mapMessage(SigningMount(), () => Message.SigningMounted())),
     ],
     [
-      h.h1([], [pt ? "Assine documentos grátis" : "Sign documents for free"]),
-      h.p(
-        [],
-        [
-          pt
-            ? "Assine PDFs no seu navegador com certificado A1."
-            : "Sign PDFs in your browser with an A1 certificate.",
-        ],
-      ),
-      h.form(
-        [],
-        [
-          Fieldset.view(
-            {
-              id: "signing-credentials",
-              toView: (attributes) =>
-                h.fieldset(attributes.fieldset, [
-                  h.legend(attributes.legend, [
-                    pt ? "Certificado e documentos" : "Certificate and documents",
-                  ]),
-                  input("pfx", pt ? "Certificado PFX ou P12" : "PFX or P12 certificate", "file", [
-                    h.Accept(".pfx,.p12"),
-                  ]),
-                  input(
-                    "password",
-                    pt ? "Senha do certificado" : "Certificate password",
-                    "password",
-                  ),
-                  button(pt ? "Carregar identidade" : "Load identity", "data-load-identity"),
-                  h.p([h.Attribute("data-identity", "")]),
-                  input("pdf", "PDF", "file", [h.Accept("application/pdf,.pdf"), h.Multiple(true)]),
-                ]),
-            },
-            h,
+      embedded
+        ? null
+        : h.h1(
+            [...sx(h, signing.title)],
+            [pt ? "Assine documentos grátis" : "Sign documents for free"],
           ),
-          Fieldset.view(
-            {
-              id: "signing-appearance",
-              toView: (attributes) =>
-                h.fieldset(attributes.fieldset, [
-                  h.legend(attributes.legend, [pt ? "Aparência" : "Appearance"]),
-                  input("stampTitle", pt ? "Título da assinatura" : "Signature title", "text"),
-                  input("stampColor", pt ? "Cor" : "Color", "color", [
-                    h.Attribute("value", "#3B5BDB"),
-                  ]),
-                  input("stampLogo", pt ? "Logo PNG" : "PNG logo", "file", [
-                    h.Accept("image/png,.png"),
-                  ]),
-                  button(pt ? "Remover logo" : "Remove logo", "data-remove-logo"),
-                  checkbox(
-                    "stamp-identity",
-                    pt ? "Exibir identidade" : "Show identity",
-                    model.identity,
-                    (checked) => Message.IdentityToggled({ checked }),
-                  ),
-                  checkbox("stamp-date", pt ? "Exibir data" : "Show date", model.date, (checked) =>
-                    Message.DateToggled({ checked }),
-                  ),
-                  checkbox(
-                    "rubric",
-                    pt ? "Rubricar demais páginas" : "Initial other pages",
-                    model.rubric,
-                    (checked) => Message.RubricToggled({ checked }),
-                  ),
-                  Select.view(
-                    {
-                      id: "signing-rubric-source",
-                      name: "rubricSource",
-                      toView: (attributes) =>
-                        h.label(
-                          [],
+      embedded
+        ? null
+        : h.p(
+            [...sx(h, signing.intro)],
+            [
+              pt
+                ? "Assine PDFs no seu navegador com certificado A1."
+                : "Sign PDFs in your browser with an A1 certificate.",
+            ],
+          ),
+      h.form(
+        [...sx(h, signing.form)],
+        [
+          field("signing-certificate", pt ? "1 · Certificado" : "1 · Certificate", "certificate", [
+            fileDrop(
+              model.pfx,
+              "pfx",
+              pt ? "Certificado .pfx ou .p12" : ".pfx or .p12 certificate",
+              pt ? "Solte aqui ou clique" : "Drop here or click",
+              [".pfx", ".p12"],
+            ),
+            input("password", pt ? "Senha do certificado" : "Certificate password", "password"),
+            button(pt ? "Carregar identidade" : "Load identity", "data-load-identity"),
+            h.p([h.Attribute("data-identity", ""), ...sx(h, signing.hint)]),
+          ]),
+          field("signing-document", pt ? "2 · Documento" : "2 · Document", "document", [
+            fileDrop(
+              model.pdf,
+              "pdf",
+              "PDF",
+              pt ? "Solte de 1 a 100 PDFs" : "Drop 1 to 100 PDFs",
+              ["application/pdf", ".pdf"],
+              true,
+            ),
+          ]),
+          field("signing-place", pt ? "3 · Posicionar" : "3 · Place", "place", [
+            h.div(
+              [h.Attribute("data-preview", ""), ...sx(h, signing.stage)],
+              [
+                h.p(
+                  [...sx(h, signing.hint)],
+                  [
+                    pt
+                      ? "Envie um PDF e clique na página para posicionar a assinatura."
+                      : "Add a PDF, then click the page to place the signature.",
+                  ],
+                ),
+              ],
+            ),
+            h.div(
+              [...sx(h, signing.actions)],
+              [
+                button(pt ? "Página anterior" : "Previous page", "data-previous"),
+                button(pt ? "Próxima página" : "Next page", "data-next"),
+                button(pt ? "Posicionar automaticamente" : "Place automatically", "data-auto"),
+              ],
+            ),
+            Disclosure.view(
+              {
+                id: "signing-appearance",
+                isOpen: model.appearance,
+                onToggle: (open) => Message.AppearanceToggled({ open }),
+                toView: ({ button: trigger, animatePanel }) =>
+                  h.div(
+                    [...sx(h, signing.appearance)],
+                    [
+                      h.button(
+                        [...trigger, ...sx(h, signing.appearanceButton)],
+                        [
+                          pt ? "Aparência do carimbo" : "Stamp appearance",
+                          h.span([h.AriaHidden(true)], [model.appearance ? "−" : "+"]),
+                        ],
+                      ),
+                      animatePanel(
+                        h.div(
+                          [...sx(h, signing.fields, signing.appearancePanel)],
                           [
-                            pt ? "Origem da rubrica" : "Handwriting source",
-                            h.select(attributes.select, [
-                              h.option(
-                                [h.Value("certificate")],
-                                [pt ? "Nome do certificado" : "Certificate name"],
-                              ),
-                              h.option([h.Value("text")], [pt ? "Texto digitado" : "Typed text"]),
+                            input(
+                              "stampTitle",
+                              pt ? "Título da assinatura" : "Signature title",
+                              "text",
+                            ),
+                            input("stampColor", pt ? "Cor" : "Color", "color", [
+                              h.Attribute("value", "#3B5BDB"),
                             ]),
+                            fileDrop(
+                              model.logo,
+                              "logo",
+                              pt ? "Logo PNG" : "PNG logo",
+                              pt ? "Opcional" : "Optional",
+                              ["image/png", ".png"],
+                            ),
+                            button(pt ? "Remover logo" : "Remove logo", "data-remove-logo"),
+                            toggle(
+                              "signing-stamp-identity",
+                              "data-stamp-identity",
+                              pt ? "Exibir identidade" : "Show identity",
+                              model.identity,
+                              (checked) => Message.IdentityToggled({ checked }),
+                            ),
+                            toggle(
+                              "signing-stamp-date",
+                              "data-stamp-date",
+                              pt ? "Exibir data" : "Show date",
+                              model.date,
+                              (checked) => Message.DateToggled({ checked }),
+                            ),
+                            toggle(
+                              "signing-rubric",
+                              "data-rubric",
+                              pt ? "Rubricar demais páginas" : "Initial other pages",
+                              model.rubric,
+                              (checked) => Message.RubricToggled({ checked }),
+                            ),
+                            h.submodel({
+                              slotId: "signing-rubric-source",
+                              model: model.rubricGroup,
+                              view: RubricRadios.view,
+                              viewInputs: {
+                                options: rubricSources,
+                                selectedValue: Option.some(model.rubricSource),
+                                ariaLabel: pt ? "Origem da rubrica" : "Handwriting source",
+                                name: "rubricSource",
+                                toView: ({ group, options, hiddenInput }) =>
+                                  h.div(
+                                    [...group, ...sx(h, signing.radios)],
+                                    [
+                                      h.input(hiddenInput),
+                                      ...options.map((option) =>
+                                        h.button(
+                                          [
+                                            ...option.option,
+                                            h.Attribute("data-rubric-source", option.value),
+                                            ...sx(
+                                              h,
+                                              signing.radio,
+                                              option.isSelected && signing.radioOn,
+                                            ),
+                                          ],
+                                          [
+                                            option.value === "text"
+                                              ? pt
+                                                ? "Texto digitado"
+                                                : "Typed text"
+                                              : pt
+                                                ? "Nome do certificado"
+                                                : "Certificate name",
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                              },
+                              toParentMessage: (message) =>
+                                Message.GotRubricSourceMessage({ message }),
+                            }),
+                            input(
+                              "rubricText",
+                              pt ? "Texto manuscrito" : "Handwritten text",
+                              "text",
+                              [h.Attribute("maxlength", "120")],
+                            ),
                           ],
                         ),
-                    },
-                    h,
+                      ),
+                    ],
                   ),
-                  input("rubricText", pt ? "Texto manuscrito" : "Handwritten text", "text", [
-                    h.Attribute("maxlength", "120"),
+              },
+              h,
+            ),
+          ]),
+          field("signing-sign", pt ? "4 · Assinar" : "4 · Sign", "sign", [
+            h.div(
+              [...sx(h, signing.actions)],
+              [
+                button(pt ? "Assinar" : "Sign", "data-submit", "submit", "primary"),
+                button(pt ? "Cancelar" : "Cancel", "data-cancel"),
+              ],
+            ),
+            Progress.view(
+              {
+                id: "signing-progress",
+                ariaLabel: pt ? "Progresso da assinatura" : "Signing progress",
+                toView: (attributes) =>
+                  h.div([
+                    ...attributes.progress,
+                    h.Attribute("data-progress", ""),
+                    h.Attribute("hidden", ""),
                   ]),
-                ]),
-            },
-            h,
-          ),
-          h.div([h.Attribute("data-preview", "")]),
-          button(pt ? "Página anterior" : "Previous page", "data-previous"),
-          button(pt ? "Próxima página" : "Next page", "data-next"),
-          button(pt ? "Posicionar automaticamente" : "Place automatically", "data-auto"),
-          button(pt ? "Assinar" : "Sign", "data-submit", "submit"),
-          button(pt ? "Cancelar" : "Cancel", "data-cancel"),
+              },
+              h,
+            ),
+            h.p([
+              h.Attribute("data-status", ""),
+              h.Attribute("role", "status"),
+              ...sx(h, signing.hint),
+            ]),
+            h.div([h.Attribute("data-downloads", ""), ...sx(h, signing.downloads)]),
+          ]),
         ],
       ),
-      Progress.view(
-        {
-          id: "signing-progress",
-          ariaLabel: pt ? "Progresso da assinatura" : "Signing progress",
-          toView: (attributes) =>
-            h.div([
-              ...attributes.progress,
-              h.Attribute("data-progress", ""),
-              h.Attribute("hidden", ""),
-            ]),
-        },
-        h,
-      ),
-      h.p([h.Attribute("data-status", ""), h.Attribute("role", "status")]),
-      h.div([h.Attribute("data-downloads", "")]),
     ],
   );
 });

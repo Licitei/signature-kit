@@ -30,7 +30,7 @@ export const socialImageTree = (input: SocialImageInput): Node => ({
             type: "text",
             text: input.description,
             style: {
-              borderBottom: "10px dashed rgba(255, 150, 255, 0.3)",
+              borderBottom: "10px dashed rgba(246, 96, 19, 0.45)",
               color: "rgba(240, 240, 240, 0.8)",
               fontSize: "42px",
               marginTop: "16px",
@@ -42,7 +42,7 @@ export const socialImageTree = (input: SocialImageInput): Node => ({
     {
       type: "text",
       text: input.site,
-      style: { color: "rgb(255, 150, 255)", fontSize: "48px", fontWeight: 600, marginTop: "auto" },
+      style: { color: "rgb(246, 96, 19)", fontSize: "48px", fontWeight: 600, marginTop: "auto" },
     },
   ],
 });

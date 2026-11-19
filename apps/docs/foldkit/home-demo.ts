@@ -1,6 +1,6 @@
-import { Button } from "@foldkit/ui";
-import { Effect, Exit, Schema } from "effect";
-import { Command } from "foldkit";
+import { Button, Tabs } from "@foldkit/ui";
+import { Effect, Exit, Option, Schema } from "effect";
+import { Command, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { defineView } from "foldkit/submodel";
 import * as Mount from "foldkit/mount";
@@ -8,6 +8,13 @@ import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { createIllustrativePdf } from "@signature-kit/pdf/stamp";
 import { captureDocsEvent } from "../lib/posthog/client";
 import type { Locale } from "./content";
+import { landing } from "./styles/landing";
+import { shell } from "./styles/shell";
+import { sx } from "./styles/sx";
+
+const DemoIndex = Schema.Literals(["0", "1", "2", "3"]);
+const DemoTabs = Tabs.create<typeof DemoIndex.Type>();
+const demoIndexes = ["0", "1", "2", "3"] satisfies ReadonlyArray<typeof DemoIndex.Type>;
 
 const DemoMounted = Schema.TaggedStruct("DemoMounted", {});
 const DemoMount = Mount.define("DemoMount", {
@@ -46,7 +53,8 @@ const DemoMount = Mount.define("DemoMount", {
           const revoke = (items: string[]) => items.forEach((url) => URL.revokeObjectURL(url));
           const show = () => {
             const url = urls[active];
-            if (preview !== null && url !== undefined) preview.src = url;
+            if (preview !== null && url !== undefined)
+              preview.src = `${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
             if (download !== null) {
               if (url === undefined) download.removeAttribute("href");
               else {
@@ -152,17 +160,18 @@ export const HomeDemoModel = Schema.Struct({
   active: Schema.Int,
   request: Schema.Int,
   marked: Schema.Boolean,
+  documents: Tabs.Model,
 });
 export type HomeDemoModel = typeof HomeDemoModel.Type;
 export const Message = defineMessageUnion({
   DemoMounted: {},
   PreviousRequested: {},
   NextRequested: {},
-  DocumentSelected: { index: Schema.Int },
   MarkRequested: {},
   ResetRequested: {},
   DownloadRequested: {},
   AnalyticsRecorded: {},
+  GotDemoTabsMessage: { message: Tabs.Message },
 });
 export type Message = typeof Message.Type;
 const RecordDemoEvent = Command.define("RecordDemoEvent", {
@@ -180,14 +189,36 @@ const RecordDemoEvent = Command.define("RecordDemoEvent", {
       return Message.AnalyticsRecorded();
     }),
 });
-export const homeDemoInit = (): HomeDemoModel => ({ active: 0, request: 0, marked: false });
+export const homeDemoInit = (): HomeDemoModel => ({
+  active: 0,
+  request: 0,
+  marked: false,
+  documents: Tabs.init({ id: "home-demo-documents" }),
+});
+const foldDemoTabs = Update.foldChild({
+  update: DemoTabs.update,
+  read: (model: HomeDemoModel) => Option.some(model.documents),
+  write: (model, documents) => ({ ...model, documents }),
+  toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
+  foldOutMessage: Tabs.OutMessage.match({
+    Selected:
+      ({ value }) =>
+      (model: HomeDemoModel) => {
+        const decoded = Schema.decodeUnknownOption(DemoIndex)(value);
+        return Option.match(decoded, {
+          onNone: () => ({ model }),
+          onSome: (index) => ({ model: { ...model, active: Number(index) } }),
+        });
+      },
+  }),
+});
 export const homeDemoUpdate = (model: HomeDemoModel, message: Message) =>
   Message.match(message, {
+    GotDemoTabsMessage: ({ message }) => ({ model: foldDemoTabs(model, message).model }),
     DemoMounted: () => ({ model }),
     AnalyticsRecorded: () => ({ model }),
     PreviousRequested: () => ({ model: { ...model, active: (model.active + 3) % 4 } }),
     NextRequested: () => ({ model: { ...model, active: (model.active + 1) % 4 } }),
-    DocumentSelected: ({ index }) => ({ model: { ...model, active: index } }),
     MarkRequested: () => ({
       model: { ...model, request: model.request + 1, marked: true },
       commands: [RecordDemoEvent({ action: "run", index: model.active })],
@@ -210,7 +241,7 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
       : ["Service agreement", "Contract amendment", "Power of attorney", "Terms of adhesion"];
     return h.div(
       [
-        h.Class("home-demo"),
+        ...sx(h, "home-demo", landing.demo),
         h.Attribute("data-locale", locale),
         h.Attribute("data-active", String(model.active)),
         h.Attribute("data-request", String(model.request)),
@@ -219,22 +250,61 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
       ],
       [
         h.p(
-          [],
+          [...sx(h, landing.demoNote)],
           [
             pt
               ? "Exemplo visual ilustrativo: não é assinatura digital e não usa certificado."
               : "Illustrative visual example: not a digital signature and no certificate is used.",
           ],
         ),
+        h.submodel({
+          slotId: "home-demo-documents",
+          model: model.documents,
+          view: DemoTabs.view,
+          viewInputs: {
+            tabs: demoIndexes,
+            selectedValue: Option.getOrElse(
+              Schema.decodeUnknownOption(DemoIndex)(String(model.active)),
+              (): typeof DemoIndex.Type => "0",
+            ),
+            ariaLabel: pt ? "Documentos de exemplo" : "Example documents",
+            panelMount: "ActiveOnly",
+            toView: ({ tablist, tabs }) =>
+              h.div(
+                [...tablist, ...sx(h, "home-demo-controls", landing.tabs, landing.toolbar)],
+                tabs.map((tab) =>
+                  h.button(
+                    [
+                      ...tab.tab,
+                      h.Attribute("data-demo-index", tab.value),
+                      ...sx(h, landing.tab, tab.isActive && landing.tabOn),
+                    ],
+                    [names[tab.index] ?? ""],
+                  ),
+                ),
+              ),
+          },
+          toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
+        }),
         h.div(
-          [h.Class("home-demo-controls")],
+          [...sx(h, landing.stage)],
+          [
+            h.iframe([
+              h.Attribute("data-demo-preview", ""),
+              ...sx(h, landing.preview),
+              h.Attribute("title", pt ? "Prévia do exemplo" : "Example preview"),
+            ]),
+          ],
+        ),
+        h.div(
+          [...sx(h, "home-demo-controls", landing.toolbar)],
           [
             Button.view(
               {
                 onClick: Message.MarkRequested(),
                 toView: ({ button }) =>
                   h.button(
-                    [...button, h.Attribute("data-demo-run", "")],
+                    [...button, ...sx(h, shell.primary), h.Attribute("data-demo-run", "")],
                     [pt ? "Aplicar marcas ilustrativas" : "Apply illustrative marks"],
                   ),
               },
@@ -245,7 +315,7 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
                 onClick: Message.ResetRequested(),
                 toView: ({ button }) =>
                   h.button(
-                    [...button, h.Attribute("data-demo-reset", "")],
+                    [...button, ...sx(h, shell.ghost), h.Attribute("data-demo-reset", "")],
                     [pt ? "Reiniciar" : "Reset"],
                   ),
               },
@@ -258,6 +328,7 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
                   h.button(
                     [
                       ...button,
+                      ...sx(h, shell.ghost),
                       h.Attribute("data-demo-previous", ""),
                       h.AriaLabel(pt ? "Documento anterior" : "Previous document"),
                     ],
@@ -273,6 +344,7 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
                   h.button(
                     [
                       ...button,
+                      ...sx(h, shell.ghost),
                       h.Attribute("data-demo-next", ""),
                       h.AriaLabel(pt ? "Próximo documento" : "Next document"),
                     ],
@@ -282,47 +354,23 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
               h,
             ),
             h.a(
-              [h.Attribute("data-demo-download", ""), h.OnClick(Message.DownloadRequested())],
+              [
+                ...sx(h, landing.link),
+                h.Attribute("data-demo-download", ""),
+                h.OnClick(Message.DownloadRequested()),
+              ],
               [pt ? "Baixar exemplo" : "Download example"],
             ),
-          ],
-        ),
-        h.div(
-          [
-            h.Class("home-demo-controls"),
-            h.Role("group"),
-            h.AriaLabel(pt ? "Documentos de exemplo" : "Example documents"),
-          ],
-          names.map((name, index) =>
-            Button.view(
-              {
-                onClick: Message.DocumentSelected({ index }),
-                toView: ({ button }) =>
-                  h.button(
-                    [
-                      ...button,
-                      h.Attribute("data-demo-index", String(index)),
-                      h.AriaPressed(String(index === model.active)),
-                    ],
-                    [name],
-                  ),
-              },
-              h,
+            h.p(
+              [...sx(h, landing.status), h.Attribute("data-demo-label", "")],
+              [`${names[model.active] ?? ""} · ${model.active + 1} / 4`],
             ),
-          ),
+          ],
         ),
         h.p(
-          [h.Attribute("data-demo-label", "")],
-          [`${names[model.active] ?? ""} · ${model.active + 1} / 4`],
-        ),
-        h.p(
-          [h.Attribute("data-demo-status", ""), h.Role("status")],
+          [h.Attribute("data-demo-status", ""), h.Role("status"), ...sx(h, landing.status)],
           [pt ? "Preparando exemplos…" : "Preparing examples…"],
         ),
-        h.iframe([
-          h.Attribute("data-demo-preview", ""),
-          h.Attribute("title", pt ? "Prévia do exemplo" : "Example preview"),
-        ]),
       ],
     );
   },

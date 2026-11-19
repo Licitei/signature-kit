@@ -1,5 +1,4 @@
-import "./site.css";
-import "./home.css";
+import "./styles/fonts";
 import { Effect, Result, Schema } from "effect";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
@@ -20,6 +19,19 @@ const pdfTextOf = (bytes: Uint8Array) =>
     const inspection = yield* core.inspect(bytes, { text: true, links: false });
     return inspection.text.map((page) => page.text).join(" ");
   }).pipe(Effect.provide(pdfCoreBrowserLayer));
+
+const openOverlay = (host: HTMLElement, kind: string) =>
+  Effect.gen(function* () {
+    const trigger = host.querySelector<HTMLAnchorElement>(`main [data-overlay="${kind}"]`);
+    if (trigger === null) return yield* Effect.die(`Missing ${kind} trigger`);
+    yield* Effect.promise(() => userEvent.click(trigger));
+    yield* Effect.promise(() =>
+      expect
+        .poll(() => host.querySelector("#site-overlay")?.hasAttribute("open"), { timeout: 10000 })
+        .toBe(true),
+    );
+    return trigger;
+  });
 
 declare module "vitest/browser" {
   interface BrowserCommands {
@@ -61,6 +73,7 @@ it("selects real provider snippets and copies the selected snippet in Chromium",
         yield* Effect.promise(() =>
           expect.poll(() => host.querySelector(".home-providers button")).not.toBeNull(),
         );
+        yield* openOverlay(host, "providers");
         const provider = [...host.querySelectorAll("button")].find(
           (button) => button.textContent === "DocuSeal",
         );
@@ -74,7 +87,7 @@ it("selects real provider snippets and copies the selected snippet in Chromium",
         expect(
           [...host.querySelectorAll(".home-providers button")]
             .find((button) => button.textContent === "DocuSeal")
-            ?.getAttribute("aria-pressed"),
+            ?.getAttribute("aria-selected"),
         ).toBe("true");
         const button = host.querySelector<HTMLButtonElement>(".home-code .home-copy");
         if (button === null) return expect.fail("Missing copy button");
@@ -128,12 +141,13 @@ it("signs a PDF from the home and exposes a verifiable download", async () => {
           { width: 600, height: 400, runs: [{ text: "SignatureKit home signing", x: 30, y: 100 }] },
         ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
-          expect.poll(() => host.querySelector("#auto-sign form")).not.toBeNull(),
+          expect.poll(() => host.querySelector("#site-overlay form")).not.toBeNull(),
         );
-        const form = host.querySelector<HTMLFormElement>("#auto-sign form");
-        const certificate = host.querySelector<HTMLInputElement>("#auto-sign [name=pfx]");
-        const documentInput = host.querySelector<HTMLInputElement>("#auto-sign [name=pdf]");
-        const password = host.querySelector<HTMLInputElement>("#auto-sign [name=password]");
+        yield* openOverlay(host, "signer");
+        const form = host.querySelector<HTMLFormElement>("#site-overlay form");
+        const certificate = host.querySelector<HTMLInputElement>("#site-overlay [name=pfx]");
+        const documentInput = host.querySelector<HTMLInputElement>("#site-overlay [name=pdf]");
+        const password = host.querySelector<HTMLInputElement>("#site-overlay [name=password]");
         if (form === null || certificate === null || documentInput === null || password === null)
           return expect.fail("Missing signer controls");
         const certificates = new DataTransfer();
@@ -380,23 +394,43 @@ it("keeps snippet text legible in both themes", async () => {
         yield* Effect.promise(() =>
           expect.poll(() => host.querySelector(".home-code pre code")).not.toBeNull(),
         );
+        const luminance = (color: string) =>
+          (color.match(/[\d.]+/g) ?? [])
+            .slice(0, 3)
+            .map((channel) => Number(channel) / 255)
+            .map((channel) =>
+              channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+            )
+            .reduce(
+              (total, channel, index) => total + channel * ([0.2126, 0.7152, 0.0722][index] ?? 0),
+              0,
+            );
         const assertContrast = () => {
           const code = host.querySelector<HTMLElement>(".home-code pre code");
-          const pre = code?.parentElement;
-          if (code === null || code === undefined || pre === null || pre === undefined)
+          const codeWindow = code?.closest<HTMLElement>(".home-code");
+          if (
+            code === null ||
+            code === undefined ||
+            codeWindow === null ||
+            codeWindow === undefined
+          )
             return expect.fail("Missing code block");
           expect(getComputedStyle(code).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-          expect(getComputedStyle(code).color).toBe("rgb(255, 255, 255)");
-          expect(getComputedStyle(pre).backgroundColor).toBe("rgb(41, 37, 45)");
+          const surface = getComputedStyle(codeWindow).backgroundColor;
+          const [light, dark] = [luminance(getComputedStyle(code).color), luminance(surface)].sort(
+            (left, right) => right - left,
+          );
+          expect(((light ?? 0) + 0.05) / ((dark ?? 0) + 0.05)).toBeGreaterThanOrEqual(7);
+          return surface;
         };
-        assertContrast();
+        const lightSurface = assertContrast();
         const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Toggle theme"]');
         if (toggle === null) return expect.fail("Missing theme toggle");
         yield* Effect.promise(() => userEvent.click(toggle));
         yield* Effect.promise(() =>
           expect.poll(() => host.querySelector(".site")?.getAttribute("data-theme")).toBe("dark"),
         );
-        assertContrast();
+        expect(assertContrast()).not.toBe(lightSurface);
       }),
     ).pipe(Effect.timeout("20 seconds")),
   );
@@ -428,7 +462,7 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
                 view,
                 container: host.querySelector<HTMLElement>("#home-demo-test"),
               }),
-              { flags: Effect.succeed(Flags.make({ locale: "en-US", path: "" })) },
+              { flags: Effect.succeed(Flags.make({ locale: "en-US", path: "/sign-free" })) },
             ),
           ),
           (runtime) => Effect.sync(() => runtime.dispose()),
@@ -543,7 +577,7 @@ it("releases example URLs and regenerates all documents for the next locale", as
                     view,
                     container: host.querySelector<HTMLElement>("#locale-demo-lifecycle"),
                   }),
-                  { flags: Effect.succeed(Flags.make({ locale: "en-US", path: "" })) },
+                  { flags: Effect.succeed(Flags.make({ locale: "en-US", path: "/sign-free" })) },
                 ),
               ),
               (runtime) => Effect.sync(() => runtime.dispose()),
@@ -592,7 +626,11 @@ it("releases example URLs and regenerates all documents for the next locale", as
                 view,
                 container: host.querySelector<HTMLElement>("#locale-demo-lifecycle"),
               }),
-              { flags: Effect.succeed(Flags.make({ locale: "pt-BR", path: "" })) },
+              {
+                flags: Effect.succeed(
+                  Flags.make({ locale: "pt-BR", path: "/assine-documentos-gratis" }),
+                ),
+              },
             ),
           ),
           (runtime) => Effect.sync(() => runtime.dispose()),
@@ -865,6 +903,7 @@ it("emits legacy home analytics through the real browser SDK without private con
             .poll(() => doc.querySelector(".home-providers button"), { timeout: 15000 })
             .not.toBeNull(),
         );
+        yield* openOverlay(doc, "providers");
         const select = [...doc.querySelectorAll<HTMLButtonElement>(".home-providers button")].find(
           (button) => button.textContent === "DocuSeal",
         );
@@ -893,14 +932,41 @@ it("emits legacy home analytics through the real browser SDK without private con
             .poll(() => doc.querySelector(".home-status")?.textContent, { timeout: 15000 })
             .toBe("Copied"),
         );
+        const demo = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const element = document.createElement("div");
+            const container = document.createElement("div");
+            container.id = "home-analytics-demo";
+            element.append(container);
+            document.body.append(element);
+            return element;
+          }),
+          (element) => Effect.sync(() => element.remove()),
+        );
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Runtime.embed(
+              Runtime.makeApplication({
+                Flags,
+                Model,
+                init,
+                update,
+                view,
+                container: demo.querySelector<HTMLElement>("#home-analytics-demo"),
+              }),
+              { flags: Effect.succeed(Flags.make({ locale: "en-US", path: "/sign-free" })) },
+            ),
+          ),
+          (runtime) => Effect.sync(() => runtime.dispose()),
+        );
         yield* Effect.promise(async () =>
           expect
-            .poll(() => doc.querySelector<HTMLAnchorElement>("[data-demo-download]")?.href, {
+            .poll(() => demo.querySelector<HTMLAnchorElement>("[data-demo-download]")?.href, {
               timeout: 30000,
             })
             .toMatch(/^blob:/),
         );
-        const download = doc.querySelector<HTMLAnchorElement>("[data-demo-download]");
+        const download = demo.querySelector<HTMLAnchorElement>("[data-demo-download]");
         if (download === null) return expect.fail("Missing demo download");
         download.click();
         const events = yield* Effect.promise(async () => {
@@ -1043,3 +1109,64 @@ it("opens and closes the language popover with the keyboard", async () => {
     ).pipe(Effect.timeout("20 seconds")),
   );
 }, 25000);
+
+it("opens the signer sheet and the providers modal, traps focus, closes on Escape and returns focus", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const host = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const element = document.createElement("div");
+            const container = document.createElement("div");
+            container.id = "home-overlay-test";
+            element.append(container);
+            document.body.append(element);
+            return element;
+          }),
+          (element) => Effect.sync(() => element.remove()),
+        );
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Runtime.embed(
+              Runtime.makeApplication({
+                Flags,
+                Model,
+                init,
+                update,
+                view,
+                container: host.querySelector<HTMLElement>("#home-overlay-test"),
+              }),
+              { flags: Effect.succeed(Flags.make({ locale: "en-US", path: "" })) },
+            ),
+          ),
+          (runtime) => Effect.sync(() => runtime.dispose()),
+        );
+        yield* Effect.promise(() =>
+          expect.poll(() => host.querySelector('main [data-overlay="signer"]')).not.toBeNull(),
+        );
+        for (const [kind, title, probe] of [
+          ["signer", "Sign a PDF", "[name=pfx]"],
+          ["providers", "Providers", ".home-providers"],
+        ] satisfies ReadonlyArray<readonly [string, string, string]>) {
+          const trigger = yield* openOverlay(host, kind);
+          const dialog = host.querySelector<HTMLDialogElement>("#site-overlay");
+          if (dialog === null) return expect.fail("Missing overlay");
+          expect(dialog.getAttribute("aria-modal")).toBe("true");
+          expect(
+            document.getElementById(dialog.getAttribute("aria-labelledby") ?? "")?.textContent,
+          ).toBe(title);
+          const content = dialog.querySelector(probe);
+          expect(content?.closest("[hidden]")).toBeNull();
+          yield* Effect.promise(() =>
+            expect.poll(() => dialog.contains(document.activeElement)).toBe(true),
+          );
+          yield* Effect.promise(() => userEvent.keyboard("{Escape}"));
+          yield* Effect.promise(() =>
+            expect.poll(() => dialog.hasAttribute("open"), { timeout: 10000 }).toBe(false),
+          );
+          yield* Effect.promise(() => expect.poll(() => document.activeElement).toBe(trigger));
+        }
+      }),
+    ).pipe(Effect.timeout("30 seconds")),
+  );
+}, 35000);

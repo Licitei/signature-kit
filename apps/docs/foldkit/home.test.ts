@@ -9,35 +9,25 @@ import { serverAnalyticsLayer } from "../lib/posthog/server";
 import { contentPaths, resolveContent } from "./content";
 import { createServerComposition, renderDocument, renderPage } from "./entry.server";
 import { Message, init, update } from "./main";
-import { ExpireHomeCopy } from "./home";
+import { ExpireHomeCopy, installCommand } from "./home";
+import { Tabs } from "@foldkit/ui";
 
 describe("Foldkit home", () => {
   it("renders each home section and localized metadata on the server", async () => {
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
     for (const [locale, title] of [
-      ["en-US", "One typed boundary for every signature."],
-      ["pt-BR", "Um ponto único de assinatura tipado para cada documento."],
+      ["en-US", "Typed digital signatures"],
+      ["pt-BR", "Assinaturas digitais tipadas"],
     ]) {
       const result = await renderPage(new Request(`https://signaturekit.dev/${locale}`), "test");
       if (result._tag !== "Rendered") return expect.fail(`Missing ${locale} home`);
       const html = renderDocument(result.application, assets);
       expect(html).toContain(title);
-      expect(html).toContain(
-        locale === "pt-BR" ? "Prévia local, sem upload." : "Local preview, without upload.",
-      );
-      expect(html).not.toContain("Rendered locally with pdf.js.");
-      expect(html).not.toContain("Renderizado localmente com pdf.js.");
-      expect(html).not.toContain("18 literal codes");
-      expect(html).not.toContain("18 códigos literais");
-      for (const id of [
-        "signer",
-        "auto-sign",
-        "providers",
-        "capabilities",
-        "get-started",
-        "sponsors",
-      ])
+      for (const id of ["signer", "providers", "formats", "get-started"])
         expect(html).toContain(`id="${id}"`);
+      expect(html).not.toContain('id="auto-sign"');
+      expect(html).not.toContain("first-signature.ts");
+      expect(html.split(installCommand)).toHaveLength(3);
       expect(html).toContain("ClicksignSignatureRequest");
       expect(html).toContain("contentBase64");
       expect(html).toContain('name="pfx"');
@@ -185,7 +175,12 @@ describe("Foldkit home", () => {
   }, 20000);
   it("selects providers and records copy success or failure without storing secrets", () => {
     const initial = init({ locale: "en-US", path: "" }).model;
-    const selected = update(initial, Message.HomeProviderRequested({ provider: "DocuSeal" })).model;
+    const selected = update(
+      initial,
+      Message.GotProviderTabsMessage({
+        message: Tabs.Message.SelectedTab({ index: 3, value: "DocuSeal" }),
+      }),
+    ).model;
     expect(selected.homeProvider).toBe("DocuSeal");
     const requested = update(
       selected,
@@ -263,7 +258,12 @@ describe("Foldkit home", () => {
       ).model;
       expect(update(nextDone, expired).model.homeCopied).toBe("provider");
       expect(update(completed, expired).model.homeCopied).toBe("none");
-      const changed = update(second, Message.HomeProviderRequested({ provider: "DocuSeal" })).model;
+      const changed = update(
+        second,
+        Message.GotProviderTabsMessage({
+          message: Tabs.Message.SelectedTab({ index: 3, value: "DocuSeal" }),
+        }),
+      ).model;
       expect(
         update(
           changed,

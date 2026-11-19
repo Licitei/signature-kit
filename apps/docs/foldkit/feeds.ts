@@ -3,9 +3,10 @@ import { Effect } from "effect";
 import { createArticleCatalog } from "./articles";
 import { contentPaths, resolveContent } from "./content";
 import type { Locale } from "./content";
+import { siteOrigin } from "./site-origin";
 
 const locales: Locale[] = ["en-US", "pt-BR"];
-const origin = "https://signaturekit.dev";
+const origin = siteOrigin;
 const escapeXml = (value: string) =>
   value
     .replaceAll("&", "&amp;")

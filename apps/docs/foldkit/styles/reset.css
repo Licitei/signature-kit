@@ -1,0 +1,21 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  overflow-x: clip;
+}
+
+html {
+  background: #fafafa;
+  color: #111111;
+}
+
+html:has(.site[data-theme="dark"]) {
+  background: #0a0a0a;
+  color: #f5f5f3;
+}
