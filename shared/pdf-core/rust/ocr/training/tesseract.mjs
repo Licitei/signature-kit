@@ -96,4 +96,9 @@ async function compare(archive, executable, directory) {
 
 const [archive, executable = "tesseract"] = process.argv.slice(2);
 const directory = await mkdtemp(join(tmpdir(), "ocr-tesseract-"));
-await compare(archive, executable, directory).finally(() => rm(directory, { recursive: true }));
+const [result] = await Promise.allSettled([compare(archive, executable, directory)]);
+await rm(directory, { recursive: true });
+if (result.status === "rejected") {
+  console.error(result.reason);
+  process.exitCode = 1;
+}

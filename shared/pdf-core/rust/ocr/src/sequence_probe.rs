@@ -51,7 +51,7 @@ fn recognize(input: &[u8]) -> Option<Box<[u8]>> {
             metrics,
         };
         sequence.predict(&prepared.page, geometry, &mut scratch, |_, label, _| {
-            text.push(label)
+            text.push(label);
         });
     }
     let length = u32::try_from(text.len().saturating_add(4)).ok()?;

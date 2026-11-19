@@ -180,9 +180,15 @@ labels and decoder. The SIMD dot product consumes contiguous 16-byte blocks.
 
 The two autovectorization flags work around an LLVM code-generation failure
 in the glyph recognizer when building the combined module. The explicit
-CTC `simd128` instructions are still enabled. The benchmark checks exact
-transcripts before comparing page times with one Tesseract process per
-dataset. CTC weights are passed as input to the probe.
+CTC `simd128` instructions remain enabled. The production build uses
+`simd128` with the glyph coordinate conversion kept out of vectorized loops.
+
+The benchmark checks exact transcripts before comparing page times with one
+Tesseract process per dataset. Its `pdf_core_ocr_ctc_probe(ptr, len)` entry
+point accepts little-endian width and height (`u32`), DPI (`f32`), table
+length (`u32`), then table bytes and gray8 pixels. The output starts with its
+total length (`u32`) followed by UTF-8 text. Use the raster allocation
+functions to allocate input and free input and output.
 
 ## Table formats
 
@@ -230,26 +236,41 @@ lines and 245 characters from the two repository JPEG fixtures, approximately
 | Line-normalized glyph MLP, Liberation and native clean     |         93.25% |            76.99% |                    32.82 / 54.25 |      48,244 |
 | Glyph-normalized MLP, mixed scans and rejection            |         82.25% |            80.28% |                    47.49 / 72.93 |      48,668 |
 | **Line-normalized glyph MLP, mixed scans and rejection**   |         85.80% |            81.59% |                    42.90 / 62.96 |      48,668 |
-| 16-channel CTC, Liberation, six warm epochs                |         33.83% |            28.63% |                   100.75 / 96.97 |       7,568 |
+| 16-channel CTC, Liberation, six warm epochs                |         33.78% |            28.44% |                  136.27 / 139.76 |       7,568 |
 | 32-channel CTC, mixed documents, twelve warm epochs        |         73.20% |            66.15% |                  169.87 / 173.19 |      17,448 |
 | Tesseract 5.5.4 Portuguese LSTM                            |         99.46% |            99.27% |              3,579.49 / 3,401.72 |  15,336,931 |
 | Tesseract 5.5.4 LSTM with `tessdata_fast`                  |         99.29% |            98.68% |              2,214.10 / 1,965.71 |   1,982,756 |
 
-The 16-channel CTC probe produced identical scalar and SIMD transcripts on
-twenty held-out pages. With 10 clean pages at 300 DPI the means were
-319.14 ms scalar, 178.82 ms SIMD and 2,413.44 ms for Tesseract fast
-(13.50×). With 10 scan-degraded pages at 200 DPI they were 223.78 ms scalar,
-141.50 ms SIMD and 1,911.18 ms for Tesseract fast (13.51×). These means cover
-page preparation and recognition. Accuracy remains well below the LSTM
-reference. On the eight real-scan lines the 16-channel probe scored 5.71%,
-the 32-channel probe scored 17.96%, and Tesseract LSTM scored 72.24% with
-the standard Portuguese model and 82.86% with `tessdata_fast`.
+Both CTC models produced identical scalar and SIMD transcripts on all 20
+held-out pages in the final vision integration. Each mean includes page
+preparation and recognition.
+
+| CTC model   | Dataset                    | Scalar ms/page | SIMD ms/page | Tesseract fast ms/page | SIMD speedup |
+| ----------- | -------------------------- | -------------: | -----------: | ---------------------: | -----------: |
+| 16 channels | 10 clean pages, 300 DPI    |         272.56 |       154.23 |               2,597.07 |       16.84× |
+| 16 channels | 10 degraded pages, 200 DPI |         282.14 |       139.40 |               1,920.03 |       13.77× |
+| 32 channels | 10 clean pages, 300 DPI    |         539.68 |       231.50 |               2,756.66 |       11.91× |
+| 32 channels | 10 degraded pages, 200 DPI |         511.78 |       224.80 |               1,844.78 |        8.21× |
+
+On the eight real-scan lines, character accuracy was 31.02% for the shipped
+glyph model, 5.71% for CTC at 16 channels and 17.96% at 32 channels. Tesseract
+LSTM scored 72.24% with the standard Portuguese model and 82.86% with
+`tessdata_fast`. On the native document line crops, the shipped glyph model
+scored 93.40% clean and 35.43% degraded. Recognition averaged 43.37 and 48.98
+ms per 50 lines. The clean-only line-normalized classifier scored 0.23% on
+the degraded crop archive, whose line metrics can be distorted by page skew.
 
 The 32-channel run sampled up to 1,600 lines per epoch for 50 epochs. Its
 input pool contained 30,451 entries, including four repetitions of the
 792 Liberation lines. Its first twelve epochs used the alignment targets
 where matching glyph boxes were available. The fitted table is available at
 `../data/sequence-wide.bin` for the `ctc-probe,ctc-wide` benchmark.
+
+The optimized production OCR module is 230,433 bytes. The main PDF module
+measures 1,165,797 bytes, up from 1,154,459 bytes at `9fb46f7` after the
+glyph inspection changes from the synthesis branch. Both main module builds
+fit the 1,144 KiB budget. The optional OCR budget covers the merged JPEG,
+raster, layout and recognition modules.
 
 The selected table uses 1,084,145 training samples, including rejection
 examples, and 139 output classes. Its training digest is `133a86b966798257`.

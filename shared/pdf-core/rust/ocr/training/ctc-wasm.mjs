@@ -67,19 +67,27 @@ for (const name of pages) {
 }
 
 const directory = await mkdtemp(join(tmpdir(), "ocr-tesseract-pages-"));
-const tessElapsed = await (async () => {
-  const list = join(directory, "pages.txt");
-  await writeFile(list, `${pages.map((page) => resolve(cases, page)).join("\n")}\n`);
-  const clock = performance.now();
-  const process = Bun.spawn([tess, list, "stdout", "-l", "por", "--oem", "1", "--psm", "3"], {
-    stdout: "ignore",
-    stderr: "inherit",
-    env: { ...globalThis.process.env, OMP_THREAD_LIMIT: "1" },
-  });
-  const status = await process.exited;
-  assert.equal(status, 0, "Tesseract failed");
-  return performance.now() - clock;
-})().finally(() => rm(directory, { recursive: true }));
+const [result] = await Promise.allSettled([
+  (async () => {
+    const list = join(directory, "pages.txt");
+    await writeFile(list, `${pages.map((page) => resolve(cases, page)).join("\n")}\n`);
+    const clock = performance.now();
+    const process = Bun.spawn([tess, list, "stdout", "-l", "por", "--oem", "1", "--psm", "3"], {
+      stdout: "ignore",
+      stderr: "inherit",
+      env: { ...globalThis.process.env, OMP_THREAD_LIMIT: "1" },
+    });
+    const status = await process.exited;
+    assert.equal(status, 0, "Tesseract failed");
+    return performance.now() - clock;
+  })(),
+]);
+await rm(directory, { recursive: true });
+if (result.status === "rejected") {
+  console.error(result.reason);
+  process.exit(1);
+}
+const tessElapsed = result.value;
 
 console.log(
   JSON.stringify({

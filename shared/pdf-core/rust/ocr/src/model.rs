@@ -1,11 +1,15 @@
+#[cfg(not(target_arch = "wasm32"))]
 use core::array;
 
 use crate::network::{Network, inputs};
 use crate::raster::Bits;
 
+#[cfg(not(target_arch = "wasm32"))]
 const GRID: u32 = 16;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const PROTOTYPE_BYTES: usize = 48;
 pub(crate) const TRANSITION_BYTES: usize = 12;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAGIC: &[u8; 4] = b"OCR1";
 
 pub(crate) const UNCLASSIFIED: Choice = Choice {
@@ -15,11 +19,13 @@ pub(crate) const UNCLASSIFIED: Choice = Choice {
 
 static MODEL: &[u8] = include_bytes!("../data/recognition.bin");
 
+#[cfg(not(target_arch = "wasm32"))]
 type PrototypeTables<'data> = (
     &'data [[u8; PROTOTYPE_BYTES]],
     &'data [[u8; TRANSITION_BYTES]],
 );
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Features {
     pub(crate) geometry: [f32; 3],
@@ -41,6 +47,7 @@ pub(crate) struct Choice {
 #[derive(Clone, Copy)]
 enum Glyphs<'model> {
     Network(Network<'model>),
+    #[cfg(not(target_arch = "wasm32"))]
     Prototypes(&'model [[u8; PROTOTYPE_BYTES]]),
 }
 
@@ -56,6 +63,7 @@ impl<'model> Model<'model> {
             Glyphs::Network(network) => {
                 network.classify(&inputs(page, bbox, metrics, network.shape))
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Glyphs::Prototypes(records) => {
                 classify_prototypes(&features(page, bbox, metrics), records)
             }
@@ -72,11 +80,18 @@ impl<'model> Model<'model> {
                 transitions,
             });
         }
-        let (prototypes, transitions) = prototype_tables(data)?;
-        Some(Self {
-            glyphs: Glyphs::Prototypes(prototypes),
-            transitions,
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (prototypes, transitions) = prototype_tables(data)?;
+            Some(Self {
+                glyphs: Glyphs::Prototypes(prototypes),
+                transitions,
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     }
 
     pub(crate) const fn learned(self) -> bool {
@@ -88,6 +103,7 @@ impl<'model> Model<'model> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn sample_axis(low: u32, high: u32) -> [u32; 16] {
     let extent = high.saturating_sub(low);
     array::from_fn(|index| {
@@ -97,18 +113,21 @@ fn sample_axis(low: u32, high: u32) -> [u32; 16] {
     })
 }
 
+#[cfg_attr(all(target_arch = "wasm32", target_feature = "simd128"), inline(never))]
 pub(crate) fn coordinate(value: u32) -> f32 {
     let high = u16::try_from(value >> 16_u32).unwrap_or_default();
     let low = u16::try_from(value & 0xffff).unwrap_or_default();
     f32::from(high) * 65_536.0 + f32::from(low)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn pixel(row: &[u64], x: u32) -> bool {
     let index = usize::try_from(x >> 6_u32).unwrap_or(usize::MAX);
     row.get(index)
         .is_some_and(|word| word & (1_u64 << (x & 63)) != 0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn features(
     page: &Bits,
     [left, top, right, bottom]: [u32; 4],
@@ -145,12 +164,14 @@ pub(crate) fn distance(sample: &Features, prototype: &Features) -> f32 {
     geometry_distance(sample, prototype) + shape_distance(sample, prototype)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn geometry_distance(sample: &Features, prototype: &Features) -> f32 {
     let [sw, sh, sb] = sample.geometry;
     let [pw, ph, pb] = prototype.geometry;
     54.0 * (sw - pw).abs() + 80.0 * (sh - ph).abs() + 45.0 * (sb - pb).abs()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn shape_distance(sample: &Features, prototype: &Features) -> f32 {
     let [sa, sc, se, sg] = sample.shape;
     let [pa, pc, pe, pg] = prototype.shape;
@@ -162,6 +183,7 @@ fn shape_distance(sample: &Features, prototype: &Features) -> f32 {
     coordinate(ink)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_prototype(record: &[u8; PROTOTYPE_BYTES]) -> Option<(char, Features)> {
     let (shape, tail) = record.split_first_chunk::<32>()?;
     let ([first, second, third, fourth], []) = shape.as_chunks::<8>() else {
@@ -188,6 +210,7 @@ fn decode_prototype(record: &[u8; PROTOTYPE_BYTES]) -> Option<(char, Features)> 
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn prototype_tables(data: &[u8]) -> Option<PrototypeTables<'_>> {
     let body = data.strip_prefix(MAGIC)?;
     let (count_bytes, records) = body.get(16..)?.split_first_chunk::<4>()?;
@@ -203,6 +226,7 @@ fn prototype_tables(data: &[u8]) -> Option<PrototypeTables<'_>> {
     (!prototypes.is_empty()).then_some((prototypes, transitions))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn classify_prototypes(sample: &Features, records: &[[u8; PROTOTYPE_BYTES]]) -> [Choice; 4] {
     let mut choices = [UNCLASSIFIED; 4];
     let mut best = UNCLASSIFIED;
