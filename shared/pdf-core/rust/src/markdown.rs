@@ -1419,9 +1419,17 @@ fn head_candidate(blocks: &[MdBlock], tail: &MdBlock) -> Option<usize> {
     None
 }
 
-pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics) {
+pub(crate) fn join_pages(
+    pages: &mut [Vec<MdBlock>],
+    metrics: Metrics,
+    verbatim: impl Fn(usize) -> bool,
+) {
     let mut tail_page: Option<usize> = None;
     for index in 0..pages.len() {
+        if verbatim(index) {
+            tail_page = None;
+            continue;
+        }
         if let Some(previous) = tail_page
             && let Some((before, after)) = pages.split_at_mut_checked(index)
             && let (Some(left), Some(right)) = (before.get_mut(previous), after.first_mut())

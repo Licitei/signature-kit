@@ -194,6 +194,13 @@ struct PageLayout {
     tables: Vec<Table>,
 }
 
+pub(crate) enum OcrPage {
+    Text(String),
+    Words(PageContent),
+}
+
+pub(crate) type OcrPages = [(usize, OcrPage)];
+
 type LinkRect = ([f64; 4], usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1380,6 +1387,14 @@ pub(crate) fn text_limits() -> Limits {
         ..Limits::default()
     }
 }
+fn ocr_page(ocr: Option<&OcrPages>, page: usize) -> Option<&OcrPage> {
+    let pages = ocr?;
+    let index = pages
+        .binary_search_by_key(&page, |(position, _)| *position)
+        .ok()?;
+    pages.get(index).map(|(_, content)| content)
+}
+
 fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkRect> {
     links
         .iter()
@@ -1388,43 +1403,56 @@ fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkRect> {
         .map(|(index, link)| (link.rect, index))
         .collect()
 }
+#[inline(never)]
 fn single_page(
     document: &Document<'_>,
-    page: &Page,
-    page_index: usize,
+    (page_index, page): (usize, &Page),
     links: &[LinkInfo],
     limits: &Limits,
     session: &mut Session,
     mode: Mode,
+    ocr: Option<&OcrPage>,
 ) -> Outcome<PageLayout> {
+    if matches!(ocr, Some(OcrPage::Text(_))) {
+        return Ok(PageLayout::default());
+    }
     let capture = Capture {
         reposition: Reposition::Split,
         structure: true,
         split_style: mode.markdown,
     };
     let scoped = page_links(links, page_index);
-    match extract_content(document, page, limits, capture, session) {
-        Ok(content) => {
-            let mut layout = page_layout(
-                &content,
-                page.info.rotate,
-                Some(page.info.crop_box),
-                mode,
-                &scoped,
-            );
-            layout.height = page.info.crop_box[3] - page.info.crop_box[1];
-            Ok(layout)
+    let native;
+    let content = if let Some(OcrPage::Words(content)) = ocr {
+        content
+    } else {
+        match extract_content(document, page, limits, capture, session) {
+            Ok(content) => {
+                native = content;
+                &native
+            }
+            Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
+            Err(_) => return Ok(PageLayout::default()),
         }
-        Err(failure) if failure.code == FailureCode::LimitExceeded => Err(failure),
-        Err(_) => Ok(PageLayout::default()),
-    }
+    };
+    let mut layout = page_layout(
+        content,
+        page.info.rotate,
+        Some(page.info.crop_box),
+        mode,
+        &scoped,
+    );
+    layout.height = page.info.crop_box[3] - page.info.crop_box[1];
+    Ok(layout)
 }
 
+#[inline(never)]
 pub(crate) fn document_text(
     bytes: &[u8],
     page_indexes: Option<&[u32]>,
     limits: &Limits,
     options: TextOptions,
+    ocr: Option<&OcrPages>,
 ) -> Outcome<Vec<String>> {
     if bytes.len() > limits.max_pdf_bytes {
         return Err(Failure::limit("pdf exceeds size limit"));
@@ -1432,7 +1460,13 @@ pub(crate) fn document_text(
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let selected = select_pages(pages.len(), page_indexes)?;
-    opened_text(&document, &pick_pages(&pages, selected), limits, options)
+    opened_text(
+        &document,
+        &pick_pages(&pages, selected),
+        limits,
+        options,
+        ocr,
+    )
 }
 
 #[inline(never)]
@@ -1441,6 +1475,7 @@ pub(crate) fn opened_text(
     selected: &[(usize, &Page)],
     limits: &Limits,
     options: TextOptions,
+    ocr: Option<&OcrPages>,
 ) -> Outcome<Vec<String>> {
     let mode = Mode {
         markdown: options.markdown,
@@ -1460,16 +1495,16 @@ pub(crate) fn opened_text(
     for &(position, page) in selected {
         layouts.push(single_page(
             document,
-            page,
-            position,
+            (position, page),
             &all_links,
             limits,
             &mut session,
             mode,
+            ocr_page(ocr, position),
         )?);
     }
     if options.markdown {
-        return markdown_pages(&layouts, &all_links, options, limits);
+        return markdown_pages(&layouts, &all_links, options, limits, selected, ocr);
     }
     let dropped = if options.drop_running {
         running_keys(
@@ -1490,8 +1525,11 @@ pub(crate) fn opened_text(
     };
     let mut texts: Vec<String> = Vec::with_capacity(layouts.len());
     let mut total_bytes = 0_usize;
-    for (position, layout) in layouts.iter().enumerate() {
-        let text = assemble(&layout.pieces, &dropped, position);
+    for (position, (layout, &(page_index, _))) in layouts.iter().zip(selected).enumerate() {
+        let text = match ocr_page(ocr, page_index) {
+            Some(OcrPage::Text(source)) => source.clone(),
+            _ => assemble(&layout.pieces, &dropped, position),
+        };
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
@@ -1566,6 +1604,8 @@ fn markdown_pages(
     links: &[LinkInfo],
     options: TextOptions,
     limits: &Limits,
+    selected: &[(usize, &Page)],
+    ocr: Option<&OcrPages>,
 ) -> Outcome<Vec<String>> {
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
     let mut pages: Vec<Vec<MdBlock>> = layouts
@@ -1591,11 +1631,18 @@ fn markdown_pages(
         let heights: Vec<f64> = layouts.iter().map(|layout| layout.height).collect();
         drop_furniture(&mut pages, &heights);
     }
-    join_pages(&mut pages, metrics);
+    join_pages(&mut pages, metrics, |index| {
+        selected
+            .get(index)
+            .is_some_and(|&(position, _)| matches!(ocr_page(ocr, position), Some(OcrPage::Text(_))))
+    });
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
     let mut total_bytes = 0_usize;
-    for blocks in &pages {
-        let text = render_page(blocks, links);
+    for (blocks, &(page_index, _)) in pages.iter().zip(selected) {
+        let text = match ocr_page(ocr, page_index) {
+            Some(OcrPage::Text(source)) => source.clone(),
+            _ => render_page(blocks, links),
+        };
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
@@ -1605,10 +1652,12 @@ fn markdown_pages(
     Ok(texts)
 }
 
+#[inline(never)]
 pub(crate) fn document_tables(
     bytes: &[u8],
     page_indexes: Option<&[u32]>,
     limits: &Limits,
+    ocr: Option<&OcrPages>,
 ) -> Outcome<Vec<Table>> {
     if bytes.len() > limits.max_pdf_bytes {
         return Err(Failure::limit("pdf exceeds size limit"));
@@ -1616,7 +1665,7 @@ pub(crate) fn document_tables(
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let selected = select_pages(pages.len(), page_indexes)?;
-    opened_tables(&document, &pick_pages(&pages, selected), limits)
+    opened_tables(&document, &pick_pages(&pages, selected), limits, ocr)
 }
 
 #[inline(never)]
@@ -1624,6 +1673,7 @@ pub(crate) fn opened_tables(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
     limits: &Limits,
+    ocr: Option<&OcrPages>,
 ) -> Outcome<Vec<Table>> {
     let mode = Mode {
         markdown: false,
@@ -1634,7 +1684,15 @@ pub(crate) fn opened_tables(
     let mut tables: Vec<Table> = Vec::new();
     let mut total_bytes = 0_usize;
     for &(position, page) in selected {
-        let layout = single_page(document, page, position, &[], limits, &mut session, mode)?;
+        let layout = single_page(
+            document,
+            (position, page),
+            &[],
+            limits,
+            &mut session,
+            mode,
+            ocr_page(ocr, position),
+        )?;
         for mut table in layout.tables {
             table.page_index = u32::try_from(position).unwrap_or(u32::MAX);
             total_bytes = table
@@ -2051,7 +2109,7 @@ mod tests {
             state
         };
         for fixture in fixtures {
-            drop(document_text(fixture, None, &limits, OPTIONS).unwrap());
+            drop(document_text(fixture, None, &limits, OPTIONS, None).unwrap());
             for _ in 0_i32..150_i32 {
                 let mut bytes = fixture.to_vec();
                 for _ in 0..=(next() & 7) {
@@ -2066,7 +2124,9 @@ mod tests {
                 if next().is_multiple_of(4) {
                     bytes.truncate(cut);
                 }
-                drop(black_box(document_text(&bytes, None, &limits, OPTIONS)));
+                drop(black_box(document_text(
+                    &bytes, None, &limits, OPTIONS, None,
+                )));
             }
         }
     }
@@ -2074,13 +2134,13 @@ mod tests {
     #[test]
     fn page_selection_validates_indexes() {
         let limits = text_limits();
-        let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits, OPTIONS).unwrap_err();
+        let error = document_text(b"%PDF-1.4\n", Some(&[0]), &limits, OPTIONS, None).unwrap_err();
         assert_eq!(error.code, FailureCode::InvalidPdf);
         let oversized = Limits {
             max_pdf_bytes: 4,
             ..Limits::default()
         };
-        let error_2 = document_text(b"%PDF-1.4\n", None, &oversized, OPTIONS).unwrap_err();
+        let error_2 = document_text(b"%PDF-1.4\n", None, &oversized, OPTIONS, None).unwrap_err();
         assert_eq!(error_2.code, FailureCode::LimitExceeded);
     }
 }
@@ -2109,11 +2169,11 @@ mod structure_tests {
     };
 
     fn tables_of(bytes: &[u8]) -> Vec<Table> {
-        document_tables(bytes, None, &text_limits()).unwrap()
+        document_tables(bytes, None, &text_limits(), None).unwrap()
     }
 
     fn pages_of(bytes: &[u8], options: TextOptions) -> Vec<String> {
-        document_text(bytes, None, &text_limits(), options).unwrap()
+        document_text(bytes, None, &text_limits(), options, None).unwrap()
     }
 
     #[test]
@@ -2528,10 +2588,10 @@ mod structure_tests {
         assert_eq!(tables.len(), 2);
         assert_eq!((tables[0].page_index, tables[1].page_index), (0, 1));
         assert_eq!(tables[0].rows, tables[1].rows);
-        let second = document_tables(&bytes, Some(&[1]), &text_limits()).unwrap();
+        let second = document_tables(&bytes, Some(&[1]), &text_limits(), None).unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].page_index, 1);
-        let missing = document_tables(&bytes, Some(&[5]), &text_limits()).unwrap_err();
+        let missing = document_tables(&bytes, Some(&[5]), &text_limits(), None).unwrap_err();
         assert_eq!(missing.code, FailureCode::InvalidPdf);
     }
 
@@ -2732,7 +2792,7 @@ mod structure_tests {
             markdown: false,
             drop_running: true,
         };
-        let one = document_text(&bytes, Some(&[0]), &text_limits(), options).unwrap();
+        let one = document_text(&bytes, Some(&[0]), &text_limits(), options, None).unwrap();
         assert!(one[0].contains("Prefeitura Municipal de Marilac"));
     }
 
@@ -2803,8 +2863,10 @@ mod structure_tests {
                     *byte = u8::try_from(next().rem_euclid(255)).unwrap_or(1).max(1);
                 }
             }
-            drop(black_box(document_tables(&bytes, None, &limits)));
-            drop(black_box(document_text(&bytes, None, &limits, MARKDOWN)));
+            drop(black_box(document_tables(&bytes, None, &limits, None)));
+            drop(black_box(document_text(
+                &bytes, None, &limits, MARKDOWN, None,
+            )));
         }
     }
 
@@ -2820,13 +2882,13 @@ mod structure_tests {
             ..text_limits()
         };
         for options in [PLAIN, MARKDOWN] {
-            let error = document_text(&bytes, None, &tight, options).unwrap_err();
+            let error = document_text(&bytes, None, &tight, options, None).unwrap_err();
             assert_eq!(error.code, FailureCode::LimitExceeded);
         }
-        let error = document_tables(&bytes, None, &tight).unwrap_err();
+        let error = document_tables(&bytes, None, &tight, None).unwrap_err();
         assert_eq!(error.code, FailureCode::LimitExceeded);
         assert_eq!(
-            document_text(&bytes, Some(&[0]), &tight, PLAIN).unwrap(),
+            document_text(&bytes, Some(&[0]), &tight, PLAIN, None).unwrap(),
             ["ok"]
         );
     }
@@ -2896,7 +2958,7 @@ mod structure_tests {
         let all = pages_of(&bytes, MARKDOWN);
         assert!(all[0].contains("(https://example.com/one)"), "{all:?}");
         assert!(all[1].contains("(https://example.com/two)"), "{all:?}");
-        let second = document_text(&bytes, Some(&[1]), &text_limits(), MARKDOWN).unwrap();
+        let second = document_text(&bytes, Some(&[1]), &text_limits(), MARKDOWN, None).unwrap();
         assert_eq!(second, [all[1].clone()]);
     }
 
@@ -2916,7 +2978,7 @@ mod structure_tests {
         }
         content.push_str(&text(50.0, 700.0, 10.0, "texto"));
         let bytes = document(&[page(content)], &[]);
-        drop(document_tables(&bytes, None, &text_limits()).unwrap());
-        drop(document_text(&bytes, None, &text_limits(), MARKDOWN).unwrap());
+        drop(document_tables(&bytes, None, &text_limits(), None).unwrap());
+        drop(document_text(&bytes, None, &text_limits(), MARKDOWN, None).unwrap());
     }
 }

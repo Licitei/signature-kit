@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Recognize scanned pages with caller-provided OCR
+
+`pageDiagnostics` classifies each selected page's text layer, and `pageImages` returns dominant scan images with their placement and DPI. The full-load and lazy Effect and Promise clients accept an OCR callback for text, Markdown, and tables. Positioned results use the native layout pipeline, and `textPages` reports whether each result came from native text or OCR.
+
 ### Read selected pages from a byte-range source
 
 `PdfCore.openLazy(source)` opens a scoped range reader for text, Markdown, tables, and rendering. It caches fetched ranges across calls, preserves original page indexes, and reports full-load fallback in its stats. The Promise client supports `close()` and `await using`. Source adapters cover bytes, Blob, Node file handles, and Effect `FileSystem`.

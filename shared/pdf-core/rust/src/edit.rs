@@ -1261,6 +1261,7 @@ mod tests {
                 drop_running: false,
                 markdown: false,
             },
+            None,
         )
         .unwrap()
     }

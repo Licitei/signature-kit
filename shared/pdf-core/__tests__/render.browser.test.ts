@@ -11,6 +11,7 @@ import {
   paintDisplayList,
   prepareDisplayListImages,
   renderDisplayListImage,
+  renderOcrPage,
 } from "../dist/canvas.js";
 import type { PdfCoreImageSource } from "../dist/canvas.js";
 import type { PdfCoreDisplayList } from "../dist/config.js";
@@ -288,6 +289,27 @@ describe("pdf-core page rendering", () => {
     expect(image.height).toBeLessThanOrEqual(16_384);
     expect(image.width).toBeGreaterThan(8_000);
   }, 60_000);
+
+  it("maps a rendered OCR image back to a rotated page crop box", async () => {
+    const url = fixtures["./fixtures/rotated-cropped.pdf"];
+    if (url === undefined) return expect.fail("rotated fixture missing");
+    const [list] = await renderList(await fetchBytes(url));
+    if (list === undefined) return expect.fail("missing display list");
+    expect(list.rotate).toBe(90);
+
+    const raster = await Effect.runPromise(renderOcrPage(list));
+    const [x0, y0, x1, y1] = list.view;
+    expect(raster).toMatchObject({
+      mediaType: "image/png",
+      width: y1 - y0,
+      height: x1 - x0,
+      dpiX: 72,
+      dpiY: 72,
+    });
+    const expected = [0, y1 - y0, x0 - x1, 0, x1, y0];
+    raster.placement.forEach((value, index) => expect(value).toBeCloseTo(expected[index] ?? 0));
+    expect(Array.from(raster.bytes.slice(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  }, 30_000);
 
   it("rasterizes a page with no dominant image as PNG at the requested scale", async () => {
     const url = fixtures["./fixtures/links.pdf"];

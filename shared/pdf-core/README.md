@@ -27,7 +27,7 @@ Apps that do not use Effect skip `effect` and use the Promise client (see [Witho
 
 `pageDiagnostics(pdf, { pageIndexes })` returns one record per selected page. The options are optional. A lazy document also exposes `pageDiagnostics({ pageIndexes })` and uses the same range planner as `text`.
 
-The engine counts shown glyphs, unmapped glyphs, U+FFFD replacement characters, invisible glyphs, visible non-whitespace Unicode characters, and painted images in the content interpreter. `textArea` and `rasterCoverage` are fractions of the crop box. Axis-aligned image overlap is counted once. Overlap involving rotated or sheared placements is estimated from bands of the clipped image shapes. The interpreter uses glyph metric boxes and the bounds of clip paths, and treats white device-color text as invisible against the assumed paper background. Visibility is estimated from content-stream operations.
+Each record also includes the page crop box (`pageBox`) and rotation in degrees (`rotate`). The engine counts shown glyphs, unmapped glyphs, U+FFFD replacement characters, invisible glyphs, visible non-whitespace Unicode characters, and painted images in the content interpreter. `textArea` and `rasterCoverage` are fractions of the crop box. Axis-aligned image overlap is counted once. Overlap involving rotated or sheared placements is estimated from bands of the clipped image shapes. The interpreter uses glyph metric boxes and the bounds of clip paths, and treats white device-color text as invisible against the assumed paper background. Visibility is estimated from content-stream operations.
 
 - `none` means there were zero glyphs. An image-only scan and a blank page can be distinguished by their raster coverage.
 - `weak` means there were glyphs, but none yielded visible usable characters, at least half were invisible, at least 20% were unmapped, or the page had at least 75% raster coverage with fewer than 16 visible characters.
@@ -236,6 +236,22 @@ Both clients accept a second argument with range tuning. The defaults are `probe
 
 After building the repository, run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
 
+## OCR during extraction
+
+Pass `ocr.recognize` to `text`, `textPages` or `tables` on either a full PDF or a lazy document. The default `auto` policy visits selected pages with a weak or absent text layer. `always` visits every selected page and `never` disables recognition. Set `concurrency` from 1 to 8. The default is 2.
+
+The callback receives the page index, original text-layer classification, crop box and rotation, plus the image bytes, dimensions, media type and DPI. Return a `kind: "words"` result with the same image dimensions and word boxes measured from its top-left corner. The lower and right edges of a word box are exclusive. Positioned words replace the page's previous text layer and go through the same layout, Markdown and table extraction used for native text.
+
+A `kind: "text"` result uses the provided text verbatim. Markdown extraction uses the provided `markdown`, falling back to `text`. These pages retain their position and act as boundaries for cross-page paragraph joining. Table extraction needs positioned words.
+
+`textPages` reports each page's `source` and original `textLayer`. For recognized words it also reports the mean of the confidences supplied by the recognizer, when available. Tables rebuilt from positioned words have `source: "ocr"`.
+
+Each selected page first uses its dominant image from `pageImages`, with JPEG passed through and other supported rasters encoded as PNG. The request includes the placement matrix in PDF user space, the page rotation, and any JPEG decoding metadata. Positioned OCR boxes use the supplied image's original pixel coordinates. The layout engine applies page rotation after the placement maps those coordinates into PDF user space.
+
+If no image is available, supply `ocr.render` to rasterize the page display list. Browser Effect callers can pass `renderOcrPage` from `@signature-kit/pdf-core/canvas`. A custom renderer returns the encoded image and a six-number matrix mapping its bottom-left unit square into PDF user space. Without a renderer, an OCR-selected page with no usable image fails with `pdfCore.PAGE_IMAGE_UNAVAILABLE`.
+
+The Effect methods retain the callback's error and service requirements. Promise clients accept an async recognizer and pass an `AbortSignal` as its second argument. A rejected Promise becomes `pdfCore.OCR_FAILED` with the corresponding page index.
+
 ## Wasm ABI
 
 The module exports `memory` and the functions below. The caller owns input and result buffers and releases them with `pdf_core_free`. Each Wasm instance owns its lazy handles until `pdf_core_lazy_close`.
@@ -260,7 +276,7 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
 | `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = return 8-bit grayscale rasters (`pdf_core_page_images`).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = return 8-bit grayscale rasters (`pdf_core_page_images`), bit 7 = table output (`pdf_core_extract_ocr`).
 
 ### Lazy handle and plan
 
@@ -304,13 +320,19 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 
 `pdf_core_tables` uses the same result block and status codes; only `flags` bit 2 applies. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`1`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 48-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`) and `bbox` (4 × `f64`) — followed by its cells in row-major order, 56 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob). The UTF-8 text blob follows the last record and is padded to 8.
 
-### Page diagnostics payload (version 1)
+### Page diagnostics payload (version 2)
 
-The 16-byte header contains four little-endian `u32` values. These are magic (`0x47444450`, "PDDG"), version (`1`), page count, and padding. Each 48-byte record contains eight `u32` values in the order page index, glyphs, unmapped, replacement, invisible, visible characters, image count, text-layer tag (`0` none, `1` weak, `2` usable). Two little-endian `f64` values follow for text area and raster coverage.
+The 16-byte header holds `magic` (`0x47444450`), `version` (`2`), page count and padding as four little-endian `u32` values. Each 88-byte record holds the page index, glyph count, unmapped glyph count, replacement count, invisible glyph count, visible character count, image count, and text layer (0 none, 1 weak, 2 usable) as eight `u32` values. The remaining fields are text area, raster coverage, crop box (six `f64` values in total), signed rotation (`i32`), and padding.
 
 ### Page images payload (version 1)
 
 The header contains magic (`0x4D494450`, "PDIM"), version (`1`), page count, and padding as little-endian `u32` values. Each record starts with the page index and a tag, both `u32`. Tags `0`–`3` end the record and report no dominant image, unsupported filter, decode failure, and masked JPEG, respectively. Tags `4`, `5`, and `6` identify PNG, JPEG, and raw grayscale. These carry six more `u32` values for width, height, rotation, CMYK flag, byte length, and JPEG `/Decode` value count. Nine `f64` values follow for horizontal DPI, vertical DPI, coverage, and the six placement coefficients. Then come the JPEG `/Decode` values as `f64`, followed by the image bytes and padding to 8 bytes.
+
+### OCR extraction payload
+
+`pdf_core_extract_ocr(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, ocr_ptr, ocr_len)` returns a text block, or a tables block when flags bit 7 is set. Selection, Markdown and running-header flags work as in text extraction. `pdf_core_lazy_run_ocr(handle, profile, flags, ocr_ptr, ocr_len)` uses the planned page selection, with profile 0 for text and 1 for tables.
+
+The payload is little-endian and unaligned. It contains records in strictly increasing page-index order. Each record starts with the page index and kind (two `u32` values). Kind 0 contains a byte string with the resolved verbatim text. Kind 1 contains a `u32` word count followed by word records. Each word contains its PDF rectangle (four `f64`), baseline direction (two `f64`), font size (`f64`) and text. Byte strings use a `u32` UTF-8 byte count followed by the bytes.
 
 ### Signatures payload (version 2)
 
@@ -375,7 +397,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1104 KiB.
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -Os`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay within 1144 KiB.
 
 ## License
 

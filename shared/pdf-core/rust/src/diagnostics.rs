@@ -24,9 +24,11 @@ pub(crate) struct PageDiagnostics {
     pub glyphs: u32,
     pub image_count: u32,
     pub invisible: u32,
+    pub page_box: Rect,
     pub page_index: u32,
     pub raster_coverage: f64,
     pub replacement: u32,
+    pub rotate: i32,
     pub text_area: f64,
     pub text_layer: TextLayer,
     pub unmapped: u32,
@@ -48,10 +50,12 @@ impl PageScan {
         self.dominant
     }
 
-    pub(crate) fn finish(self, page_index: usize) -> Outcome<PageDiagnostics> {
+    fn finish(self, page_index: usize, rotate: i32) -> Outcome<PageDiagnostics> {
         let mut diagnostics = self.diagnostics;
         diagnostics.page_index = u32::try_from(page_index)
             .map_err(|_conversion| Failure::limit("page index exceeds 32-bit limit"))?;
+        diagnostics.page_box = self.crop;
+        diagnostics.rotate = rotate;
         let [x0, y0, x1, y1] = self.crop;
         let page_area = (x1 - x0) * (y1 - y0);
         diagnostics.text_area = fraction(&self.glyph_boxes, page_area);
@@ -361,7 +365,7 @@ pub(crate) fn opened_diagnostics(
             &mut session,
             Some(&mut scan),
         )?);
-        diagnostics.push(scan.finish(index)?);
+        diagnostics.push(scan.finish(index, page.info.rotate)?);
     }
     Ok(diagnostics)
 }
