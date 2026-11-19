@@ -63,8 +63,8 @@ The output length is `8 + width * height`.
 
 The rasterizer handles solid fills, outlines, approximate strokes, clipping,
 and nearest-neighbor RGBA images. pdf-core converts decoded indexed, gray and
-RGB sources to RGBA before emitting them. Compressed JPEG sources are rendered
-as mid-gray until the OCR JPEG decoder is integrated. Font substitution
+RGB sources to RGBA before emitting them. Compressed JPEGs are decoded by the OCR vision decoder, including progressive
+images. Unsupported or malformed JPEG color sources use mid-gray. Font substitution
 (`OP_TEXT`), dash patterns, blend modes and standalone shading are unsupported.
 Fill and stroke gradients use the middle stop.
 

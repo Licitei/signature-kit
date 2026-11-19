@@ -768,7 +768,7 @@ export const makePdfCore = (
       );
       const pageIndexes = options.pageIndexes ?? [];
       const flags =
-        (options.text || options.glyphs ? FLAG_TEXT : 0) |
+        (options.text === true || options.glyphs === true ? FLAG_TEXT : 0) |
         (options.links ? FLAG_LINKS : 0) |
         (options.runs === true ? FLAG_RUNS : 0) |
         (options.glyphs === true ? FLAG_GLYPHS : 0) |

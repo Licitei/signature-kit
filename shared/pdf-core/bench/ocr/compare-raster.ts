@@ -33,10 +33,11 @@ const bundle = await Bun.build({
   format: "esm",
 });
 const browserSource = await bundle.outputs[0]?.text();
-if (!bundle.success || browserSource === undefined || rasterize === undefined) process.exit(1);
+if (bundle.success !== true || browserSource === undefined || rasterize === undefined)
+  process.exit(1);
 
 const browser = await chromium.launch();
-await (async () => {
+try {
   const page = await browser.newPage();
   const moduleUrl = `data:text/javascript;base64,${Buffer.from(browserSource).toString("base64")}`;
   let pixels = 0;
@@ -49,9 +50,15 @@ await (async () => {
       pageIndexes: [0],
       scale,
     });
-    if (list === undefined) continue;
+    if (list === undefined) {
+      console.error(`Could not build a display list for ${file}`);
+      continue;
+    }
     const raster = rasterize(renderPayload(list), scale);
-    if (raster === undefined) continue;
+    if (raster === undefined) {
+      console.error(`Could not rasterize ${file}`);
+      continue;
+    }
     const { ops, blobs, ...metadata } = list;
     const sample: Sample = {
       list: metadata,
@@ -94,4 +101,6 @@ await (async () => {
     }),
   );
   if (timings.length !== count) process.exitCode = 1;
-})().finally(() => browser.close());
+} finally {
+  await browser.close();
+}
