@@ -108,11 +108,86 @@ impl Bits {
             }
         }
     }
+
+    pub(crate) fn set_run(&mut self, yy: u32, start: u32, end: u32, ink: bool) {
+        if end <= start || end > self.width {
+            return;
+        }
+        let Some((first, first_bit)) = self.location(start, yy) else {
+            return;
+        };
+        let Some((last, last_bit)) = self.location(end.saturating_sub(1), yy) else {
+            return;
+        };
+        if let Some(words) = self.words.get_mut(first..=last) {
+            let low = 0_u64.wrapping_sub(first_bit);
+            let high = last_bit.wrapping_sub(1) | last_bit;
+            let count = words.len();
+            for (index, word) in words.iter_mut().enumerate() {
+                let left = if index == 0 { low } else { u64::MAX };
+                let right = if index.saturating_add(1) == count {
+                    high
+                } else {
+                    u64::MAX
+                };
+                if ink {
+                    *word |= left & right;
+                } else {
+                    *word &= !(left & right);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn ink_runs<Visit>(row: &[u64], width: u32, mut visit: Visit)
+where
+    Visit: FnMut(u32, u32),
+{
+    let mut offset = 0_u32;
+    let mut pending = None;
+    for &packed in row {
+        let mut word = packed;
+        if let Some(start) = pending {
+            let ones = word.trailing_ones();
+            if ones == 64 {
+                offset = offset.saturating_add(64);
+                continue;
+            }
+            visit(start, offset.saturating_add(ones).min(width));
+            pending = None;
+            word &= u64::MAX.wrapping_shl(ones);
+        }
+        while word != 0 {
+            let start = word.trailing_zeros();
+            let length = word.wrapping_shr(start).trailing_ones();
+            let end = start.saturating_add(length);
+            let left = offset.saturating_add(start);
+            if end == 64 {
+                pending = Some(left);
+                break;
+            }
+            if left < width {
+                visit(left, offset.saturating_add(end).min(width));
+            }
+            word &= u64::MAX.wrapping_shl(end);
+        }
+        offset = offset.saturating_add(64);
+    }
+    if let Some(start) = pending
+        && start < width
+    {
+        visit(start, width);
+    }
 }
 
 pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize, RasterError> {
     let count = u64::from(width).saturating_mul(u64::from(height));
-    if count == 0 || count > 32_000_000 {
+    if count == 0
+        || count > 32_000_000
+        || width > u32::from(u16::MAX)
+        || height > u32::from(u16::MAX)
+    {
         return Err(RasterError::Dimensions);
     }
     usize::try_from(count).map_err(|_cause: TryFromIntError| RasterError::Dimensions)

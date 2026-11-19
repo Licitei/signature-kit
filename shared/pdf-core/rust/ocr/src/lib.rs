@@ -1,2 +1,10 @@
 mod abi;
+mod binarize;
+pub mod clean;
+mod deskew;
+pub mod engine;
+pub mod jpeg;
+mod postprocess;
 pub mod raster;
+mod recognize;
+pub mod segment;
