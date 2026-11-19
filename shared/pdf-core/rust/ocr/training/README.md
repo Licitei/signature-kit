@@ -182,6 +182,43 @@ benchmark measures reading order and page segmentation on less constrained
 inputs. During timing, other jobs shared the Xeon E5-2680 v4 host and its
 logical CPU 0. Comparisons establish the observed latency in these runs.
 
+### Full-page benchmark
+
+Values are raw CER and mean milliseconds per page from the common harness.
+Clean and degraded each use eight held-out 150 DPI native PDF pages.
+The real set uses all 20 hash-verified page references. Three CLI trials
+were run per page. Tesseract used PSM 3.
+
+| Engine                     |    Clean CER / ms | Degraded CER / ms | Real-page CER / ms |
+| -------------------------- | ----------------: | ----------------: | -----------------: |
+| SignatureKit glyph         |    12.07% / 66.18 |    28.17% / 81.59 |    192.92% / 62.35 |
+| v3 mixed, greedy           | 15.96% / 4,871.54 | 23.40% / 4,852.78 | 107.74% / 5,441.96 |
+| v3 mixed, beam and lexicon | 14.25% / 3,593.31 | 21.51% / 1,816.43 | 110.96% / 2,190.77 |
+| Tesseract LSTM 5.3.0       |  4.00% / 5,667.12 | 12.98% / 4,441.45 |  11.15% / 2,036.13 |
+| Tesseract fast 5.3.0       |  4.03% / 2,973.21 | 13.25% / 2,599.57 |  14.05% / 1,313.85 |
+
+CER can exceed 100% when inserted text outnumbers reference characters.
+Against greedy CTC, beam and lexicon lowered clean and degraded CER by
+1.71 and 1.89 points and raised real-page CER by 3.22 points. These variants
+were timed in separate shared-host windows, with different levels of CPU
+contention. The wall times do not isolate decoder overhead.
+
+```sh
+for dataset in "$out/clean-pages/test" "$out/scan-pages/test" "$out/real-pages"; do
+  OCR_BENCH_CTC_MODEL="$rust/ocr/data/sequence-v3-mixed.bin" \
+    "$runner" --cpu 3 --mem 6G bun "$bench/run.ts" --dataset "$dataset" --engines ours-native
+  "$runner" --cpu 2 --mem 4G bun "$bench/run.ts" \
+    --dataset "$dataset" --engines tesseract-lstm,tesseract-fast
+done
+```
+
+Build with `ctc-v3,ctc-probe` for greedy inference and
+`ctc-v3,ctc-beam,ocr-lexicon` for the second v3 configuration. To generate
+the clean and degraded pages, use the corpus root above and
+`--labels poppler --mode pages --split test --dpi 150 --max-docs 4
+--max-pages 2 --seed d3`, with `--preset clean` and `--preset scan`
+respectively. Use `prepare-real.ts` for the 20 real pages.
+
 ## Training and evaluation
 
 From the workspace root, install the repository dependencies and make Bun,

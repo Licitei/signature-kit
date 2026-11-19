@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parsePgm } from "../../../bench/ocr/degradation.ts";
 
 async function loadWasm(path) {
   const { instance } = await WebAssembly.instantiate(await readFile(path));
@@ -9,13 +10,11 @@ async function loadWasm(path) {
 }
 
 function pageInput(pgm, label, weights) {
-  const header = /^P5\s+(\d+)\s+(\d+)\s+255\n/.exec(pgm.toString("ascii", 0, 80));
-  assert.ok(header !== null, "Expected an 8-bit P5 page");
-  const width = Number(header[1]);
-  const height = Number(header[2]);
-  const pixels = pgm.subarray(header[0].length);
+  const raster = parsePgm(pgm);
+  assert.ok(raster !== undefined, "Expected an 8-bit P5 page");
+  const { width, height, pixels } = raster;
   assert.ok(
-    width * height === pixels.length && label.width === width && label.height === height,
+    label.width === width && label.height === height,
     "Page dimensions do not match the fixtures",
   );
   const input = Buffer.alloc(16 + weights.length + pixels.length);
@@ -24,7 +23,7 @@ function pageInput(pgm, label, weights) {
   input.writeFloatLE(label.dpi, 8);
   input.writeUInt32LE(weights.length, 12);
   weights.copy(input, 16);
-  pixels.copy(input, 16 + weights.length);
+  input.set(pixels, 16 + weights.length);
   return input;
 }
 

@@ -1,3 +1,4 @@
+import { parsePgm } from "../../../bench/ocr/degradation.ts";
 import { readFile, mkdir, writeFile, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
@@ -506,36 +507,9 @@ async function bootstrap(wasmPath, output, trainFontDir, valFontDir, testFontDir
 }
 
 function readPgm(data) {
-  let offset = 0;
-  const whitespace = (byte) => byte === 32 || (byte >= 9 && byte <= 13);
-  const token = () => {
-    for (;;) {
-      while (whitespace(data[offset])) offset += 1;
-      if (data[offset] !== 35) break;
-      while (offset < data.length && data[offset] !== 10) offset += 1;
-    }
-    const start = offset;
-    while (offset < data.length && !whitespace(data[offset])) offset += 1;
-    return ansi.decode(data.subarray(start, offset));
-  };
-  const magic = token();
-  const width = Number(token());
-  const height = Number(token());
-  const max = Number(token());
-  const payload = width * height;
-  const separator = data.length - offset - payload;
-  if (
-    magic !== "P5" ||
-    max !== 255 ||
-    ![width, height, payload].every(Number.isSafeInteger) ||
-    width < 1 ||
-    height < 1 ||
-    (separator !== 1 && !(separator === 2 && data[offset] === 13 && data[offset + 1] === 10)) ||
-    !whitespace(data[offset])
-  ) {
-    fail("Invalid binary P5 grayscale image");
-  }
-  return { width, height, pixels: data.subarray(offset + separator) };
+  const raster = parsePgm(data);
+  if (raster === undefined) fail("Invalid binary P5 grayscale image");
+  return raster;
 }
 
 function inkBounds({ pixels, width }, box) {

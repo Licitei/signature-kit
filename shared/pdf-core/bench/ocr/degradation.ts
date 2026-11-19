@@ -59,15 +59,38 @@ export function pgm({ width, height, pixels }: Raster): Blob {
 }
 
 export function parsePgm(bytes: Uint8Array<ArrayBuffer>): Raster | undefined {
-  const header = /^P5\s+(\d+)\s+(\d+)\s+255\n/.exec(
-    new TextDecoder().decode(bytes.subarray(0, 80)),
-  );
-  if (header === null) return undefined;
-  const width = Number(header[1]);
-  const height = Number(header[2]);
-  const pixels = bytes.subarray(header[0].length);
-  if (width < 1 || height < 1 || width * height !== pixels.length) return undefined;
-  return { width, height, pixels };
+  const decoder = new TextDecoder();
+  const whitespace = (byte: number | undefined) =>
+    byte === 32 || (byte !== undefined && byte >= 9 && byte <= 13);
+  let offset = 0;
+  const token = () => {
+    for (;;) {
+      while (whitespace(bytes[offset])) offset += 1;
+      if (bytes[offset] !== 35) break;
+      while (offset < bytes.length && bytes[offset] !== 10) offset += 1;
+    }
+    const start = offset;
+    while (offset < bytes.length && !whitespace(bytes[offset])) offset += 1;
+    return decoder.decode(bytes.subarray(start, offset));
+  };
+  if (token() !== "P5") return undefined;
+  const widthToken = token();
+  const heightToken = token();
+  if (!/^\d+$/u.test(widthToken) || !/^\d+$/u.test(heightToken) || token() !== "255")
+    return undefined;
+  const width = Number(widthToken);
+  const height = Number(heightToken);
+  const size = width * height;
+  const separator = bytes.length - offset - size;
+  if (
+    ![width, height, size].every(Number.isSafeInteger) ||
+    width < 1 ||
+    height < 1 ||
+    !whitespace(bytes[offset]) ||
+    (separator !== 1 && !(separator === 2 && bytes[offset] === 13 && bytes[offset + 1] === 10))
+  )
+    return undefined;
+  return { width, height, pixels: bytes.subarray(offset + separator) };
 }
 
 export function mapDegradedBox(
