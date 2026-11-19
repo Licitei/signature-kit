@@ -1,0 +1,37 @@
+{
+  "id": "scan-09-038",
+  "dpi": 150,
+  "width": 1240,
+  "height": 1753,
+  "source": "0039p_registro-de-precos-para-futura-e-eventual-aquisica_08349011000193-2026-116/edital.pdf#page=38",
+  "degradation": {
+    "real": true,
+    "encoding": "image"
+  },
+  "imageSha256": "85c979b6d9983aa323936cfa0388b2f13c8bed1f047c8741f3dcd7e7917c4cb7",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 66,
+  "text": "Estado do Rio Grande do Norte\nPREFEITURA MUNICIPAL DE APODI\nCNPJ/MF nº 08.349.011/0001-93\nPraça Francisco Pinto, 56 - Centro - CEP 59700-000\nFax: (084) 3333-2124 - Fones: (084) 3333-2122/2123, gabinetecivilapodi@gmail.com\nEDITAL DE PREGÃO ELETRÔNICO Nº 031/2026\nPROCESSO ADMINISTRATIVO Nº 02030.000070/2026\nCONTRATANTE\nPREFEITURA MUNICIPAL DE APODI/RN\nCNPJ/MF Nº: 08.349.011/0001-93\nLUIS SABINO DA COSTA\nPREFEITO\nCONTRATADO\nTestemunhas:\n1. Nome:\nCPF:\n2. Nome:\nCPF:\nAssinatura Eletrônica: b94fe33a5f26f12d5ffa2a10111b6c0a8fe8f54fa1dd22003c0f9de654edfd76\n38",
+  "lines": [
+    "Estado do Rio Grande do Norte",
+    "PREFEITURA MUNICIPAL DE APODI",
+    "CNPJ/MF nº 08.349.011/0001-93",
+    "Praça Francisco Pinto, 56 - Centro - CEP 59700-000",
+    "Fax: (084) 3333-2124 - Fones: (084) 3333-2122/2123, gabinetecivilapodi@gmail.com",
+    "EDITAL DE PREGÃO ELETRÔNICO Nº 031/2026",
+    "PROCESSO ADMINISTRATIVO Nº 02030.000070/2026",
+    "CONTRATANTE",
+    "PREFEITURA MUNICIPAL DE APODI/RN",
+    "CNPJ/MF Nº: 08.349.011/0001-93",
+    "LUIS SABINO DA COSTA",
+    "PREFEITO",
+    "CONTRATADO",
+    "Testemunhas:",
+    "1. Nome:",
+    "CPF:",
+    "2. Nome:",
+    "CPF:",
+    "Assinatura Eletrônica: b94fe33a5f26f12d5ffa2a10111b6c0a8fe8f54fa1dd22003c0f9de654edfd76",
+    "38"
+  ]
+}

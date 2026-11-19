@@ -1,0 +1,30 @@
+{
+  "id": "scan-03-022",
+  "dpi": 150,
+  "width": 1225,
+  "height": 1757,
+  "source": "0022p_contratacao-de-empresa-especializada-para-fornecim_07705817000104-2026-149/edital.pdf#page=22",
+  "degradation": {
+    "real": true,
+    "encoding": "jpeg"
+  },
+  "imageSha256": "182c2fedfee5c04b1e8e10e1d6c88338c1c163e70521eb31b02e5e6b7d5f5c33",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 64,
+  "text": "Tamboril\nPREFEITURA\n24.13. Não havendo expediente na Prefeitura Municipal de Tamboril na data marcada, a sessão\nrealizar-se-ão primeiro dia útil subsequente, na mesma hora e local.\n24.14. O Município de Tamboril se reserva ao direito de anular ou revogar a presente licitação, no\ntotal ou em parte, sem que caiba indenização de qualquer espécie.\nTamboril – CE, 08 de outubro de 2026.\nCICERO GLAUBIO CAMPOS SILVANO\nSECRETÁRIO DA SEGURANÇA PÚBLICA E CIDADANIA\nCentro Administrativo Antônio Mota\nRua Germiniano Rodrigues de Farias S/N\nBairro São Pedro CNPJ 07.705.817/0001-04\nwww.tamboril.ce.gov.br",
+  "lines": [
+    "Tamboril",
+    "PREFEITURA",
+    "24.13. Não havendo expediente na Prefeitura Municipal de Tamboril na data marcada, a sessão",
+    "realizar-se-ão primeiro dia útil subsequente, na mesma hora e local.",
+    "24.14. O Município de Tamboril se reserva ao direito de anular ou revogar a presente licitação, no",
+    "total ou em parte, sem que caiba indenização de qualquer espécie.",
+    "Tamboril – CE, 08 de outubro de 2026.",
+    "CICERO GLAUBIO CAMPOS SILVANO",
+    "SECRETÁRIO DA SEGURANÇA PÚBLICA E CIDADANIA",
+    "Centro Administrativo Antônio Mota",
+    "Rua Germiniano Rodrigues de Farias S/N",
+    "Bairro São Pedro CNPJ 07.705.817/0001-04",
+    "www.tamboril.ce.gov.br"
+  ]
+}

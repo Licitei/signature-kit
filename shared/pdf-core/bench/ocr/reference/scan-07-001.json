@@ -1,0 +1,40 @@
+{
+  "id": "scan-07-001",
+  "dpi": 200,
+  "width": 1649,
+  "height": 2282,
+  "source": "0034p_aquisicao-de-kits-de-laboratorio-de-ciencias-e-mat_12261228000114-2026-60/edital.pdf#page=1",
+  "degradation": {
+    "real": true,
+    "encoding": "ccitt"
+  },
+  "imageSha256": "5944c3118828632caed4b72323e3a6ea009f88e9e2dd561d068e60cb9c1638b2",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 141,
+  "text": "SÃO JOSÉ DA TAPERA\nConstruindo um futuro melhor\nEDITAL DO PREGÃO ELETRÔNICO n.º 10.016/2026\nCONTRATANTE\nMunicípio de São José da Tapera/AL\nOBJETO\nRegistro de Preços para eventual e futura aquisição de Kits de Laboratório de Ciências e Matemática\npara atender as necessidades do município de São José da Tapera/AL.\nVALOR TOTAL DA CONTRATAÇÃO\nR$ 7.229.453,20\nDATA DA SESSÃO PÚBLICA\nDia 12/11/2026 às 10:30h (horário de Brasília)\nCRITÉRIO DE JULGAMENTO:\nmenor preço por lote\nMODO DE DISPUTA:\nAberto e Fechado\nPREFEITURA MUNICIPAL DE SÃO JOSÉ DA TAPERA\nRua do Comércio, 209 - Centro CEP 57445-000\nCNPJ 12.261.228/0001-14 / São José da Tapera - AL\n@prefeituradesjtapera\n@prefeiturasaojosedatapera\n(82) 3622-1208\nwww.saojosedatapera.al.gov.br",
+  "lines": [
+    "SÃO JOSÉ DA TAPERA",
+    "Construindo um futuro melhor",
+    "EDITAL DO PREGÃO ELETRÔNICO n.º 10.016/2026",
+    "CONTRATANTE",
+    "Município de São José da Tapera/AL",
+    "OBJETO",
+    "Registro de Preços para eventual e futura aquisição de Kits de Laboratório de Ciências e Matemática",
+    "para atender as necessidades do município de São José da Tapera/AL.",
+    "VALOR TOTAL DA CONTRATAÇÃO",
+    "R$ 7.229.453,20",
+    "DATA DA SESSÃO PÚBLICA",
+    "Dia 12/11/2026 às 10:30h (horário de Brasília)",
+    "CRITÉRIO DE JULGAMENTO:",
+    "menor preço por lote",
+    "MODO DE DISPUTA:",
+    "Aberto e Fechado",
+    "PREFEITURA MUNICIPAL DE SÃO JOSÉ DA TAPERA",
+    "Rua do Comércio, 209 - Centro CEP 57445-000",
+    "CNPJ 12.261.228/0001-14 / São José da Tapera - AL",
+    "@prefeituradesjtapera",
+    "@prefeiturasaojosedatapera",
+    "(82) 3622-1208",
+    "www.saojosedatapera.al.gov.br"
+  ]
+}

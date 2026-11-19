@@ -1,0 +1,28 @@
+{
+  "id": "scan-02-021",
+  "dpi": 200,
+  "width": 1600,
+  "height": 2274,
+  "source": "0021p_construcao-e-reforma-de-pracas-e-de-canteiro-centr_12461646000155-2027-1/edital.pdf#page=21",
+  "degradation": {
+    "real": true,
+    "encoding": "jpeg"
+  },
+  "imageSha256": "b97f0e8ce685736c2af120467915f9dfd39198e803cde71cd423ac8fca09cac7",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 19,
+  "text": "PREFEITURA DE\nIBICUITINGA\nCUIDANDO DA NOSSA GENTE\n14.11.1. ANEXO I – Projeto Básico/Termo de Referência.\n14.11.2. ANEXO II – Minuta de Termo de Contrato.\nIBICUITINGA-CE, 28 de outubro de 2026.\nJORDELIO COELHO DAMASCENO\nSecretário de Infraestrutura\nEndereço: Rua Edval Maia da Silva, 16, Ibicuitinga - CE | CEP: 62.955-000\nwww.ibicuitinga.ce.gov.br | e-mail: gabinete@ibicuitinga.ce.gov.br\nCNPJ: 12.461.646/0001-55 | CGF: 06.920.297-4",
+  "lines": [
+    "PREFEITURA DE",
+    "IBICUITINGA",
+    "CUIDANDO DA NOSSA GENTE",
+    "14.11.1. ANEXO I – Projeto Básico/Termo de Referência.",
+    "14.11.2. ANEXO II – Minuta de Termo de Contrato.",
+    "IBICUITINGA-CE, 28 de outubro de 2026.",
+    "JORDELIO COELHO DAMASCENO",
+    "Secretário de Infraestrutura",
+    "Endereço: Rua Edval Maia da Silva, 16, Ibicuitinga - CE | CEP: 62.955-000",
+    "www.ibicuitinga.ce.gov.br | e-mail: gabinete@ibicuitinga.ce.gov.br",
+    "CNPJ: 12.461.646/0001-55 | CGF: 06.920.297-4"
+  ]
+}

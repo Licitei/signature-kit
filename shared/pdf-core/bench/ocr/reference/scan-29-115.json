@@ -1,0 +1,26 @@
+{
+  "id": "scan-29-115",
+  "dpi": 150,
+  "width": 1238,
+  "height": 1759,
+  "source": "0116p_contratacao-de-empresa-de-engenharia-especializada_04860854000107-2026-35/edital.pdf#page=115",
+  "degradation": {
+    "real": true,
+    "encoding": "jpeg"
+  },
+  "imageSha256": "b6e7b3dd6b42b82f09401cb2e3f0b8ec31d8a129bb35aa4168b86b455e7f910e",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 112,
+  "text": "GOVERNO DO PARÁ\nPREFEITURA MUNICIPAL DE PRAINHA\nPODER EXECUTIVO\nCOORDENADORIA DE LICITAÇÃO E CONTRATOS\nPrefeitura Municipal de\nPRAINHA\nConstruindo um Futuro Melhor\nANEXO IX – PLANILHA DE ORÇAMENTO\nCentro Administrativo, PA 419 s/n – São Sebastião (antiga base física) – Prainha/PA CEP 68.130-000",
+  "lines": [
+    "GOVERNO DO PARÁ",
+    "PREFEITURA MUNICIPAL DE PRAINHA",
+    "PODER EXECUTIVO",
+    "COORDENADORIA DE LICITAÇÃO E CONTRATOS",
+    "Prefeitura Municipal de",
+    "PRAINHA",
+    "Construindo um Futuro Melhor",
+    "ANEXO IX – PLANILHA DE ORÇAMENTO",
+    "Centro Administrativo, PA 419 s/n – São Sebastião (antiga base física) – Prainha/PA CEP 68.130-000"
+  ]
+}
