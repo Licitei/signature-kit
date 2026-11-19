@@ -348,7 +348,7 @@ pub fn write_pgm(gray: &Gray) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bits, RasterError, read_pgm, write_pgm};
+    use super::{Bits, RasterError, ink_runs, read_pgm, write_pgm};
 
     #[test]
     #[expect(
@@ -380,5 +380,17 @@ mod tests {
         bits.set(64, 0, false);
         assert!(!bits.get(64, 0));
         Ok(())
+    }
+
+    #[test]
+    fn ink_runs_join_packed_words_and_stop_at_the_row_width() {
+        let mut bits = Bits::new(129, 1).unwrap();
+        bits.set_run(0, 62, 67, true);
+        bits.set_run(0, 126, 129, true);
+        let mut spans = Vec::new();
+        ink_runs(bits.row(0), bits.width, |start, end| {
+            spans.push((start, end));
+        });
+        assert_eq!(spans, [(62, 67), (126, 129)]);
     }
 }
