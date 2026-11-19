@@ -269,7 +269,7 @@ pub fn write_pgm(gray: &Gray) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bits, RasterError, read_pgm, write_pgm};
+    use super::{Bits, RasterError, ink_runs, read_pgm, write_pgm};
 
     #[test]
     #[expect(
