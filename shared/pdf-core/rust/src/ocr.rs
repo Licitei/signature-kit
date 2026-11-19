@@ -9,15 +9,6 @@ use crate::text::{PageContent, Run};
 struct Payload<'data>(&'data [u8]);
 
 impl<'data> Payload<'data> {
-    fn finite(&mut self) -> Outcome<f64> {
-        let value = f64::from_le_bytes(self.number()?);
-        if value.is_finite() {
-            Ok(value)
-        } else {
-            Err(Failure::request("non-finite OCR geometry"))
-        }
-    }
-
     fn integer(&mut self) -> Outcome<usize> {
         self.number().map(u32::from_le_bytes).map(widen)
     }
@@ -50,29 +41,29 @@ impl<'data> Payload<'data> {
             return Err(Failure::limit("OCR page exceeds the word limit"));
         }
         let mut content = PageContent::default();
+        let mut start = 0;
         for _ in 0..count {
-            let rect = [
-                self.finite()?,
-                self.finite()?,
-                self.finite()?,
-                self.finite()?,
-            ];
-            let direction = (self.finite()?, self.finite()?);
-            let font_size = self.finite()?;
-            let text = self.text(remaining)?;
-            let start = u32::try_from(content.text.len())
-                .map_err(|_overflow| Failure::limit("OCR text exceeds the size limit"))?;
-            content.text.push_str(text);
+            let raw = self.number::<56>()?;
+            let (chunks, _) = raw.as_chunks::<8>();
+            let fields = <[[u8; 8]; 7]>::try_from(chunks)
+                .map_err(|_shape| Failure::request("invalid OCR geometry record"))?
+                .map(f64::from_le_bytes);
+            if !fields.iter().all(|value| value.is_finite()) {
+                return Err(Failure::request("non-finite OCR geometry"));
+            }
+            let [x0, y0, x1, y1, dx, dy, font_size] = fields;
+            content.text.push_str(self.text(remaining)?);
             let end = u32::try_from(content.text.len())
                 .map_err(|_overflow| Failure::limit("OCR text exceeds the size limit"))?;
             content.runs.push(Run {
                 bold: false,
-                direction,
+                direction: (dx, dy),
                 font_size,
                 italic: false,
-                rect,
+                rect: [x0, y0, x1, y1],
                 text: start..end,
             });
+            start = end;
         }
         Ok(content)
     }

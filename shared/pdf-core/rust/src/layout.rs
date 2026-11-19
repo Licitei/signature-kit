@@ -192,7 +192,6 @@ struct PageLayout {
     md: Vec<MdItem>,
     pieces: Vec<Piece>,
     tables: Vec<Table>,
-    verbatim: Option<String>,
 }
 
 pub(crate) enum OcrPage {
@@ -1414,13 +1413,8 @@ fn single_page(
     mode: Mode,
     ocr: Option<&OcrPage>,
 ) -> Outcome<PageLayout> {
-    let height = page.info.crop_box[3] - page.info.crop_box[1];
-    if let Some(OcrPage::Text(text)) = ocr {
-        return Ok(PageLayout {
-            height,
-            verbatim: Some(text.clone()),
-            ..PageLayout::default()
-        });
+    if matches!(ocr, Some(OcrPage::Text(_))) {
+        return Ok(PageLayout::default());
     }
     let capture = Capture {
         reposition: Reposition::Split,
@@ -1448,7 +1442,7 @@ fn single_page(
         mode,
         &scoped,
     );
-    layout.height = height;
+    layout.height = page.info.crop_box[3] - page.info.crop_box[1];
     Ok(layout)
 }
 
@@ -1510,7 +1504,7 @@ pub(crate) fn opened_text(
         )?);
     }
     if options.markdown {
-        return markdown_pages(&layouts, &all_links, options, limits);
+        return markdown_pages(&layouts, &all_links, options, limits, selected, ocr);
     }
     let dropped = if options.drop_running {
         running_keys(
@@ -1531,11 +1525,11 @@ pub(crate) fn opened_text(
     };
     let mut texts: Vec<String> = Vec::with_capacity(layouts.len());
     let mut total_bytes = 0_usize;
-    for (position, layout) in layouts.iter().enumerate() {
-        let text = layout
-            .verbatim
-            .clone()
-            .unwrap_or_else(|| assemble(&layout.pieces, &dropped, position));
+    for (position, (layout, &(page_index, _))) in layouts.iter().zip(selected).enumerate() {
+        let text = match ocr_page(ocr, page_index) {
+            Some(OcrPage::Text(source)) => source.clone(),
+            _ => assemble(&layout.pieces, &dropped, position),
+        };
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
@@ -1610,6 +1604,8 @@ fn markdown_pages(
     links: &[LinkInfo],
     options: TextOptions,
     limits: &Limits,
+    selected: &[(usize, &Page)],
+    ocr: Option<&OcrPages>,
 ) -> Outcome<Vec<String>> {
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
     let mut pages: Vec<Vec<MdBlock>> = layouts
@@ -1636,17 +1632,17 @@ fn markdown_pages(
         drop_furniture(&mut pages, &heights);
     }
     join_pages(&mut pages, metrics, |index| {
-        layouts
+        selected
             .get(index)
-            .is_some_and(|layout| layout.verbatim.is_some())
+            .is_some_and(|&(position, _)| matches!(ocr_page(ocr, position), Some(OcrPage::Text(_))))
     });
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
     let mut total_bytes = 0_usize;
-    for (blocks, layout) in pages.iter().zip(layouts) {
-        let text = layout
-            .verbatim
-            .clone()
-            .unwrap_or_else(|| render_page(blocks, links));
+    for (blocks, &(page_index, _)) in pages.iter().zip(selected) {
+        let text = match ocr_page(ocr, page_index) {
+            Some(OcrPage::Text(source)) => source.clone(),
+            _ => render_page(blocks, links),
+        };
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
