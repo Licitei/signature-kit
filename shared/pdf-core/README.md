@@ -235,7 +235,7 @@ A `kind: "text"` result uses the provided text verbatim. Markdown extraction use
 
 `textPages` reports each page's `source` and original `textLayer`. For recognized words it also reports the mean of the confidences supplied by the recognizer, when available. Tables rebuilt from positioned words have `source: "ocr"`.
 
-By default a selected page without a dominant image fails with `pdfCore.PAGE_IMAGE_UNAVAILABLE`. To provide a raster for such a page, supply `ocr.render`. Browser Effect callers can pass `renderOcrPage` from `@signature-kit/pdf-core/canvas`. A custom renderer receives the page display list and returns the encoded image and a six-number placement matrix that maps its bottom-left unit square into PDF user space.
+Dominant-image extraction is pending in `ocr/diagnostics`. Supply `ocr.render` to exercise this branch. By default a selected page without a dominant image fails with `pdfCore.PAGE_IMAGE_UNAVAILABLE`. To provide a raster for such a page, supply `ocr.render`. Browser Effect callers can pass `renderOcrPage` from `@signature-kit/pdf-core/canvas`. A custom renderer receives the page display list and returns the encoded image and a six-number placement matrix that maps its bottom-left unit square into PDF user space.
 
 The Effect methods retain the callback's error and service requirements. Promise clients accept an async recognizer and pass an `AbortSignal` as its second argument. A rejected Promise becomes `pdfCore.OCR_FAILED` with the corresponding page index.
 

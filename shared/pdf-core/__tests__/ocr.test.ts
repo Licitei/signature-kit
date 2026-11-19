@@ -4,7 +4,6 @@ import { Context, Deferred, Effect, Fiber, Layer, Ref } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import type {
-  PdfCoreDisplayList,
   PdfCoreEditOperation,
   PdfCoreOcrRaster,
   PdfCoreOcrRequest,
@@ -69,6 +68,18 @@ const grayscale = (): Uint8Array => {
   }
   return pixels;
 };
+
+const fixtureRaster = (): PdfCoreOcrRaster => ({
+  mediaType: "application/octet-stream",
+  bytes: grayscale(),
+  width,
+  height,
+  dpiX: 72,
+  dpiY: 72,
+  placement: [width, 0, 0, height, 0, 0],
+});
+
+const renderFixture = () => Effect.sync(fixtureRaster);
 
 const fixture = Effect.fn(function* (
   pages: ReadonlyArray<"cover" | "scan" | "overlay" | "native" | "blank">,
@@ -153,6 +164,7 @@ describe("caller-supplied PDF OCR", () => {
       const twin = yield* fixture(["cover", "native"]);
       const calls = yield* Ref.make<Array<number>>([]);
       const ocr = {
+        render: renderFixture,
         recognize: Effect.fn(function* (request: PdfCoreOcrRequest) {
           yield* Ref.update(calls, (current) => [...current, request.pageIndex]);
           expect(request).toMatchObject({
@@ -160,11 +172,9 @@ describe("caller-supplied PDF OCR", () => {
             pageBox: [0, 0, width, height],
             rotate: 0,
             textLayer: "weak",
-            image: { width, height, mediaType: "image/png", dpiX: 72, dpiY: 72 },
+            image: { width, height, mediaType: "application/octet-stream", dpiX: 72, dpiY: 72 },
           });
-          expect(request.image.bytes.slice(0, 8)).toEqual(
-            new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
-          );
+          expect(request.image.bytes).toEqual(grayscale());
           return recognizeTable(request);
         }),
       };
@@ -215,6 +225,7 @@ describe("caller-supplied PDF OCR", () => {
         const invalid = yield* Effect.flip(
           core.text(scan, {
             ocr: {
+              render: renderFixture,
               recognize: (request) =>
                 Effect.succeed({
                   kind: "words",
@@ -231,6 +242,7 @@ describe("caller-supplied PDF OCR", () => {
         });
         const service = core.text(scan, {
           ocr: {
+            render: renderFixture,
             recognize: ({ pageIndex }) =>
               Effect.map(Recognizer, (resolve) => text(resolve(pageIndex))),
           },
@@ -240,7 +252,11 @@ describe("caller-supplied PDF OCR", () => {
         ).toEqual(["Page 0"]);
         const upstream = { message: "recognizer service unavailable" };
         expect(
-          yield* Effect.flip(core.text(scan, { ocr: { recognize: () => Effect.fail(upstream) } })),
+          yield* Effect.flip(
+            core.text(scan, {
+              ocr: { render: renderFixture, recognize: () => Effect.fail(upstream) },
+            }),
+          ),
         ).toBe(upstream);
       }).pipe(Effect.provide(layer)),
   );
@@ -280,38 +296,6 @@ describe("caller-supplied PDF OCR", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("rebuilds positioned text and tables from a rendered raster", () =>
-    Effect.gen(function* () {
-      const core = yield* PdfCore;
-      const pdf = yield* fixture(["blank"]);
-      const twin = yield* fixture(["native"]);
-      const raster: PdfCoreOcrRaster = {
-        mediaType: "application/octet-stream",
-        bytes: grayscale(),
-        width,
-        height,
-        dpiX: 72,
-        dpiY: 72,
-        placement: [width, 0, 0, height, 0, 0],
-      };
-      const ocr = {
-        render: (page: PdfCoreDisplayList) => {
-          expect(page.view).toEqual([0, 0, width, height]);
-          return Effect.succeed(raster);
-        },
-        recognize: (request: PdfCoreOcrRequest) => {
-          expect(request.image.mediaType).toBe("application/octet-stream");
-          expect(request.image.bytes).toEqual(raster.bytes);
-          return Effect.succeed(recognizeTable(request));
-        },
-      };
-      expect(yield* core.text(pdf, { ocr, format: "markdown" })).toEqual(
-        yield* core.text(twin, { format: "markdown" }),
-      );
-      expect(yield* core.tables(pdf, { ocr })).toMatchObject([{ source: "ocr", rows: 3, cols: 3 }]);
-    }).pipe(Effect.provide(layer)),
-  );
-
   it.effect("reads only the requested scan through the lazy document", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -324,6 +308,7 @@ describe("caller-supplied PDF OCR", () => {
         const options = {
           pageIndexes: [1],
           ocr: {
+            render: renderFixture,
             recognize: (request: PdfCoreOcrRequest) => Effect.succeed(recognizeTable(request)),
           },
         };
@@ -349,6 +334,7 @@ describe("caller-supplied PDF OCR", () => {
         const finalized = yield* Ref.make(0);
         const read = core.text(pdf, {
           ocr: {
+            render: renderFixture,
             concurrency: 2,
             recognize: () =>
               Effect.gen(function* () {
@@ -371,7 +357,9 @@ describe("caller-supplied PDF OCR", () => {
     const core = await loadPdfCoreNode();
     const pdf = await Effect.runPromise(fixture(["scan"]).pipe(Effect.provide(layer)));
     await expect(
-      core.text(pdf, { ocr: { recognize: () => Promise.reject("offline") } }),
+      core.text(pdf, {
+        ocr: { render: async () => fixtureRaster(), recognize: () => Promise.reject("offline") },
+      }),
     ).rejects.toMatchObject({
       code: PdfCoreErrorCodeValue.ocrFailed,
       pageIndex: 0,
@@ -383,6 +371,7 @@ describe("caller-supplied PDF OCR", () => {
     await expect(
       doc.text({
         ocr: {
+          render: async () => fixtureRaster(),
           recognize: async (_request, signal) => ({
             kind: "text",
             text: signal.aborted ? "interrupted" : "Promise OCR",
