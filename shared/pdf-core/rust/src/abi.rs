@@ -788,13 +788,19 @@ pub(crate) unsafe extern "C" fn pdf_core_page_images(
     pages_ptr: *const u32,
     pages_len: usize,
 ) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
     let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
     finish(request.and_then(|inner_request| {
         let limits = layout::text_limits();
         let document = document::Document::open(inner_request.pdf, &limits)?;
         let pages = document.pages()?;
         let selected = select_pages(pages.len(), inner_request.pages)?;
-        encode_images(&document, &pick_pages(&pages, selected), &limits, inner_request.has(FLAG_GRAY_IMAGE))
+        encode_images(
+            &document,
+            &pick_pages(&pages, selected),
+            &limits,
+            inner_request.has(FLAG_GRAY_IMAGE),
+        )
     }))
 }
 

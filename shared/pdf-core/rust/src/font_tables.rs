@@ -1,4 +1,7 @@
 use core::cmp::Ordering;
+use std::sync::OnceLock;
+
+use crate::inflate::inflate;
 
 include!(concat!(env!("OUT_DIR"), "/font_tables.rs"));
 
@@ -100,21 +103,50 @@ impl Standard14Font {
     }
 }
 
-fn name_at(index: usize) -> Option<&'static str> {
-    let end = usize::from(*GLYPH_NAME_ENDS.get(index)?);
+struct GlyphNames {
+    ends: Vec<u16>,
+    text: String,
+}
+
+fn glyph_names() -> Option<&'static GlyphNames> {
+    static DECODED: OnceLock<Option<GlyphNames>> = OnceLock::new();
+    DECODED
+        .get_or_init(|| {
+            let mut data = inflate(&GLYPH_DATA_ZLIB, GLYPH_DATA_LEN.saturating_add(1)).ok()?;
+            if data.len() != GLYPH_DATA_LEN {
+                return None;
+            }
+            let text = String::from_utf8(data.split_off(GLYPH_NAME_COUNT)).ok()?;
+            let mut end = 0_u16;
+            let ends = data
+                .into_iter()
+                .map(|length| {
+                    end = end.saturating_add(u16::from(length));
+                    end
+                })
+                .collect();
+            Some(GlyphNames { ends, text })
+        })
+        .as_ref()
+}
+
+fn name_at(names: &'static GlyphNames, index: usize) -> Option<&'static str> {
+    let end = *names.ends.get(index)?;
     let start = index
         .checked_sub(1)
-        .and_then(|previous| GLYPH_NAME_ENDS.get(previous))
-        .map_or(0, |start| usize::from(*start));
-    GLYPH_NAME_TEXT.get(start..end)
+        .and_then(|previous| names.ends.get(previous))
+        .copied()
+        .unwrap_or_default();
+    names.text.get(usize::from(start)..usize::from(end))
 }
 
 fn name_index(name: &str) -> Option<usize> {
+    let names = glyph_names()?;
     let mut low = 0;
-    let mut high = GLYPH_NAME_ENDS.len();
+    let mut high = names.ends.len();
     while low < high {
         let middle = low.midpoint(high);
-        match name_at(middle)?.cmp(name) {
+        match name_at(names, middle)?.cmp(name) {
             Ordering::Equal => return Some(middle),
             Ordering::Less => low = middle.checked_add(1)?,
             Ordering::Greater => high = middle,
@@ -127,7 +159,7 @@ pub(crate) fn encoding_glyph_name(encoding: BuiltinEncoding, code: u8) -> &'stat
     encoding
         .table()
         .and_then(|table| table.get(usize::from(code)))
-        .and_then(|index| name_at(usize::from(*index)))
+        .and_then(|index| name_at(glyph_names()?, usize::from(*index)))
         .unwrap_or_default()
 }
 
@@ -159,8 +191,10 @@ mod tests {
 
     #[test]
     fn glyph_names_are_sorted_and_unique() {
-        let names: Vec<_> = (0..GLYPH_NAME_ENDS.len()).filter_map(name_at).collect();
-        assert_eq!(names.len(), GLYPH_NAME_ENDS.len());
+        let names: Vec<_> = (0..GLYPH_NAME_COUNT)
+            .filter_map(|index| name_at(glyph_names()?, index))
+            .collect();
+        assert_eq!(names.len(), GLYPH_NAME_COUNT);
         assert!(names.windows(2).all(|pair| matches!(pair, [a, b] if a < b)));
     }
 

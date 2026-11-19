@@ -3,11 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Context, Deferred, Effect, Fiber, Layer, Ref } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import type {
-  PdfCoreEditOperation,
-  PdfCoreOcrRequest,
-  PdfCoreOcrResult,
-} from "../dist/config.js";
+import type { PdfCoreEditOperation, PdfCoreOcrRequest, PdfCoreOcrResult } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
 import { loadPdfCoreNode } from "../dist/node.js";
 import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
@@ -212,7 +208,7 @@ describe("caller-supplied PDF OCR", () => {
         const invalid = yield* Effect.flip(
           core.text(scan, {
             ocr: {
-                    recognize: (request) =>
+              recognize: (request) =>
                 Effect.succeed({
                   kind: "words",
                   width: request.image.width,
@@ -228,7 +224,7 @@ describe("caller-supplied PDF OCR", () => {
         });
         const service = core.text(scan, {
           ocr: {
-                recognize: ({ pageIndex }) =>
+            recognize: ({ pageIndex }) =>
               Effect.map(Recognizer, (resolve) => text(resolve(pageIndex))),
           },
         });
@@ -293,7 +289,7 @@ describe("caller-supplied PDF OCR", () => {
         const options = {
           pageIndexes: [1],
           ocr: {
-                recognize: (request: PdfCoreOcrRequest) => Effect.succeed(recognizeTable(request)),
+            recognize: (request: PdfCoreOcrRequest) => Effect.succeed(recognizeTable(request)),
           },
         };
         const pages = yield* doc.textPages(options);
@@ -318,7 +314,7 @@ describe("caller-supplied PDF OCR", () => {
         const finalized = yield* Ref.make(0);
         const read = core.text(pdf, {
           ocr: {
-                concurrency: 2,
+            concurrency: 2,
             recognize: () =>
               Effect.gen(function* () {
                 const count = yield* Ref.updateAndGet(started, (current) => current + 1);

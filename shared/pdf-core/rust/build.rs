@@ -172,10 +172,6 @@ fn glyph_list(text: &str) -> BuildResult<BTreeMap<&str, Vec<u32>>> {
     Ok(agl)
 }
 
-#[expect(
-    clippy::use_debug,
-    reason = "generated Rust uses Debug quoting for embeddable string literals"
-)]
 fn font_tables(
     glyphlist: &str,
     encodings: &Sections<'_>,
@@ -197,18 +193,21 @@ fn font_tables(
         .collect();
 
     let mut out = String::new();
-    writeln!(
-        out,
-        "pub(crate) static GLYPH_NAME_TEXT: &str = {:?};",
-        names.concat()
-    )?;
-    let mut end = 0_usize;
-    let mut ends = Vec::with_capacity(names.len());
+    let name_text = names.concat();
+    let _: u16 = u16::try_from(name_text.len())?;
+    let mut glyph_data = Vec::with_capacity(names.len().saturating_add(name_text.len()));
     for name in &names {
-        end = end.saturating_add(name.len());
-        ends.push(u16::try_from(end)?);
+        glyph_data.push(u8::try_from(name.len())?);
     }
-    emit(&mut out, "GLYPH_NAME_ENDS", "u16", &ends)?;
+    glyph_data.extend_from_slice(name_text.as_bytes());
+    let glyph_zlib = zlib_compress_bytes(&glyph_data)?;
+    for (name, value) in [
+        ("GLYPH_NAME_COUNT", names.len()),
+        ("GLYPH_DATA_LEN", glyph_data.len()),
+    ] {
+        writeln!(out, "pub(crate) const {name}: usize = {value};")?;
+    }
+    emit(&mut out, "GLYPH_DATA_ZLIB", "u8", &glyph_zlib)?;
 
     let mut starts = Vec::with_capacity(names.len().saturating_add(1));
     let mut codepoints: Vec<u32> = Vec::new();

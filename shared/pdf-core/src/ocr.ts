@@ -117,7 +117,8 @@ export const recognizePages = Effect.fn(function* <E, R>(
         });
       }
 
-      const { placement, jpegCmyk, jpegDecode, mediaType, bytes, width, height, dpiX, dpiY } = raster;
+      const { placement, jpegCmyk, jpegDecode, mediaType, bytes, width, height, dpiX, dpiY } =
+        raster;
       const raw = yield* recognize({
         ...page,
         image: { mediaType, bytes, width, height, dpiX, dpiY },
