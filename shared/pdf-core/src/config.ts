@@ -180,6 +180,7 @@ const maxUint32 = 0xffff_ffff;
 const pageIndexSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: maxUint32 }));
 
 export const PdfCoreInspectOptionsSchema = Schema.Struct({
+  glyphs: Schema.optional(Schema.Boolean),
   text: Schema.Boolean,
   links: Schema.Boolean,
   runs: Schema.optional(Schema.Boolean),

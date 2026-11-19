@@ -15,7 +15,7 @@ use crate::document;
 use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
-use crate::inspection::{InspectOptions, Inspection, Limits};
+use crate::inspection::{InspectOptions, Inspection, Limits, TextItems};
 use crate::layout::{self, TextOptions};
 use crate::lazy::{Lazy, Plan, Tuning};
 use crate::num::widen;
@@ -36,6 +36,7 @@ const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
 const FLAG_RUNS: u32 = 32;
+const FLAG_GLYPHS: u32 = 64;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
@@ -566,7 +567,13 @@ pub(crate) unsafe extern "C" fn pdf_core_inspect(
             text: inner_request.has(FLAG_TEXT),
             links: inner_request.has(FLAG_LINKS),
             page_indexes: inner_request.pages.map(<[u32]>::to_vec),
-            runs: inner_request.has(FLAG_RUNS),
+            text_items: if inner_request.has(FLAG_GLYPHS) {
+                TextItems::Glyphs
+            } else if inner_request.has(FLAG_RUNS) {
+                TextItems::Runs
+            } else {
+                TextItems::Joined
+            },
         };
         let inspection = document::inspect(inner_request.pdf, &options, &layout::text_limits())?;
         encode(&inspection)

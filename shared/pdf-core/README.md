@@ -98,6 +98,12 @@ By default an item is a run of text that continues on one baseline, so `17/06/20
 const inspection = yield * core.inspect(pdf, { text: true, links: false, runs: true });
 ```
 
+For OCR training labels, pass `glyphs: true` with `text: true`. Each item
+then covers one glyph advance box in PDF user coordinates, and glyph mode
+takes precedence over `runs`. The inspection omits nonpainting text modes,
+white device colors and glyphs fully outside recognized clips. Keep the
+default inspection mode for text extraction, including invisible text layers.
+
 A style bit is set when every glyph of the item carries it. It comes from the embedded font program, the font name (`Helvetica-Bold`), the font descriptor, and fill-and-stroke rendering. Without `runs` an item can mix styles (its bits then cover only the style shared by all its glyphs), and embedded TrueType fonts are not probed for their weight, so read `styles` with `runs: true`. Results are decoded straight from wasm memory, and the typed arrays copied out, before the wasm buffers are released.
 
 ## Signatures and revisions
@@ -237,7 +243,7 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
 | `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = emit visible glyph items (`pdf_core_inspect`).
 
 ### Lazy handle and plan
 
