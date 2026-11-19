@@ -5,6 +5,7 @@ use core::mem;
 use core::ops::Range;
 use std::collections::{HashMap, HashSet};
 
+use crate::diagnostics::{PageScan, intersection};
 use crate::document::{Document, Page};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::font::{Font, Glyph, embedded_style};
@@ -51,6 +52,7 @@ const OP_TJ: u32 = op(b"Tj");
 const OP_TJ_ARRAY: u32 = op(b"TJ");
 const OP_QUOTE: u32 = op(b"'");
 const OP_DQUOTE: u32 = op(b"\"");
+const OP_INLINE_IMAGE: u32 = op(b"EI");
 const OP_DO: u32 = op(b"Do");
 const OP_GS: u32 = op(b"gs");
 const OP_LINE_WIDTH: u32 = op(b"w");
@@ -70,6 +72,8 @@ const OP_FILL_STROKE: u32 = op(b"B");
 const OP_FILL_STROKE_EO: u32 = op(b"B*");
 const OP_CLOSE_FILL_STROKE: u32 = op(b"b");
 const OP_CLOSE_FILL_STROKE_EO: u32 = op(b"b*");
+const OP_CLIP: u32 = op(b"W");
+const OP_CLIP_EO: u32 = op(b"W*");
 const OP_NO_PAINT: u32 = op(b"n");
 const OP_BMC: u32 = op(b"BMC");
 const OP_BDC: u32 = op(b"BDC");
@@ -220,6 +224,125 @@ enum FontKey {
     Within(ObjRef, u32),
 }
 
+#[derive(Clone, Copy, Default)]
+struct ScanState {
+    clip: Option<[f64; 4]>,
+    render_mode: u8,
+    transparent: [bool; 2],
+    white: [bool; 2],
+}
+
+impl ScanState {
+    fn clipped_bounds(self, bounds: [f64; 4]) -> Option<[f64; 4]> {
+        self.clip
+            .map_or(Some(bounds), |clip| intersection(clip, bounds))
+    }
+
+    const fn paints_text(self) -> bool {
+        let [fill_white, stroke_white] = self.white;
+        let [fill_clear, stroke_clear] = self.transparent;
+        let fill = self.render_mode & 3 != 1 && !fill_clear && !fill_white;
+        let stroke = matches!(self.render_mode & 3, 1 | 2) && !stroke_clear && !stroke_white;
+        self.render_mode & 3 != 3 && (fill || stroke)
+    }
+
+    fn restrict(&mut self, bounds: [f64; 4]) {
+        self.clip = Some(self.clipped_bounds(bounds).unwrap_or([0.0_f64; 4]));
+    }
+}
+
+#[derive(Default)]
+struct ScanPath {
+    bounds: Option<[f64; 4]>,
+    clip: bool,
+}
+
+impl ScanPath {
+    fn include(&mut self, [x, y, right, top]: [f64; 4]) {
+        self.bounds = Some(self.bounds.map_or([x, y, right, top], |[a, b, c, d]| {
+            [a.min(x), b.min(y), c.max(right), d.max(top)]
+        }));
+    }
+
+    fn operator(&mut self, code: u32, operands: &[Operand<'_>], state: &mut GState) {
+        match code {
+            OP_MOVE | OP_LINE | OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
+                let count = match code {
+                    OP_CURVE => 6,
+                    OP_CURVE_V | OP_CURVE_Y => 4,
+                    _ => 2,
+                };
+                for pair in operands
+                    .get(operands.len().saturating_sub(count)..)
+                    .unwrap_or_default()
+                    .as_chunks::<2>()
+                    .0
+                {
+                    if let [Some(x), Some(y)] = pair.each_ref().map(Operand::as_number) {
+                        let (a, b) = apply(&state.ctm, x, y);
+                        self.include([a, b, a, b]);
+                    }
+                }
+            }
+            OP_RECT => {
+                if let Some([x, y, width, height]) = tail_numbers::<4, _>(operands) {
+                    self.include(transformed_bounds(&state.ctm, x, y, x + width, y + height));
+                }
+            }
+            OP_CLIP | OP_CLIP_EO => self.clip = true,
+            OP_NO_PAINT
+            | OP_STROKE
+            | OP_CLOSE_STROKE
+            | OP_FILL
+            | OP_FILL_OLD
+            | OP_FILL_EO
+            | OP_FILL_STROKE
+            | OP_FILL_STROKE_EO
+            | OP_CLOSE_FILL_STROKE
+            | OP_CLOSE_FILL_STROKE_EO => {
+                if self.clip {
+                    state.scan.restrict(self.bounds.unwrap_or([0.0_f64; 4]));
+                }
+                *self = Self::default();
+            }
+            _ => {
+                let [fill, stroke] = &mut state.scan.white;
+                let color = match code {
+                    key if key == op(b"g")
+                        || key == op(b"rg")
+                        || key == op(b"k")
+                        || key == op(b"cs")
+                        || key == op(b"sc")
+                        || key == op(b"scn") =>
+                    {
+                        fill
+                    }
+                    key if key == op(b"G")
+                        || key == op(b"RG")
+                        || key == op(b"K")
+                        || key == op(b"CS")
+                        || key == op(b"SC")
+                        || key == op(b"SCN") =>
+                    {
+                        stroke
+                    }
+                    _ => return,
+                };
+                *color = match code {
+                    key if key == op(b"g") || key == op(b"G") => {
+                        tail_numbers::<1, _>(operands).is_some_and(|[gray]| gray >= 1.0_f64)
+                    }
+                    key if key == op(b"rg") || key == op(b"RG") => tail_numbers::<3, _>(operands)
+                        .is_some_and(|rgb| rgb.iter().all(|value| *value >= 1.0_f64)),
+                    key if key == op(b"k") || key == op(b"K") => tail_numbers::<4, _>(operands)
+                        .is_some_and(|cmyk| cmyk.iter().all(|value| *value <= 0.0_f64)),
+                    _ => false,
+                };
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct GState {
     char_space: f64,
@@ -229,6 +352,7 @@ struct GState {
     line_width: f64,
     rise: f64,
     scale: f64,
+    scan: ScanState,
     size: f64,
     stroked_fill: bool,
     word_space: f64,
@@ -247,6 +371,12 @@ impl GState {
             rise: 0.0,
             line_width: 1.0,
             stroked_fill: false,
+            scan: ScanState {
+                clip: None,
+                render_mode: 0,
+                white: [false; 2],
+                transparent: [false; 2],
+            },
         }
     }
 }
@@ -415,6 +545,7 @@ struct Interpreter<'doc, 'data> {
     repositioned: bool,
     ruling_cap: usize,
     rulings: Vec<Ruling>,
+    scan: Option<&'doc mut PageScan>,
     scopes: u32,
     skipped: HashSet<ObjRef>,
     text: String,
@@ -551,6 +682,16 @@ impl Interpreter<'_, '_> {
         let Some(gs) = resolved.as_dict() else {
             return;
         };
+        if self.scan.is_some() {
+            for (alpha_key, slot) in [b"ca", b"CA"]
+                .into_iter()
+                .zip(state.scan.transparent.iter_mut())
+            {
+                if let Some(value) = gs.get(alpha_key).and_then(Object::as_number) {
+                    *slot = value <= 0.0_f64;
+                }
+            }
+        }
         if let Some(Object::Array(items)) = gs.get(b"Font") {
             let name = items
                 .len()
@@ -659,12 +800,19 @@ impl Interpreter<'_, '_> {
         let Object::Stream(stream) = &*resolved else {
             return Ok(());
         };
-        let is_form = stream
-            .dict
-            .get(b"Subtype")
-            .and_then(Object::as_name)
-            .is_some_and(|subtype| subtype == b"Form");
-        if !is_form {
+        let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name);
+        if subtype != Some(b"Form") {
+            if let Some(scan) = self.scan.as_deref_mut() {
+                if subtype == Some(b"Image")
+                    && !state.scan.transparent[0]
+                    && let Some(rect) = state
+                        .scan
+                        .clipped_bounds(transformed_bounds(&state.ctm, 0.0, 0.0, 1.0, 1.0))
+                {
+                    scan.image(rect)?;
+                }
+                return Ok(());
+            }
             if let Some(inner_reference) = reference {
                 let _: bool = self.skipped.insert(inner_reference);
             }
@@ -677,7 +825,7 @@ impl Interpreter<'_, '_> {
                 Ok(data) => {
                     let shared_data: Rc<[u8]> = data.into();
                     if let Some(known) = reference {
-                        if scan_shows(&shared_data) == Shows::Nothing {
+                        if self.scan.is_none() && scan_shows(&shared_data) == Shows::Nothing {
                             let _: bool = self.skipped.insert(known);
                         } else {
                             self.forms.insert(known, &shared_data, self.generation);
@@ -708,7 +856,7 @@ impl Interpreter<'_, '_> {
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
-        if self.capture.structure
+        if (self.capture.structure || self.scan.is_some())
             && let Some(bounds) = stream
                 .dict
                 .get(b"BBox")
@@ -720,6 +868,7 @@ impl Interpreter<'_, '_> {
         {
             let [x0, y0, x1, y1] =
                 transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
+            inner_state.scan.restrict([x0, y0, x1, y1]);
             self.clip = Some(outer_clip.map_or([x0, y0, x1, y1], |outer| {
                 [
                     outer[0].max(x0),
@@ -1023,6 +1172,10 @@ impl Interpreter<'_, '_> {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "glyph metrics, diagnostic visibility and run assembly share the text advance"
+    )]
     fn place(
         &mut self,
         entry: &FontEntry,
@@ -1087,6 +1240,19 @@ impl Interpreter<'_, '_> {
                 y1 = state.rise + entry.ascent * size;
                 step_x = width + spacing * scale;
                 step_y = 0.0_f64;
+            }
+            if let Some(scan) = self.scan.as_deref_mut() {
+                let bounds = if usable && state.scan.paints_text() {
+                    state
+                        .scan
+                        .clipped_bounds(transformed_bounds(&mapping, x0, y0, x1, y1))
+                } else {
+                    None
+                };
+                scan.glyph(glyph_text, bounds)?;
+                pen_x += step_x;
+                pen_y += step_y;
+                continue;
             }
             let clipped = usable
                 && self.clip.is_some_and(|clip| {
@@ -1200,16 +1366,19 @@ impl Interpreter<'_, '_> {
             .budget
             .checked_sub(data.len())
             .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
-        match scan_shows(data) {
-            Shows::Text => {}
-            Shows::Forms if scope.has_forms(self.document) => {}
-            Shows::Forms | Shows::Nothing => return Ok(()),
+        if self.scan.is_none() {
+            match scan_shows(data) {
+                Shows::Text => {}
+                Shows::Forms if scope.has_forms(self.document) => {}
+                Shows::Forms | Shows::Nothing => return Ok(()),
+            }
         }
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
         let mut overflow = 0_usize;
         let mut operands: Vec<Operand<'_>> = Vec::new();
         let mut path = PathBuilder::default();
+        let mut scan_path = ScanPath::default();
         let mut marked: Vec<bool> = Vec::new();
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
@@ -1228,6 +1397,18 @@ impl Interpreter<'_, '_> {
                 Ok(ContentToken::Operator(name)) => name,
             };
             let code = op(name);
+            if let Some(scan) = self.scan.as_deref_mut() {
+                scan_path.operator(code, &operands, state);
+                if code == OP_INLINE_IMAGE
+                    && lexer.take_inline_image().is_some()
+                    && !state.scan.transparent[0]
+                    && let Some(rect) = state
+                        .scan
+                        .clipped_bounds(transformed_bounds(&state.ctm, 0.0, 0.0, 1.0, 1.0))
+                {
+                    scan.image(rect)?;
+                }
+            }
             match code {
                 OP_SAVE => {
                     if stack.len() >= max_stack {
@@ -1284,6 +1465,9 @@ impl Interpreter<'_, '_> {
 
     fn show(&mut self, state: &GState, matrices: &mut TextMatrices, bytes: &[u8]) -> Outcome<()> {
         let Some(entry) = state.font.clone() else {
+            if let Some(scan) = self.scan.as_deref_mut() {
+                scan.missing_font(bytes, state.scan.paints_text());
+            }
             return Ok(());
         };
         let placement = Placement::new(&entry, state, &matrices.tm);
@@ -1308,6 +1492,8 @@ impl Interpreter<'_, '_> {
             if let Some(bytes) = item.string(scratch) {
                 if let Some((entry, placement)) = &prepared {
                     self.show_with(entry, placement, state, matrices, bytes)?;
+                } else if let Some(scan) = self.scan.as_deref_mut() {
+                    scan.missing_font(bytes, state.scan.paints_text());
                 }
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1_000.0_f64 * state.size;
@@ -1441,6 +1627,12 @@ impl Interpreter<'_, '_> {
             OP_TR => {
                 if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.stroked_fill = (value - 2.0).abs() < 0.5_f64;
+                    if self.scan.is_some() {
+                        state.scan.render_mode = u8::try_from(f64_to_i64(value))
+                            .ok()
+                            .filter(|mode| *mode <= 7)
+                            .unwrap_or(0);
+                    }
                 }
             }
             OP_TF => {
@@ -1673,6 +1865,17 @@ pub(crate) fn extract_content(
     capture: Capture,
     session: &mut Session,
 ) -> Outcome<PageContent> {
+    scan_page(document, page, limits, capture, session, None)
+}
+
+pub(crate) fn scan_page(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    capture: Capture,
+    session: &mut Session,
+    scan: Option<&mut PageScan>,
+) -> Outcome<PageContent> {
     let content = document.content(page)?;
     if content.is_empty() {
         return Ok(PageContent::default());
@@ -1691,6 +1894,7 @@ pub(crate) fn extract_content(
         generation: session.generation,
         skipped: mem::take(&mut session.skipped),
         active: Vec::new(),
+        scan,
         scopes: session.scopes,
         budget: limits.max_decoded_stream_bytes,
         max_depth: limits.max_nesting.min(MAX_FORM_DEPTH),

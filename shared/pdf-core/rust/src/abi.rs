@@ -11,7 +11,8 @@ use core::ptr;
 use core::slice;
 
 use crate::deflate::zlib_compress;
-use crate::document;
+use crate::diagnostics::{PageDiagnostics, TextLayer, opened_diagnostics};
+use crate::document::{self, pick_pages, select_pages};
 use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
@@ -42,6 +43,10 @@ const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
 const TEXT_HEADER_LEN: usize = 16;
+const DIAGNOSTICS_MAGIC: u32 = 0x4744_4450;
+const DIAGNOSTICS_VERSION: u32 = 1;
+const DIAGNOSTICS_HEADER_LEN: usize = 16;
+const DIAGNOSTICS_RECORD_LEN: usize = 48;
 const TABLES_MAGIC: u32 = 0x4254_4450;
 const TABLES_VERSION: u32 = 1;
 const TABLES_HEADER_LEN: usize = 16;
@@ -399,6 +404,33 @@ fn encode_text(pages: &[String]) -> Outcome<Writer> {
     out.done()
 }
 
+fn encode_diagnostics(pages: &[PageDiagnostics]) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(
+        DIAGNOSTICS_HEADER_LEN.saturating_add(pages.len().saturating_mul(DIAGNOSTICS_RECORD_LEN)),
+    );
+    out.u32(DIAGNOSTICS_MAGIC);
+    out.u32(DIAGNOSTICS_VERSION);
+    out.u32(len32(pages.len())?);
+    out.u32(0);
+    for page in pages {
+        out.u32(page.page_index);
+        out.u32(page.glyphs);
+        out.u32(page.unmapped);
+        out.u32(page.replacement);
+        out.u32(page.invisible);
+        out.u32(page.visible_chars);
+        out.u32(page.image_count);
+        out.u32(match page.text_layer {
+            TextLayer::None => 0,
+            TextLayer::Weak => 1,
+            TextLayer::Usable => 2,
+        });
+        out.f64(page.text_area);
+        out.f64(page.raster_coverage);
+    }
+    out.done()
+}
+
 fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
     let table_count = len32(tables.len())?;
     let mut cell_count: usize = 0;
@@ -625,6 +657,29 @@ pub(crate) unsafe extern "C" fn pdf_core_tables(
             None,
         )?;
         encode_tables(&tables)
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_page_diagnostics(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|inner_request| {
+        let limits = layout::text_limits();
+        let document = document::Document::open(inner_request.pdf, &limits)?;
+        let pages = document.pages()?;
+        let selected = select_pages(pages.len(), inner_request.pages)?;
+        encode_diagnostics(&opened_diagnostics(
+            &document,
+            &pick_pages(&pages, selected),
+            &limits,
+        )?)
     }))
 }
 
@@ -1258,6 +1313,7 @@ fn lazy_run(
             )?),
             1 => encode_tables(&layout::opened_tables(document, pages, &limits, ocr)?),
             2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
+            3 => encode_diagnostics(&opened_diagnostics(document, pages, &limits)?),
             _ => Err(Failure::invalid("invalid lazy profile")),
         })?;
         payload.map_or_else(

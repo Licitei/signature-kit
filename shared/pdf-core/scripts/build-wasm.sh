@@ -17,9 +17,9 @@ else
   exit 1
 fi
 
-cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST"
+(cd "$ROOT/rust" && cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST")
 mkdir -p "$OUT_DIR"
-"$WASM_OPT" -O3 \
+"$WASM_OPT" -Os \
   --enable-bulk-memory \
   --enable-sign-ext \
   --enable-nontrapping-float-to-int \

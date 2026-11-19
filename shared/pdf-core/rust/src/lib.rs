@@ -6,6 +6,7 @@ mod cff;
 mod cmap;
 mod color;
 mod deflate;
+mod diagnostics;
 mod display;
 mod document;
 mod edit;

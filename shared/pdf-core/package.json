@@ -69,6 +69,7 @@
         "inputs": [
           "{projectRoot}/rust/Cargo.toml",
           "{projectRoot}/rust/Cargo.lock",
+          "{projectRoot}/rust/rust-toolchain.toml",
           "{projectRoot}/rust/build.rs",
           "{projectRoot}/rust/data/**/*",
           "{projectRoot}/rust/src/**/*",

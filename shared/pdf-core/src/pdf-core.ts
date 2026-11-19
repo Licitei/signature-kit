@@ -18,6 +18,8 @@ import {
   PdfCoreMergeOptionsSchema,
   PdfCoreMergeSourcesSchema,
   PdfCoreOperationValue,
+  PdfCorePageDiagnosticsOptionsSchema,
+  PdfCorePageDiagnosticsSchema,
   PDF_CORE_MAX_LAZY_BYTES,
   PdfCoreLazyOptionsSchema,
   PdfCoreRangeSizeSchema,
@@ -51,6 +53,8 @@ import type {
   PdfCoreMergeSources,
   PdfCoreObjectRef,
   PdfCoreOperation,
+  PdfCorePageDiagnostics,
+  PdfCorePageDiagnosticsOptions,
   PdfCorePngSize,
   PdfCoreRenderOptions,
   PdfCoreSchemaName,
@@ -85,6 +89,9 @@ export type PdfCoreLazyDocument = {
   readonly tables: <E = never, R = never>(
     options?: PdfCoreTablesOptions<E, R>,
   ) => Effect.Effect<PdfCoreTables, PdfCoreError | E, R>;
+  readonly pageDiagnostics: (
+    options?: PdfCorePageDiagnosticsOptions,
+  ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
   readonly renderPages: (
     options?: PdfCoreRenderOptions,
   ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
@@ -132,6 +139,10 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options?: PdfCoreTablesOptions<E, R>,
   ) => Effect.Effect<PdfCoreTables, PdfCoreError | E, R>;
+  readonly pageDiagnostics: (
+    pdf: Uint8Array,
+    options?: PdfCorePageDiagnosticsOptions,
+  ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
   readonly signatures: (
     pdf: Uint8Array,
     analysis: PdfCoreSignatureAnalysis,
@@ -180,6 +191,10 @@ const VERSION = 3;
 const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
+const DIAGNOSTICS_MAGIC = 0x4744_4450;
+const DIAGNOSTICS_VERSION = 1;
+const DIAGNOSTICS_HEADER_BYTES = 16;
+const DIAGNOSTICS_RECORD_BYTES = 48;
 const TABLES_MAGIC = 0x4254_4450;
 const TABLES_VERSION = 1;
 const TABLES_HEADER_BYTES = 16;
@@ -436,6 +451,7 @@ const lazyProfiles = {
   [PdfCoreOperationValue.text]: 0,
   [PdfCoreOperationValue.tables]: 1,
   [PdfCoreOperationValue.render]: 2,
+  [PdfCoreOperationValue.pageDiagnostics]: 3,
 };
 
 export const makePdfCore = (
@@ -1049,6 +1065,70 @@ export const makePdfCore = (
         operation,
         reason: "The PDF core result format is not supported by this package version.",
       });
+
+    const decodeDiagnosticsBlock = Effect.fn(function* (block: ResultBlock) {
+      const operation = PdfCoreOperationValue.pageDiagnostics;
+      const view = new DataView(block.memory, block.pointer, block.length);
+      if (view.getUint32(4, true) !== STATUS_OK) {
+        return yield* failStatus(operation, block);
+      }
+      const header = RESULT_HEADER_BYTES + DIAGNOSTICS_HEADER_BYTES;
+      if (
+        block.length < header ||
+        view.getUint32(RESULT_HEADER_BYTES, true) !== DIAGNOSTICS_MAGIC ||
+        view.getUint32(RESULT_HEADER_BYTES + 4, true) !== DIAGNOSTICS_VERSION
+      ) {
+        return yield* unsupportedFormat(operation);
+      }
+      const count = view.getUint32(RESULT_HEADER_BYTES + 8, true);
+      if (block.length !== header + count * DIAGNOSTICS_RECORD_BYTES) {
+        return yield* unsupportedFormat(operation);
+      }
+      const diagnostics = [];
+      const textLayers = ["none", "weak", "usable"];
+      for (let at = header; at < block.length; at += DIAGNOSTICS_RECORD_BYTES) {
+        diagnostics.push({
+          pageIndex: view.getUint32(at, true),
+          glyphs: view.getUint32(at + 4, true),
+          unmapped: view.getUint32(at + 8, true),
+          replacement: view.getUint32(at + 12, true),
+          invisible: view.getUint32(at + 16, true),
+          visibleChars: view.getUint32(at + 20, true),
+          imageCount: view.getUint32(at + 24, true),
+          textLayer: textLayers[view.getUint32(at + 28, true)],
+          textArea: view.getFloat64(at + 32, true),
+          rasterCoverage: view.getFloat64(at + 40, true),
+        });
+      }
+      return yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsSchema)(diagnostics).pipe(
+        Effect.mapError(
+          malformedResult(
+            operation,
+            PdfCoreSchemaNameValue.pageDiagnostics,
+            "The PDF core returned invalid page diagnostics.",
+          ),
+        ),
+      );
+    });
+
+    const runPageDiagnostics = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCorePageDiagnosticsOptions = {},
+    ) {
+      const operation = PdfCoreOperationValue.pageDiagnostics;
+      const options = yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsOptionsSchema)(
+        rawOptions,
+      ).pipe(
+        Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.pageDiagnosticsOptions)),
+      );
+      return yield* read(
+        operation,
+        core.pdf_core_page_diagnostics,
+        options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES,
+        options.pageIndexes ?? [],
+        decodeDiagnosticsBlock,
+      );
+    });
 
     const span = (view: DataView, at: number, present: boolean) =>
       present
@@ -1872,6 +1952,7 @@ export const makePdfCore = (
               const profile =
                 operation === PdfCoreOperationValue.text ||
                 operation === PdfCoreOperationValue.tables ||
+                operation === PdfCoreOperationValue.pageDiagnostics ||
                 operation === PdfCoreOperationValue.render
                   ? lazyProfiles[operation]
                   : undefined;
@@ -1956,6 +2037,8 @@ export const makePdfCore = (
         text: <E, R>(options?: PdfCoreTextOptions<E, R>) => runText(read, options),
         textPages: <E, R>(options?: PdfCoreTextOptions<E, R>) => runTextPages(read, options),
         tables: <E, R>(options?: PdfCoreTablesOptions<E, R>) => runTables(read, options),
+        pageDiagnostics: (options?: PdfCorePageDiagnosticsOptions) =>
+          runPageDiagnostics(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
         stats: Ref.get(state).pipe(
           Effect.map(({ bytesRead, rounds, strategy }) => ({ bytesRead, rounds, strategy })),
@@ -1970,6 +2053,7 @@ export const makePdfCore = (
       text: (pdf, options) => runText(full(pdf), options),
       textPages: (pdf, options) => runTextPages(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),
+      pageDiagnostics: (pdf, options) => runPageDiagnostics(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,
       revisionComplete,
