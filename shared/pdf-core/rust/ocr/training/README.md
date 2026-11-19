@@ -161,6 +161,27 @@ OCR_BENCH_CTC_MODEL="$rust/ocr/data/sequence-v3-mixed.bin" \
   --dataset "$out/line-reviews/test" --engines tesseract-lstm,tesseract-fast --psm 7
 ```
 
+### Original grayscale test crops
+
+The common page harness scored the same 431 hash-verified grayscale crops
+from ten test documents. It ran Tesseract with PSM 7. Both SignatureKit
+variants used their full native pipeline. Raw CER retains whitespace and
+case. Normalized CER collapses whitespace and lowercases. Each time is
+the mean of the per-crop medians over three separate processes.
+
+| Engine                        | Raw CER | Normalized CER | Raw WER | Mean ms/crop |
+| ----------------------------- | ------: | -------------: | ------: | -----------: |
+| SignatureKit glyph            |  59.78% |         53.51% | 175.64% |        11.65 |
+| SignatureKit v3 mixed, greedy |  44.95% |         39.74% | 104.10% |        84.82 |
+| Tesseract LSTM 5.3.0          |   0.96% |          0.91% |   5.06% |       498.57 |
+| Tesseract fast 5.3.0          |   0.90% |          0.89% |   4.29% |       585.61 |
+
+The real-crop references were seeded by Tesseract and visually reviewed.
+They favor legible, successfully segmented lines. The separate 20-page
+benchmark measures reading order and page segmentation on less constrained
+inputs. During timing, other jobs shared the Xeon E5-2680 v4 host and its
+logical CPU 0. Comparisons establish the observed latency in these runs.
+
 ## Training and evaluation
 
 From the workspace root, install the repository dependencies and make Bun,
