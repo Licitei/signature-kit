@@ -2,6 +2,7 @@
 
 See [OCR datasets and rasterizer](DATASETS.md) for the current generator and WASM raster ABI.
 
+The [real-scan line references](reference-lines/README.md) provide a separate document-disjoint dev and test set.
 The runner compares OCR engines on the same 8-bit grayscale P5 images. Tesseract runs in Docker and is used only as a benchmark reference. The scripts and reference JSON are outside the published package.
 
 [Baseline tables](BASELINES.md) cover clean and degraded synthetic inputs, real scans, and a PSM 6 check on single-line crops.

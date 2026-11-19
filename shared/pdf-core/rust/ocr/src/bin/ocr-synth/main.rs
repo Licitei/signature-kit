@@ -110,7 +110,7 @@ fn execute() -> io::Result<()> {
     output.write_all(header.as_bytes())?;
     output.write_all(&raster.pixels)?;
     if quality != 0 {
-        output.write_all(&jpeg::encode(&raster, quality.clamp(30, 90)))?;
+        output.write_all(&jpeg::encode(&raster, quality.clamp(1, 100)))?;
     }
     output.flush()
 }

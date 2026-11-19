@@ -1,15 +1,36 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import scanProfiles from "./scan-profile-v1.json";
 
 export type Box = [number, number, number, number];
 export type Raster = { width: number; height: number; pixels: Uint8Array<ArrayBuffer> };
 
-export const presets = ["clean", "scan", "photocopy", "jpeg", "fax"];
+export const presets = ["clean", "scan", "photocopy", "jpeg", "fax", "calibrated"];
 
-export function degradation(preset: string, seed: string, id: string) {
+export function scanProfile(seed: string, document: string) {
+  const index = createHash("sha256")
+    .update(JSON.stringify([seed, document]))
+    .digest()
+    .readUInt32LE(0);
+  return scanProfiles.profiles[index % scanProfiles.profiles.length];
+}
+
+type ScanProfile = NonNullable<ReturnType<typeof scanProfile>>;
+
+export function degradation(preset: string, seed: string, id: string, profile?: ScanProfile) {
   const hash = createHash("sha256")
     .update(JSON.stringify([seed, id, preset]))
     .digest();
+  if (preset === "calibrated" && profile !== undefined) {
+    return {
+      ...profile,
+      preset,
+      profileVersion: scanProfiles.version,
+      seed: hash.readUInt32LE(0),
+      warpPixels: 0,
+      gamma: 1,
+    };
+  }
   const fraction = (offset: number) => hash.readUInt32LE(offset) / 2 ** 32;
   const photocopy = preset === "photocopy";
   const scan = preset === "scan" || photocopy || preset === "fax";

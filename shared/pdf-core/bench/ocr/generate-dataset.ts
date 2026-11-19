@@ -3,7 +3,15 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
-import { degradation, degrade, mapDegradedBox, parsePgm, pgm, presets } from "./degradation";
+import {
+  degradation,
+  degrade,
+  mapDegradedBox,
+  parsePgm,
+  pgm,
+  presets,
+  scanProfile,
+} from "./degradation";
 import type { Box, Raster } from "./degradation";
 import type { Glyph } from "./glyph-labels";
 type Word = Glyph & { line: number; glyphs?: Glyph[] };
@@ -24,7 +32,7 @@ const { values, positionals } = parseArgs({
 });
 
 const source = positionals[0];
-const dpi = Number(values.dpi);
+const requestedDpi = Number(values.dpi);
 const mode = values.mode;
 const preset = values.preset;
 const labelSource = values.labels;
@@ -36,7 +44,8 @@ const maxPages = Number(values["max-pages"] ?? Number.MAX_SAFE_INTEGER);
 if (
   positionals.length !== 1 ||
   source === undefined ||
-  ![150, 200, 300].includes(dpi) ||
+  (![150, 200, 300].includes(requestedDpi) &&
+    !(values.dpi === "calibrated" && preset === "calibrated")) ||
   preset === undefined ||
   !presets.includes(preset) ||
   seed === undefined ||
@@ -46,7 +55,7 @@ if (
   ![maxDocs, maxPages].every((count) => Number.isSafeInteger(count) && count >= 1)
 ) {
   console.error(
-    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300] [--mode pages|lines] [--preset clean|scan|photocopy|jpeg|fax] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N]",
+    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N]",
   );
   process.exit(2);
 }
@@ -155,9 +164,11 @@ async function writeSample(
   lines: ReadonlyArray<readonly Word[]>,
   preset: string,
   seed: string,
+  dpi: number,
+  profile: ReturnType<typeof scanProfile>,
 ) {
   const { width, height } = raster;
-  const params = degradation(preset, seed, base);
+  const params = degradation(preset, seed, base, profile);
   const id = preset === "clean" ? base : `${base}-${preset}-${params.seed.toString(16)}`;
   const labels = lines
     .map((line) =>
@@ -203,6 +214,12 @@ let matchedWords = 0;
 for await (const file of pdfFiles(pdfRoot)) {
   const key = relative(root, file).split(sep).join("/");
   const digest = createHash("sha256").update(key).digest("hex");
+  const profile = preset === "calibrated" ? scanProfile(seed, key) : undefined;
+  const dpi = values.dpi === "calibrated" ? (profile?.dpi ?? requestedDpi) : requestedDpi;
+  if (preset === "calibrated" && profile === undefined) {
+    console.error("Missing calibrated scan profile");
+    process.exit(1);
+  }
   const bucket = Number.parseInt(digest.slice(0, 8), 16) % 100;
   const split = bucket < 80 ? "train" : bucket < 90 ? "val" : "test";
   if (selectedSplit !== "all" && selectedSplit !== split) continue;
@@ -290,7 +307,19 @@ for await (const file of pdfFiles(pdfRoot)) {
     const origin = `${file}#page=${page - 1}`;
     const id = `${digest.slice(0, 20)}-p${page - 1}-${dpi}${labelSource === "poppler" ? "-poppler" : ""}`;
     if (mode === "pages") {
-      if (await writeSample(directory, id, raster, origin, [...lines.values()], preset, seed))
+      if (
+        await writeSample(
+          directory,
+          id,
+          raster,
+          origin,
+          [...lines.values()],
+          preset,
+          seed,
+          dpi,
+          profile,
+        )
+      )
         samples += 1;
       else failed += 1;
     } else {
@@ -321,6 +350,8 @@ for await (const file of pdfFiles(pdfRoot)) {
             [labels],
             preset,
             seed,
+            dpi,
+            profile,
           )
         )
           samples += 1;
