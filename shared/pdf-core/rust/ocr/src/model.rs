@@ -149,7 +149,7 @@ fn prototype_tables(data: &[u8]) -> Option<(&[[u8; PROTOTYPE_BYTES]], &[[u8; TRA
     let body = data.strip_prefix(MAGIC)?;
     let (count, records) = body.get(16..)?.split_first_chunk::<4>()?;
     let count = usize::try_from(u32::from_le_bytes(*count)).ok()?;
-    let (prototypes, transitions) =
+    let (prototype_bytes, transition_bytes) =
         records.split_at_checked(count.checked_mul(PROTOTYPE_BYTES)?)?;
     let (prototypes, []) = prototype_bytes.as_chunks() else {
         return None;
