@@ -17,7 +17,7 @@ use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
-use crate::lazy::{Lazy, Plan};
+use crate::lazy::{Lazy, Plan, Tuning};
 use crate::num::widen;
 use crate::png;
 use crate::render::{self, RenderedPage};
@@ -1034,7 +1034,12 @@ std::thread_local! {
 }
 
 #[unsafe(no_mangle)]
-pub(crate) extern "C" fn pdf_core_lazy_open(size: usize) -> u32 {
+pub(crate) extern "C" fn pdf_core_lazy_open(
+    size: usize,
+    probe: usize,
+    gap: usize,
+    round_bytes: usize,
+) -> u32 {
     if size > Limits::default().max_pdf_bytes {
         return 0;
     }
@@ -1043,7 +1048,17 @@ pub(crate) extern "C" fn pdf_core_lazy_open(size: usize) -> u32 {
         if handle != 0 {
             next.set(handle.checked_add(1).unwrap_or(0));
             LAZY_DOCUMENTS.with(|documents| {
-                documents.borrow_mut().push((handle, Lazy::new(size)));
+                documents.borrow_mut().push((
+                    handle,
+                    Lazy::new(
+                        size,
+                        Tuning {
+                            gap,
+                            probe,
+                            round_bytes,
+                        },
+                    ),
+                ));
             });
         }
         handle
@@ -1171,7 +1186,16 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
             2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
             _ => Err(Failure::invalid("invalid lazy profile")),
         })?;
-        payload.map_or_else(|| bytes_result(&[]), Ok)
+        payload.map_or_else(
+            || {
+                if lazy.needs_ranges() {
+                    bytes_result(&1_u32.to_le_bytes())
+                } else {
+                    bytes_result(&[])
+                }
+            },
+            Ok,
+        )
     }))
 }
 

@@ -320,7 +320,8 @@ impl Scope {
         let found = self.category(document, b"XObject").is_some_and(|xobjects| {
             xobjects.as_dict().is_some_and(|dict| {
                 dict.entries.iter().any(|(_, entry)| {
-                    document.follow(entry).is_ok_and(|resolved| {
+                    let before = document.pending_reads();
+                    let is_form = document.follow(entry).is_ok_and(|resolved| {
                         resolved.as_stream().is_some_and(|stream| {
                             stream
                                 .dict
@@ -328,7 +329,8 @@ impl Scope {
                                 .and_then(Object::as_name)
                                 .is_some_and(|subtype| subtype == b"Form")
                         })
-                    })
+                    });
+                    is_form || document.pending_reads() != before
                 })
             })
         });

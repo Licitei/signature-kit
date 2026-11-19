@@ -2,12 +2,12 @@ import { readFileSync, readdirSync } from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Layer, Ref } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer, pdfCoreFileSource } from "../dist/file.js";
 import { loadPdfCoreNode } from "../dist/node.js";
-import { PdfCore, pdfCoreBlobSource } from "../dist/pdf-core.js";
+import { PdfCore, pdfCoreBlobSource, pdfCoreBytesSource } from "../dist/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provideMerge(NodeServices.layer));
 const fixtures = new URL("./fixtures/", import.meta.url);
@@ -112,6 +112,98 @@ describe("PdfCore byte-range documents", () => {
       const error = yield* Effect.flip(doc.text({ pageIndexes: [0] }));
       expect(error.code).toBe(PdfCoreErrorCodeValue.documentClosed);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("starts both probes before either read finishes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const bytes = readFileSync(new URL("habilitacao-150.pdf", fixtures));
+        const source = pdfCoreBytesSource(bytes);
+        const bothStarted = yield* Deferred.make<void>();
+        const started = yield* Ref.make(0);
+        const probeBytes = 1024;
+        const doc = yield* core.openLazy(
+          {
+            size: source.size,
+            read: (offset, length) =>
+              Effect.gen(function* () {
+                const count = yield* Ref.updateAndGet(started, (current) => current + 1);
+                if (count <= 2) {
+                  expect(length).toBe(probeBytes);
+                  expect([0, source.size - probeBytes]).toContain(offset);
+                  if (count === 2) {
+                    yield* Deferred.succeed(bothStarted, undefined);
+                  }
+                  yield* Deferred.await(bothStarted);
+                }
+                return yield* source.read(offset, length);
+              }),
+          },
+          { probeBytes, gapBytes: 0, maxRoundBytes: 2 * probeBytes },
+        );
+        const options = { pageIndexes: [0] };
+        expect(yield* doc.text(options)).toStrictEqual(yield* core.text(bytes, options));
+        expect((yield* doc.stats).strategy).toBe("lazy");
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("fetches a used form without loading the shared form dictionary's other streams", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const stream = (dictionary: string, data: string) =>
+          `<< ${dictionary} /Length ${data.length} >>\nstream\n${data}\nendstream`;
+        const unused = Array.from({ length: 17 }, (_, index) => `/Other${index} 7 0 R`);
+        const font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+        const form = "/Type /XObject /Subtype /Form /BBox [0 0 200 200]";
+        const objects = [
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+          `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 ${font} >> /XObject << /Used 6 0 R ${unused.join(" ")} >> >> >>`,
+          stream("", "/Used Do"),
+          stream("", " ".repeat(256 * 1024)),
+          stream(form, "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Selected) Tj ET"),
+          stream(form, " ".repeat(256 * 1024)),
+        ];
+        let pdf = "%PDF-1.7\n";
+        const offsets = objects.map((object, index) => {
+          const offset = pdf.length;
+          pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+          return offset.toString().padStart(10, "0");
+        });
+        const xref = pdf.length;
+        pdf += `xref\n0 8\n0000000000 65535 f \n${offsets.map((offset) => `${offset} 00000 n \n`).join("")}trailer\n<< /Root 1 0 R /Size 8 >>\nstartxref\n${xref}\n%%EOF\n`;
+        const bytes = new TextEncoder().encode(pdf);
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), { gapBytes: 0 });
+        const options = { pageIndexes: [0] };
+        const result = yield* doc.text(options);
+        expect(result).toStrictEqual(yield* core.text(bytes, options));
+        expect(result.join(" ")).toContain("Selected");
+        const stats = yield* doc.stats;
+        expect(stats.strategy).toBe("lazy");
+        expect(stats.rounds).toBe(2);
+        expect(stats.bytesRead).toBeLessThan(bytes.byteLength / 2);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("rejects invalid tuning and oversized sources before reading", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const source = {
+          size: 10,
+          read: () => Effect.die("Unexpected range read"),
+        };
+        const invalid = yield* Effect.flip(core.openLazy(source, { gapBytes: -1 }));
+        expect(invalid.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
+        expect(invalid.schemaName).toBe("PdfCoreLazyOptions");
+        const oversized = yield* Effect.flip(core.openLazy({ ...source, size: 4 * 1024 ** 3 }));
+        expect(oversized.code).toBe(PdfCoreErrorCodeValue.limitExceeded);
+      }),
+    ).pipe(Effect.provide(layer)),
   );
 
   it.effect("reports a short range without invoking the full loader", () =>

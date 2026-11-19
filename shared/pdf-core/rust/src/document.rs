@@ -11,10 +11,11 @@ use crate::encryption::Encryption;
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::filters;
 use crate::inspection::{InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText};
+use crate::lazy::Sparse;
 use crate::object::{Dict, ObjRef, Object, Resolver, Stream};
 use crate::syntax::{
-    Parser, find_bytes, keyword_at, parse_indirect_object, parse_object_header, read_unsigned,
-    skip_whitespace_at,
+    IndirectObject, Parser, find_bytes, keyword_at, parse_indirect_object, parse_object_header,
+    read_unsigned, skip_whitespace_at,
 };
 
 const HEADER_PROBE: usize = 1024;
@@ -41,10 +42,10 @@ pub(crate) enum Entry {
     Compressed { index: u32, stream: u32 },
     Free,
     Offset(usize),
-    Pending,
     Unset,
 }
 
+#[derive(Debug)]
 struct ObjectStream {
     data: Vec<u8>,
     entries: Vec<(u32, usize)>,
@@ -99,18 +100,37 @@ struct Scan {
     trailers: Vec<Dict>,
 }
 
+#[derive(Debug)]
+pub(crate) struct DocumentCache {
+    objects: RefCell<Vec<Option<Rc<Object>>>>,
+    streams: RefCell<HashMap<u32, Rc<ObjectStream>>>,
+}
+
+impl DocumentCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            objects: RefCell::new(Vec::new()),
+            streams: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+struct SparseDocument<'data> {
+    cache: &'data DocumentCache,
+    source: &'data Sparse,
+    table: &'data [Entry],
+    trailer: &'data Dict,
+}
+
 pub(crate) struct Document<'data> {
     bytes: &'data [u8],
-    cache: RefCell<Vec<Option<Rc<Object>>>>,
-    compact_ends: &'data [usize],
+    cache: DocumentCache,
     depth: Cell<u32>,
     encryption: RefCell<Option<Encryption>>,
     limits: Limits,
-    missing: Option<&'data RefCell<HashSet<u32>>>,
-    object_streams: RefCell<HashMap<u32, Rc<ObjectStream>>>,
-    original_size: usize,
     repaired: Cell<bool>,
     shift: Cell<usize>,
+    sparse: Option<SparseDocument<'data>>,
     table: RefCell<Vec<Entry>>,
     trailer: RefCell<Dict>,
 }
@@ -145,8 +165,17 @@ impl<'data> Document<'data> {
         self.bytes
     }
 
+    fn cache(&self) -> &DocumentCache {
+        self.sparse
+            .as_ref()
+            .map_or(&self.cache, |sparse| sparse.cache)
+    }
+
     pub(crate) fn catalog(&self) -> Outcome<Option<Rc<Object>>> {
-        let root = self.trailer.borrow().get(b"Root").cloned();
+        let root = self.sparse.as_ref().map_or_else(
+            || self.trailer.borrow().get(b"Root").cloned(),
+            |sparse| sparse.trailer.get(b"Root").cloned(),
+        );
         let Some(root_next) = root else {
             return Ok(None);
         };
@@ -154,42 +183,6 @@ impl<'data> Document<'data> {
             return Ok(None);
         };
         Ok(object.as_dict().is_some().then_some(object))
-    }
-
-    pub(crate) fn compact(
-        bytes: &'data [u8],
-        size: usize,
-        ends: &'data [usize],
-        table: Vec<Entry>,
-        trailer: Dict,
-        limits: &Limits,
-        missing: &'data RefCell<HashSet<u32>>,
-    ) -> Outcome<Self> {
-        let mut document = Self::new(bytes, limits);
-        document.shift.set(0);
-        document.compact_ends = ends;
-        document.original_size = size;
-        document.missing = Some(missing);
-        document.install(table, trailer);
-        document.unlock()?;
-        Ok(document)
-    }
-
-    pub(crate) fn compact_pages(&self, indexes: Option<&[u32]>) -> Outcome<Vec<(usize, Page)>> {
-        if !self.root_valid() {
-            return Err(Failure::invalid("missing document catalog"));
-        }
-        let first =
-            indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
-        let pages = self.walk_pages(first)?;
-        if pages.is_empty() {
-            return Err(Failure::invalid("page tree requires repair"));
-        }
-        let selected = select_pages(pages.len(), indexes)?;
-        Ok(pick_pages(&pages, selected)
-            .into_iter()
-            .map(|(index, page)| (index, page.clone()))
-            .collect())
     }
 
     pub(crate) fn content(&self, page: &Page) -> Outcome<Vec<u8>> {
@@ -235,24 +228,29 @@ impl<'data> Document<'data> {
     }
 
     fn encryption_dictionary(&self, reference: ObjRef) -> Option<Dict> {
-        let entry = self.table.borrow().get(widen(reference.number)).copied()?;
+        let entry = self.entry(reference.number);
         let Entry::Offset(offset) = entry else {
             return None;
         };
         let start = offset.saturating_add(self.shift.get());
-        let parsed = parse_indirect_object(
-            self.object_window(start),
-            start,
-            self.limits.max_nesting,
-            |_| None,
-        )
-        .ok()?;
+        let parsed = self.parse_at(start, &|_| None).ok()??;
         if parsed.obj_ref == reference
             && let Object::Dict(dict) = parsed.object
         {
             return Some(dict);
         }
         None
+    }
+
+    fn entry(&self, number: u32) -> Entry {
+        let index = widen(number);
+        self.sparse
+            .as_ref()
+            .map_or_else(
+                || self.table.borrow().get(index).copied(),
+                |sparse| sparse.table.get(index).copied(),
+            )
+            .unwrap_or(Entry::Unset)
     }
 
     pub(crate) fn follow(&self, object: &Object) -> Outcome<Rc<Object>> {
@@ -294,7 +292,7 @@ impl<'data> Document<'data> {
                     continue;
                 };
                 let replace = match *slot {
-                    Entry::Unset | Entry::Free | Entry::Pending | Entry::Compressed { .. } => true,
+                    Entry::Unset | Entry::Free | Entry::Compressed { .. } => true,
                     Entry::Offset(existing) => existing < offset,
                 };
                 if replace {
@@ -307,7 +305,7 @@ impl<'data> Document<'data> {
             }
             drop(table);
             let len = self.table.borrow().len();
-            let mut cache = self.cache.borrow_mut();
+            let mut cache = self.cache.objects.borrow_mut();
             if cache.len() < len {
                 cache.resize(len, None);
             }
@@ -316,10 +314,10 @@ impl<'data> Document<'data> {
     }
 
     fn install(&self, table: Vec<Entry>, trailer: Dict) {
-        *self.cache.borrow_mut() = vec![None; table.len()];
+        *self.cache.objects.borrow_mut() = vec![None; table.len()];
         *self.table.borrow_mut() = table;
         *self.trailer.borrow_mut() = trailer;
-        self.object_streams.borrow_mut().clear();
+        self.cache.streams.borrow_mut().clear();
         *self.encryption.borrow_mut() = None;
     }
 
@@ -378,33 +376,26 @@ impl<'data> Document<'data> {
 
     pub(crate) fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
         let index = widen(reference.number);
-        if let Some(hit) = self.cache.borrow().get(index).and_then(Clone::clone) {
+        let cache = &self.cache().objects;
+        if let Some(hit) = cache.borrow().get(index).and_then(Clone::clone) {
             return Ok(hit);
         }
-        let entry = self
-            .table
-            .borrow()
-            .get(index)
-            .copied()
-            .unwrap_or(Entry::Unset);
-        let loaded = match entry {
+        let before = self.pending_reads();
+        let loaded = match self.entry(reference.number) {
             Entry::Unset | Entry::Free => return Ok(Rc::new(Object::Null)),
-            Entry::Pending => {
-                if let Some(missing) = self.missing {
-                    let _: bool = missing.borrow_mut().insert(reference.number);
-                }
-                return Ok(Rc::new(Object::Null));
-            }
             Entry::Offset(offset) => self.load_at(reference.number, offset),
             Entry::Compressed {
                 stream,
                 index: position,
             } => self.load_compressed(reference.number, stream, position),
         };
+        if self.pending_reads() != before {
+            return Ok(Rc::new(Object::Null));
+        }
         match loaded {
             Ok(object) => {
                 let shared_object = Rc::new(object);
-                if let Some(slot) = self.cache.borrow_mut().get_mut(index) {
+                if let Some(slot) = cache.borrow_mut().get_mut(index) {
                     *slot = Some(Rc::clone(&shared_object));
                 }
                 Ok(shared_object)
@@ -426,15 +417,11 @@ impl<'data> Document<'data> {
 
     fn load_at(&self, number: u32, offset: usize) -> Outcome<Object> {
         let start = offset.saturating_add(self.shift.get());
-        let window = self.object_window(start);
-        let mut parsed = parse_indirect_object(window, start, self.limits.max_nesting, |length| {
-            self.length_of(length)
-        })?;
+        let Some(mut parsed) = self.parse_at(start, &|length| self.length_of(length))? else {
+            return Ok(Object::Null);
+        };
         if parsed.obj_ref.number != number {
             return Err(Failure::invalid("object number mismatch"));
-        }
-        if self.request_pending() && !object_terminated(window, parsed.end) {
-            return Err(Failure::invalid("incomplete compact object"));
         }
         if self.is_encrypted()
             && let Object::Stream(stream) = &mut parsed.object
@@ -442,25 +429,23 @@ impl<'data> Document<'data> {
             self.resolve_crypt_filter(&mut stream.dict)?;
         }
         if let Some(encryption) = self.encryption.borrow().as_ref() {
-            encryption.decrypt_object(&mut parsed.object, parsed.obj_ref, self.bytes)?;
+            let window = self
+                .sparse
+                .as_ref()
+                .map_or(self.bytes, |sparse| sparse.source.object(start).0);
+            encryption.decrypt_object(&mut parsed.object, parsed.obj_ref, window)?;
+        }
+        if self.sparse.is_some()
+            && let Object::Stream(stream) = &mut parsed.object
+        {
+            stream.data =
+                stream.data.start.saturating_add(start)..stream.data.end.saturating_add(start);
         }
         Ok(parsed.object)
     }
 
     fn load_compressed(&self, number: u32, stream: u32, index: u32) -> Outcome<Object> {
-        let container = self
-            .table
-            .borrow()
-            .get(widen(stream))
-            .copied()
-            .unwrap_or(Entry::Unset);
-        if container == Entry::Pending {
-            if let Some(missing) = self.missing {
-                let _: bool = missing.borrow_mut().insert(stream);
-            }
-            return Ok(Object::Null);
-        }
-        if !matches!(container, Entry::Offset(_)) {
+        if !matches!(self.entry(stream), Entry::Offset(_)) {
             return Err(Failure::invalid("object stream is not a direct object"));
         }
         let object_stream = self.object_stream(stream)?;
@@ -485,13 +470,10 @@ impl<'data> Document<'data> {
             bytes,
             shift: Cell::new(header_shift(bytes)),
             limits: *limits,
-            missing: None,
-            original_size: bytes.len(),
+            sparse: None,
             table: RefCell::new(Vec::new()),
             trailer: RefCell::new(Dict::default()),
-            cache: RefCell::new(Vec::new()),
-            compact_ends: &[],
-            object_streams: RefCell::new(HashMap::new()),
+            cache: DocumentCache::new(),
             repaired: Cell::new(false),
             depth: Cell::new(0),
             encryption: RefCell::new(None),
@@ -499,7 +481,7 @@ impl<'data> Document<'data> {
     }
 
     const fn object_bound(&self) -> usize {
-        object_bound(self.original_size, &self.limits)
+        object_bound(self.bytes.len(), &self.limits)
     }
 
     pub(crate) fn object_count(&self) -> usize {
@@ -507,7 +489,9 @@ impl<'data> Document<'data> {
     }
 
     fn object_stream(&self, number: u32) -> Outcome<Rc<ObjectStream>> {
-        if let Some(hit) = self.object_streams.borrow().get(&number) {
+        let streams = &self.cache().streams;
+        let before = self.pending_reads();
+        if let Some(hit) = streams.borrow().get(&number) {
             return Ok(Rc::clone(hit));
         }
         let object = self.load(ObjRef {
@@ -556,20 +540,10 @@ impl<'data> Document<'data> {
             entries,
             first,
         });
-        drop(
-            self.object_streams
-                .borrow_mut()
-                .insert(number, Rc::clone(&parsed)),
-        );
+        if self.pending_reads() == before {
+            drop(streams.borrow_mut().insert(number, Rc::clone(&parsed)));
+        }
         Ok(parsed)
-    }
-
-    fn object_window(&self, start: usize) -> &'data [u8] {
-        let index = self.compact_ends.partition_point(|end| *end <= start);
-        self.compact_ends
-            .get(index)
-            .and_then(|end| self.bytes.get(..*end))
-            .unwrap_or(self.bytes)
     }
 
     pub(crate) fn open(bytes: &'data [u8], limits: &Limits) -> Outcome<Self> {
@@ -672,6 +646,39 @@ impl<'data> Document<'data> {
         Ok(pages)
     }
 
+    fn parse_at(
+        &self,
+        start: usize,
+        resolve: &dyn Fn(ObjRef) -> Option<i64>,
+    ) -> Outcome<Option<IndirectObject>> {
+        let Some(sparse) = &self.sparse else {
+            return parse_indirect_object(self.bytes, start, self.limits.max_nesting, resolve)
+                .map(Some);
+        };
+        let (window, ceiling) = sparse.source.object(start);
+        let end = start.saturating_add(window.len());
+        let parsed = parse_indirect_object(window, 0, self.limits.max_nesting, resolve);
+        if let Ok(object) = &parsed
+            && (object.end < window.len() || end == ceiling)
+            && object_terminated(window, object.end)
+            && (!matches!(object.object, Object::Stream(_)) || end == ceiling)
+        {
+            return parsed.map(Some);
+        }
+        if end < ceiling {
+            sparse.source.request(end, ceiling);
+            return Ok(None);
+        }
+        drop(parsed?);
+        Err(Failure::invalid("incomplete sparse object"))
+    }
+
+    pub(crate) fn pending_reads(&self) -> usize {
+        self.sparse
+            .as_ref()
+            .map_or(0, |sparse| sparse.source.misses())
+    }
+
     fn read_classic_section(&self, start: usize, complete: bool) -> Outcome<Section> {
         let data = self.bytes;
         let mut pos = start;
@@ -756,7 +763,7 @@ impl<'data> Document<'data> {
     }
 
     fn read_stream_section(&self, pos: usize, complete: bool) -> Outcome<Section> {
-        let parsed = parse_indirect_object(self.bytes, pos, self.limits.max_nesting, |_| None)?;
+        let parsed = parse_indirect_object(self.bytes, pos, self.limits.max_nesting, &|_| None)?;
         if !complete
             && (parsed.end >= self.bytes.len() || !object_terminated(self.bytes, parsed.end))
         {
@@ -882,12 +889,12 @@ impl<'data> Document<'data> {
     }
 
     fn rebuild(&self) -> Outcome<()> {
-        if self.request_pending() {
+        if self.sparse.is_some() {
             if !self.waiting() {
                 self.repaired.set(true);
             }
             return Err(Failure::invalid(
-                "compact cross-reference table requires repair",
+                "sparse cross-reference table requires repair",
             ));
         }
         self.repaired.set(true);
@@ -922,10 +929,6 @@ impl<'data> Document<'data> {
         }
         let [x0, y0, x1, y1] = values;
         Ok(Some([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)]))
-    }
-
-    const fn request_pending(&self) -> bool {
-        self.missing.is_some()
     }
 
     fn resolve_crypt_filter(&self, dict: &mut Dict) -> Outcome<()> {
@@ -1016,7 +1019,7 @@ impl<'data> Document<'data> {
     fn scan_object(&self, scan: &mut Scan, at: usize, floor: usize, bound: usize) -> Option<usize> {
         let data = self.bytes;
         let start = header_before(data, at, floor)?;
-        let parsed = parse_indirect_object(data, start, self.limits.max_nesting, |_| None).ok()?;
+        let parsed = parse_indirect_object(data, start, self.limits.max_nesting, &|_| None).ok()?;
         let number = parsed.obj_ref.number;
         let index = widen(number);
         if index < bound {
@@ -1088,6 +1091,44 @@ impl<'data> Document<'data> {
         self.shift.get()
     }
 
+    pub(crate) fn sparse(
+        source: &'data Sparse,
+        table: &'data [Entry],
+        trailer: &'data Dict,
+        cache: &'data DocumentCache,
+        limits: &Limits,
+    ) -> Outcome<Self> {
+        let mut document = Self::new(&[], limits);
+        document.sparse = Some(SparseDocument {
+            cache,
+            source,
+            table,
+            trailer,
+        });
+        if cache.objects.borrow().is_empty() {
+            *cache.objects.borrow_mut() = vec![None; table.len()];
+        }
+        document.unlock()?;
+        Ok(document)
+    }
+
+    pub(crate) fn sparse_pages(&self, indexes: Option<&[u32]>) -> Outcome<Vec<(usize, Page)>> {
+        if !self.root_valid() {
+            return Err(Failure::invalid("missing document catalog"));
+        }
+        let first =
+            indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
+        let pages = self.walk_pages(first)?;
+        if pages.is_empty() {
+            return Err(Failure::invalid("page tree requires repair"));
+        }
+        let selected = select_pages(pages.len(), indexes)?;
+        Ok(pick_pages(&pages, selected)
+            .into_iter()
+            .map(|(index, page)| (index, page.clone()))
+            .collect())
+    }
+
     pub(crate) fn startxref(&self) -> Option<usize> {
         find_startxref(self.bytes)
     }
@@ -1097,17 +1138,21 @@ impl<'data> Document<'data> {
     }
 
     fn unlock(&self) -> Outcome<()> {
-        let trailer = self.trailer.borrow();
+        let stored = self.trailer.borrow();
+        let trailer = self
+            .sparse
+            .as_ref()
+            .map_or(&*stored, |sparse| sparse.trailer);
         let Some(setting) = trailer.get(b"Encrypt") else {
             return Ok(());
         };
         let encryption = match setting {
             Object::Null => return Ok(()),
-            Object::Dict(dict) => Encryption::authenticate(dict, &trailer, None),
+            Object::Dict(dict) => Encryption::authenticate(dict, trailer, None),
             Object::Ref(reference) => match self.encryption_dictionary(*reference) {
-                Some(dict) => Encryption::authenticate(&dict, &trailer, Some(*reference)),
+                Some(dict) => Encryption::authenticate(&dict, trailer, Some(*reference)),
                 None if !self.repaired.get() => {
-                    drop(trailer);
+                    drop(stored);
                     return self.rebuild();
                 }
                 None => None,
@@ -1130,8 +1175,7 @@ impl<'data> Document<'data> {
     }
 
     fn waiting(&self) -> bool {
-        self.missing
-            .is_some_and(|missing| !missing.borrow().is_empty())
+        self.pending_reads() != 0
     }
 
     fn walk_pages(&self, first: bool) -> Outcome<Vec<Page>> {
@@ -1246,7 +1290,16 @@ impl Resolver for Document<'_> {
 
 impl Document<'_> {
     fn decode_stream(&self, stream: &Stream, prefix: Option<usize>) -> Outcome<Vec<u8>> {
-        let raw = stream.encoded_bytes(self.bytes)?;
+        let raw = if let Some(sparse) = &self.sparse
+            && stream.decrypted.is_none()
+        {
+            sparse
+                .source
+                .bytes(stream.data.clone())
+                .ok_or_else(|| Failure::invalid("sparse stream data out of range"))?
+        } else {
+            stream.encoded_bytes(self.bytes)?
+        };
         let max = self.limits.max_decoded_stream_bytes;
         let Some(filter) = stream.dict.get(b"Filter") else {
             return filters::decode_stream(&stream.dict, raw, max, prefix);
@@ -1588,7 +1641,7 @@ pub(crate) fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::{Lazy, Plan};
+    use crate::lazy::{Lazy, Plan, Tuning};
     use crate::test_pdf::assert_exact;
     use core::fmt::Write as _;
     use core::hint::black_box;
@@ -2590,7 +2643,14 @@ mod tests {
     }
 
     fn plan_first(bytes: &[u8]) -> Option<Lazy> {
-        let mut lazy = Lazy::new(bytes.len());
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 16 * 1024,
+                probe: 32 * 1024,
+                round_bytes: 1024 * 1024,
+            },
+        );
         for _ in 0_i32..64_i32 {
             match lazy.plan(Some(&[0]), false, &Limits::default()) {
                 Plan::Ready => return Some(lazy),

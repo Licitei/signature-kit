@@ -1435,6 +1435,7 @@ pub(crate) fn document_text(
     opened_text(&document, &pick_pages(&pages, selected), limits, options)
 }
 
+#[inline(never)]
 pub(crate) fn opened_text(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
@@ -1618,6 +1619,7 @@ pub(crate) fn document_tables(
     opened_tables(&document, &pick_pages(&pages, selected), limits)
 }
 
+#[inline(never)]
 pub(crate) fn opened_tables(
     document: &Document<'_>,
     selected: &[(usize, &Page)],

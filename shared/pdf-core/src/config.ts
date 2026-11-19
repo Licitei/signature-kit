@@ -40,7 +40,7 @@ export const pdfCoreErrorMessages = {
     "pdfCore.ENCRYPTED_PDF": "The operation could not process this encrypted PDF.",
     "pdfCore.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
     "pdfCore.UNSUPPORTED_FEATURE": "The PDF document uses an unsupported feature.",
-    "pdfCore.INVALID_OPTIONS": "Invalid PDF inspection options.",
+    "pdfCore.INVALID_OPTIONS": "Invalid PDF options.",
     "pdfCore.PAINT_FAILED": "The PDF page could not be painted.",
     "pdfCore.RANGE_READ_FAILED": "The PDF byte range could not be read.",
     "pdfCore.DOCUMENT_CLOSED": "The PDF document is closed.",
@@ -51,7 +51,7 @@ export const pdfCoreErrorMessages = {
     "pdfCore.ENCRYPTED_PDF": "A operação não pôde processar este PDF criptografado.",
     "pdfCore.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",
     "pdfCore.UNSUPPORTED_FEATURE": "O documento PDF usa um recurso não suportado.",
-    "pdfCore.INVALID_OPTIONS": "Opções de inspeção de PDF inválidas.",
+    "pdfCore.INVALID_OPTIONS": "Opções de PDF inválidas.",
     "pdfCore.PAINT_FAILED": "Não foi possível desenhar a página do PDF.",
     "pdfCore.RANGE_READ_FAILED": "Não foi possível ler o intervalo de bytes do PDF.",
     "pdfCore.DOCUMENT_CLOSED": "O documento PDF está fechado.",
@@ -100,6 +100,7 @@ export const PdfCoreOperationValue = {
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreExports",
+  "PdfCoreLazyOptions",
   "PdfCoreInspectOptions",
   "PdfCoreInspection",
   "PdfCoreTextOptions",
@@ -122,6 +123,7 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
 export type PdfCoreSchemaName = (typeof PdfCoreSchemaNameSchema)["Type"];
 export const PdfCoreSchemaNameValue = {
   exports: "PdfCoreExports",
+  lazyOptions: "PdfCoreLazyOptions",
   inspectOptions: "PdfCoreInspectOptions",
   inspection: "PdfCoreInspection",
   textOptions: "PdfCoreTextOptions",
@@ -333,6 +335,10 @@ const isEditFunction = (
   operationsLength: number,
 ) => number => typeof value === "function" && value.length === 4;
 
+const isLazyOpenFunction = (
+  value: unknown,
+): value is (size: number, probe: number, gap: number, roundBytes: number) => number =>
+  typeof value === "function" && value.length === 4;
 const isLazyCloseFunction = (value: unknown): value is (handle: number) => void =>
   typeof value === "function" && value.length === 1;
 const isLazyFeedFunction = (
@@ -372,7 +378,7 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_create: Schema.declare(isBufferFunction, { identifier: "pdf_core_create" }),
   pdf_core_font_metrics: Schema.declare(isBufferFunction, { identifier: "pdf_core_font_metrics" }),
   pdf_core_png_size: Schema.declare(isBufferFunction, { identifier: "pdf_core_png_size" }),
-  pdf_core_lazy_open: Schema.declare(isAllocFunction, { identifier: "pdf_core_lazy_open" }),
+  pdf_core_lazy_open: Schema.declare(isLazyOpenFunction, { identifier: "pdf_core_lazy_open" }),
   pdf_core_lazy_close: Schema.declare(isLazyCloseFunction, { identifier: "pdf_core_lazy_close" }),
   pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
   pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
@@ -381,7 +387,20 @@ export const PdfCoreExportsSchema = Schema.Struct({
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 
 const byteOffsetSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: maxUint32 }));
-export const PdfCoreRangeSizeSchema = byteOffsetSchema;
+
+export const PDF_CORE_MAX_LAZY_BYTES = 512 * 1024 * 1024;
+export const PdfCoreLazyOptionsSchema = Schema.Struct({
+  probeBytes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 1024 * 1024 })),
+  ),
+  gapBytes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1024 * 1024 })),
+  ),
+  maxRoundBytes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 64 * 1024 * 1024 })),
+  ),
+});
+export type PdfCoreLazyOptions = (typeof PdfCoreLazyOptionsSchema)["Type"];
 export const PdfCoreLazyStatsSchema = Schema.Struct({
   bytesRead: Schema.Int,
   rounds: Schema.Int,
@@ -392,6 +411,7 @@ export type PdfCoreLazyStats = (typeof PdfCoreLazyStatsSchema)["Type"];
 const safeOffsetSchema = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
+export const PdfCoreRangeSizeSchema = safeOffsetSchema;
 
 export const PdfCoreSignatureAnalysisSchema = Schema.Literals([
   "scan",

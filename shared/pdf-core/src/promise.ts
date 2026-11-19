@@ -2,7 +2,7 @@ import { Effect, Exit, Scope } from "effect";
 
 import { pdfCoreBrowserModule } from "./browser.js";
 import { PdfCoreError, PdfCoreErrorCodeValue, PdfCoreOperationValue } from "./config.js";
-import type { PdfCoreLazyStats } from "./config.js";
+import type { PdfCoreLazyOptions, PdfCoreLazyStats } from "./config.js";
 import { makePdfCore } from "./pdf-core.js";
 import type { PdfCoreLazyDocument, PdfCoreService } from "./pdf-core.js";
 
@@ -26,30 +26,40 @@ export type PdfCorePromiseDocument = PromiseMethods<Omit<PdfCoreLazyDocument, "s
 };
 
 export type PdfCoreClient = PromiseMethods<Omit<PdfCoreService, "openLazy">> & {
-  readonly openLazy: (source: PdfCorePromiseRangeSource) => Promise<PdfCorePromiseDocument>;
+  readonly openLazy: (
+    source: PdfCorePromiseRangeSource,
+    options?: PdfCoreLazyOptions,
+  ) => Promise<PdfCorePromiseDocument>;
 };
 const run = <A>(effect: Effect.Effect<A, PdfCoreError>): Promise<A> =>
   // effect-boundary: promise entry point for apps without Effect [allow-run: rejects with the PdfCoreError]
   Effect.runPromise(effect);
 
-const openLazy = (core: PdfCoreService, source: PdfCorePromiseRangeSource) =>
+const openLazy = (
+  core: PdfCoreService,
+  source: PdfCorePromiseRangeSource,
+  options?: PdfCoreLazyOptions,
+) =>
   run(
     Effect.gen(function* () {
       const scope = yield* Scope.make();
       const document = yield* core
-        .openLazy({
-          size: source.size,
-          read: (offset, length) =>
-            Effect.tryPromise({
-              try: async () => source.read(offset, length),
-              catch: () =>
-                new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.rangeReadFailed,
-                  operation: PdfCoreOperationValue.readRange,
-                  reason: `The PDF source could not read ${length} bytes at offset ${offset}.`,
-                }),
-            }),
-        })
+        .openLazy(
+          {
+            size: source.size,
+            read: (offset, length) =>
+              Effect.tryPromise({
+                try: async () => source.read(offset, length),
+                catch: () =>
+                  new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.rangeReadFailed,
+                    operation: PdfCoreOperationValue.readRange,
+                    reason: `The PDF source could not read ${length} bytes at offset ${offset}.`,
+                  }),
+              }),
+          },
+          options,
+        )
         .pipe(
           Scope.provide(scope),
           Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
@@ -69,7 +79,7 @@ const openLazy = (core: PdfCoreService, source: PdfCorePromiseRangeSource) =>
   );
 
 const toClient = (core: PdfCoreService): PdfCoreClient => ({
-  openLazy: (source) => openLazy(core, source),
+  openLazy: (source, options) => openLazy(core, source, options),
   wasmMemoryBytes: () => run(core.wasmMemoryBytes()),
   inspect: (...args) => run(core.inspect(...args)),
   text: (...args) => run(core.text(...args)),

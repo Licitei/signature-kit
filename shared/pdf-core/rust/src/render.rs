@@ -2215,6 +2215,7 @@ pub(crate) fn opened_render(
     )
 }
 
+#[inline(never)]
 fn render_selected(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
