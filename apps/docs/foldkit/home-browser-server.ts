@@ -24,8 +24,20 @@ const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
         yield* Effect.promise(() => isolated.grantPermissions([], { origin }));
         const tab = yield* Effect.promise(() => isolated.newPage());
         yield* Effect.promise(() => tab.goto(`${origin}/en-US`));
+        yield* Effect.promise(async () => {
+          for (let attempt = 0; attempt < 100; attempt++) {
+            await tab.keyboard.press("Control+k");
+            if ((await tab.locator("#site-overlay[open]").count()) > 0) return;
+            await tab.waitForTimeout(200);
+          }
+        });
+        yield* Effect.promise(() => tab.keyboard.press("Escape"));
         yield* Effect.promise(() =>
-          tab.getByRole("tab", { name: "Assinafy", exact: true }).click(),
+          tab.locator("#site-overlay:not([open])").waitFor({ state: "attached" }),
+        );
+        yield* Effect.promise(() => tab.locator('main [data-overlay="providers"]').click());
+        yield* Effect.promise(() =>
+          tab.getByRole("tab", { name: "Assinafy", exact: true }).dispatchEvent("click"),
         );
         yield* Effect.promise(() =>
           tab.waitForFunction(() => {
@@ -48,7 +60,7 @@ const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
             ),
           ),
         );
-        yield* Effect.promise(() => tab.locator(".home-code .home-copy").click());
+        yield* Effect.promise(() => tab.locator(".home-code .home-copy").dispatchEvent("click"));
         yield* Effect.promise(() =>
           tab.getByRole("status").filter({ hasText: "Could not copy." }).waitFor(),
         );

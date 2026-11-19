@@ -57,6 +57,7 @@ it("updates appearance toggles without storing certificate material in the model
   ).model;
   expect(changed.signingForm).toEqual({ ...initial.signingForm, rubric: true });
   expect(Object.keys(changed.signingForm).sort()).toEqual([
+    "appearance",
     "date",
     "identity",
     "logo",

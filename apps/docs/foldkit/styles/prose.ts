@@ -6,14 +6,15 @@ export const prose = stylex.create({
     maxWidth: "1120px",
     margin: "0 auto",
     display: "grid",
-    gridTemplateColumns: "220px minmax(0, 1fr)",
+    gridTemplateColumns: {
+      default: "220px minmax(0, 1fr)",
+      "@media (max-width: 1023px)": "minmax(0, 1fr)",
+    },
     gap: "48px",
     padding: "32px 24px 80px",
-    "@media (max-width: 800px)": {
-      display: "block",
-    },
   },
   navigation: {
+    display: { default: "block", "@media (max-width: 1023px)": "none" },
     minWidth: 0,
   },
   navTitle: {
@@ -59,7 +60,7 @@ export const prose = stylex.create({
     maxWidth: "68ch",
   },
   link: {
-    color: tokens.accentSolid,
+    color: tokens.fg,
     textUnderlineOffset: "3px",
     ":focus-visible": { outline: "none", boxShadow: tokens.focus },
   },
@@ -116,7 +117,7 @@ export const prose = stylex.create({
   callout: {
     borderLeftWidth: "3px",
     borderLeftStyle: "solid",
-    borderLeftColor: tokens.accentSolid,
+    borderLeftColor: tokens.fg,
     padding: "12px 16px",
     backgroundColor: tokens.bgSubtle,
   },
@@ -131,28 +132,10 @@ export const prose = stylex.create({
     display: "grid",
     gap: "8px",
   },
-  searchPage: {
-    maxWidth: "720px",
-    margin: "0 auto",
-    padding: "48px 24px 80px",
-  },
   feedback: {
     display: "grid",
     gap: "12px",
     maxWidth: "40rem",
     marginTop: "32px",
-  },
-  textarea: {
-    width: "100%",
-    minHeight: "7rem",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: tokens.line,
-    borderRadius: "12px",
-    backgroundColor: tokens.bgElevated,
-    color: tokens.fg,
-    font: "inherit",
-    padding: "12px",
-    ":focus-visible": { outline: "none", boxShadow: tokens.focus },
   },
 });

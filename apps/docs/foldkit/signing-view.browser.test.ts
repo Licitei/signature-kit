@@ -994,6 +994,12 @@ it("toggles appearance with the keyboard without resetting sensitive form fields
         files.items.add(new File(["certificate"], "certificate.p12"));
         certificate.files = files.files;
         password.value = "private password";
+        const appearance = app.host.querySelector<HTMLButtonElement>("#signing-appearance-button");
+        if (appearance === null) return expect.fail("Appearance disclosure missing");
+        appearance.click();
+        yield* Effect.promise(() =>
+          expect.poll(() => appearance.getAttribute("aria-expanded")).toBe("true"),
+        );
         rubric.focus();
         rubric.dispatchEvent(
           new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true }),

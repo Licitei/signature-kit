@@ -154,8 +154,8 @@ test("serves the Foldkit build over HTTP", async () => {
           const request = (url: URL | string, options?: RequestInit) =>
             fetch(url, { ...options, signal });
           for (const [locale, title] of [
-            ["en-US", "One typed boundary for every signature."],
-            ["pt-BR", "Um ponto único de assinatura tipado para cada documento."],
+            ["en-US", "Typed digital signatures"],
+            ["pt-BR", "Assinaturas digitais tipadas"],
           ]) {
             const response = await request(new URL(locale, origin));
             const html = await response.text();
@@ -253,7 +253,7 @@ test("serves the Foldkit build over HTTP", async () => {
           const fallback = await request(new URL("/en-US", origin));
           const fallbackHtml = await fallback.text();
           expect(fallback.status).toBe(200);
-          expect(fallbackHtml).toContain("One typed boundary for every signature.");
+          expect(fallbackHtml).toContain("Typed digital signatures");
           expect(fallbackHtml).toContain("data-foldkit-app");
           expect(fallbackHtml).not.toContain(marker);
           const redirect = await request(origin, { redirect: "manual" });

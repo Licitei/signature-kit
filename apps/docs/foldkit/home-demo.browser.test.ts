@@ -28,7 +28,7 @@ it("navigates with the keyboard and releases each instance's PDF URLs independen
               const handle = Runtime.embed(
                 Runtime.makeApplication({ Flags, Model, init, update, view, container }),
                 {
-                  flags: Effect.succeed(Flags.make({ locale: "en-US", path: "" })),
+                  flags: Effect.succeed(Flags.make({ locale: "en-US", path: "/sign-free" })),
                 },
               );
               return { container: wrapper, handle };
@@ -95,7 +95,7 @@ it("hydrates the server-rendered demo and runs its controls", async () => {
         const rendered = yield* Server.renderToString(
           { Flags, init, view },
           {
-            flags: { locale: "en-US", path: "" },
+            flags: { locale: "en-US", path: "/sign-free" },
             buildId: "home-demo-hydration",
           },
         );

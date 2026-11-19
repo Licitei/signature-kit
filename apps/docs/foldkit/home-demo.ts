@@ -54,7 +54,7 @@ const DemoMount = Mount.define("DemoMount", {
           const show = () => {
             const url = urls[active];
             if (preview !== null && url !== undefined)
-              preview.src = `${url}#toolbar=0&navpanes=0&scrollbar=0`;
+              preview.src = `${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
             if (download !== null) {
               if (url === undefined) download.removeAttribute("href");
               else {
@@ -167,7 +167,6 @@ export const Message = defineMessageUnion({
   DemoMounted: {},
   PreviousRequested: {},
   NextRequested: {},
-  DocumentSelected: { index: Schema.Int },
   MarkRequested: {},
   ResetRequested: {},
   DownloadRequested: {},
@@ -220,7 +219,6 @@ export const homeDemoUpdate = (model: HomeDemoModel, message: Message) =>
     AnalyticsRecorded: () => ({ model }),
     PreviousRequested: () => ({ model: { ...model, active: (model.active + 3) % 4 } }),
     NextRequested: () => ({ model: { ...model, active: (model.active + 1) % 4 } }),
-    DocumentSelected: ({ index }) => ({ model: { ...model, active: index } }),
     MarkRequested: () => ({
       model: { ...model, request: model.request + 1, marked: true },
       commands: [RecordDemoEvent({ action: "run", index: model.active })],
@@ -252,11 +250,50 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
       ],
       [
         h.p(
-          [],
+          [...sx(h, landing.demoNote)],
           [
             pt
               ? "Exemplo visual ilustrativo: não é assinatura digital e não usa certificado."
               : "Illustrative visual example: not a digital signature and no certificate is used.",
+          ],
+        ),
+        h.submodel({
+          slotId: "home-demo-documents",
+          model: model.documents,
+          view: DemoTabs.view,
+          viewInputs: {
+            tabs: demoIndexes,
+            selectedValue: Option.getOrElse(
+              Schema.decodeUnknownOption(DemoIndex)(String(model.active)),
+              (): typeof DemoIndex.Type => "0",
+            ),
+            ariaLabel: pt ? "Documentos de exemplo" : "Example documents",
+            panelMount: "ActiveOnly",
+            toView: ({ tablist, tabs }) =>
+              h.div(
+                [...tablist, ...sx(h, "home-demo-controls", landing.tabs, landing.toolbar)],
+                tabs.map((tab) =>
+                  h.button(
+                    [
+                      ...tab.tab,
+                      h.Attribute("data-demo-index", tab.value),
+                      ...sx(h, landing.tab, tab.isActive && landing.tabOn),
+                    ],
+                    [names[tab.index] ?? ""],
+                  ),
+                ),
+              ),
+          },
+          toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
+        }),
+        h.div(
+          [...sx(h, landing.stage)],
+          [
+            h.iframe([
+              h.Attribute("data-demo-preview", ""),
+              ...sx(h, landing.preview),
+              h.Attribute("title", pt ? "Prévia do exemplo" : "Example preview"),
+            ]),
           ],
         ),
         h.div(
@@ -317,53 +354,23 @@ export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale
               h,
             ),
             h.a(
-              [h.Attribute("data-demo-download", ""), h.OnClick(Message.DownloadRequested())],
+              [
+                ...sx(h, landing.link),
+                h.Attribute("data-demo-download", ""),
+                h.OnClick(Message.DownloadRequested()),
+              ],
               [pt ? "Baixar exemplo" : "Download example"],
             ),
-          ],
-        ),
-        h.submodel({
-          slotId: "home-demo-documents",
-          model: model.documents,
-          view: DemoTabs.view,
-          viewInputs: {
-            tabs: demoIndexes,
-            selectedValue: Option.getOrElse(
-              Schema.decodeUnknownOption(DemoIndex)(String(model.active)),
-              (): typeof DemoIndex.Type => "0",
+            h.p(
+              [...sx(h, landing.status), h.Attribute("data-demo-label", "")],
+              [`${names[model.active] ?? ""} · ${model.active + 1} / 4`],
             ),
-            ariaLabel: pt ? "Documentos de exemplo" : "Example documents",
-            panelMount: "ActiveOnly",
-            toView: ({ tablist, tabs }) =>
-              h.div(
-                [...tablist, ...sx(h, "home-demo-controls", landing.tabs, landing.toolbar)],
-                tabs.map((tab) =>
-                  h.button(
-                    [
-                      ...tab.tab,
-                      h.Attribute("data-demo-index", tab.value),
-                      ...sx(h, landing.tab, tab.isActive && landing.tabOn),
-                    ],
-                    [names[tab.index] ?? ""],
-                  ),
-                ),
-              ),
-          },
-          toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
-        }),
-        h.p(
-          [h.Attribute("data-demo-label", "")],
-          [`${names[model.active] ?? ""} · ${model.active + 1} / 4`],
+          ],
         ),
         h.p(
           [h.Attribute("data-demo-status", ""), h.Role("status"), ...sx(h, landing.status)],
           [pt ? "Preparando exemplos…" : "Preparing examples…"],
         ),
-        h.iframe([
-          h.Attribute("data-demo-preview", ""),
-          ...sx(h, landing.preview),
-          h.Attribute("title", pt ? "Prévia do exemplo" : "Example preview"),
-        ]),
       ],
     );
   },
