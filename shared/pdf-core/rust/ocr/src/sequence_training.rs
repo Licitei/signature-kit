@@ -1,4 +1,5 @@
 #[cfg(target_arch = "x86_64")]
+#[path = "sequence_avx2.rs"]
 mod avx2;
 
 use alloc::collections::BTreeMap;
@@ -39,10 +40,24 @@ pub(crate) struct Training {
     pub(crate) epochs: usize,
     pub(crate) lines_per_epoch: usize,
     pub(crate) patience: usize,
+    pub(crate) quantized_epochs: usize,
     pub(crate) resume: bool,
     pub(crate) seed: u64,
     pub(crate) warm_epochs: usize,
     pub(crate) workers: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Phase {
+    Alignment,
+    Ctc,
+    Quantized,
+}
+
+impl Phase {
+    const fn quantized(self) -> bool {
+        matches!(self, Self::Quantized)
+    }
 }
 
 #[derive(Debug)]
@@ -181,6 +196,38 @@ impl Layer {
         result
     }
 
+    fn quantized(&self) -> Self {
+        let record = self.record();
+        let layer_scale = weight_scale(
+            self.values
+                .chunks_exact(record)
+                .flat_map(|row| row.iter().skip(1)),
+        );
+        let values = self
+            .values
+            .chunks_exact(record)
+            .flat_map(|row| {
+                let (bias, weights) = row.split_first().unwrap_or((&0.0, &[]));
+                let scale = if CHANNELWISE {
+                    weight_scale(weights)
+                } else {
+                    layer_scale
+                };
+                iter::once(*bias).chain(
+                    weights
+                        .iter()
+                        .map(move |weight| (*weight / scale).round().clamp(-127.0, 127.0) * scale),
+                )
+            })
+            .collect();
+        Self {
+            dilation: self.dilation,
+            kernel: self.kernel,
+            values,
+            width: self.width,
+        }
+    }
+
     const fn record(&self) -> usize {
         self.width.saturating_mul(self.kernel).saturating_add(1)
     }
@@ -212,7 +259,7 @@ impl Parameters {
         example: &Example,
         labels: &[usize],
         key: u64,
-        warm: bool,
+        phase: Phase,
         result: &mut Worker,
     ) -> Option<f32> {
         let mut geometry = example.geometry;
@@ -246,7 +293,7 @@ impl Parameters {
                     .into_iter()
                     .map(|value| {
                         let level = f32::from(value) / 64.0;
-                        match variant {
+                        let augmented = match variant {
                             1 => (level * 1.65 - 0.65).max(0.0),
                             2 => (level * 1.6).min(1.0),
                             3 => (level * 0.85 + 0.08 * random.value()).clamp(0.0, 1.0),
@@ -258,6 +305,11 @@ impl Parameters {
                                 }
                             }
                             _ => level,
+                        };
+                        if phase.quantized() {
+                            fake_quantize(augmented, 64.0)
+                        } else {
+                            augmented
                         }
                     })
                     .collect()
@@ -265,16 +317,17 @@ impl Parameters {
             .collect();
         let [first, second, third, output] = &self.layers;
         let kernels = self.kernels;
-        let first_activation = relu(first.apply(kernels, &source), &mut random);
-        let second_activation = relu(second.apply(kernels, &first_activation), &mut random);
-        let third_activation = relu(third.apply(kernels, &second_activation), &mut random);
+        let first_activation = relu(first.apply(kernels, &source), &mut random, phase);
+        let second_activation = relu(second.apply(kernels, &first_activation), &mut random, phase);
+        let third_activation = relu(third.apply(kernels, &second_activation), &mut random, phase);
         let mut probability = output.apply(kernels, &third_activation);
         log_softmax(&mut probability);
-        let (gradient, loss) = if warm && example.alignment.len() == labels.len() {
-            aligned_gradient(&probability, &result.frames, &example.alignment, labels)?
-        } else {
-            ctc::gradients(&probability, labels)?
-        };
+        let (gradient, loss) =
+            if matches!(phase, Phase::Alignment) && example.alignment.len() == labels.len() {
+                aligned_gradient(&probability, &result.frames, &example.alignment, labels)?
+            } else {
+                ctc::gradients(&probability, labels)?
+            };
         let [
             first_gradient,
             second_gradient,
@@ -285,19 +338,19 @@ impl Parameters {
         let signal_second = third.backprop(
             kernels,
             &second_activation,
-            &relu_gradient(signal_third, &third_activation),
+            &relu_gradient(signal_third, &third_activation, phase),
             third_gradient,
         );
         let signal_first = second.backprop(
             kernels,
             &first_activation,
-            &relu_gradient(signal_second, &second_activation),
+            &relu_gradient(signal_second, &second_activation, phase),
             second_gradient,
         );
         drop(first.backprop(
             kernels,
             &source,
-            &relu_gradient(signal_first, &first_activation),
+            &relu_gradient(signal_first, &first_activation, phase),
             first_gradient,
         ));
         Some(loss)
@@ -354,6 +407,13 @@ impl Parameters {
                 observe(winner);
             }
             previous = winner;
+        }
+    }
+
+    fn quantized(&self) -> Self {
+        Self {
+            kernels: self.kernels,
+            layers: self.layers.each_ref().map(Layer::quantized),
         }
     }
 
@@ -495,7 +555,17 @@ fn dot(left: &[f32], right: &[f32]) -> f32 {
         .sum()
 }
 
-fn relu(mut values: Vec<Vec<f32>>, random: &mut Random) -> Vec<Vec<f32>> {
+fn fake_quantize(value: f32, unit: f32) -> f32 {
+    (value * unit).round().clamp(-127.0, 127.0) / unit
+}
+
+fn relu(mut values: Vec<Vec<f32>>, random: &mut Random, phase: Phase) -> Vec<Vec<f32>> {
+    if phase.quantized() {
+        for value in values.iter_mut().flatten() {
+            *value = fake_quantize(activate(*value), 16.0);
+        }
+        return values;
+    }
     let mask: [bool; CHANNELS] = array::from_fn(|_| !CHANNELWISE || random.value() >= -0.9);
     for row in &mut values {
         for (value, keep) in row.iter_mut().zip(mask) {
@@ -509,18 +579,33 @@ fn relu(mut values: Vec<Vec<f32>>, random: &mut Random) -> Vec<Vec<f32>> {
     values
 }
 
-fn relu_gradient(mut values: Vec<Vec<f32>>, activations: &[Vec<f32>]) -> Vec<Vec<f32>> {
+fn relu_gradient(
+    mut values: Vec<Vec<f32>>,
+    activations: &[Vec<f32>],
+    phase: Phase,
+) -> Vec<Vec<f32>> {
+    let scale = if phase.quantized() {
+        1.0
+    } else {
+        DROPOUT_SCALE
+    };
+    let maximum = if phase.quantized() {
+        7.875
+    } else {
+        7.9 * scale
+    };
     for (delta, activation) in values
         .iter_mut()
         .flatten()
         .zip(activations.iter().flatten())
     {
-        if activation.abs() >= 7.9 * DROPOUT_SCALE || (CHANNELWISE && *activation == 0.0) {
+        if activation.abs() >= maximum || (CHANNELWISE && !phase.quantized() && *activation == 0.0)
+        {
             *delta = 0.0;
         } else if *activation <= 0.0 {
-            *delta *= NEGATIVE_SLOPE * DROPOUT_SCALE;
+            *delta *= NEGATIVE_SLOPE * scale;
         } else {
-            *delta *= DROPOUT_SCALE;
+            *delta *= scale;
         }
     }
     values
@@ -596,7 +681,7 @@ fn collect_batch(
     batch: &[&(&Example, Vec<usize>)],
     workers: usize,
     seed: u64,
-    warm: bool,
+    phase: Phase,
 ) -> Option<Worker> {
     thread::scope(|scope| {
         let size = batch.len().div_ceil(workers);
@@ -617,7 +702,7 @@ fn collect_batch(
                     );
                     for (example, labels) in job {
                         if let Some(loss) =
-                            model.gradient(example, labels, rng.next(), warm, &mut worker)
+                            model.gradient(example, labels, rng.next(), phase, &mut worker)
                         {
                             worker.lines = worker.lines.saturating_add(1);
                             worker.loss += loss;
@@ -780,6 +865,13 @@ fn checkpoint_contract(training: Training, hash: u64) -> Vec<u8> {
     ] {
         contract.extend(u64::try_from(value).unwrap_or(u64::MAX).to_le_bytes());
     }
+    if training.quantized_epochs != 0 {
+        contract.extend(
+            u64::try_from(training.quantized_epochs)
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+    }
     contract
 }
 
@@ -938,6 +1030,13 @@ fn train_epoch(
         order.swap(index, pick);
     }
     order.truncate(training.lines_per_epoch);
+    let phase = if epoch >= training.epochs.saturating_sub(training.quantized_epochs) {
+        Phase::Quantized
+    } else if epoch < training.warm_epochs {
+        Phase::Alignment
+    } else {
+        Phase::Ctc
+    };
     let rate = learning_rate(epoch, training.epochs);
     let mut loss = 0.0_f32;
     let mut total_lines = 0_usize;
@@ -945,14 +1044,10 @@ fn train_epoch(
     for bucket in order.chunks_mut(size.saturating_mul(8)) {
         bucket.sort_by_cached_key(|(example, _)| normalized_width(example));
         for batch in bucket.chunks(size) {
-            let gradients = collect_batch(
-                model,
-                batch,
-                training.workers,
-                rng.next(),
-                epoch < training.warm_epochs,
-            )
-            .ok_or_else(|| io::Error::other("a CTC gradient worker failed"))?;
+            let quantized = phase.quantized().then(|| model.quantized());
+            let forward = quantized.as_ref().unwrap_or(model);
+            let gradients = collect_batch(forward, batch, training.workers, rng.next(), phase)
+                .ok_or_else(|| io::Error::other("a CTC gradient worker failed"))?;
             if gradients.lines == 0 {
                 continue;
             }
@@ -1020,7 +1115,7 @@ mod tests {
         assert!(
             checkpoint_values(&mut fresh, &mut moments)
                 .zip(expected)
-                .all(|(restored, original)| restored.to_bits() == original.to_bits())
+                .all(|(value, original)| value.to_bits() == original.to_bits())
         );
     }
 }

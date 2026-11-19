@@ -28,3 +28,6 @@ mod sequence_probe;
 mod sequence_training;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod training;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod training_lines;

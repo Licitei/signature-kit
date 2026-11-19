@@ -4,7 +4,7 @@ use alloc::collections::BTreeMap;
 use core::{hint, iter, mem, str};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, BufReader, Read as _, Seek as _, Write as _};
 use std::path::Path;
 use std::process;
 use std::time::Instant;
@@ -20,6 +20,7 @@ use crate::recognize::{ink_box, recognize_line_with_model};
 use crate::segment::{Line, WordBox};
 use crate::sequence::{Geometry, Scratch, Sequence};
 use crate::sequence_training::{self, Example, Training};
+use crate::training_lines;
 
 const ARCHIVE_MAGIC: &[u8; 4] = b"OCRT";
 const PROTOTYPES_PER_LABEL: usize = 12;
@@ -485,7 +486,7 @@ fn medoids(group: &[Features], centers: &mut [Features]) -> Option<()> {
     Some(())
 }
 
-fn digest(bytes: &[u8], hash: u64) -> u64 {
+pub(crate) fn digest(bytes: &[u8], hash: u64) -> u64 {
     bytes.iter().fold(hash, |value, &byte| {
         (value ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
     })
@@ -868,7 +869,7 @@ fn cell(distances: &[Vec<usize>], row: usize, col: usize) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-const fn sequence_geometry(line: &Line) -> Geometry {
+pub(crate) const fn sequence_geometry(line: &Line) -> Geometry {
     Geometry {
         bbox: line.bbox,
         metrics: Metrics {
@@ -911,7 +912,16 @@ fn load_sequence_archive(
     hash: &mut u64,
     output: &mut Vec<Example>,
 ) -> io::Result<()> {
-    let bytes = fs::read(archive)?;
+    let mut file = fs::File::open(archive)?;
+    let mut signature = [0_u8; 8];
+    file.read_exact(&mut signature)?;
+    if &signature == training_lines::MAGIC {
+        return training_lines::read(archive, BufReader::new(file), hash, output);
+    }
+    file.rewind()?;
+    let mut input = BufReader::new(file);
+    let mut bytes = Vec::new();
+    let _read = input.read_to_end(&mut bytes)?;
     *hash = digest(&bytes, *hash);
     for sample in load(&bytes)? {
         let alignment = labeled_centers(&sample).unwrap_or_default();
@@ -987,6 +997,7 @@ fn sequence_arguments(
         epochs: epoch_count,
         lines_per_epoch: usize::MAX,
         patience: 5,
+        quantized_epochs: 0,
         resume: false,
         seed: u64::try_from(seed_id).unwrap_or_default(),
         warm_epochs: 0,
@@ -1013,6 +1024,9 @@ fn sequence_arguments(
             Some(("--warm", rounds)) if rounds < training.epochs => training.warm_epochs = rounds,
             Some(("--lines", limit)) if limit > 0 => training.lines_per_epoch = limit,
             Some(("--patience", rounds)) if rounds > 0 => training.patience = rounds,
+            Some(("--qat", rounds)) if rounds < training.epochs => {
+                training.quantized_epochs = rounds
+            }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -1020,6 +1034,16 @@ fn sequence_arguments(
                 ));
             }
         }
+    }
+    if training
+        .warm_epochs
+        .saturating_add(training.quantized_epochs)
+        >= training.epochs
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CTC requires an epoch between alignment and quantized fine-tuning",
+        ));
     }
     train_sequence(Path::new(output), training, archives, validation)
 }
@@ -1146,7 +1170,7 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--patience=N] [--resume] <samples.ocrt>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--patience=N] [--qat=N] [--resume] <samples.ocrt>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }

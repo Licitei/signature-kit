@@ -133,11 +133,11 @@ const program = Effect.gen(function* () {
     limit < 1 ||
     !Number.isSafeInteger(repeats) ||
     repeats < 3 ||
-    !["3", "6"].includes(psm)
+    !["3", "6", "7"].includes(psm)
   ) {
     return yield* new BenchmarkError({
       reason:
-        "Usage: bun run.ts --dataset DIR [--engines NAME,...] [--limit N] [--repeats N>=3] [--psm 3|6]",
+        "Usage: bun run.ts --dataset DIR [--engines NAME,...] [--limit N] [--repeats N>=3] [--psm 3|6|7]",
     });
   }
   const engines = yield* Schema.decodeUnknownEffect(Schema.Array(EngineSchema))([
