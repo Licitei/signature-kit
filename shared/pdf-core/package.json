@@ -97,9 +97,9 @@
         "cache": false,
         "options": {
           "commands": [
-            "cargo fmt --check",
-            "cargo clippy --all-targets --all-features -- -D warnings",
-            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps"
+            "cargo fmt --all --check",
+            "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --workspace --no-deps"
           ],
           "parallel": false,
           "cwd": "{projectRoot}/rust"
@@ -109,7 +109,7 @@
         "executor": "nx:run-commands",
         "cache": false,
         "options": {
-          "command": "cargo test",
+          "command": "cargo test --workspace",
           "cwd": "{projectRoot}/rust"
         }
       },

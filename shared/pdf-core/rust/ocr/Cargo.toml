@@ -1,0 +1,21 @@
+[package]
+name = "signature-kit-pdf-core-ocr"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "In-house zero-dependency OCR engine compiled to WebAssembly for SignatureKit"
+repository = "https://github.com/Licitei/signature-kit"
+readme = "../../README.md"
+keywords = ["ocr", "wasm", "pdf"]
+categories = ["computer-vision", "wasm"]
+rust-version = "1.92"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

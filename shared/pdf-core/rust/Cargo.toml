@@ -17,6 +17,9 @@ path = "src/lib.rs"
 
 [dependencies]
 
+[lints]
+workspace = true
+
 [profile.release]
 opt-level = 3
 lto = true
@@ -24,7 +27,11 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-[lints.rust]
+[workspace]
+members = [".", "ocr"]
+resolver = "3"
+
+[workspace.lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "deny"
@@ -85,7 +92,7 @@ variant_size_differences = "deny"
 unfulfilled_lint_expectations = "deny"
 unknown_lints = "warn"
 
-[lints.rustdoc]
+[workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 private_intra_doc_links = "deny"
 invalid_html_tags = "deny"
@@ -98,7 +105,7 @@ invalid_codeblock_attributes = "deny"
 missing_crate_level_docs = "allow" # cdylib consumed only through the C ABI; documentation lives in ../README.md
 private_doc_tests = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
