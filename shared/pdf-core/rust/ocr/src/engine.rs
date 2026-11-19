@@ -8,6 +8,8 @@ use crate::recognize::{Word as RecognizedWord, recognize_line};
 use crate::segment::{Line, PageLayout, segment, segment_with_tables};
 #[cfg(feature = "ctc-probe")]
 use crate::sequence::{Scratch, Sequence};
+#[cfg(feature = "ctc-v4")]
+use crate::sequence_v4;
 
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -76,6 +78,14 @@ impl PreparedPage {
     #[inline]
     #[must_use]
     pub fn recognize_sequence(&self, table: &[u8]) -> Option<PageResult> {
+        #[cfg(feature = "ctc-v4")]
+        if table.starts_with(sequence_v4::MAGIC) {
+            let sequence = sequence_v4::Sequence::decode(table)?;
+            let mut scratch = sequence_v4::Scratch::default();
+            return Some(
+                self.recognize_with(|page, line| sequence.words(page, line, &mut scratch)),
+            );
+        }
         let sequence = Sequence::decode(table)?;
         let mut scratch = Scratch::for_page(self.page.width);
         Some(self.recognize_with(|page, line| sequence.words(page, line, &mut scratch)))

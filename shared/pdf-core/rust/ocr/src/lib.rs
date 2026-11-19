@@ -28,6 +28,8 @@ mod sequence_beam;
 mod sequence_probe;
 #[cfg(not(target_arch = "wasm32"))]
 mod sequence_training;
+#[cfg(feature = "ctc-v4")]
+pub mod sequence_v4;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod training;
 

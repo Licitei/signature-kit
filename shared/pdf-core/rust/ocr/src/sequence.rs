@@ -1,4 +1,4 @@
-#[cfg(all(target_arch = "x86_64", feature = "ctc-v3"))]
+#[cfg(all(target_arch = "x86_64", any(feature = "ctc-v3", feature = "ctc-v4")))]
 #[path = "sequence_int8_avx2.rs"]
 mod int8_avx2;
 
@@ -63,7 +63,7 @@ impl Frame {
     }
 }
 
-type Dot = fn(&[i8], &[u8]) -> i32;
+pub(crate) type Dot = fn(&[i8], &[u8]) -> i32;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Layer<'model> {
@@ -270,42 +270,67 @@ impl<'model> Sequence<'model> {
                 x_height: line.x_height,
             },
         };
-        let [left, top, right, bottom] = line.bbox;
-        let mut words = Vec::<Word>::new();
-        let mut starts_word = true;
         #[cfg(feature = "ctc-beam")]
         let recognize = Self::predict_beam;
         #[cfg(not(feature = "ctc-beam"))]
         let recognize = Self::predict;
+        let mut words = LineWords::new(line);
         recognize(
             self,
             page,
             geometry,
             scratch,
-            |position: u32, character: char, confidence: f32| {
-                if character.is_whitespace() {
-                    starts_word = true;
-                    return;
-                }
-                let x = position.clamp(left, right.saturating_sub(1).max(left));
-                if !starts_word && let Some(word) = words.last_mut() {
-                    let [start, _, _, _] = word.bbox;
-                    word.bbox = [start, top, x.saturating_add(1), bottom];
-                    word.text.push(character);
-                    word.confidence = word.confidence.min(confidence);
-                    return;
-                }
-                words.push(Word {
-                    alternatives: Vec::new(),
-                    bbox: [x, top, x.saturating_add(1), bottom],
-                    confidence,
-                    text: String::from(character),
-                });
-                starts_word = false;
-            },
+            |position, character, confidence| words.push(position, character, confidence),
         );
-        refine_word_boxes(line, &mut words);
-        words
+        words.finish()
+    }
+}
+
+#[cfg(feature = "ctc-probe")]
+pub(crate) struct LineWords<'line> {
+    line: &'line Line,
+    starts_word: bool,
+    words: Vec<Word>,
+}
+
+#[cfg(feature = "ctc-probe")]
+impl<'line> LineWords<'line> {
+    pub(crate) fn finish(mut self) -> Vec<Word> {
+        refine_word_boxes(self.line, &mut self.words);
+        self.words
+    }
+
+    pub(crate) const fn new(line: &'line Line) -> Self {
+        Self {
+            line,
+            starts_word: true,
+            words: Vec::new(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, position: u32, character: char, confidence: f32) {
+        if character.is_whitespace() {
+            self.starts_word = true;
+            return;
+        }
+        let [left, top, right, bottom] = self.line.bbox;
+        let x = position.clamp(left, right.saturating_sub(1).max(left));
+        if !self.starts_word
+            && let Some(word) = self.words.last_mut()
+        {
+            let [start, _, _, _] = word.bbox;
+            word.bbox = [start, top, x.saturating_add(1), bottom];
+            word.text.push(character);
+            word.confidence = word.confidence.min(confidence);
+            return;
+        }
+        self.words.push(Word {
+            alternatives: Vec::new(),
+            bbox: [x, top, x.saturating_add(1), bottom],
+            confidence,
+            text: String::from(character),
+        });
+        self.starts_word = false;
     }
 }
 
@@ -483,8 +508,8 @@ fn convolve<const WIDTH: usize, const WINDOW: usize>(
     }
 }
 
-fn dot_kernel() -> Dot {
-    #[cfg(all(target_arch = "x86_64", feature = "ctc-v3"))]
+pub(crate) fn dot_kernel() -> Dot {
+    #[cfg(all(target_arch = "x86_64", any(feature = "ctc-v3", feature = "ctc-v4")))]
     if std::is_x86_feature_detected!("avx2") {
         return int8_avx2::dot;
     }
@@ -496,6 +521,15 @@ fn dot_kernel() -> Dot {
     {
         scalar_dot
     }
+}
+
+#[cfg(feature = "ctc-v4")]
+pub(crate) fn nonnegative_dot_kernel() -> Dot {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        return int8_avx2::dot_nonnegative;
+    }
+    dot_kernel()
 }
 
 fn scalar_dot(input: &[i8], weights: &[u8]) -> i32 {

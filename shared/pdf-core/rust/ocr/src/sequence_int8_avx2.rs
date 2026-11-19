@@ -8,6 +8,12 @@ use core::arch::x86_64::{
     _mm256_setzero_si256, _mm256_storeu_si256,
 };
 
+#[cfg(feature = "ctc-v4")]
+use core::arch::x86_64::{
+    _mm_madd_epi16, _mm_maddubs_epi16, _mm_set1_epi16, _mm_storeu_si128, _mm256_loadu_si256,
+    _mm256_maddubs_epi16, _mm256_set1_epi16,
+};
+
 use super::scalar_dot;
 
 pub(super) fn dot(input: &[i8], weights: &[u8]) -> i32 {
@@ -34,6 +40,53 @@ fn dot_avx2(input: &[i8], weights: &[u8]) -> i32 {
     lanes
         .into_iter()
         .fold(scalar_dot(feature_tail, weight_tail), i32::wrapping_add)
+}
+
+#[cfg(feature = "ctc-v4")]
+pub(super) fn dot_nonnegative(input: &[i8], weights: &[u8]) -> i32 {
+    // SAFETY: OCR v4 selects the kernel only after detecting AVX2.
+    unsafe { dot_nonnegative_avx2(input, weights) }
+}
+
+#[cfg(feature = "ctc-v4")]
+#[target_feature(enable = "avx2")]
+fn dot_nonnegative_avx2(input: &[i8], weights: &[u8]) -> i32 {
+    let (features, feature_tail) = input.as_chunks::<32>();
+    let (matrix, weight_tail) = weights.as_chunks::<32>();
+    let ones = _mm256_set1_epi16(1);
+    let mut sums = _mm256_setzero_si256();
+    for (window, row) in features.iter().zip(matrix) {
+        // SAFETY: Both arrays contain 32 initialized bytes.
+        let left = unsafe { _mm256_loadu_si256(window.as_ptr().cast()) };
+        // SAFETY: The row contains 32 initialized bytes.
+        let right = unsafe { _mm256_loadu_si256(row.as_ptr().cast()) };
+        let pairs = _mm256_maddubs_epi16(left, right);
+        sums = _mm256_add_epi32(sums, _mm256_madd_epi16(pairs, ones));
+    }
+    let mut lanes = [0_i32; 8];
+    // SAFETY: The destination has space for eight i32 lanes.
+    unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sums) };
+    let tail = match (
+        feature_tail.split_first_chunk::<16>(),
+        weight_tail.split_first_chunk::<16>(),
+    ) {
+        (Some((inputs, remaining_inputs)), Some((kernel, remaining_weights))) => {
+            // SAFETY: Both chunks contain exactly 16 initialized bytes.
+            let left = unsafe { _mm_loadu_si128(inputs.as_ptr().cast()) };
+            // SAFETY: The kernel contains exactly 16 initialized bytes.
+            let right = unsafe { _mm_loadu_si128(kernel.as_ptr().cast()) };
+            let partial = _mm_madd_epi16(_mm_maddubs_epi16(left, right), _mm_set1_epi16(1));
+            let mut tail_lanes = [0_i32; 4];
+            // SAFETY: The destination has space for four i32 lanes.
+            unsafe { _mm_storeu_si128(tail_lanes.as_mut_ptr().cast(), partial) };
+            tail_lanes.into_iter().fold(
+                scalar_dot(remaining_inputs, remaining_weights),
+                i32::wrapping_add,
+            )
+        }
+        _ => scalar_dot(feature_tail, weight_tail),
+    };
+    lanes.into_iter().fold(tail, i32::wrapping_add)
 }
 
 #[cfg(test)]

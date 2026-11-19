@@ -25,6 +25,7 @@ ctc-probe = []
 ctc-beam = ["ctc-probe"]
 ctc-wide = []
 ctc-v3 = []
+ctc-v4 = ["ctc-probe"]
 ocr-lexicon = []
 synth = []
 
@@ -32,3 +33,8 @@ synth = []
 name = "pdf-core-ocr-synth"
 path = "src/bin/ocr-synth/main.rs"
 required-features = ["synth"]
+
+[[bin]]
+name = "pdf-core-ocr-v4"
+path = "src/bin/pdf-core-ocr-v4.rs"
+required-features = ["ctc-v4"]

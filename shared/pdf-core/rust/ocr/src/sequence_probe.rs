@@ -7,6 +7,8 @@ use core::{ptr, slice};
 
 use crate::engine::{Options, prepare_page};
 use crate::raster::Gray;
+#[cfg(feature = "ctc-v4")]
+use crate::sequence_v4::Probe;
 
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn pdf_core_ocr_ctc_probe(data: *const u8, length: usize) -> *mut u8 {
@@ -39,4 +41,31 @@ fn recognize(input: &[u8]) -> Option<Box<[u8]>> {
     output.extend(length.to_le_bytes());
     output.extend(text.bytes());
     Some(output.into_boxed_slice())
+}
+
+#[cfg(feature = "ctc-v4")]
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_ocr_v4_line_probe(
+    data: *const u8,
+    length: usize,
+    fixture: u32,
+) -> *mut u8 {
+    if data.is_null() || length == 0 || length > 33_000_000 {
+        return ptr::null_mut();
+    }
+    // SAFETY: The caller keeps the initialized packet alive for this call.
+    let input = unsafe { slice::from_raw_parts(data, length) };
+    Probe::decode(input).map_or_else(ptr::null_mut, |mut probe| {
+        let result = if fixture != 0 {
+            probe.fixture()
+        } else {
+            let mut output = String::new();
+            probe.transcript(|char| output.push(char));
+            output.into_bytes()
+        };
+        let size = u32::try_from(result.len().saturating_add(4)).unwrap_or_default();
+        let mut output = size.to_le_bytes().to_vec();
+        output.extend(result);
+        Box::into_raw(output.into_boxed_slice()).cast()
+    })
 }
