@@ -63,6 +63,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.openLazy",
   "pdfCore.readRange",
   "pdfCore.inspect",
+  "pdfCore.info",
   "pdfCore.text",
   "pdfCore.tables",
   "pdfCore.render",
@@ -83,6 +84,7 @@ export const PdfCoreOperationValue = {
   openLazy: "pdfCore.openLazy",
   readRange: "pdfCore.readRange",
   inspect: "pdfCore.inspect",
+  info: "pdfCore.info",
   text: "pdfCore.text",
   tables: "pdfCore.tables",
   render: "pdfCore.render",
@@ -103,6 +105,7 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreLazyOptions",
   "PdfCoreInspectOptions",
   "PdfCoreInspection",
+  "PdfCoreDocumentInfo",
   "PdfCoreTextOptions",
   "PdfCoreText",
   "PdfCoreTablesOptions",
@@ -126,6 +129,7 @@ export const PdfCoreSchemaNameValue = {
   lazyOptions: "PdfCoreLazyOptions",
   inspectOptions: "PdfCoreInspectOptions",
   inspection: "PdfCoreInspection",
+  documentInfo: "PdfCoreDocumentInfo",
   textOptions: "PdfCoreTextOptions",
   text: "PdfCoreText",
   tablesOptions: "PdfCoreTablesOptions",
@@ -285,6 +289,21 @@ export const PdfCoreInspectionSchema = Schema.Struct({
 });
 export type PdfCoreInspection = (typeof PdfCoreInspectionSchema)["Type"];
 
+export const PdfCoreDocumentInfoSchema = Schema.Struct({
+  pageCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+  encrypted: Schema.Boolean,
+  title: Schema.optional(Schema.String),
+  subject: Schema.optional(Schema.String),
+  author: Schema.optional(Schema.String),
+  keywords: Schema.optional(Schema.String),
+  creator: Schema.optional(Schema.String),
+  producer: Schema.optional(Schema.String),
+  creationDate: Schema.optional(Schema.String),
+  modificationDate: Schema.optional(Schema.String),
+  language: Schema.optional(Schema.String),
+});
+export type PdfCoreDocumentInfo = (typeof PdfCoreDocumentInfoSchema)["Type"];
+
 const isAllocFunction = (value: unknown): value is (length: number) => number =>
   typeof value === "function" && value.length === 1;
 const isFreeFunction = (value: unknown): value is (pointer: number, length: number) => void =>
@@ -363,6 +382,7 @@ export const PdfCoreExportsSchema = Schema.Struct({
   memory: Schema.instanceOf(WebAssembly.Memory),
   pdf_core_alloc: Schema.declare(isAllocFunction, { identifier: "pdf_core_alloc" }),
   pdf_core_free: Schema.declare(isFreeFunction, { identifier: "pdf_core_free" }),
+  pdf_core_info: Schema.declare(isBufferFunction, { identifier: "pdf_core_info" }),
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
   pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
   pdf_core_tables: Schema.declare(isTextFunction, { identifier: "pdf_core_tables" }),

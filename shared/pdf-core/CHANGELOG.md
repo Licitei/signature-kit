@@ -1,5 +1,13 @@
 ## Unreleased
 
+### Inspect selected pages and read document info from byte ranges
+
+`openLazy` now supports `inspect(options)` for page boxes, links, and positioned text with bold and italic styles. Eager and lazy inspection apply `pageIndexes` to all three result sections. Boxes follow the deduplicated request order, and links and text retain their original page indexes.
+
+`PdfCore.info(pdf)` and `doc.info` read a validated root page count and document metadata without walking the page tree or decoding content streams. They decode Info and Catalog text strings, report encryption, preserve raw date strings, and fill missing title, subject, producer, and creator from XMP. The Promise client exposes `info(pdf)`, `doc.info()`, and `doc.inspect(options)`.
+
+The optimized Wasm grows from 1,164,368 to 1,178,445 bytes (1.2%) with the new profiles. The size gate is 1152 KiB and the release build still uses `opt-level = 3`.
+
 ### Read selected pages from a byte-range source
 
 `PdfCore.openLazy(source)` opens a scoped range reader for text, Markdown, tables, and rendering. It caches fetched ranges across calls, preserves original page indexes, and reports full-load fallback in its stats. The Promise client supports `close()` and `await using`. Source adapters cover bytes, Blob, Node file handles, and Effect `FileSystem`.

@@ -8,8 +8,8 @@ use crate::document::{
     Document, DocumentCache, Entry, MAX_SECTIONS, Page, STARTXREF_PROBE, Section, apply_entries,
     find_startxref, merge_section_trailer, object_bound, previous_section,
 };
-use crate::failure::{Failure, Outcome};
-use crate::inspection::Limits;
+use crate::failure::{Failure, FailureCode, Outcome};
+use crate::inspection::{Limits, Metadata};
 use crate::num::widen;
 use crate::object::{Dict, ObjRef, Object};
 use crate::syntax::{keyword_at, parse_indirect_object, parse_object_header, skip_whitespace_at};
@@ -207,6 +207,13 @@ impl Sparse {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageProfile {
+    Extract,
+    Inspect { text: bool },
+    Render,
+}
+
 #[derive(Debug)]
 struct Frontier {
     indexes: Option<Vec<u32>>,
@@ -241,18 +248,23 @@ impl Frontier {
         document: &Document<'_>,
         indexes: Option<&[u32]>,
         pages: Vec<(usize, Page)>,
-        render: bool,
+        profile: PageProfile,
     ) -> Outcome<Self> {
         let mut pending = Vec::new();
         for (_, page) in &pages {
-            references(&page.resources, &mut pending);
-            for key in [b"Contents".as_slice(), b"Annots"] {
-                if let Some(value) = page.dict.get(key) {
+            if profile != (PageProfile::Inspect { text: false }) {
+                references(&page.resources, &mut pending);
+                if let Some(value) = page.dict.get(b"Contents") {
                     collect(value, &mut pending);
                 }
             }
+            if !matches!(profile, PageProfile::Inspect { .. })
+                && let Some(annots) = page.dict.get(b"Annots")
+            {
+                collect(annots, &mut pending);
+            }
         }
-        if render
+        if profile == PageProfile::Render
             && let Some(catalog) = document.catalog()?
             && let Some(properties) = catalog.as_dict().and_then(|dict| dict.get(b"OCProperties"))
         {
@@ -283,7 +295,8 @@ pub(crate) struct Lazy {
     indexed: bool,
     linearized: Option<(usize, u32)>,
     next_section: Option<usize>,
-    render: bool,
+    planning_info: bool,
+    profile: PageProfile,
     sparse: Sparse,
 }
 
@@ -358,9 +371,9 @@ impl Lazy {
         self.sparse.feed(offset, bytes)
     }
 
-    fn head_and_tail(&mut self, limits: &Limits) -> Option<Plan> {
+    fn head_and_tail(&mut self, probe_cap: usize, limits: &Limits) -> Option<Plan> {
         let sparse = &self.sparse;
-        let probe = sparse.tuning.probe.min(
+        let probe = sparse.tuning.probe.min(probe_cap).min(
             sparse
                 .size
                 .checked_div(8)
@@ -405,12 +418,12 @@ impl Lazy {
         self.sparse.bytes(0..end).is_none().then_some(end)
     }
 
-    fn index(&mut self, first: bool, limits: &Limits) -> Option<Plan> {
+    fn index(&mut self, first: bool, probe_cap: usize, limits: &Limits) -> Option<Plan> {
         if self.indexed {
             return None;
         }
         if self.next_section.is_none()
-            && let Some(plan) = self.head_and_tail(limits)
+            && let Some(plan) = self.head_and_tail(probe_cap, limits)
         {
             return Some(plan);
         }
@@ -476,6 +489,31 @@ impl Lazy {
         None
     }
 
+    pub(crate) fn info(&self, limits: &Limits) -> Outcome<Option<Metadata>> {
+        let result = match self.document(limits) {
+            Ok(document) => {
+                let result = document.metadata();
+                if document.was_repaired()
+                    || (result
+                        .as_ref()
+                        .is_err_and(|failure| failure.code == FailureCode::InvalidPdf)
+                        && !document.root_valid()
+                        && !self.needs_ranges())
+                {
+                    return Ok(None);
+                }
+                result.map(Some)
+            }
+            Err(failure) if failure.code == FailureCode::InvalidPdf => Ok(None),
+            Err(failure) => Err(failure),
+        };
+        if self.needs_ranges() {
+            Ok(None)
+        } else {
+            result
+        }
+    }
+
     pub(crate) fn needs_ranges(&self) -> bool {
         self.sparse.misses() != 0
     }
@@ -488,7 +526,8 @@ impl Lazy {
             indexed: false,
             linearized: None,
             next_section: None,
-            render: false,
+            planning_info: false,
+            profile: PageProfile::Extract,
             sparse: Sparse {
                 missing: RefCell::new(Vec::new()),
                 offsets: Vec::new(),
@@ -499,13 +538,20 @@ impl Lazy {
         }
     }
 
-    pub(crate) fn plan(&mut self, indexes: Option<&[u32]>, render: bool, limits: &Limits) -> Plan {
+    pub(crate) fn plan(
+        &mut self,
+        indexes: Option<&[u32]>,
+        profile: PageProfile,
+        limits: &Limits,
+    ) -> Plan {
         let misses = mem::take(self.sparse.missing.get_mut());
+        let info_plan = mem::take(&mut self.planning_info);
         let mut frontier = self
             .frontier
             .take()
-            .filter(|frontier| frontier.indexes.as_deref() == indexes && self.render == render);
-        if !misses.is_empty()
+            .filter(|frontier| frontier.indexes.as_deref() == indexes && self.profile == profile);
+        if !info_plan
+            && !misses.is_empty()
             && frontier
                 .as_ref()
                 .is_some_and(|selection| selection.pending.is_empty())
@@ -513,25 +559,30 @@ impl Lazy {
             self.frontier = frontier;
             return self.sparse.plan_ranges(misses, true);
         }
-        if self.render != render {
+        if (self.profile == PageProfile::Render) != (profile == PageProfile::Render) {
             self.cache = DocumentCache::new();
-            self.render = render;
         }
+        self.profile = profile;
         if self.sparse.size > limits.max_pdf_bytes {
             return Plan::Fallback;
         }
-        let first =
-            indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
-        if let Some(plan) = self.index(first, limits) {
+        let prefetch = profile != (PageProfile::Inspect { text: false })
+            && indexes
+                .is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
+        if let Some(plan) = self.index(prefetch, usize::MAX, limits) {
             return plan;
         }
         let result = self.document(limits).and_then(|document| {
             if frontier.is_none() {
-                let pages = document.sparse_pages(indexes)?;
+                let inspect_text = match profile {
+                    PageProfile::Inspect { text } => Some(text),
+                    PageProfile::Extract | PageProfile::Render => None,
+                };
+                let pages = document.sparse_pages(indexes, inspect_text)?;
                 if self.sparse.misses() != 0 {
                     return Ok(());
                 }
-                frontier = Some(Frontier::new(&document, indexes, pages, render)?);
+                frontier = Some(Frontier::new(&document, indexes, pages, profile)?);
             }
             if let Some(selection) = &mut frontier {
                 selection.advance(&document, &self.sparse)?;
@@ -544,7 +595,7 @@ impl Lazy {
         self.frontier = frontier;
         if self.sparse.misses() != 0 {
             let wanted = mem::take(self.sparse.missing.get_mut());
-            if first && let Some(end) = self.hinted_end() {
+            if prefetch && let Some(end) = self.hinted_end() {
                 let mut speculative = wanted.clone();
                 speculative.push(0..end);
                 if let plan @ Plan::Need(_) = self.sparse.plan_ranges(speculative, true) {
@@ -558,6 +609,15 @@ impl Lazy {
         } else {
             Plan::Fallback
         }
+    }
+
+    pub(crate) fn plan_info(&mut self, limits: &Limits) -> Plan {
+        let misses = mem::take(self.sparse.missing.get_mut());
+        if mem::replace(&mut self.planning_info, true) && !misses.is_empty() {
+            return self.sparse.plan_ranges(misses, false);
+        }
+        self.index(false, STARTXREF_PROBE, limits)
+            .unwrap_or(Plan::Ready)
     }
 
     fn section_range(&self, offset: usize, length: usize) -> Range<usize> {

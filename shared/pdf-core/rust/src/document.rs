@@ -5,12 +5,15 @@ use crate::text::Session;
 use crate::text::{Capture, Reposition, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
+use core::mem;
 use std::collections::{HashMap, HashSet};
 
 use crate::encryption::Encryption;
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::filters;
-use crate::inspection::{InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText};
+use crate::inspection::{
+    InspectOptions, Inspection, Limits, LinkInfo, Metadata, PageInfo, PageText,
+};
 use crate::lazy::Sparse;
 use crate::object::{Dict, ObjRef, Object, Resolver, Stream};
 use crate::syntax::{
@@ -363,17 +366,6 @@ impl<'data> Document<'data> {
         Ok(uri_from_action(&resolved_uri))
     }
 
-    pub(crate) fn links(&self, pages: &[Page]) -> Outcome<Vec<LinkInfo>> {
-        let mut links = Vec::new();
-        for (index, page) in pages.iter().enumerate() {
-            let Ok(page_index) = u32::try_from(index) else {
-                break;
-            };
-            self.page_links(page, page_index, &mut links)?;
-        }
-        Ok(links)
-    }
-
     pub(crate) fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
         let index = widen(reference.number);
         let cache = &self.cache().objects;
@@ -463,6 +455,84 @@ impl<'data> Document<'data> {
             .checked_add(relative)
             .ok_or_else(|| Failure::invalid("object stream offset overflow"))?;
         Parser::new(&object_stream.data, start, self.limits.max_nesting, true).parse_object()
+    }
+
+    pub(crate) fn metadata(&self) -> Outcome<Metadata> {
+        const INFO_KEYS: [&[u8]; 8] = [
+            b"Title",
+            b"Subject",
+            b"Author",
+            b"Keywords",
+            b"Creator",
+            b"Producer",
+            b"CreationDate",
+            b"ModDate",
+        ];
+        let catalog = self
+            .catalog()?
+            .ok_or_else(|| Failure::invalid("missing document catalog"))?;
+        let dict = catalog
+            .as_dict()
+            .ok_or_else(|| Failure::invalid("invalid document catalog"))?;
+        let root = self.metadata_object(dict.get(b"Pages"))?;
+        let count = root
+            .as_deref()
+            .and_then(Object::as_dict)
+            .and_then(|tree| tree.get(b"Count"));
+        let page_count = self
+            .metadata_object(count)?
+            .and_then(|value| value.as_integer())
+            .and_then(|integer| usize::try_from(integer).ok())
+            .ok_or_else(|| Failure::invalid("missing or invalid root page count"))?;
+        if page_count > self.limits.max_pages {
+            return Err(Failure::limit("page count exceeds limit"));
+        }
+        let stored = self.trailer.borrow();
+        let trailer = self
+            .sparse
+            .as_ref()
+            .map_or(&*stored, |sparse| sparse.trailer);
+        let info_ref = trailer.get(b"Info").cloned();
+        drop(stored);
+        let info = self.metadata_object(info_ref.as_ref())?;
+        let mut fields = [const { None }; 9];
+        for (field, key) in fields.iter_mut().zip(INFO_KEYS) {
+            *field = self.metadata_string(
+                info.as_deref()
+                    .and_then(Object::as_dict)
+                    .and_then(|entry| entry.get(key)),
+            )?;
+        }
+        let [title, subject, _, _, creator, producer, _, _, language] = &mut fields;
+        *language = self.metadata_string(dict.get(b"Lang"))?;
+        let xmp =
+            if (title.is_none() || subject.is_none() || creator.is_none() || producer.is_none())
+                && let Some(object) = self.metadata_object(dict.get(b"Metadata"))?
+                && let Object::Stream(stream) = object.as_ref()
+                && let Ok(bytes) = self.decode_stream(stream, None, 1024 * 1024)
+            {
+                bytes
+            } else {
+                Vec::new()
+            };
+        Ok(Metadata {
+            encrypted: self.encryption.borrow().is_some(),
+            fields,
+            page_count,
+            xmp,
+        })
+    }
+
+    fn metadata_object(&self, object: Option<&Object>) -> Outcome<Option<Rc<Object>>> {
+        object.map_or(Ok(None), |value| lenient(self.follow(value)))
+    }
+
+    fn metadata_string(&self, object: Option<&Object>) -> Outcome<Option<String>> {
+        let resolved = self.metadata_object(object)?;
+        Ok(resolved
+            .as_deref()
+            .and_then(Object::as_string)
+            .map(decode_text_string))
     }
 
     fn new(bytes: &'data [u8], limits: &Limits) -> Self {
@@ -639,9 +709,9 @@ impl<'data> Document<'data> {
     }
 
     pub(crate) fn pages(&self) -> Outcome<Vec<Page>> {
-        let pages = self.walk_pages(false)?;
+        let pages = self.walk_pages()?;
         if pages.is_empty() && !self.repaired.get() && self.rebuild().is_ok() {
-            return self.walk_pages(false);
+            return self.walk_pages();
         }
         Ok(pages)
     }
@@ -1112,21 +1182,41 @@ impl<'data> Document<'data> {
         Ok(document)
     }
 
-    pub(crate) fn sparse_pages(&self, indexes: Option<&[u32]>) -> Outcome<Vec<(usize, Page)>> {
+    pub(crate) fn sparse_pages(
+        &self,
+        indexes: Option<&[u32]>,
+        inspect_text: Option<bool>,
+    ) -> Outcome<Vec<(usize, Page)>> {
         if !self.root_valid() {
             return Err(Failure::invalid("missing document catalog"));
         }
+        if inspect_text.is_some() && indexes.is_some_and(<[u32]>::is_empty) {
+            return Ok(Vec::new());
+        }
         let first =
             indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
-        let pages = self.walk_pages(first)?;
-        if pages.is_empty() {
+        let filter = inspect_text
+            .and(indexes)
+            .map(|items| items.iter().copied().map(widen).collect());
+        let (count, mut pages) =
+            self.walk_page_tree(first, filter.as_ref(), inspect_text != Some(false))?;
+        if count == 0 {
             return Err(Failure::invalid("page tree requires repair"));
         }
-        let selected = select_pages(pages.len(), indexes)?;
-        Ok(pick_pages(&pages, selected)
-            .into_iter()
-            .map(|(index, page)| (index, page.clone()))
-            .collect())
+        if let Some(items) = indexes {
+            let selected = select_pages(count, Some(items))?;
+            pages = selected
+                .into_iter()
+                .filter_map(|index| {
+                    let at = pages
+                        .binary_search_by_key(&index, |(position, _)| *position)
+                        .ok()?;
+                    let (position, page) = pages.get(at)?;
+                    Some((*position, page.clone()))
+                })
+                .collect();
+        }
+        Ok(pages)
     }
 
     pub(crate) fn startxref(&self) -> Option<usize> {
@@ -1178,22 +1268,33 @@ impl<'data> Document<'data> {
         self.pending_reads() != 0
     }
 
-    fn walk_pages(&self, first: bool) -> Outcome<Vec<Page>> {
+    fn walk_page_tree(
+        &self,
+        first: bool,
+        selected: Option<&HashSet<usize>>,
+        with_resources: bool,
+    ) -> Outcome<(usize, Vec<(usize, Page)>)> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
         let Some(root) = catalog.as_dict().and_then(|dict| dict.get(b"Pages")) else {
             return Err(Failure::invalid("missing page tree"));
         };
-        let mut pages: Vec<Page> = Vec::new();
+        let mut pages = Vec::new();
+        let mut count = 0_usize;
         let mut visited: HashSet<u32> = HashSet::new();
         let mut stack: Vec<(Object, Inherited)> = vec![(root.clone(), Inherited::default())];
         let mut declared = self.limits.max_pages;
+        let last_selected = selected.and_then(|indexes| indexes.iter().copied().max());
+        let mut stop_at = None;
+        let mut at_root = true;
         while let Some((node, inherited)) = stack.pop() {
+            let is_root = mem::take(&mut at_root);
+            let pending = self.pending_reads();
             let obj_ref = if let Object::Ref(reference) = &node {
                 if !visited.insert(reference.number) {
                     if first {
-                        return self.walk_pages(false);
+                        return self.walk_page_tree(false, selected, with_resources);
                     }
                     continue;
                 }
@@ -1207,12 +1308,13 @@ impl<'data> Document<'data> {
             let Some(resolved) = lenient(self.follow(&node))? else {
                 continue;
             };
-            if first && self.waiting() {
+            if (first && self.waiting()) || (selected.is_some() && self.pending_reads() != pending)
+            {
                 break;
             }
             let Some(dict) = resolved.as_dict() else {
                 if first {
-                    return self.walk_pages(false);
+                    return self.walk_page_tree(false, selected, with_resources);
                 }
                 continue;
             };
@@ -1223,50 +1325,72 @@ impl<'data> Document<'data> {
                 }
                 _ => None,
             };
-            if first && self.waiting() {
+            if (first && self.waiting()) || (selected.is_some() && self.pending_reads() != pending)
+            {
                 break;
             }
             if let Some(items) = kids.as_deref().and_then(Object::as_array) {
+                if !first
+                    && is_root
+                    && let Some(last) = last_selected
+                {
+                    stop_at = page_count(dict, items.len(), declared)
+                        .filter(|total| last < *total)
+                        .map(|_| last);
+                }
                 if first {
-                    let Some(count) = page_count(dict, items.len(), declared) else {
-                        return self.walk_pages(false);
+                    let Some(subtree_count) = page_count(dict, items.len(), declared) else {
+                        return self.walk_page_tree(false, selected, with_resources);
                     };
-                    declared = count.saturating_sub(items.len().saturating_sub(1));
+                    declared = subtree_count.saturating_sub(items.len().saturating_sub(1));
                 }
                 stack.extend(items.iter().rev().map(|kid| (kid.clone(), merged.clone())));
                 continue;
             }
             if name_is(dict, b"Type", b"Pages") {
                 if first {
-                    return self.walk_pages(false);
+                    return self.walk_page_tree(false, selected, with_resources);
                 }
                 continue;
             }
-            if pages.len() >= self.limits.max_pages {
+            if count >= self.limits.max_pages {
                 return Err(Failure::limit("page count exceeds limit"));
             }
+            let position = count;
+            count = count.saturating_add(1);
+            if selected.is_some_and(|indexes| !indexes.contains(&position)) {
+                continue;
+            }
             let resources = match &merged.resources {
-                Some(object) => lenient(self.follow(object))?
+                Some(object) if with_resources => lenient(self.follow(object))?
                     .and_then(|value| value.as_dict().cloned())
                     .unwrap_or_default(),
-                None => Dict::default(),
+                Some(_) | None => Dict::default(),
             };
             let resources_ref = match merged.resources.as_deref() {
                 Some(Object::Ref(reference)) => Some(*reference),
                 _ => None,
             };
-            pages.push(Page {
-                obj_ref,
-                dict: dict.clone(),
-                resources,
-                resources_ref,
-                info: self.page_info(&merged)?,
-            });
-            if first {
+            pages.push((
+                position,
+                Page {
+                    obj_ref,
+                    dict: dict.clone(),
+                    resources,
+                    resources_ref,
+                    info: self.page_info(&merged)?,
+                },
+            ));
+            if first || stop_at == Some(position) {
                 break;
             }
         }
-        Ok(pages)
+        Ok((count, pages))
+    }
+
+    fn walk_pages(&self) -> Outcome<Vec<Page>> {
+        let (_, pages) = self.walk_page_tree(false, None, true)?;
+        Ok(pages.into_iter().map(|(_, page)| page).collect())
     }
 
     pub(crate) const fn was_repaired(&self) -> bool {
@@ -1280,16 +1404,21 @@ impl Resolver for Document<'_> {
     }
 
     fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>> {
-        self.decode_stream(stream, None)
+        self.decode_stream(stream, None, self.limits.max_decoded_stream_bytes)
     }
 
     fn stream_prefix(&self, stream: &Stream, len: usize) -> Outcome<Vec<u8>> {
-        self.decode_stream(stream, Some(len))
+        self.decode_stream(stream, Some(len), self.limits.max_decoded_stream_bytes)
     }
 }
 
 impl Document<'_> {
-    fn decode_stream(&self, stream: &Stream, prefix: Option<usize>) -> Outcome<Vec<u8>> {
+    fn decode_stream(
+        &self,
+        stream: &Stream,
+        prefix: Option<usize>,
+        max: usize,
+    ) -> Outcome<Vec<u8>> {
         let raw = if let Some(sparse) = &self.sparse
             && stream.decrypted.is_none()
         {
@@ -1300,7 +1429,6 @@ impl Document<'_> {
         } else {
             stream.encoded_bytes(self.bytes)?
         };
-        let max = self.limits.max_decoded_stream_bytes;
         let Some(filter) = stream.dict.get(b"Filter") else {
             return filters::decode_stream(&stream.dict, raw, max, prefix);
         };
@@ -1587,22 +1715,36 @@ pub(crate) fn inspect(
     }
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
+    let selected = select_pages(pages.len(), options.page_indexes.as_deref())?;
+    inspect_opened(&document, &pick_pages(&pages, selected), options, limits)
+}
+
+fn page_index_u32(index: usize) -> Outcome<u32> {
+    u32::try_from(index)
+        .ok()
+        .ok_or_else(|| Failure::limit("page index out of range"))
+}
+
+pub(crate) fn inspect_opened(
+    document: &Document<'_>,
+    pages: &[(usize, &Page)],
+    options: &InspectOptions,
+    limits: &Limits,
+) -> Outcome<Inspection> {
     let mut inspection = Inspection {
-        pages: pages.iter().map(|page| page.info).collect(),
+        pages: pages.iter().map(|(_, page)| page.info).collect(),
         ..Inspection::default()
     };
     if options.links {
-        inspection.links = document.links(&pages)?;
+        for &(position, page) in pages {
+            document.page_links(page, page_index_u32(position)?, &mut inspection.links)?;
+        }
     }
     if options.text {
-        let selected = select_pages(pages.len(), options.page_indexes.as_deref())?;
         let mut total_items = 0_usize;
         let mut total_bytes = 0_usize;
         let mut session = Session::default();
-        for position in selected {
-            let Some(page) = pages.get(position) else {
-                continue;
-            };
+        for &(position, page) in pages {
             let capture = Capture {
                 reposition: if options.runs {
                     Reposition::SplitGapped
@@ -1612,7 +1754,7 @@ pub(crate) fn inspect(
                 split_style: options.runs,
                 structure: false,
             };
-            let content = extract_content(&document, page, limits, capture, &mut session)?;
+            let content = extract_content(document, page, limits, capture, &mut session)?;
             let items = content.items();
             if items.len() > limits.max_items_per_page {
                 return Err(Failure::limit("page text items exceed limit"));
@@ -1628,9 +1770,7 @@ pub(crate) fn inspect(
                 return Err(Failure::limit("text bytes exceed limit"));
             }
             inspection.text.push(PageText {
-                page_index: u32::try_from(position)
-                    .ok()
-                    .ok_or_else(|| Failure::limit("page index out of range"))?,
+                page_index: page_index_u32(position)?,
                 items,
             });
         }
@@ -1641,7 +1781,7 @@ pub(crate) fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::{Lazy, Plan, Tuning};
+    use crate::lazy::{Lazy, PageProfile, Plan, Tuning};
     use crate::test_pdf::assert_exact;
     use core::fmt::Write as _;
     use core::hint::black_box;
@@ -2652,7 +2792,7 @@ mod tests {
             },
         );
         for _ in 0_i32..64_i32 {
-            match lazy.plan(Some(&[0]), false, &Limits::default()) {
+            match lazy.plan(Some(&[0]), PageProfile::Extract, &Limits::default()) {
                 Plan::Ready => return Some(lazy),
                 Plan::Fallback => return None,
                 Plan::Need(ranges) => {
@@ -2921,7 +3061,12 @@ mod tests {
         let list = document.pages().unwrap();
         let pages_time = listed.elapsed();
         let linked = Instant::now();
-        let links = document.links(&list).unwrap();
+        let mut links = Vec::new();
+        for (index, page) in list.iter().enumerate() {
+            document
+                .page_links(page, u32::try_from(index).unwrap(), &mut links)
+                .unwrap();
+        }
         let links_time = linked.elapsed();
         let budget = Duration::from_secs(5);
         assert!(opened < budget, "open took {opened:?}");
