@@ -64,6 +64,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.readRange",
   "pdfCore.inspect",
   "pdfCore.text",
+  "pdfCore.headings",
   "pdfCore.tables",
   "pdfCore.render",
   "pdfCore.paint",
@@ -84,6 +85,7 @@ export const PdfCoreOperationValue = {
   readRange: "pdfCore.readRange",
   inspect: "pdfCore.inspect",
   text: "pdfCore.text",
+  headings: "pdfCore.headings",
   tables: "pdfCore.tables",
   render: "pdfCore.render",
   paint: "pdfCore.paint",
@@ -105,6 +107,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreInspection",
   "PdfCoreTextOptions",
   "PdfCoreText",
+  "PdfCoreHeadingsOptions",
+  "PdfCoreHeadings",
   "PdfCoreTablesOptions",
   "PdfCoreTables",
   "PdfCoreRenderOptions",
@@ -128,6 +132,8 @@ export const PdfCoreSchemaNameValue = {
   inspection: "PdfCoreInspection",
   textOptions: "PdfCoreTextOptions",
   text: "PdfCoreText",
+  headingsOptions: "PdfCoreHeadingsOptions",
+  headings: "PdfCoreHeadings",
   tablesOptions: "PdfCoreTablesOptions",
   tables: "PdfCoreTables",
   renderOptions: "PdfCoreRenderOptions",
@@ -174,12 +180,48 @@ export type PdfCoreInspectOptions = (typeof PdfCoreInspectOptionsSchema)["Type"]
 export const PdfCoreTextFormatSchema = Schema.Literals(["text", "markdown"]);
 export type PdfCoreTextFormat = (typeof PdfCoreTextFormatSchema)["Type"];
 
+const textBudgetSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: maxUint32 - 1 }));
+
 export const PdfCoreTextOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
   format: Schema.optional(PdfCoreTextFormatSchema),
   dropRunningHeaders: Schema.optional(Schema.Boolean),
+  maxChars: Schema.optional(textBudgetSchema),
+  maxBlocks: Schema.optional(textBudgetSchema),
 });
 export type PdfCoreTextOptions = (typeof PdfCoreTextOptionsSchema)["Type"];
+
+export const PdfCoreHeadingsOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+  limit: Schema.optional(pageIndexSchema),
+});
+export type PdfCoreHeadingsOptions = (typeof PdfCoreHeadingsOptionsSchema)["Type"];
+
+const unitIntervalSchema = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+export const PdfCoreHeadingSchema = Schema.Struct({
+  text: Schema.String,
+  bounds: Schema.Tuple([
+    unitIntervalSchema,
+    unitIntervalSchema,
+    unitIntervalSchema,
+    unitIntervalSchema,
+  ]),
+  fontSize: Schema.Finite,
+  relativeFontSize: Schema.Finite,
+  bold: Schema.Boolean,
+  italic: Schema.Boolean,
+  uppercaseRatio: unitIntervalSchema,
+  readingOrder: pageIndexSchema,
+  lineCount: Schema.Int.check(Schema.isGreaterThan(0)),
+  repeated: Schema.Boolean,
+  score: Schema.Finite,
+});
+export type PdfCoreHeading = (typeof PdfCoreHeadingSchema)["Type"];
+
+export const PdfCoreHeadingsSchema = Schema.Array(
+  Schema.Struct({ pageIndex: pageIndexSchema, candidates: Schema.Array(PdfCoreHeadingSchema) }),
+);
+export type PdfCoreHeadings = (typeof PdfCoreHeadingsSchema)["Type"];
 
 export const PdfCoreTablesOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
@@ -298,7 +340,17 @@ const isInspectFunction = (
   pagesPointer: number,
   pagesLength: number,
 ) => number => typeof value === "function" && value.length === 5;
-const isTextFunction = isInspectFunction;
+const isTextFunction = (
+  value: unknown,
+): value is (
+  pdfPointer: number,
+  pdfLength: number,
+  flags: number,
+  pagesPointer: number,
+  pagesLength: number,
+  chars: number,
+  blocks: number,
+) => number => typeof value === "function" && value.length === 7;
 const isRenderFunction = (
   value: unknown,
 ): value is (
@@ -356,8 +408,14 @@ const isLazyPlanFunction = (
 ) => number => typeof value === "function" && value.length === 5;
 const isLazyRunFunction = (
   value: unknown,
-): value is (handle: number, profile: number, flags: number, scale: number) => number =>
-  typeof value === "function" && value.length === 4;
+): value is (
+  handle: number,
+  profile: number,
+  flags: number,
+  scale: number,
+  argument: number,
+  extra: number,
+) => number => typeof value === "function" && value.length === 6;
 
 export const PdfCoreExportsSchema = Schema.Struct({
   memory: Schema.instanceOf(WebAssembly.Memory),
@@ -365,7 +423,8 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_free: Schema.declare(isFreeFunction, { identifier: "pdf_core_free" }),
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
   pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
-  pdf_core_tables: Schema.declare(isTextFunction, { identifier: "pdf_core_tables" }),
+  pdf_core_tables: Schema.declare(isInspectFunction, { identifier: "pdf_core_tables" }),
+  pdf_core_headings: Schema.declare(isInspectFunction, { identifier: "pdf_core_headings" }),
   pdf_core_render: Schema.declare(isRenderFunction, { identifier: "pdf_core_render" }),
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {

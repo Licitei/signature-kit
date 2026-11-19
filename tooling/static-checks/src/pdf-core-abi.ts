@@ -15,6 +15,7 @@ const readmePath = "shared/pdf-core/README.md";
 const payloadSections: Record<string, string> = {
   VERSION: "Payload",
   TEXT_VERSION: "Text payload",
+  HEADINGS_VERSION: "Headings payload",
   TABLES_VERSION: "Tables payload",
   SIGNATURES_VERSION: "Signatures payload",
   DOCUMENT_VERSION: "Document payload",

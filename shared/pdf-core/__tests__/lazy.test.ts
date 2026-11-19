@@ -234,6 +234,7 @@ describe("PdfCore byte-range documents", () => {
       typeof doc.text
     >[0];
     expect(await doc.text(options)).toEqual(await core.text(pdf, options));
+    expect(await doc.headings(options)).toEqual(await core.headings(pdf, options));
     const stats = await doc.stats();
     expect(await doc.text(options)).toEqual(await core.text(pdf, options));
     expect(await doc.stats()).toEqual(stats);

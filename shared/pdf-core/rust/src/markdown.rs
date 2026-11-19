@@ -1,5 +1,5 @@
 use crate::inspection::LinkInfo;
-use crate::layout::Band;
+use crate::layout::{Band, TextBudget, TextOutput};
 use crate::num::fold_string;
 
 const WORD_GAP: f64 = 0.12;
@@ -1675,21 +1675,23 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
     }
 }
 
-pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
-    let mut out = String::new();
+pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo], budget: TextBudget) -> String {
+    let mut out = TextOutput::new(budget);
     for block in blocks {
+        if out.full() {
+            break;
+        }
         let mut rendered = String::new();
         render_block(block, links, &mut rendered);
         if rendered.trim().is_empty() {
             continue;
         }
-        if !out.is_empty() {
-            let tight = matches!(block.kind, Kind::Item { tight: true, .. });
-            out.push_str(if tight { "\n" } else { "\n\n" });
+        let tight = matches!(block.kind, Kind::Item { tight: true, .. });
+        if !out.append(if tight { "\n" } else { "\n\n" }, &rendered) {
+            break;
         }
-        out.push_str(&rendered);
     }
-    out
+    out.into_text()
 }
 
 #[cfg(test)]
@@ -1723,7 +1725,11 @@ mod tests {
     }
 
     fn render(items: &[MdItem]) -> String {
-        render_page(&page_blocks(items, document_metrics([items])), &[])
+        render_page(
+            &page_blocks(items, document_metrics([items])),
+            &[],
+            TextBudget::UNLIMITED,
+        )
     }
 
     fn joined(left: &str, right: &str) -> (String, String) {
