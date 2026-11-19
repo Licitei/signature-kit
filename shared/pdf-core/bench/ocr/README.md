@@ -107,3 +107,136 @@ Use the same variables from above. This run measures variants of one held-out 15
 - Geometry uses greedy, one-to-one, descending-IoU matching at `IoU ≥ 0.5`. Box+text applies the same match with exact NFC text equality. Bag F1 is the multiset overlap of normalized tokens and ignores reading order.
 - Each engine runs on one logical CPU. Tesseract additionally uses `OMP_THREAD_LIMIT=1` and one container per engine and dataset. Each page uses a fresh process. The timer inside the container includes CLI and model startup, input reading, OCR, and TSV writing. It excludes container startup and harness scoring. Native timings include process startup and stdout capture. WASM driver timings include Bun startup and service initialization.
 - Latency summaries use the median of three elapsed times for each page. P95 is nearest-rank, and pages/s is the reciprocal of mean seconds per page. Peak RSS is the maximum GNU time high-water mark from all runs in the bucket, in KiB. Accuracy is scored on trial one, and the JSON reports the count of distinct outputs across trials. This shared-host run uses affinity and a resource reservation. Other host processes can still affect wall-clock timings.
+
+## Isolate page segmentation
+
+`segment-pages.py` runs the native CLI with `--layout-only --timings`, crops
+each source-space line box from the grayscale input, adds white padding, and
+recognizes the crops in emitted order with the standard Portuguese model and
+PSM 7. It scores the assembled transcript and the same model's PSM 3 page
+transcript against the same reference. The difference includes clipping,
+skew within the axis-aligned source crops, and the loss of page recognition
+context. Preprocessing time sums binarization, deskew, cleaning, and
+segmentation, excluding image decode and recognition.
+
+The report includes predicted line boxes, both transcripts, and raw CER/WER
+counts. Line matches use descending IoU at 0.5 and match each box at most once.
+The overlap diagnostics count unmatched, missed, split, and merged lines by
+requiring the intersection to cover at least 15% of each box. Order inversions
+count matched pairs in the opposite order. For synthetic pages, each reference
+line box encloses its labeled words. For full real scans, PSM 3 supplies proxy
+geometry because the manual references contain transcripts only. The reviewed
+dev corpus supplies 186 sparse boxes for positive coverage. Unmatched
+predictions against those sparse annotations include legitimate unreviewed
+lines.
+
+Use Pillow and the same Docker image as the page benchmark. Save a release
+CLI from the baseline commit and a second one from the candidate. Regenerate
+the real-page inputs as above. For the reviewed dev inputs, pass the
+`pages/` directory from `real_lines.py candidates`. The scorer verifies the
+reviewed crop hashes before using their geometry.
+
+```bash
+mkdir -p .cache/t
+export TMPDIR="$PWD/.cache/t" PYTHONDONTWRITEBYTECODE=1
+resource=/home/yorizel/.local/bin/resource-run
+bench=shared/pdf-core/bench/ocr
+out=shared/pdf-core/.cache/pipeline
+corpus=/home/yorizel/Documents/bench-parsers/editais-extra
+
+for preset in clean calibrated; do
+  "$resource" --cpu 2 --mem 4G bun "$bench/generate-dataset.ts" "$corpus" \
+    --labels poppler --mode pages --split test --max-docs 4 --max-pages 2 \
+    --dpi 300 --preset "$preset" --seed d3 --output "$out/synth-$preset"
+done
+for version in baseline candidate; do
+  "$resource" --cpu 2 --mem 4G python "$bench/segment-pages.py" \
+    "$out/real" "$out/real-$version.json" --segmenter "$out/$version"
+  for preset in clean calibrated; do
+    "$resource" --cpu 2 --mem 4G python "$bench/segment-pages.py" \
+      "$out/synth-$preset/test" "$out/$preset-$version.json" --segmenter "$out/$version"
+  done
+  "$resource" --cpu 1 --mem 2G python "$bench/segment-pages.py" \
+    "$out/real-line-review/pages" "$out/dev-$version.json" --segmenter "$out/$version" \
+    --reviewed-pages --split dev --geometry-only
+done
+```
+
+`--split test` excludes the known real dev documents from a full-page report.
+Keep the benchmark's geometry and OCR scores separate when comparing versions.
+
+### Pipeline v2 measurements
+
+The comparison started at `07fb0d3`. The candidate requires support from
+nearby glyphs before emitting a line or widening its box. A connected group
+with word-like dimensions can also support a line. Table cells retain
+single-glyph support. The page-scale estimate discounts punctuation-sized
+components when there are enough larger components at the supplied DPI.
+
+The Cajamar validation contents page illustrates the scale error. The
+baseline estimated a four-pixel glyph height from dot leaders and missed all
+57 labeled lines at IoU 0.5. The candidate matched 29 and reduced predictions
+from 168 to 45. On 21 real dev pages the candidate emitted 1,106 boxes,
+down from 1,367, and matched 181 of 186 reviewed boxes at IoU 0.5.
+The baseline matched all 186, using the segmenter that originally proposed
+those crops. Candidate bounds can be tighter even when the same text is found.
+
+The 20-page convenience set includes five pages from dev documents. The
+remaining 15 pages were held out. For the complete real set, native glyph
+recognition went from 192.92% to 63.54% CER with the same recognizer weights.
+The cropped Tesseract result measures how much of the pipeline error remains
+when recognition weights are held to a stronger reference.
+
+| Pages                           | Tesseract PSM 3 CER / WER | Baseline crops PSM 7 CER / WER | Candidate crops PSM 7 CER / WER |
+| ------------------------------- | ------------------------: | -----------------------------: | ------------------------------: |
+| 20 real                         |           11.15% / 18.74% |               69.05% / 127.21% |                 21.96% / 39.63% |
+| 15 held-out real                |           12.24% / 20.34% |                42.87% / 77.99% |                 25.17% / 43.55% |
+| 8 clean synthetic, 300 DPI      |           10.92% / 14.31% |                17.75% / 24.07% |                 17.23% / 22.85% |
+| 8 calibrated synthetic, 300 DPI |           10.74% / 13.98% |                12.73% / 17.93% |                 12.53% / 17.71% |
+
+| Line geometry        |   Predicted | Without overlap |  Missed |     Split |    Merged | Order inversions |            IoU precision / recall |
+| -------------------- | ----------: | --------------: | ------: | --------: | --------: | ---------------: | --------------------------------: |
+| Real, PSM 3 proxy    | 2,010 → 789 |     1,586 → 337 | 82 → 30 |   77 → 68 |   43 → 47 |           10 → 8 | 14.38% / 64.08% → 43.09% / 75.39% |
+| Clean synthetic      |   706 → 672 |        104 → 72 | 19 → 20 |   29 → 29 |   20 → 22 |    5,039 → 4,948 | 77.48% / 89.97% → 80.36% / 88.82% |
+| Calibrated synthetic |   635 → 613 |         58 → 32 | 26 → 21 | 120 → 119 | 120 → 120 |    4,825 → 5,244 | 85.98% / 89.80% → 90.38% / 91.12% |
+
+The remaining real-page gaps are 10.80 CER points for the complete set
+and 12.93 points for the held-out subset. Neither synthetic condition
+reaches 97% precision or 98% recall. Candidate line merges still affect
+tables and stamps, and calibrated reading-order inversions increased.
+As a control, feeding PSM 3's own 451 line boxes and order into
+PSM 7 produced 12.45% CER and 21.46% WER. This isolates a
+1.29-point CER difference with the same segmentation and no page context.
+
+Three interleaved layout trials per 300-DPI page gave mean preprocessing
+times of 32.60 → 34.45 ms on clean pages and 36.93 → 29.24 ms on
+calibrated pages. The largest candidate page medians were 56.01 and
+54.60 ms, respectively. These timings exclude image decode.
+
+#### Ground-truth labels
+
+The benchmark retains the existing Poppler TSV line and word convention.
+The current PDF-core glyph API exposes text and per-glyph rectangles.
+Glyph-only output has no word or line membership. The native plain-text
+layout has line breaks but no mapping back to those rectangles, and table
+ordering can differ. On the first page of the UASG 158658 university edital,
+PDF-core groups the four metadata headings into one row. Poppler emits
+separate lines for `Editado por` and `Atualizado em`. A direct substitution
+would change the line geometry target.
+
+On eight training first pages at 150 DPI, the existing hybrid
+`--labels pdf-core` mode retained 1,951 of 1,979 source words. All 28
+exclusions were on the Cajati edital first page. Its native text preserved
+`Divisão de Licitações e Contratos` where Poppler split words into fragments
+such as `Divisã o de Lic it aç ões e Cont rat os`. A strict glyph-to-TSV
+match can drop parts of that text. Native extraction gives better text in
+this case, while the current API still lacks independent word and line
+geometry for the dataset and streaming training shards.
+
+```bash
+for labels in pdf-core poppler; do
+  "$resource" --cpu 1 --mem 3G bun "$bench/generate-dataset.ts" "$corpus" \
+    --labels "$labels" --mode pages --split train --max-docs 8 --max-pages 1 \
+    --dpi 150 --preset clean --seed d3 --output "$out/labels-$labels"
+done
+```
