@@ -8,8 +8,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
+import type { PdfCoreLazyStats } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const id = "<31415926535897932384626433832795>";
@@ -161,6 +162,23 @@ const vectors = {
 const fixture = (vector: (typeof vectors)[keyof typeof vectors]): Uint8Array =>
   pdf(Buffer.from(vector.content, "hex"), vector.uri, vector.dictionary);
 
+const compareLazy = Effect.fn(function* (
+  input: Uint8Array,
+  strategy: PdfCoreLazyStats["strategy"] = "lazy",
+) {
+  const core = yield* PdfCore;
+  const doc = yield* core.openLazy(pdfCoreBytesSource(input));
+  for (const pageIndexes of [[0], [0, 0], []]) {
+    const plain = { pageIndexes };
+    const markdown = { pageIndexes, format: "markdown" } satisfies Parameters<typeof doc.text>[0];
+    expect(yield* doc.text(plain)).toStrictEqual(yield* core.text(input, plain));
+    expect(yield* doc.text(markdown)).toStrictEqual(yield* core.text(input, markdown));
+    expect(yield* doc.tables(plain)).toStrictEqual(yield* core.tables(input, plain));
+    expect(yield* doc.renderPages(plain)).toStrictEqual(yield* core.renderPages(input, plain));
+  }
+  expect((yield* doc.stats).strategy).toBe(strategy);
+});
+
 describe("PdfCore encrypted PDFs", () => {
   const plain = pdf(Buffer.from(contents), "(https://example.test)");
   const options = { text: true, links: true };
@@ -171,6 +189,7 @@ describe("PdfCore encrypted PDFs", () => {
       Effect.gen(function* () {
         const core = yield* PdfCore;
         const input = fixture(vector);
+        yield* Effect.scoped(compareLazy(input));
         const expected = yield* core.inspect(plain, options);
         expect(expected.links[0]?.uri).toBe("https://example.test");
         expect(yield* core.inspect(input, options)).toEqual(expected);
@@ -188,11 +207,16 @@ describe("PdfCore encrypted PDFs", () => {
     );
   }
 
+  it.effect("extracts lazily from an encrypted object stream", () =>
+    Effect.scoped(compareLazy(encryptedObjectStreamPdf())).pipe(Effect.provide(layer)),
+  );
+
   it.effect("reads both legacy version and revision combinations", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
       const v2r2 = vectors.r2;
       const input = fixture({ ...v2r2, dictionary: v2r2.dictionary.replace("/V 1", "/V 2") });
+      yield* Effect.scoped(compareLazy(input));
       expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
       const v1r3 = pdf(
         Buffer.from(
@@ -203,6 +227,7 @@ describe("PdfCore encrypted PDFs", () => {
         "<< /Filter /Standard /V 1 /R 3 /P -4 /O <61840a4e66456bd408feb9a45fc05fce6d8f57574f1350bf0362c1836240898c> /U <7d96333c226e3ca7101c067ccaa2cc4000000000000000000000000000000000> >>",
         "",
       );
+      yield* Effect.scoped(compareLazy(v1r3));
       const expected = pdf(
         Buffer.from("BT /F1 12 Tf 30 147 Td (Item) Tj ET"),
         "(https://example.test)",
@@ -217,6 +242,7 @@ describe("PdfCore encrypted PDFs", () => {
       const vector = vectors.r2;
       const withPermissions = (flags: number) =>
         fixture({ ...vector, dictionary: vector.dictionary.replace("/P -4", `/P ${flags}`) });
+      yield* Effect.scoped(compareLazy(withPermissions(4294967292)));
       expect(yield* core.inspect(withPermissions(4294967292), options)).toEqual(
         yield* core.inspect(plain, options),
       );
@@ -236,7 +262,9 @@ describe("PdfCore encrypted PDFs", () => {
         const dictionary = vector.dictionary
           .replace(" /Length 128", "")
           .replace(" /Length 16", filterLength);
-        expect(yield* core.inspect(fixture({ ...vector, dictionary }), options)).toEqual(expected);
+        const input = fixture({ ...vector, dictionary });
+        yield* Effect.scoped(compareLazy(input));
+        expect(yield* core.inspect(input, options)).toEqual(expected);
       }
     }).pipe(Effect.provide(layer)),
   );
@@ -249,9 +277,9 @@ describe("PdfCore encrypted PDFs", () => {
         /(\/[OU] <[\da-f]{96})>/g,
         (_, entry: string) => `${entry}${"00".repeat(79)}>`,
       );
-      expect(yield* core.inspect(fixture({ ...vector, dictionary }), options)).toEqual(
-        yield* core.inspect(plain, options),
-      );
+      const input = fixture({ ...vector, dictionary });
+      yield* Effect.scoped(compareLazy(input));
+      expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
     }).pipe(Effect.provide(layer)),
   );
 
@@ -277,6 +305,7 @@ describe("PdfCore encrypted PDFs", () => {
       );
       const expected = yield* core.inspect(plain, options);
       const input = xrefTablePdf([...objects, vector.dictionary], encryptedTrailer, 7);
+      yield* Effect.scoped(compareLazy(input, "fallback"));
       expect(yield* core.inspect(input, options)).toEqual(expected);
       const failure = yield* Effect.flip(
         core.inspect(xrefTablePdf(objects, encryptedTrailer), options),
@@ -304,6 +333,7 @@ describe("PdfCore encrypted PDFs", () => {
         ],
         encryptedTrailer,
       );
+      yield* Effect.scoped(compareLazy(input));
       expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
       const rewritten = yield* core.edit(input, [], { mode: "rewrite" });
       expect(Buffer.from(rewritten).includes(metadata)).toBe(true);
@@ -320,6 +350,7 @@ describe("PdfCore encrypted PDFs", () => {
         vector.dictionary,
         " /Filter [/Crypt /FlateDecode] /DecodeParms [<< /Name /Identity >> null]",
       );
+      yield* Effect.scoped(compareLazy(input));
       const expected = yield* core.inspect(plain, options);
       expect(yield* core.inspect(input, options)).toEqual(expected);
       const merged = yield* core.merge([{ pdf: input }]);
@@ -346,6 +377,7 @@ describe("PdfCore encrypted PDFs", () => {
         ],
         encryptedTrailer,
       );
+      yield* Effect.scoped(compareLazy(input));
       expect(yield* core.inspect(input, options)).toEqual(yield* core.inspect(plain, options));
       const rewritten = Buffer.from(yield* core.edit(input, [], { mode: "rewrite" }));
       expect(rewritten.includes("/Lang ()")).toBe(true);
@@ -382,6 +414,7 @@ describe("PdfCore encrypted PDFs", () => {
         vector.dictionary,
         " /Filter [/Crypt /FlateDecode] /DecodeParms [<< /Name /StdCF >> null]",
       );
+      yield* Effect.scoped(compareLazy(input));
       const expected = yield* core.text(plain);
       expect(yield* core.text(input)).toEqual(expected);
       const merged = yield* core.merge([{ pdf: input }]);
@@ -394,6 +427,13 @@ describe("PdfCore encrypted PDFs", () => {
     Effect.gen(function* () {
       const core = yield* PdfCore;
       const input = fixture(vectors.locked);
+      const lazyFailure = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const doc = yield* core.openLazy(pdfCoreBytesSource(input));
+          return yield* Effect.flip(doc.text({ pageIndexes: [0] }));
+        }),
+      );
+      expect(lazyFailure.code).toBe(PdfCoreErrorCodeValue.encryptedPdf);
       const failed = yield* Effect.flip(core.inspect(input, options));
       expect(failed.code).toBe(PdfCoreErrorCodeValue.encryptedPdf);
     }).pipe(Effect.provide(layer)),

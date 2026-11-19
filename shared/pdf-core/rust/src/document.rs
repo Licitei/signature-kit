@@ -11,15 +11,16 @@ use crate::encryption::Encryption;
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::filters;
 use crate::inspection::{InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText};
+use crate::lazy::Sparse;
 use crate::object::{Dict, ObjRef, Object, Resolver, Stream};
 use crate::syntax::{
-    Parser, find_bytes, keyword_at, parse_indirect_object, parse_object_header, read_unsigned,
-    skip_whitespace_at,
+    IndirectObject, Parser, find_bytes, keyword_at, parse_indirect_object, parse_object_header,
+    read_unsigned, skip_whitespace_at,
 };
 
 const HEADER_PROBE: usize = 1024;
-const STARTXREF_PROBE: usize = 4096;
-const MAX_SECTIONS: usize = 4096;
+pub(crate) const STARTXREF_PROBE: usize = 4096;
+pub(crate) const MAX_SECTIONS: usize = 4096;
 const MAX_REF_CHAIN: usize = 32;
 const MAX_LENGTH_DEPTH: u32 = 4;
 const MAX_DEEP_RESOLVE: usize = 8;
@@ -37,23 +38,25 @@ const PDF_DOC_HIGH: [char; 31] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Entry {
+pub(crate) enum Entry {
     Compressed { index: u32, stream: u32 },
     Free,
     Offset(usize),
     Unset,
 }
 
+#[derive(Debug)]
 struct ObjectStream {
     data: Vec<u8>,
     entries: Vec<(u32, usize)>,
     first: usize,
 }
 
-struct Section {
-    entries: Vec<(u32, Entry)>,
-    hybrid: Option<usize>,
-    trailer: Dict,
+#[derive(Debug)]
+pub(crate) struct Section {
+    pub entries: Vec<(u32, Entry)>,
+    pub hybrid: Option<usize>,
+    pub trailer: Dict,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,7 +68,7 @@ pub(crate) struct Page {
     pub resources_ref: Option<ObjRef>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Inherited {
     crop_box: Option<Rc<Object>>,
     media_box: Option<Rc<Object>>,
@@ -97,15 +100,37 @@ struct Scan {
     trailers: Vec<Dict>,
 }
 
+#[derive(Debug)]
+pub(crate) struct DocumentCache {
+    objects: RefCell<Vec<Option<Rc<Object>>>>,
+    streams: RefCell<HashMap<u32, Rc<ObjectStream>>>,
+}
+
+impl DocumentCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            objects: RefCell::new(Vec::new()),
+            streams: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+struct SparseDocument<'data> {
+    cache: &'data DocumentCache,
+    source: &'data Sparse,
+    table: &'data [Entry],
+    trailer: &'data Dict,
+}
+
 pub(crate) struct Document<'data> {
     bytes: &'data [u8],
-    cache: RefCell<Vec<Option<Rc<Object>>>>,
+    cache: DocumentCache,
     depth: Cell<u32>,
     encryption: RefCell<Option<Encryption>>,
     limits: Limits,
-    object_streams: RefCell<HashMap<u32, Rc<ObjectStream>>>,
     repaired: Cell<bool>,
     shift: Cell<usize>,
+    sparse: Option<SparseDocument<'data>>,
     table: RefCell<Vec<Entry>>,
     trailer: RefCell<Dict>,
 }
@@ -136,30 +161,21 @@ impl<'data> Document<'data> {
         Err(Failure::invalid("no document catalog found"))
     }
 
-    fn apply(&self, table: &mut Vec<Entry>, entries: Vec<(u32, Entry)>) {
-        let bound = self.object_bound();
-        for (number, entry) in entries {
-            let index = widen(number);
-            if index >= bound {
-                continue;
-            }
-            if table.len() <= index {
-                table.resize(index.saturating_add(1), Entry::Unset);
-            }
-            if let Some(slot) = table.get_mut(index)
-                && *slot == Entry::Unset
-            {
-                *slot = entry;
-            }
-        }
-    }
-
     pub(crate) const fn bytes(&self) -> &'data [u8] {
         self.bytes
     }
 
+    fn cache(&self) -> &DocumentCache {
+        self.sparse
+            .as_ref()
+            .map_or(&self.cache, |sparse| sparse.cache)
+    }
+
     pub(crate) fn catalog(&self) -> Outcome<Option<Rc<Object>>> {
-        let root = self.trailer.borrow().get(b"Root").cloned();
+        let root = self.sparse.as_ref().map_or_else(
+            || self.trailer.borrow().get(b"Root").cloned(),
+            |sparse| sparse.trailer.get(b"Root").cloned(),
+        );
         let Some(root_next) = root else {
             return Ok(None);
         };
@@ -212,19 +228,29 @@ impl<'data> Document<'data> {
     }
 
     fn encryption_dictionary(&self, reference: ObjRef) -> Option<Dict> {
-        let entry = self.table.borrow().get(widen(reference.number)).copied()?;
+        let entry = self.entry(reference.number);
         let Entry::Offset(offset) = entry else {
             return None;
         };
         let start = offset.saturating_add(self.shift.get());
-        let parsed =
-            parse_indirect_object(self.bytes, start, self.limits.max_nesting, |_| None).ok()?;
+        let parsed = self.parse_at(start, &|_| None).ok()??;
         if parsed.obj_ref == reference
             && let Object::Dict(dict) = parsed.object
         {
             return Some(dict);
         }
         None
+    }
+
+    fn entry(&self, number: u32) -> Entry {
+        let index = widen(number);
+        self.sparse
+            .as_ref()
+            .map_or_else(
+                || self.table.borrow().get(index).copied(),
+                |sparse| sparse.table.get(index).copied(),
+            )
+            .unwrap_or(Entry::Unset)
     }
 
     pub(crate) fn follow(&self, object: &Object) -> Outcome<Rc<Object>> {
@@ -279,7 +305,7 @@ impl<'data> Document<'data> {
             }
             drop(table);
             let len = self.table.borrow().len();
-            let mut cache = self.cache.borrow_mut();
+            let mut cache = self.cache.objects.borrow_mut();
             if cache.len() < len {
                 cache.resize(len, None);
             }
@@ -288,10 +314,10 @@ impl<'data> Document<'data> {
     }
 
     fn install(&self, table: Vec<Entry>, trailer: Dict) {
-        *self.cache.borrow_mut() = vec![None; table.len()];
+        *self.cache.objects.borrow_mut() = vec![None; table.len()];
         *self.table.borrow_mut() = table;
         *self.trailer.borrow_mut() = trailer;
-        self.object_streams.borrow_mut().clear();
+        self.cache.streams.borrow_mut().clear();
         *self.encryption.borrow_mut() = None;
     }
 
@@ -350,16 +376,12 @@ impl<'data> Document<'data> {
 
     pub(crate) fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
         let index = widen(reference.number);
-        if let Some(hit) = self.cache.borrow().get(index).and_then(Clone::clone) {
+        let cache = &self.cache().objects;
+        if let Some(hit) = cache.borrow().get(index).and_then(Clone::clone) {
             return Ok(hit);
         }
-        let entry = self
-            .table
-            .borrow()
-            .get(index)
-            .copied()
-            .unwrap_or(Entry::Unset);
-        let loaded = match entry {
+        let before = self.pending_reads();
+        let loaded = match self.entry(reference.number) {
             Entry::Unset | Entry::Free => return Ok(Rc::new(Object::Null)),
             Entry::Offset(offset) => self.load_at(reference.number, offset),
             Entry::Compressed {
@@ -367,10 +389,13 @@ impl<'data> Document<'data> {
                 index: position,
             } => self.load_compressed(reference.number, stream, position),
         };
+        if self.pending_reads() != before {
+            return Ok(Rc::new(Object::Null));
+        }
         match loaded {
             Ok(object) => {
                 let shared_object = Rc::new(object);
-                if let Some(slot) = self.cache.borrow_mut().get_mut(index) {
+                if let Some(slot) = cache.borrow_mut().get_mut(index) {
                     *slot = Some(Rc::clone(&shared_object));
                 }
                 Ok(shared_object)
@@ -392,10 +417,9 @@ impl<'data> Document<'data> {
 
     fn load_at(&self, number: u32, offset: usize) -> Outcome<Object> {
         let start = offset.saturating_add(self.shift.get());
-        let mut parsed =
-            parse_indirect_object(self.bytes, start, self.limits.max_nesting, |length| {
-                self.length_of(length)
-            })?;
+        let Some(mut parsed) = self.parse_at(start, &|length| self.length_of(length))? else {
+            return Ok(Object::Null);
+        };
         if parsed.obj_ref.number != number {
             return Err(Failure::invalid("object number mismatch"));
         }
@@ -405,19 +429,23 @@ impl<'data> Document<'data> {
             self.resolve_crypt_filter(&mut stream.dict)?;
         }
         if let Some(encryption) = self.encryption.borrow().as_ref() {
-            encryption.decrypt_object(&mut parsed.object, parsed.obj_ref, self.bytes)?;
+            let window = self
+                .sparse
+                .as_ref()
+                .map_or(self.bytes, |sparse| sparse.source.object(start).0);
+            encryption.decrypt_object(&mut parsed.object, parsed.obj_ref, window)?;
+        }
+        if self.sparse.is_some()
+            && let Object::Stream(stream) = &mut parsed.object
+        {
+            stream.data =
+                stream.data.start.saturating_add(start)..stream.data.end.saturating_add(start);
         }
         Ok(parsed.object)
     }
 
     fn load_compressed(&self, number: u32, stream: u32, index: u32) -> Outcome<Object> {
-        let container = self
-            .table
-            .borrow()
-            .get(widen(stream))
-            .copied()
-            .unwrap_or(Entry::Unset);
-        if !matches!(container, Entry::Offset(_)) {
+        if !matches!(self.entry(stream), Entry::Offset(_)) {
             return Err(Failure::invalid("object stream is not a direct object"));
         }
         let object_stream = self.object_stream(stream)?;
@@ -437,10 +465,23 @@ impl<'data> Document<'data> {
         Parser::new(&object_stream.data, start, self.limits.max_nesting, true).parse_object()
     }
 
-    fn object_bound(&self) -> usize {
-        self.limits
-            .max_objects
-            .min(self.bytes.len().saturating_mul(8).saturating_add(4096))
+    fn new(bytes: &'data [u8], limits: &Limits) -> Self {
+        Self {
+            bytes,
+            shift: Cell::new(header_shift(bytes)),
+            limits: *limits,
+            sparse: None,
+            table: RefCell::new(Vec::new()),
+            trailer: RefCell::new(Dict::default()),
+            cache: DocumentCache::new(),
+            repaired: Cell::new(false),
+            depth: Cell::new(0),
+            encryption: RefCell::new(None),
+        }
+    }
+
+    const fn object_bound(&self) -> usize {
+        object_bound(self.bytes.len(), &self.limits)
     }
 
     pub(crate) fn object_count(&self) -> usize {
@@ -448,7 +489,9 @@ impl<'data> Document<'data> {
     }
 
     fn object_stream(&self, number: u32) -> Outcome<Rc<ObjectStream>> {
-        if let Some(hit) = self.object_streams.borrow().get(&number) {
+        let streams = &self.cache().streams;
+        let before = self.pending_reads();
+        if let Some(hit) = streams.borrow().get(&number) {
             return Ok(Rc::clone(hit));
         }
         let object = self.load(ObjRef {
@@ -497,11 +540,9 @@ impl<'data> Document<'data> {
             entries,
             first,
         });
-        drop(
-            self.object_streams
-                .borrow_mut()
-                .insert(number, Rc::clone(&parsed)),
-        );
+        if self.pending_reads() == before {
+            drop(streams.borrow_mut().insert(number, Rc::clone(&parsed)));
+        }
         Ok(parsed)
     }
 
@@ -509,18 +550,7 @@ impl<'data> Document<'data> {
         if bytes.len() > limits.max_pdf_bytes {
             return Err(Failure::limit("pdf exceeds size limit"));
         }
-        let document = Document {
-            bytes,
-            shift: Cell::new(header_shift(bytes)),
-            limits: *limits,
-            table: RefCell::new(Vec::new()),
-            trailer: RefCell::new(Dict::default()),
-            cache: RefCell::new(Vec::new()),
-            object_streams: RefCell::new(HashMap::new()),
-            repaired: Cell::new(false),
-            depth: Cell::new(0),
-            encryption: RefCell::new(None),
-        };
+        let document = Self::new(bytes, limits);
         if document.read_xref_chain().is_err() {
             document.rebuild()?;
         } else {
@@ -609,14 +639,47 @@ impl<'data> Document<'data> {
     }
 
     pub(crate) fn pages(&self) -> Outcome<Vec<Page>> {
-        let pages = self.walk_pages()?;
+        let pages = self.walk_pages(false)?;
         if pages.is_empty() && !self.repaired.get() && self.rebuild().is_ok() {
-            return self.walk_pages();
+            return self.walk_pages(false);
         }
         Ok(pages)
     }
 
-    fn read_classic_section(&self, start: usize) -> Outcome<Section> {
+    fn parse_at(
+        &self,
+        start: usize,
+        resolve: &dyn Fn(ObjRef) -> Option<i64>,
+    ) -> Outcome<Option<IndirectObject>> {
+        let Some(sparse) = &self.sparse else {
+            return parse_indirect_object(self.bytes, start, self.limits.max_nesting, resolve)
+                .map(Some);
+        };
+        let (window, ceiling) = sparse.source.object(start);
+        let end = start.saturating_add(window.len());
+        let parsed = parse_indirect_object(window, 0, self.limits.max_nesting, resolve);
+        if let Ok(object) = &parsed
+            && (object.end < window.len() || end == ceiling)
+            && object_terminated(window, object.end)
+            && (!matches!(object.object, Object::Stream(_)) || end == ceiling)
+        {
+            return parsed.map(Some);
+        }
+        if end < ceiling {
+            sparse.source.request(end, ceiling);
+            return Ok(None);
+        }
+        drop(parsed?);
+        Err(Failure::invalid("incomplete sparse object"))
+    }
+
+    pub(crate) fn pending_reads(&self) -> usize {
+        self.sparse
+            .as_ref()
+            .map_or(0, |sparse| sparse.source.misses())
+    }
+
+    fn read_classic_section(&self, start: usize, complete: bool) -> Outcome<Section> {
         let data = self.bytes;
         let mut pos = start;
         let mut entries: Vec<(u32, Entry)> = Vec::new();
@@ -668,6 +731,9 @@ impl<'data> Document<'data> {
         let Object::Dict(trailer) = parser.parse_object()? else {
             return Err(Failure::invalid("trailer is not a dictionary"));
         };
+        if !complete && parser.position() >= data.len() {
+            return Err(Failure::invalid("incomplete xref trailer"));
+        }
         let hybrid = trailer
             .get(b"XRefStm")
             .and_then(Object::as_integer)
@@ -687,21 +753,35 @@ impl<'data> Document<'data> {
                 break;
             }
             let pos = skip_whitespace_at(self.bytes, *candidate);
-            if keyword_at(self.bytes, pos, b"xref") {
-                return self.read_classic_section(pos.saturating_add(4));
-            }
-            if parse_object_header(self.bytes, pos).is_some() {
-                return self.read_stream_section(pos);
+            if keyword_at(self.bytes, pos, b"xref")
+                || parse_object_header(self.bytes, pos).is_some()
+            {
+                return self.section_at(pos, true);
             }
         }
         Err(Failure::invalid("cross-reference section not found"))
     }
 
-    fn read_stream_section(&self, pos: usize) -> Outcome<Section> {
-        let parsed = parse_indirect_object(self.bytes, pos, self.limits.max_nesting, |_| None)?;
+    fn read_stream_section(&self, pos: usize, complete: bool) -> Outcome<Section> {
+        let parsed = parse_indirect_object(self.bytes, pos, self.limits.max_nesting, &|_| None)?;
+        if !complete
+            && (parsed.end >= self.bytes.len() || !object_terminated(self.bytes, parsed.end))
+        {
+            return Err(Failure::invalid("incomplete xref stream"));
+        }
         let Object::Stream(stream) = parsed.object else {
             return Err(Failure::invalid("xref stream expected"));
         };
+        if !complete
+            && stream
+                .dict
+                .get(b"Length")
+                .and_then(Object::as_integer)
+                .and_then(|value| usize::try_from(value).ok())
+                .is_some_and(|length| stream.data.start.saturating_add(length) >= self.bytes.len())
+        {
+            return Err(Failure::invalid("incomplete xref stream data"));
+        }
         let widths = stream
             .dict
             .get(b"W")
@@ -794,25 +874,11 @@ impl<'data> Document<'data> {
             if let Some(hybrid) = section.hybrid
                 && let Ok(extra) = self.read_section(hybrid)
             {
-                self.apply(&mut table, extra.entries);
+                apply_entries(&mut table, extra.entries, self.object_bound());
             }
-            self.apply(&mut table, section.entries);
-            next = section
-                .trailer
-                .get(b"Prev")
-                .and_then(Object::as_number)
-                .filter(|value| value.is_finite() && *value >= 0.0_f64)
-                .map(f64_to_usize);
-            match trailer.as_mut() {
-                None => trailer = Some(section.trailer),
-                Some(base) => {
-                    for (key, value) in section.trailer.entries {
-                        if base.get(&key).is_none() {
-                            base.entries.push((key, value));
-                        }
-                    }
-                }
-            }
+            apply_entries(&mut table, section.entries, self.object_bound());
+            next = previous_section(&section.trailer);
+            merge_section_trailer(&mut trailer, section.trailer);
         }
         let trailer_next = trailer.ok_or_else(|| Failure::invalid("missing trailer"))?;
         if table.is_empty() {
@@ -823,6 +889,14 @@ impl<'data> Document<'data> {
     }
 
     fn rebuild(&self) -> Outcome<()> {
+        if self.sparse.is_some() {
+            if !self.waiting() {
+                self.repaired.set(true);
+            }
+            return Err(Failure::invalid(
+                "sparse cross-reference table requires repair",
+            ));
+        }
         self.repaired.set(true);
         self.shift.set(0);
         let scan = self.scan_objects();
@@ -929,7 +1003,7 @@ impl<'data> Document<'data> {
         Ok(Object::Array(filters))
     }
 
-    fn root_valid(&self) -> bool {
+    pub(crate) fn root_valid(&self) -> bool {
         let Ok(Some(catalog)) = self.catalog() else {
             return false;
         };
@@ -945,7 +1019,7 @@ impl<'data> Document<'data> {
     fn scan_object(&self, scan: &mut Scan, at: usize, floor: usize, bound: usize) -> Option<usize> {
         let data = self.bytes;
         let start = header_before(data, at, floor)?;
-        let parsed = parse_indirect_object(data, start, self.limits.max_nesting, |_| None).ok()?;
+        let parsed = parse_indirect_object(data, start, self.limits.max_nesting, &|_| None).ok()?;
         let number = parsed.obj_ref.number;
         let index = widen(number);
         if index < bound {
@@ -997,8 +1071,62 @@ impl<'data> Document<'data> {
         scan
     }
 
+    fn section_at(&self, pos: usize, complete: bool) -> Outcome<Section> {
+        if keyword_at(self.bytes, pos, b"xref") {
+            self.read_classic_section(pos.saturating_add(4), complete)
+        } else {
+            self.read_stream_section(pos, complete)
+        }
+    }
+
+    pub(crate) fn section_window(
+        bytes: &'data [u8],
+        limits: &Limits,
+        complete: bool,
+    ) -> Outcome<Section> {
+        Self::new(bytes, limits).section_at(skip_whitespace_at(bytes, 0), complete)
+    }
+
     pub(crate) const fn shift(&self) -> usize {
         self.shift.get()
+    }
+
+    pub(crate) fn sparse(
+        source: &'data Sparse,
+        table: &'data [Entry],
+        trailer: &'data Dict,
+        cache: &'data DocumentCache,
+        limits: &Limits,
+    ) -> Outcome<Self> {
+        let mut document = Self::new(&[], limits);
+        document.sparse = Some(SparseDocument {
+            cache,
+            source,
+            table,
+            trailer,
+        });
+        if cache.objects.borrow().is_empty() {
+            *cache.objects.borrow_mut() = vec![None; table.len()];
+        }
+        document.unlock()?;
+        Ok(document)
+    }
+
+    pub(crate) fn sparse_pages(&self, indexes: Option<&[u32]>) -> Outcome<Vec<(usize, Page)>> {
+        if !self.root_valid() {
+            return Err(Failure::invalid("missing document catalog"));
+        }
+        let first =
+            indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
+        let pages = self.walk_pages(first)?;
+        if pages.is_empty() {
+            return Err(Failure::invalid("page tree requires repair"));
+        }
+        let selected = select_pages(pages.len(), indexes)?;
+        Ok(pick_pages(&pages, selected)
+            .into_iter()
+            .map(|(index, page)| (index, page.clone()))
+            .collect())
     }
 
     pub(crate) fn startxref(&self) -> Option<usize> {
@@ -1010,17 +1138,21 @@ impl<'data> Document<'data> {
     }
 
     fn unlock(&self) -> Outcome<()> {
-        let trailer = self.trailer.borrow();
+        let stored = self.trailer.borrow();
+        let trailer = self
+            .sparse
+            .as_ref()
+            .map_or(&*stored, |sparse| sparse.trailer);
         let Some(setting) = trailer.get(b"Encrypt") else {
             return Ok(());
         };
         let encryption = match setting {
             Object::Null => return Ok(()),
-            Object::Dict(dict) => Encryption::authenticate(dict, &trailer, None),
+            Object::Dict(dict) => Encryption::authenticate(dict, trailer, None),
             Object::Ref(reference) => match self.encryption_dictionary(*reference) {
-                Some(dict) => Encryption::authenticate(&dict, &trailer, Some(*reference)),
+                Some(dict) => Encryption::authenticate(&dict, trailer, Some(*reference)),
                 None if !self.repaired.get() => {
-                    drop(trailer);
+                    drop(stored);
                     return self.rebuild();
                 }
                 None => None,
@@ -1042,7 +1174,11 @@ impl<'data> Document<'data> {
         Ok(())
     }
 
-    fn walk_pages(&self) -> Outcome<Vec<Page>> {
+    fn waiting(&self) -> bool {
+        self.pending_reads() != 0
+    }
+
+    fn walk_pages(&self, first: bool) -> Outcome<Vec<Page>> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
@@ -1052,9 +1188,13 @@ impl<'data> Document<'data> {
         let mut pages: Vec<Page> = Vec::new();
         let mut visited: HashSet<u32> = HashSet::new();
         let mut stack: Vec<(Object, Inherited)> = vec![(root.clone(), Inherited::default())];
+        let mut declared = self.limits.max_pages;
         while let Some((node, inherited)) = stack.pop() {
             let obj_ref = if let Object::Ref(reference) = &node {
                 if !visited.insert(reference.number) {
+                    if first {
+                        return self.walk_pages(false);
+                    }
                     continue;
                 }
                 Some(*reference)
@@ -1067,7 +1207,13 @@ impl<'data> Document<'data> {
             let Some(resolved) = lenient(self.follow(&node))? else {
                 continue;
             };
+            if first && self.waiting() {
+                break;
+            }
             let Some(dict) = resolved.as_dict() else {
+                if first {
+                    return self.walk_pages(false);
+                }
                 continue;
             };
             let merged = inherited.merged(dict);
@@ -1077,23 +1223,23 @@ impl<'data> Document<'data> {
                 }
                 _ => None,
             };
-            if let Some(inner_kids) = kids {
-                if let Some(items) = inner_kids.as_array() {
-                    for kid in items.iter().rev() {
-                        stack.push((
-                            kid.clone(),
-                            Inherited {
-                                resources: merged.resources.clone(),
-                                media_box: merged.media_box.clone(),
-                                crop_box: merged.crop_box.clone(),
-                                rotate: merged.rotate.clone(),
-                            },
-                        ));
-                    }
+            if first && self.waiting() {
+                break;
+            }
+            if let Some(items) = kids.as_deref().and_then(Object::as_array) {
+                if first {
+                    let Some(count) = page_count(dict, items.len(), declared) else {
+                        return self.walk_pages(false);
+                    };
+                    declared = count.saturating_sub(items.len().saturating_sub(1));
                 }
+                stack.extend(items.iter().rev().map(|kid| (kid.clone(), merged.clone())));
                 continue;
             }
             if name_is(dict, b"Type", b"Pages") {
+                if first {
+                    return self.walk_pages(false);
+                }
                 continue;
             }
             if pages.len() >= self.limits.max_pages {
@@ -1116,6 +1262,9 @@ impl<'data> Document<'data> {
                 resources_ref,
                 info: self.page_info(&merged)?,
             });
+            if first {
+                break;
+            }
         }
         Ok(pages)
     }
@@ -1141,7 +1290,16 @@ impl Resolver for Document<'_> {
 
 impl Document<'_> {
     fn decode_stream(&self, stream: &Stream, prefix: Option<usize>) -> Outcome<Vec<u8>> {
-        let raw = stream.encoded_bytes(self.bytes)?;
+        let raw = if let Some(sparse) = &self.sparse
+            && stream.decrypted.is_none()
+        {
+            sparse
+                .source
+                .bytes(stream.data.clone())
+                .ok_or_else(|| Failure::invalid("sparse stream data out of range"))?
+        } else {
+            stream.encoded_bytes(self.bytes)?
+        };
         let max = self.limits.max_decoded_stream_bytes;
         let Some(filter) = stream.dict.get(b"Filter") else {
             return filters::decode_stream(&stream.dict, raw, max, prefix);
@@ -1166,6 +1324,56 @@ impl Document<'_> {
                 .push((b"DecodeParms".to_vec(), self.resolve_deep(parms, 0)?));
         }
         filters::decode_stream(&resolved, raw, max, prefix)
+    }
+}
+
+pub(crate) fn object_terminated(bytes: &[u8], end: usize) -> bool {
+    end >= 6 && keyword_at(bytes, end.saturating_sub(6), b"endobj")
+}
+
+pub(crate) fn previous_section(trailer: &Dict) -> Option<usize> {
+    trailer
+        .get(b"Prev")
+        .and_then(Object::as_number)
+        .filter(|value| value.is_finite() && *value >= 0.0_f64)
+        .map(f64_to_usize)
+}
+
+pub(crate) fn merge_section_trailer(trailer: &mut Option<Dict>, section: Dict) {
+    if let Some(base) = trailer {
+        for (key, value) in section.entries {
+            if base.get(&key).is_none() {
+                base.entries.push((key, value));
+            }
+        }
+    } else {
+        *trailer = Some(section);
+    }
+}
+
+pub(crate) fn apply_entries(table: &mut Vec<Entry>, entries: Vec<(u32, Entry)>, bound: usize) {
+    for (number, entry) in entries {
+        let index = widen(number);
+        if index >= bound {
+            continue;
+        }
+        if table.len() <= index {
+            table.resize(index.saturating_add(1), Entry::Unset);
+        }
+        if let Some(slot) = table.get_mut(index)
+            && *slot == Entry::Unset
+        {
+            *slot = entry;
+        }
+    }
+}
+
+pub(crate) const fn object_bound(size: usize, limits: &Limits) -> usize {
+    let bound = size.saturating_mul(8).saturating_add(4096);
+    if limits.max_objects < bound {
+        limits.max_objects
+    } else {
+        bound
     }
 }
 
@@ -1269,7 +1477,7 @@ fn name_is(dict: &Dict, key: &[u8], expected: &[u8]) -> bool {
         .is_some_and(|name| name == expected)
 }
 
-fn find_startxref(bytes: &[u8]) -> Option<usize> {
+pub(crate) fn find_startxref(bytes: &[u8]) -> Option<usize> {
     let tail_start = bytes.len().saturating_sub(STARTXREF_PROBE);
     let mut found = None;
     let mut from = tail_start;
@@ -1337,6 +1545,18 @@ fn normalize_rotation(value: f64) -> i32 {
         return 0;
     }
     i32::try_from(degrees).unwrap_or(0)
+}
+
+fn page_count(dict: &Dict, kids: usize, declared: usize) -> Option<usize> {
+    let count = usize::try_from(dict.get(b"Count")?.as_integer()?).ok()?;
+    (kids > 0 && count >= kids && count <= declared).then_some(count)
+}
+
+pub(crate) fn pick_pages(pages: &[Page], selected: Vec<usize>) -> Vec<(usize, &Page)> {
+    selected
+        .into_iter()
+        .filter_map(|index| pages.get(index).map(|page| (index, page)))
+        .collect()
 }
 
 pub(crate) fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcome<Vec<usize>> {
@@ -1421,6 +1641,7 @@ pub(crate) fn inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lazy::{Lazy, Plan, Tuning};
     use crate::test_pdf::assert_exact;
     use core::fmt::Write as _;
     use core::hint::black_box;
@@ -2419,6 +2640,147 @@ mod tests {
             "\u{2d8}\u{2dc}\u{fb01}\u{17e}"
         );
         assert_eq!(decode_text_string(&[0x7f, 0x9f]), "\u{FFFD}\u{FFFD}");
+    }
+
+    fn plan_first(bytes: &[u8]) -> Option<Lazy> {
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 16 * 1024,
+                probe: 32 * 1024,
+                round_bytes: 1024 * 1024,
+            },
+        );
+        for _ in 0_i32..64_i32 {
+            match lazy.plan(Some(&[0]), false, &Limits::default()) {
+                Plan::Ready => return Some(lazy),
+                Plan::Fallback => return None,
+                Plan::Need(ranges) => {
+                    for range in ranges {
+                        let offset = range.start;
+                        assert!(lazy.feed(offset, &bytes[range]));
+                    }
+                }
+            }
+        }
+        panic!("lazy planner did not finish");
+    }
+
+    fn lazy_contents(lazy: &Lazy) -> Vec<u8> {
+        lazy.execute(&Limits::default(), |document, pages| {
+            assert_eq!(pages[0].0, 0);
+            document.content(pages[0].1)
+        })
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn lazy_planner_handles_classic_stream_and_hybrid_indexes() {
+        let classic = basic_pdf();
+        let expected = open(&classic);
+        let expected_content = expected.content(&expected.pages().unwrap()[0]).unwrap();
+        assert_eq!(
+            lazy_contents(&plan_first(&classic).unwrap()),
+            expected_content
+        );
+        for hybrid in [false, true] {
+            let file = object_stream_pdf(hybrid);
+            assert_eq!(
+                lazy_contents(&plan_first(&file.bytes).unwrap()),
+                b"BT (Hi) Tj ET"
+            );
+        }
+    }
+
+    #[test]
+    fn lazy_planner_accepts_xref_offsets_at_the_preceding_newline() {
+        let mut bytes = basic_pdf();
+        let xref = find_startxref(&bytes).unwrap();
+        let mut line = find_bytes(&bytes, xref, b"65535 f \n")
+            .unwrap()
+            .saturating_add(9);
+        for _ in 0_i32..4_i32 {
+            let last_digit = line.saturating_add(10);
+            let offset = str::from_utf8(&bytes[line..last_digit])
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let previous_byte = offset.saturating_sub(1);
+            bytes[line..last_digit].copy_from_slice(format!("{previous_byte:010}").as_bytes());
+            line = line.saturating_add(20);
+        }
+        assert_eq!(
+            lazy_contents(&plan_first(&bytes).unwrap()),
+            b"BT /F1 12 Tf (Hi) Tj ET"
+        );
+    }
+
+    #[test]
+    fn lazy_planner_uses_prev_and_falls_back_when_startxref_is_broken() {
+        let base = build_classic(&basic_objects(), "", 0);
+        let mut bytes = base.bytes;
+        let updated = bytes.len();
+        bytes.extend_from_slice(
+            format!(
+                "4 0 obj\n{}\nendobj\n",
+                stream_object("", "BT (Updated) Tj ET")
+            )
+            .as_bytes(),
+        );
+        let xref = bytes.len();
+        bytes.extend_from_slice(format!("xref\n4 1\n{updated:010} 00000 n \ntrailer\n<< /Size 5 /Prev {} >>\nstartxref\n{xref}\n%%EOF\n", base.xref).as_bytes());
+        assert_eq!(
+            lazy_contents(&plan_first(&bytes).unwrap()),
+            b"BT (Updated) Tj ET"
+        );
+        assert!(plan_first(include_bytes!("../../__tests__/fixtures/broken-xref.pdf")).is_none());
+    }
+
+    #[test]
+    fn lazy_planner_unlocks_rc4_and_aes() {
+        let vectors = [
+            (
+                "d2a1b8340024ec0293a0f34da5092a93e2d573c1c005fc711b12c829745f092bdc101c0f37003b61e6fc65066568464ac60da87c26dc6ae398d214ad4f094a9c3018fa3ca26a43526b556b6742d28d8ba9d42e960ac929ac78df07ef103b46e3f7d82913cce35279c657d10d",
+                "<< /Filter /Standard /Length 40 /O <a0b130ed69fe55902dc33d8c602379c856fe7ed15e9d8e0bacd7367a5f67b6dc> /P -4 /R 2 /U <e0dcfef423e881eb379f48274cf2f6c4deb74ca157e4a2ed17813dfddf601617> /V 1 >>",
+            ),
+            (
+                "0e1c2a38465462707e8c9aa8b6c4d2e0db4f7853f5e2f47456927395c5850459dc16dbf12c0700e5b5e30c8b22231a2914ff78041ed4395d7d81ae37daceea24e89aa7c7956d75bbb01217441266f7fdf150d7f98b37565da339833385cfca10134778a8af002791c98f3e4d2e6c6bc842bee258d6c96a605c69759782d0860e",
+                "<< /CF << /StdCF << /AuthEvent /DocOpen /CFM /AESV2 /Length 16 >> >> /Filter /Standard /Length 128 /O <5a0c0b55deda723d6a1a77ca020e0bf91273d02733c4748c700d9eb9a6d68a09> /OE <> /P -4 /R 4 /StmF /StdCF /StrF /StdCF /U <7556a3ea1d7266be2635f8b0c1eb48ab0021446990b9e4114071a4d9104984c1> /UE <> /V 4 >>",
+            ),
+        ];
+        let trailer = "/Encrypt 7 0 R /ID [<31415926535897932384626433832795><31415926535897932384626433832795>]";
+        for (hex, dictionary) in vectors {
+            let ciphertext: Vec<_> = hex
+                .as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            let mut objects = basic_objects();
+            let stream = objects.iter_mut().find(|(number, _)| *number == 4).unwrap();
+            stream.0 = 5;
+            stream.1 = stream_object("/Filter /FlateDecode", &" ".repeat(ciphertext.len()));
+            let leaf = objects.iter_mut().find(|(number, _)| *number == 3).unwrap();
+            leaf.1 = leaf.1.replace("/Contents 4 0 R", "/Contents 5 0 R");
+            objects.push((7, dictionary.to_owned()));
+            let mut bytes = build_classic(&objects, trailer, 0).bytes;
+            let start = find_bytes(&bytes, 0, b"stream\n")
+                .unwrap()
+                .saturating_add(7);
+            let end = start.saturating_add(ciphertext.len());
+            bytes[start..end].copy_from_slice(&ciphertext);
+            let lazy = plan_first(&bytes).unwrap();
+            let expected = open(&bytes);
+            assert!(expected.is_encrypted());
+            let content = lazy_contents(&lazy);
+            assert_eq!(
+                content,
+                expected.content(&expected.pages().unwrap()[0]).unwrap()
+            );
+            assert!(find_bytes(&content, 0, b"(Item)").is_some());
+        }
     }
 
     fn mutate(seed: &[u8], rng: &mut XorShift) -> Vec<u8> {

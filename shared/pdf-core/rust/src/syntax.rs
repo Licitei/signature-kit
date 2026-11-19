@@ -1051,11 +1051,12 @@ fn object_tail(data: &[u8], from: usize) -> usize {
     pos
 }
 
+#[inline(never)]
 pub(crate) fn parse_indirect_object(
     data: &[u8],
     offset: usize,
     max_depth: usize,
-    resolve_length: impl Fn(ObjRef) -> Option<i64>,
+    resolve_length: &dyn Fn(ObjRef) -> Option<i64>,
 ) -> Outcome<IndirectObject> {
     let (obj_ref, body) = parse_object_header(data, offset)
         .ok_or_else(|| Failure::invalid("missing object header"))?;
@@ -1309,7 +1310,7 @@ mod tests {
     #[test]
     fn parses_indirect_object() {
         let data = b"7 0 obj\n<< /A 1 >>\nendobj\n";
-        let Ok(parsed) = parse_indirect_object(data, 0, 64, no_length) else {
+        let Ok(parsed) = parse_indirect_object(data, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(
@@ -1323,7 +1324,7 @@ mod tests {
         assert!(matches!(parsed.object, Object::Dict(_)));
 
         let compact = b"3 2 obj<</A 1>>endobj";
-        let Ok(parsed_2) = parse_indirect_object(compact, 0, 64, no_length) else {
+        let Ok(parsed_2) = parse_indirect_object(compact, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(
@@ -1336,7 +1337,7 @@ mod tests {
         assert_eq!(parsed_2.end, compact.len());
 
         let empty = b"4 0 obj endobj";
-        let Ok(parsed_3) = parse_indirect_object(empty, 0, 64, no_length) else {
+        let Ok(parsed_3) = parse_indirect_object(empty, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(parsed_3.object, Object::Null);
@@ -1344,9 +1345,9 @@ mod tests {
 
     #[test]
     fn rejects_missing_header() {
-        drop(parse_indirect_object(b"hello", 0, 64, no_length).unwrap_err());
-        drop(parse_indirect_object(b"1 0 objx", 0, 64, no_length).unwrap_err());
-        drop(parse_indirect_object(b"10obj", 0, 64, no_length).unwrap_err());
+        drop(parse_indirect_object(b"hello", 0, 64, &no_length).unwrap_err());
+        drop(parse_indirect_object(b"1 0 objx", 0, 64, &no_length).unwrap_err());
+        drop(parse_indirect_object(b"10obj", 0, 64, &no_length).unwrap_err());
     }
 
     fn stream_bytes<'data>(data: &'data [u8], parsed: &IndirectObject) -> &'data [u8] {
@@ -1360,7 +1361,7 @@ mod tests {
     #[test]
     fn stream_with_correct_length() {
         let data = b"1 0 obj\n<< /Length 5 >>\nstream\nhello\nendstream\nendobj\n";
-        let Ok(parsed) = parse_indirect_object(data, 0, 64, no_length) else {
+        let Ok(parsed) = parse_indirect_object(data, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(data, &parsed), b"hello");
@@ -1370,17 +1371,17 @@ mod tests {
     #[test]
     fn stream_with_crlf_and_cr_only() {
         let crlf = b"1 0 obj\r\n<< /Length 5 >>\r\nstream\r\nhello\r\nendstream\r\nendobj";
-        let Ok(parsed) = parse_indirect_object(crlf, 0, 64, no_length) else {
+        let Ok(parsed) = parse_indirect_object(crlf, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(crlf, &parsed), b"hello");
         let cr = b"1 0 obj << /Length 5 >> stream\rhello\rendstream endobj";
-        let Ok(parsed_4) = parse_indirect_object(cr, 0, 64, no_length) else {
+        let Ok(parsed_4) = parse_indirect_object(cr, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(cr, &parsed_4), b"hello");
         let spaced = b"1 0 obj << /Length 5 >> stream  \nhello\nendstream endobj";
-        let Ok(parsed_5) = parse_indirect_object(spaced, 0, 64, no_length) else {
+        let Ok(parsed_5) = parse_indirect_object(spaced, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(spaced, &parsed_5), b"hello");
@@ -1389,17 +1390,17 @@ mod tests {
     #[test]
     fn stream_with_wrong_length_scans_for_endstream() {
         let short = b"1 0 obj\n<< /Length 2 >>\nstream\nhello\nendstream\nendobj\n";
-        let Ok(parsed) = parse_indirect_object(short, 0, 64, no_length) else {
+        let Ok(parsed) = parse_indirect_object(short, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(short, &parsed), b"hello");
         let long = b"1 0 obj\n<< /Length 999 >>\nstream\nhello\nendstream\nendobj\n";
-        let Ok(parsed_6) = parse_indirect_object(long, 0, 64, no_length) else {
+        let Ok(parsed_6) = parse_indirect_object(long, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(long, &parsed_6), b"hello");
         let missing = b"1 0 obj\n<< >>\nstream\nhello\nendstream\nendobj\n";
-        let Ok(parsed_7) = parse_indirect_object(missing, 0, 64, no_length) else {
+        let Ok(parsed_7) = parse_indirect_object(missing, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(missing, &parsed_7), b"hello");
@@ -1409,11 +1410,11 @@ mod tests {
     fn stream_with_indirect_length() {
         let data = b"1 0 obj\n<< /Length 9 0 R >>\nstream\nhel\nendstream lo\nendstream\nendobj\n";
         let resolve = |reference: ObjRef| (reference.number == 9).then_some(16);
-        let Ok(parsed) = parse_indirect_object(data, 0, 64, resolve) else {
+        let Ok(parsed) = parse_indirect_object(data, 0, 64, &resolve) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(data, &parsed), b"hel\nendstream lo");
-        let Ok(unresolved) = parse_indirect_object(data, 0, 64, no_length) else {
+        let Ok(unresolved) = parse_indirect_object(data, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(data, &unresolved), b"hel");
@@ -1422,12 +1423,12 @@ mod tests {
     #[test]
     fn stream_without_endstream_uses_endobj_or_eof() {
         let data = b"1 0 obj\n<< /Length 99 >>\nstream\nhello\nendobj\n";
-        let Ok(parsed) = parse_indirect_object(data, 0, 64, no_length) else {
+        let Ok(parsed) = parse_indirect_object(data, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(data, &parsed), b"hello");
         let eof = b"1 0 obj\n<< >>\nstream\nhello";
-        let Ok(parsed_8) = parse_indirect_object(eof, 0, 64, no_length) else {
+        let Ok(parsed_8) = parse_indirect_object(eof, 0, 64, &no_length) else {
             panic!("parse failed");
         };
         assert_eq!(stream_bytes(eof, &parsed_8), b"hello");

@@ -1,3 +1,33 @@
+## Unreleased
+
+### Read selected pages from a byte-range source
+
+`PdfCore.openLazy(source)` opens a scoped range reader for text, Markdown, tables, and rendering. It caches fetched ranges across calls, preserves original page indexes, and reports full-load fallback in its stats. The Promise client supports `close()` and `await using`. Source adapters cover bytes, Blob, Node file handles, and Effect `FileSystem`.
+
+The planner probes both ends of the file concurrently, follows the cross-reference chain using cached windows, and batches each dependency frontier. It reuses parsed objects and object streams across rounds, follows indirect stream lengths when their headers are available, and fetches adjacent objects within the configured read-ahead gap. Valid linearization hints can prefetch the first page section. Large shared form dictionaries fetch the forms used by the selected page during extraction. The defaults are 64 KiB per probe, a 32 KiB read-ahead gap, and a 2 MiB selective-read batch. Both Effect and Promise clients accept overrides.
+
+Page-0 Markdown matched on all 294 files with zero read failures. Warm measurements use separate long-lived Wasm instances, one warm-up and the median of three trials per file. Values separated by slashes are p50, p90 and max, or p50 and p90 where specified.
+
+| Measurement                                  |                  `pdfs` (30), before → after |        `editais-extra` (264), before → after |
+| -------------------------------------------- | -------------------------------------------: | -------------------------------------------: |
+| Lazy rounds                                  |                     23 / 32 / 39 → 3 / 5 / 8 |                    19 / 28 / 40 → 3 / 5 / 13 |
+| Warm local lazy (ms)                         |  11.03 / 15.02 / 68.34 → 5.43 / 8.38 / 11.39 | 8.38 / 18.29 / 127.88 → 4.66 / 11.78 / 61.75 |
+| Warm local full (ms)                         |  5.45 / 21.75 / 40.46 → 5.89 / 25.07 / 34.84 |  5.99 / 23.85 / 74.64 → 6.20 / 21.35 / 58.66 |
+| Simulated 40 ms RTT lazy (ms, p50 / p90)     |          1148.28 / 1882.81 → 127.97 / 212.40 |           945.67 / 1756.36 → 128.94 / 224.57 |
+| Simulated 40 ms RTT full (ms, p50 / p90)     |                50.10 / 82.55 → 48.92 / 72.53 |                49.59 / 72.77 → 50.52 / 72.42 |
+| Loopback HTTP lazy (ms, 12 files per corpus) | 17.81 / 29.00 / 79.43 → 6.50 / 10.42 / 14.06 |  13.46 / 28.49 / 93.40 → 4.81 / 7.82 / 43.06 |
+| Loopback HTTP full (ms, 12 files per corpus) |  5.54 / 31.93 / 40.70 → 6.45 / 35.54 / 53.03 |  7.35 / 22.96 / 31.48 → 6.25 / 32.21 / 37.08 |
+| Lazy bytes read                              |                                3.63% → 6.05% |                                9.81% → 8.80% |
+| Warm peak lazy Wasm memory (MiB)             |                                  5.44 → 4.38 |                                37.38 → 21.44 |
+| Warm peak full Wasm memory (MiB)             |                                39.25 → 39.25 |                                77.19 → 77.19 |
+| Full-load fallbacks                          |                                        0 → 0 |                                        4 → 0 |
+
+The 40 ms model delays each read and permits up to four concurrent range reads. The full download takes one simulated request, and the model applies no bandwidth limit. On the 74 files with at least 100 pages, warm p50/p90 was 6.38/13.78 ms lazy and 16.45/32.54 ms full. Across both corpora, lazy read 8.47% of the source bytes. The four previous fallbacks stayed lazy and read 6.89%, 1.77%, 33.22%, and 35.10% of their respective files.
+
+Disabling read-ahead raised lazy rounds from 3/5 to 5/8 at p50/p90 on both corpora. Reducing the probe to 32 KiB raised p90 from five to six on both. In one-change-at-a-time runs on the 30 primary files and 30 evenly spaced extra files, serializing the two probes added one round to every file. Serializing known cross-reference reads added one round to one file, and serializing dependency ranges added up to two rounds to eight files. Disabling the linearized shortcut, delaying indirect-length lookup, and probing an object stream header first resulted in the same round counts on that sample.
+
+In fresh processes, p50/p90 was 46.37/84.51 ms lazy and 46.26/104.03 ms full on `pdfs`, and 44.57/66.93 ms lazy and 36.13/70.06 ms full on `editais-extra`. The release Wasm keeps `opt-level = 3`: the lazy planner adds about 39 KB (1,125,410 → 1,164,368 bytes), so the Wasm budget test moves from 1104 KiB to 1144 KiB. Building with `opt-level = "s"` would shrink the module to 841,262 bytes but makes full-load Markdown extraction 9.6% slower (2.47 → 2.71 ms/page on the 30 editais), so it was not adopted.
+
 ## @signature-kit/pdf-core@0.2.0
 
 ### Repair missing PDF catalog types during edits

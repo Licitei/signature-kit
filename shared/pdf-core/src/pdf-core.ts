@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match, Schema } from "effect";
+import { Context, Effect, Layer, Match, Ref, Schema, Semaphore } from "effect";
 import type { Scope } from "effect";
 
 import {
@@ -18,6 +18,9 @@ import {
   PdfCoreMergeOptionsSchema,
   PdfCoreMergeSourcesSchema,
   PdfCoreOperationValue,
+  PDF_CORE_MAX_LAZY_BYTES,
+  PdfCoreLazyOptionsSchema,
+  PdfCoreRangeSizeSchema,
   PdfCoreRenderOptionsSchema,
   PdfCoreSchemaNameValue,
   PdfCoreSignatureAnalysisSchema,
@@ -42,6 +45,8 @@ import type {
   PdfCoreFontMetrics,
   PdfCoreInspection,
   PdfCoreInspectOptions,
+  PdfCoreLazyOptions,
+  PdfCoreLazyStats,
   PdfCoreMergeOptions,
   PdfCoreMergeSources,
   PdfCoreObjectRef,
@@ -58,7 +63,45 @@ import type {
   PdfCoreWinAnsiFont,
 } from "./config.js";
 
+export type PdfCoreRangeSource = {
+  readonly size: number;
+  readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, PdfCoreError>;
+};
+
+export type PdfCoreLazyDocument = {
+  readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
+  readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
+  readonly renderPages: (
+    options?: PdfCoreRenderOptions,
+  ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
+  readonly stats: Effect.Effect<PdfCoreLazyStats>;
+};
+
+export const pdfCoreBytesSource = (bytes: Uint8Array): PdfCoreRangeSource => ({
+  size: bytes.byteLength,
+  read: (offset, length) => Effect.sync(() => bytes.subarray(offset, offset + length)),
+});
+
+export const pdfCoreBlobSource = (blob: Blob): PdfCoreRangeSource => ({
+  size: blob.size,
+  read: (offset, length) =>
+    Effect.tryPromise({
+      try: async () => new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer()),
+      catch: () =>
+        new PdfCoreError({
+          code: PdfCoreErrorCodeValue.rangeReadFailed,
+          operation: PdfCoreOperationValue.readRange,
+          reason: "The PDF Blob range could not be read.",
+        }),
+    }),
+});
+
 export type PdfCoreService = {
+  readonly openLazy: (
+    source: PdfCoreRangeSource,
+    options?: PdfCoreLazyOptions,
+  ) => Effect.Effect<PdfCoreLazyDocument, PdfCoreError, Scope.Scope>;
+  readonly wasmMemoryBytes: () => Effect.Effect<number>;
   readonly inspect: (
     pdf: Uint8Array,
     options: PdfCoreInspectOptions,
@@ -112,6 +155,7 @@ const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
 const FLAG_RUNS = 32;
 const STATUS_OK = 0;
+const STATUS_LIMIT_EXCEEDED = 3;
 const MAGIC = 0x4346_4450;
 const VERSION = 3;
 const TEXT_MAGIC = 0x5854_4450;
@@ -350,6 +394,21 @@ type Entry = (
   pagesLength: number,
 ) => number;
 
+type BlockReader = <A>(
+  operation: PdfCoreOperation,
+  entry: Entry,
+  flags: number,
+  pageIndexes: ReadonlyArray<number>,
+  decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
+  scale?: number,
+) => Effect.Effect<A, PdfCoreError>;
+
+const lazyProfiles = {
+  [PdfCoreOperationValue.text]: 0,
+  [PdfCoreOperationValue.tables]: 1,
+  [PdfCoreOperationValue.render]: 2,
+};
+
 export const makePdfCore = (
   module: WebAssembly.Module,
 ): Effect.Effect<PdfCoreService, PdfCoreError> =>
@@ -465,9 +524,14 @@ export const makePdfCore = (
     const resultBlock = (
       operation: PdfCoreOperation,
       call: () => number,
+      guard?: () => PdfCoreError | undefined,
     ): Effect.Effect<ResultBlock, PdfCoreError, Scope.Scope> =>
       Effect.acquireRelease(
         Effect.suspend(() => {
+          const blocked = guard?.();
+          if (blocked !== undefined) {
+            return Effect.fail(blocked);
+          }
           const pointer = call() >>> 0;
           if (pointer === 0) {
             return Effect.fail(
@@ -548,7 +612,7 @@ export const makePdfCore = (
               }),
           ),
           Match.when(
-            3,
+            STATUS_LIMIT_EXCEEDED,
             () =>
               new PdfCoreError({
                 code: PdfCoreErrorCodeValue.limitExceeded,
@@ -758,7 +822,7 @@ export const makePdfCore = (
         );
       });
 
-    const text = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreTextOptions = {}) {
+    const runText = Effect.fn(function* (read: BlockReader, rawOptions: PdfCoreTextOptions = {}) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreTextOptionsSchema)(rawOptions).pipe(
         Effect.mapError(
           (issue) =>
@@ -775,10 +839,9 @@ export const makePdfCore = (
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
         (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
         (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
-      return yield* readBlock(
+      return yield* read(
         PdfCoreOperationValue.text,
         core.pdf_core_text,
-        pdf,
         flags,
         pageIndexes,
         decodeTextBlock,
@@ -861,7 +924,10 @@ export const makePdfCore = (
         );
       });
 
-    const tables = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreTablesOptions = {}) {
+    const runTables = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCoreTablesOptions = {},
+    ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreTablesOptionsSchema)(
         rawOptions,
       ).pipe(
@@ -877,10 +943,9 @@ export const makePdfCore = (
       );
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      return yield* readBlock(
+      return yield* read(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
-        pdf,
         flags,
         pageIndexes,
         decodeTablesBlock,
@@ -1410,8 +1475,8 @@ export const makePdfCore = (
           );
         });
 
-    const renderPages = Effect.fn(function* (
-      pdf: Uint8Array,
+    const runRenderPages = Effect.fn(function* (
+      read: BlockReader,
       rawOptions: PdfCoreRenderOptions = {},
     ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreRenderOptionsSchema)(
@@ -1430,22 +1495,298 @@ export const makePdfCore = (
       const scale = options.scale ?? PDF_CORE_DEFAULT_RENDER_SCALE;
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      return yield* readBlock(
+      return yield* read(
         PdfCoreOperationValue.render,
         (pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength) =>
           core.pdf_core_render(pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength, scale),
-        pdf,
         flags,
         pageIndexes,
         decodeRenderBlock(scale),
+        scale,
       );
     });
 
+    const full =
+      (pdf: Uint8Array): BlockReader =>
+      (operation, entry, flags, indexes, decode) =>
+        readBlock(operation, entry, pdf, flags, indexes, decode);
+
+    const openLazy = Effect.fn(function* (
+      source: PdfCoreRangeSource,
+      options?: PdfCoreLazyOptions,
+    ) {
+      const operation = PdfCoreOperationValue.openLazy;
+      const size = yield* Schema.decodeUnknownEffect(PdfCoreRangeSizeSchema)(source.size).pipe(
+        Effect.mapError(invalidOptions(operation)),
+      );
+      const tuning = yield* Schema.decodeUnknownEffect(PdfCoreLazyOptionsSchema)(
+        options === undefined ? {} : options,
+      ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.lazyOptions)));
+      if (size > PDF_CORE_MAX_LAZY_BYTES) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.limitExceeded,
+          operation,
+          reason: "Lazy PDF sources may contain at most 512 MiB.",
+        });
+      }
+      const maxRoundBytes = tuning.maxRoundBytes ?? 2 * 1024 * 1024;
+      const lock = yield* Semaphore.make(1);
+      type LazyState = PdfCoreLazyStats & {
+        readonly closed: boolean;
+        readonly fallback?: Uint8Array;
+      };
+      const state = yield* Ref.make<LazyState>({
+        closed: false,
+        bytesRead: 0,
+        rounds: 0,
+        strategy: "lazy",
+      });
+      const handle = yield* Effect.acquireRelease(
+        Effect.suspend(() => {
+          const opened =
+            core.pdf_core_lazy_open(
+              size,
+              tuning.probeBytes ?? 64 * 1024,
+              tuning.gapBytes ?? 32 * 1024,
+              maxRoundBytes,
+            ) >>> 0;
+          return opened === 0
+            ? Effect.fail(
+                new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.limitExceeded,
+                  operation,
+                  reason: "This WebAssembly instance exhausted its lazy document handles.",
+                }),
+              )
+            : Effect.succeed(opened);
+        }),
+        (opened) =>
+          Ref.update(state, ({ closed: _closed, fallback: _fallback, ...stats }) => ({
+            ...stats,
+            closed: true,
+          })).pipe(Effect.andThen(Effect.sync(() => core.pdf_core_lazy_close(opened)))),
+      );
+
+      const closed = () =>
+        Ref.getUnsafe(state).closed
+          ? new PdfCoreError({ code: PdfCoreErrorCodeValue.documentClosed, operation })
+          : undefined;
+      const ensureOpen = Effect.suspend(() => {
+        const precise = closed();
+        return precise === undefined ? Effect.void : Effect.fail(precise);
+      });
+
+      const fetchRange = Effect.fn(function* (offset: number, length: number) {
+        yield* ensureOpen;
+        const bytes = yield* source.read(offset, length);
+        yield* Ref.update(state, (current) => ({
+          ...current,
+          bytesRead: current.bytesRead + bytes.byteLength,
+        }));
+        yield* ensureOpen;
+        if (bytes.byteLength !== length) {
+          return yield* new PdfCoreError({
+            code: PdfCoreErrorCodeValue.rangeReadFailed,
+            operation: PdfCoreOperationValue.readRange,
+            reason: `Expected ${length} bytes at offset ${offset}, received ${bytes.byteLength}.`,
+          });
+        }
+        return bytes;
+      });
+
+      const startRound = Ref.update(state, (current) => ({
+        ...current,
+        rounds: current.rounds + 1,
+      }));
+      const supply = Effect.fn(function* (
+        ranges: ReadonlyArray<{ offset: number; length: number }>,
+      ) {
+        yield* startRound;
+        const batch = yield* Effect.forEach(
+          ranges,
+          ({ offset, length }) => fetchRange(offset, length),
+          { concurrency: 4 },
+        );
+        const length = batch.reduce((sum, bytes) => sum + bytes.byteLength, 0);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const input = yield* allocate(PdfCoreOperationValue.readRange, length);
+            const blocked = closed();
+            if (blocked !== undefined) {
+              return yield* blocked;
+            }
+            let pointer = input.pointer;
+            for (const [index, range] of ranges.entries()) {
+              const bytes = batch[index];
+              if (bytes === undefined) {
+                return yield* Effect.die("Missing bytes in the lazy PDF range batch.");
+              }
+              new Uint8Array(core.memory.buffer, pointer, bytes.byteLength).set(bytes);
+              if (core.pdf_core_lazy_feed(handle, range.offset, pointer, bytes.byteLength) !== 1) {
+                return yield* Effect.die("The PDF core rejected its own planned byte range.");
+              }
+              pointer += bytes.byteLength;
+            }
+          }),
+        );
+      });
+
+      const plan = Effect.fn(function* (
+        operation: PdfCoreOperation,
+        profile: number,
+        flags: number,
+        pages: Allocation,
+      ) {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const result = yield* resultBlock(
+              operation,
+              () =>
+                core.pdf_core_lazy_plan(
+                  handle,
+                  flags,
+                  pages.pointer,
+                  pages.length / Uint32Array.BYTES_PER_ELEMENT,
+                  profile,
+                ),
+              closed,
+            ).pipe(
+              Effect.catchIf(
+                (error) => error.code === PdfCoreErrorCodeValue.wasmLoadFailed,
+                Effect.die,
+              ),
+            );
+            const view = new DataView(result.memory, result.pointer, result.length);
+            const resultStatus = view.getUint32(4, true);
+            if (resultStatus === STATUS_LIMIT_EXCEEDED) {
+              return yield* failStatus(operation, result);
+            }
+            if (resultStatus !== STATUS_OK) {
+              return yield* Effect.die("The PDF core failed to encode its lazy plan.");
+            }
+            const payload = result.length - RESULT_HEADER_BYTES;
+            const status = payload >= 4 ? view.getUint32(RESULT_HEADER_BYTES, true) : -1;
+            if ((status === 0 || status === 2) && payload === 4) {
+              return { status, ranges: [] };
+            }
+            if (status !== 1 || payload < 12 || (payload - 4) % 8 !== 0) {
+              return yield* Effect.die("The PDF core returned an invalid lazy plan.");
+            }
+            const ranges = [];
+            let previousEnd = 0;
+            let totalBytes = 0;
+            for (let cursor = RESULT_HEADER_BYTES + 4; cursor < result.length; cursor += 8) {
+              const offset = view.getUint32(cursor, true);
+              const length = view.getUint32(cursor + 4, true);
+              if (length === 0 || offset < previousEnd || offset + length > size) {
+                return yield* Effect.die(
+                  "The PDF core returned overlapping or out-of-bounds ranges.",
+                );
+              }
+              ranges.push({ offset, length });
+              previousEnd = offset + length;
+              totalBytes += length;
+            }
+            if (totalBytes > maxRoundBytes) {
+              return yield* Effect.die("The lazy plan exceeds the round byte limit.");
+            }
+            return { status, ranges };
+          }),
+        );
+      });
+
+      const read: BlockReader = (operation, entry, flags, indexes, decode, scale = 1) =>
+        lock.withPermits(1)(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const profile =
+                operation === PdfCoreOperationValue.text ||
+                operation === PdfCoreOperationValue.tables ||
+                operation === PdfCoreOperationValue.render
+                  ? lazyProfiles[operation]
+                  : undefined;
+              if (profile === undefined) {
+                return yield* Effect.die("Invalid lazy PDF operation.");
+              }
+              yield* ensureOpen;
+              const pages = yield* allocate(
+                operation,
+                indexes.length * Uint32Array.BYTES_PER_ELEMENT,
+              );
+              new Uint32Array(core.memory.buffer, pages.pointer, indexes.length).set(indexes);
+              while (Ref.getUnsafe(state).strategy === "lazy") {
+                const next = yield* plan(operation, profile, flags, pages);
+                if (next.status === 1) {
+                  yield* supply(next.ranges);
+                  continue;
+                }
+                if (next.status === 0) {
+                  const decoded = yield* Effect.scoped(
+                    Effect.gen(function* () {
+                      yield* ensureOpen;
+                      const result = yield* resultBlock(
+                        operation,
+                        () => core.pdf_core_lazy_run(handle, profile, flags, scale),
+                        closed,
+                      );
+                      const view = new DataView(result.memory, result.pointer, result.length);
+                      if (view.getUint32(4, true) === STATUS_OK) {
+                        if (result.length === RESULT_HEADER_BYTES) {
+                          return { fallback: true };
+                        }
+                        if (result.length === RESULT_HEADER_BYTES + 4) {
+                          if (view.getUint32(RESULT_HEADER_BYTES, true) !== 1) {
+                            return yield* Effect.die(
+                              "The PDF core returned an invalid lazy retry.",
+                            );
+                          }
+                          return { retry: true };
+                        }
+                      }
+                      return { value: yield* decode(result) };
+                    }),
+                  );
+                  if ("value" in decoded) {
+                    return decoded.value;
+                  }
+                  if ("retry" in decoded) {
+                    continue;
+                  }
+                }
+                yield* Ref.update(state, (current): LazyState => ({
+                  ...current,
+                  strategy: "fallback",
+                }));
+                core.pdf_core_lazy_close(handle);
+              }
+              const cached = (yield* Ref.get(state)).fallback;
+              const bytes = cached ?? (yield* startRound.pipe(Effect.andThen(fetchRange(0, size))));
+              yield* Ref.update(state, (current) =>
+                current.closed ? current : { ...current, fallback: bytes },
+              );
+              yield* ensureOpen;
+              return yield* full(bytes)(operation, entry, flags, indexes, decode);
+            }),
+          ),
+        );
+
+      return {
+        text: (options?: PdfCoreTextOptions) => runText(read, options),
+        tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
+        renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
+        stats: Ref.get(state).pipe(
+          Effect.map(({ bytesRead, rounds, strategy }) => ({ bytesRead, rounds, strategy })),
+        ),
+      };
+    });
+
     return {
+      openLazy,
+      wasmMemoryBytes: () => Effect.sync(() => core.memory.buffer.byteLength),
       inspect,
-      text,
-      tables,
-      renderPages,
+      text: (pdf, options) => runText(full(pdf), options),
+      tables: (pdf, options) => runTables(full(pdf), options),
+      renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,
       revisionComplete,
       document,

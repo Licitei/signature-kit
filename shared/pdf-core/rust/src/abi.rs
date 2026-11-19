@@ -5,6 +5,7 @@
 
 use alloc::alloc::{alloc, dealloc, realloc};
 use core::alloc::Layout;
+use core::cell::{Cell, RefCell};
 use core::mem;
 use core::ptr;
 use core::slice;
@@ -16,6 +17,7 @@ use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
+use crate::lazy::{Lazy, Plan, Tuning};
 use crate::num::widen;
 use crate::png;
 use crate::render::{self, RenderedPage};
@@ -1023,6 +1025,177 @@ pub(crate) unsafe extern "C" fn pdf_core_render(
             &Limits::default(),
         )?;
         encode_render(&pages)
+    }))
+}
+
+std::thread_local! {
+    static LAZY_DOCUMENTS: RefCell<Vec<(u32, Lazy)>> = const { RefCell::new(Vec::new()) };
+    static NEXT_LAZY_HANDLE: Cell<u32> = const { Cell::new(1) };
+}
+
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_open(
+    size: usize,
+    probe: usize,
+    gap: usize,
+    round_bytes: usize,
+) -> u32 {
+    if size > Limits::default().max_pdf_bytes {
+        return 0;
+    }
+    NEXT_LAZY_HANDLE.with(|next| {
+        let handle = next.get();
+        if handle != 0 {
+            next.set(handle.checked_add(1).unwrap_or(0));
+            LAZY_DOCUMENTS.with(|documents| {
+                documents.borrow_mut().push((
+                    handle,
+                    Lazy::new(
+                        size,
+                        Tuning {
+                            gap,
+                            probe,
+                            round_bytes,
+                        },
+                    ),
+                ));
+            });
+        }
+        handle
+    })
+}
+
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_close(handle: u32) {
+    LAZY_DOCUMENTS.with(|documents| {
+        let mut all = documents.borrow_mut();
+        if let Some(position) = all.iter().position(|(id, _)| *id == handle) {
+            drop(all.swap_remove(position));
+        }
+    });
+}
+
+/// # Safety
+///
+/// `data` must satisfy [`view`] for `length` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_lazy_feed(
+    handle: u32,
+    offset: usize,
+    data: *const u8,
+    length: usize,
+) -> u32 {
+    // SAFETY: forwarded from this function's contract.
+    let supplied = unsafe { view(data, length) };
+    LAZY_DOCUMENTS.with(|documents| {
+        let mut all = documents.borrow_mut();
+        match (
+            all.iter_mut()
+                .find(|(id, _)| *id == handle)
+                .map(|(_, document)| document),
+            supplied,
+        ) {
+            (Some(document), Ok(bytes)) => u32::from(document.feed(offset, bytes)),
+            (None, _) | (Some(_), Err(_)) => 0,
+        }
+    })
+}
+
+fn encode_plan(plan: Plan) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(4);
+    match plan {
+        Plan::Ready => out.u32(0),
+        Plan::Fallback => out.u32(2),
+        Plan::Need(ranges) => {
+            out.u32(1);
+            for range in ranges {
+                out.u32(len32(range.start)?);
+                out.u32(len32(range.end.saturating_sub(range.start))?);
+            }
+        }
+    }
+    out.done()
+}
+
+/// # Safety
+///
+/// `pages_ptr` must satisfy [`view`] for `pages_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_lazy_plan(
+    handle: u32,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+    profile: u32,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pages = unsafe { view(pages_ptr, pages_len) };
+    finish(pages.and_then(|indexes| {
+        LAZY_DOCUMENTS.with(|documents| {
+            let mut all = documents.borrow_mut();
+            let document = all
+                .iter_mut()
+                .find(|(id, _)| *id == handle)
+                .map(|(_, document)| document)
+                .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
+            let limits = lazy_limits(profile);
+            let plan = document.plan(
+                (flags & FLAG_PAGE_INDEXES != 0).then_some(indexes),
+                profile == 2,
+                &limits,
+            );
+            encode_plan(plan)
+        })
+    }))
+}
+
+fn lazy_limits(profile: u32) -> Limits {
+    if profile == 2 {
+        Limits::default()
+    } else {
+        layout::text_limits()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_run(
+    handle: u32,
+    profile: u32,
+    flags: u32,
+    scale: f64,
+) -> *mut u8 {
+    finish(LAZY_DOCUMENTS.with(|documents| {
+        let all = documents.borrow();
+        let lazy = all
+            .iter()
+            .find(|(id, _)| *id == handle)
+            .map(|(_, document)| document)
+            .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
+        let limits = lazy_limits(profile);
+        let payload = lazy.execute(&limits, |document, pages| match profile {
+            0 => encode_text(&layout::opened_text(
+                document,
+                pages,
+                &limits,
+                TextOptions {
+                    markdown: flags & FLAG_MARKDOWN != 0,
+                    drop_running: flags & FLAG_DROP_RUNNING != 0,
+                },
+            )?),
+            1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
+            2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
+            _ => Err(Failure::invalid("invalid lazy profile")),
+        })?;
+        payload.map_or_else(
+            || {
+                if lazy.needs_ranges() {
+                    bytes_result(&1_u32.to_le_bytes())
+                } else {
+                    bytes_result(&[])
+                }
+            },
+            Ok,
+        )
     }))
 }
 
