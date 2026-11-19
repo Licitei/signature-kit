@@ -33,8 +33,8 @@ impl Default for Limits {
 pub(crate) struct InspectOptions {
     pub links: bool,
     pub page_indexes: Option<Vec<u32>>,
-    pub text_items: TextItems,
     pub text: bool,
+    pub text_items: TextItems,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

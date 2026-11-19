@@ -26,9 +26,9 @@ impl Entropy {
         let dc = coefficients.first().copied().unwrap_or(0);
         let difference = dc.saturating_sub(*previous);
         *previous = dc;
-        let category = category(difference);
-        self.write(category, 4);
-        self.value(difference, category);
+        let dc_size = category(difference);
+        self.write(dc_size, 4);
+        self.value(difference, dc_size);
         let mut run = 0_u32;
         for &ac in coefficients.iter().skip(1) {
             if ac == 0 {

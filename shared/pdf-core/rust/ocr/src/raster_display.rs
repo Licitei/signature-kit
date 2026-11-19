@@ -959,7 +959,7 @@ mod tests {
         let raster = rasterize(&bytes, 1000).unwrap();
         assert_eq!((raster.width, raster.height), (2, 4));
         assert_eq!(raster.pixels, [0, 0, 0, 0, 255, 255, 128, 128]);
-        assert!(rasterize(bytes.get(..bytes.len().saturating_sub(1)).unwrap(), 1000).is_none());
+        assert!(rasterize(&bytes[..bytes.len().saturating_sub(1)], 1000).is_none());
     }
 
     #[test]

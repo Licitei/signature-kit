@@ -5,6 +5,8 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
+use signature_kit_pdf_core_ocr as _;
+
 #[derive(Debug)]
 struct Raster {
     height: usize,

@@ -740,8 +740,8 @@ impl Interpreter<'_, '_> {
         {
             let [x0, y0, x1, y1] =
                 transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
-            let bounds = [x0, y0, x1, y1];
-            self.clip = Some(outer_clip.map_or(bounds, |outer| rect_intersection(outer, bounds)));
+            let mapped = [x0, y0, x1, y1];
+            self.clip = Some(outer_clip.map_or(mapped, |outer| rect_intersection(outer, mapped)));
         }
         let mut inner_matrices = *matrices;
         if let Some(inner_reference) = reference {
@@ -1055,7 +1055,7 @@ impl Interpreter<'_, '_> {
                         | OP_FILL_EO
                 ) =>
             {
-                path.clear()
+                path.clear();
             }
             OP_STROKE | OP_FILL_STROKE | OP_FILL_STROKE_EO => self.paint(path, state, true),
             OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO => {
