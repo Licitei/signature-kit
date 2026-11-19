@@ -261,6 +261,7 @@ impl ScanState {
 struct ScanPath {
     bounds: Option<[f64; 4]>,
     clip: bool,
+    curves: u32,
 }
 
 impl ScanPath {
@@ -271,9 +272,18 @@ impl ScanPath {
     }
 
     #[inline(never)]
-    fn operator(&mut self, code: u32, operands: &[Operand<'_>], state: &mut GState) {
+    fn operator(
+        &mut self,
+        code: u32,
+        operands: &[Operand<'_>],
+        state: &mut GState,
+        scan: &mut PageScan,
+    ) {
         match code {
             OP_MOVE | OP_LINE | OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
+                if matches!(code, OP_CURVE | OP_CURVE_V | OP_CURVE_Y) {
+                    self.curves = self.curves.saturating_add(1);
+                }
                 for pair in operands.as_chunks::<2>().0 {
                     if let [Some(x), Some(y)] = pair.each_ref().map(Operand::as_number) {
                         let (a, b) = apply(&state.ctm, x, y);
@@ -299,6 +309,11 @@ impl ScanPath {
             | OP_CLOSE_FILL_STROKE_EO => {
                 if self.clip {
                     state.scan.restrict(self.bounds.unwrap_or([0.0_f64; 4]));
+                }
+                if !matches!(code, OP_NO_PAINT | OP_STROKE | OP_CLOSE_STROKE)
+                    && !state.scan.transparent[0]
+                {
+                    scan.curved_fill(self.curves);
                 }
                 *self = Self::default();
             }
@@ -1173,7 +1188,8 @@ impl Interpreter<'_, '_> {
         clippy::too_many_lines,
         reason = "glyph metrics, diagnostic visibility and run assembly share the text advance"
     )]
-    fn place(
+    #[inline(never)]
+    fn place<const SCAN: bool>(
         &mut self,
         entry: &FontEntry,
         placement: &Placement,
@@ -1238,7 +1254,7 @@ impl Interpreter<'_, '_> {
                 step_x = width + spacing * scale;
                 step_y = 0.0_f64;
             }
-            if let Some(scan) = self.scan.as_deref_mut() {
+            if SCAN && let Some(scan) = self.scan.as_deref_mut() {
                 let bounds = if usable && state.scan.paints_text() {
                     state
                         .scan
@@ -1371,11 +1387,27 @@ impl Interpreter<'_, '_> {
         matrices: &mut TextMatrices,
         depth: usize,
     ) -> Outcome<()> {
+        if self.scan.is_some() {
+            self.interpret::<true>(data, scope, state, matrices, depth)
+        } else {
+            self.interpret::<false>(data, scope, state, matrices, depth)
+        }
+    }
+
+    #[inline(never)]
+    fn interpret<const SCAN: bool>(
+        &mut self,
+        data: &[u8],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+        depth: usize,
+    ) -> Outcome<()> {
         self.budget = self
             .budget
             .checked_sub(data.len())
             .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
-        if self.scan.is_none() {
+        if !SCAN {
             match scan_shows(data) {
                 Shows::Text => {}
                 Shows::Forms if scope.has_forms(self.document) => {}
@@ -1406,8 +1438,8 @@ impl Interpreter<'_, '_> {
                 Ok(ContentToken::Operator(name)) => name,
             };
             let code = op(name);
-            if let Some(scan) = self.scan.as_deref_mut() {
-                scan_path.operator(code, &operands, state);
+            if SCAN && let Some(scan) = self.scan.as_deref_mut() {
+                scan_path.operator(code, &operands, state, scan);
                 if code == OP_INLINE_IMAGE
                     && !state.scan.transparent[0]
                     && let Some((dict, bytes)) = lexer.take_inline_image()
@@ -1589,7 +1621,11 @@ impl Interpreter<'_, '_> {
         glyphs.clear();
         decoded.clear();
         entry.font.decode(bytes, &mut glyphs, &mut decoded);
-        let result = self.place(entry, placement, state, matrices, &glyphs, &decoded);
+        let result = if self.scan.is_some() {
+            self.place::<true>(entry, placement, state, matrices, &glyphs, &decoded)
+        } else {
+            self.place::<false>(entry, placement, state, matrices, &glyphs, &decoded)
+        };
         self.glyphs = glyphs;
         self.decoded = decoded;
         result

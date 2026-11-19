@@ -39,6 +39,7 @@ pub(crate) struct PageScan {
     crop: Rect,
     diagnostics: PageDiagnostics,
     dominant: Option<Candidate>,
+    fill_curves: u32,
     glyph_boxes: Vec<Rect>,
     image_boxes: Vec<Rect>,
     images_only: bool,
@@ -60,18 +61,24 @@ impl PageScan {
         let page_area = (x1 - x0) * (y1 - y0);
         diagnostics.text_area = fraction(&self.glyph_boxes, page_area);
         diagnostics.raster_coverage = fraction(&self.image_boxes, page_area);
+        let sparse_text = diagnostics.visible_chars < 128 && diagnostics.text_area < 0.02_f64;
+        let readable_body = diagnostics.visible_chars >= 128 && diagnostics.text_area >= 0.05_f64;
         diagnostics.text_layer = if diagnostics.glyphs == 0 {
             TextLayer::None
         } else if diagnostics.visible_chars == 0
-            || diagnostics.invisible >= diagnostics.glyphs.div_ceil(2)
+            || !readable_body && diagnostics.invisible >= diagnostics.glyphs.div_ceil(2)
             || diagnostics.unmapped >= diagnostics.glyphs.div_ceil(5)
-            || diagnostics.raster_coverage >= 0.75_f64 && diagnostics.visible_chars < 16
+            || sparse_text && (diagnostics.raster_coverage >= 0.5_f64 || self.fill_curves >= 1_024)
         {
             TextLayer::Weak
         } else {
             TextLayer::Usable
         };
         Ok(diagnostics)
+    }
+
+    pub(crate) const fn curved_fill(&mut self, curves: u32) {
+        self.fill_curves = self.fill_curves.saturating_add(curves);
     }
 
     pub(crate) fn for_images(crop: Rect) -> Self {
@@ -173,6 +180,7 @@ impl PageScan {
     pub(crate) fn new(crop: Rect, keep_runs: bool) -> Self {
         Self {
             crop,
+            fill_curves: 0,
             glyph_boxes: Vec::new(),
             image_boxes: Vec::new(),
             diagnostics: PageDiagnostics::default(),

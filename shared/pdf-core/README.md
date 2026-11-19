@@ -30,7 +30,7 @@ Apps that do not use Effect skip `effect` and use the Promise client (see [Witho
 Each record also includes the page crop box (`pageBox`) and rotation in degrees (`rotate`). The engine counts shown glyphs, unmapped glyphs, U+FFFD replacement characters, invisible glyphs, visible non-whitespace Unicode characters, and painted images in the content interpreter. `textArea` and `rasterCoverage` are fractions of the crop box. Axis-aligned image overlap is counted once. Overlap involving rotated or sheared placements is estimated from bands of the clipped image shapes. The interpreter uses glyph metric boxes and the bounds of clip paths, and treats white device-color text as invisible against the assumed paper background. Visibility is estimated from content-stream operations.
 
 - `none` means there were zero glyphs. An image-only scan and a blank page can be distinguished by their raster coverage.
-- `weak` means there were glyphs, but none yielded visible usable characters, at least half were invisible, at least 20% were unmapped, or the page had at least 75% raster coverage with fewer than 16 visible characters.
+- `weak` means there were glyphs, but none yielded visible usable characters, at least 20% were unmapped, or at least half were invisible and the remaining visible text did not cover a substantial area. Sparse text on a page dominated by raster imagery or complex filled curves also counts as weak. This catches scan headers and stamps over body text stored as vector outlines.
 - `usable` is the remaining case.
 
 ## Dominant page images

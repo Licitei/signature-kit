@@ -96,6 +96,23 @@ describe("PdfCore.pageDiagnostics", () => {
     ]);
   });
 
+  it("distinguishes sparse stamps on graphical pages from readable text with invisible duplicates", async () => {
+    const core = await loadPdfCoreNode();
+    const stamp = `q 100 0 0 65 0 0 cm /Scan Do Q ${native}`;
+    const outlined = `0 10 m 5 10 5 15 10 15 c f `.repeat(1024) + native;
+    const rows = Array.from(
+      { length: 7 },
+      (_, row) => `BT /F1 7 Tf 8 ${10 + row * 12} Td (abcdefghijklmnopqrstuv) Tj ET`,
+    ).join(" ");
+    const pdf = scannedPdf([stamp, outlined, `${rows} q 3 Tr ${rows} ${rows} Q`, native]);
+    expect((await core.pageDiagnostics(pdf)).map(({ textLayer }) => textLayer)).toEqual([
+      "weak",
+      "weak",
+      "usable",
+      "usable",
+    ]);
+  });
+
   it("reads only selected page content through the lazy range source", async () => {
     const core = await loadPdfCoreNode();
     const pdf = scannedPdf([native, scan, " ".repeat(384 * 1024)]);
