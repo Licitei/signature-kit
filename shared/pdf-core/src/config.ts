@@ -65,6 +65,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.inspect",
   "pdfCore.text",
   "pdfCore.tables",
+  "pdfCore.pageDiagnostics",
   "pdfCore.render",
   "pdfCore.paint",
   "pdfCore.signatures",
@@ -85,6 +86,7 @@ export const PdfCoreOperationValue = {
   inspect: "pdfCore.inspect",
   text: "pdfCore.text",
   tables: "pdfCore.tables",
+  pageDiagnostics: "pdfCore.pageDiagnostics",
   render: "pdfCore.render",
   paint: "pdfCore.paint",
   signatures: "pdfCore.signatures",
@@ -107,6 +109,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreText",
   "PdfCoreTablesOptions",
   "PdfCoreTables",
+  "PdfCorePageDiagnosticsOptions",
+  "PdfCorePageDiagnostics",
   "PdfCoreRenderOptions",
   "PdfCoreDisplayLists",
   "PdfCorePaintOptions",
@@ -130,6 +134,8 @@ export const PdfCoreSchemaNameValue = {
   text: "PdfCoreText",
   tablesOptions: "PdfCoreTablesOptions",
   tables: "PdfCoreTables",
+  pageDiagnosticsOptions: "PdfCorePageDiagnosticsOptions",
+  pageDiagnostics: "PdfCorePageDiagnostics",
   renderOptions: "PdfCoreRenderOptions",
   displayLists: "PdfCoreDisplayLists",
   paintOptions: "PdfCorePaintOptions",
@@ -185,6 +191,32 @@ export const PdfCoreTablesOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
 });
 export type PdfCoreTablesOptions = (typeof PdfCoreTablesOptionsSchema)["Type"];
+
+export const PdfCorePageDiagnosticsOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+});
+export type PdfCorePageDiagnosticsOptions = (typeof PdfCorePageDiagnosticsOptionsSchema)["Type"];
+
+export const PdfCoreTextLayerSchema = Schema.Literals(["usable", "weak", "none"]);
+export type PdfCoreTextLayer = (typeof PdfCoreTextLayerSchema)["Type"];
+
+const fractionSchema = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+
+export const PdfCorePageDiagnosticsSchema = Schema.Array(
+  Schema.Struct({
+    pageIndex: pageIndexSchema,
+    glyphs: pageIndexSchema,
+    unmapped: pageIndexSchema,
+    replacement: pageIndexSchema,
+    invisible: pageIndexSchema,
+    visibleChars: pageIndexSchema,
+    textArea: fractionSchema,
+    rasterCoverage: fractionSchema,
+    imageCount: pageIndexSchema,
+    textLayer: PdfCoreTextLayerSchema,
+  }),
+);
+export type PdfCorePageDiagnostics = (typeof PdfCorePageDiagnosticsSchema)["Type"];
 
 export const PDF_CORE_DEFAULT_RENDER_SCALE = 150 / 72;
 const renderScaleSchema = Schema.Finite.check(
@@ -366,6 +398,9 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
   pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
   pdf_core_tables: Schema.declare(isTextFunction, { identifier: "pdf_core_tables" }),
+  pdf_core_page_diagnostics: Schema.declare(isTextFunction, {
+    identifier: "pdf_core_page_diagnostics",
+  }),
   pdf_core_render: Schema.declare(isRenderFunction, { identifier: "pdf_core_render" }),
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {

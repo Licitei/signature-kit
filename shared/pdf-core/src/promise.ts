@@ -69,6 +69,8 @@ const openLazy = (
         text: (...args: Parameters<PdfCoreLazyDocument["text"]>) => run(document.text(...args)),
         tables: (...args: Parameters<PdfCoreLazyDocument["tables"]>) =>
           run(document.tables(...args)),
+        pageDiagnostics: (...args: Parameters<PdfCoreLazyDocument["pageDiagnostics"]>) =>
+          run(document.pageDiagnostics(...args)),
         renderPages: (...args: Parameters<PdfCoreLazyDocument["renderPages"]>) =>
           run(document.renderPages(...args)),
         stats: () => run(document.stats),
@@ -81,6 +83,7 @@ const openLazy = (
 const toClient = (core: PdfCoreService): PdfCoreClient => ({
   openLazy: (source, options) => openLazy(core, source, options),
   wasmMemoryBytes: () => run(core.wasmMemoryBytes()),
+  pageDiagnostics: (...args) => run(core.pageDiagnostics(...args)),
   inspect: (...args) => run(core.inspect(...args)),
   text: (...args) => run(core.text(...args)),
   tables: (...args) => run(core.tables(...args)),

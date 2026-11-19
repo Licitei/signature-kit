@@ -23,6 +23,16 @@ Apps that do not use Effect skip `effect` and use the Promise client (see [Witho
 
 `WebAssembly`, `fetch`, `TextEncoder`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
 
+## Page diagnostics
+
+`pageDiagnostics(pdf, { pageIndexes })` returns one record per selected page. The options are optional. A lazy document also exposes `pageDiagnostics({ pageIndexes })` and uses the same range planner as `text`.
+
+The engine counts shown glyphs, unmapped glyphs, U+FFFD replacement characters, invisible glyphs, visible non-whitespace Unicode characters, and painted images in the content interpreter. `textArea` and `rasterCoverage` are fractions of the crop box. Overlap is counted once. The interpreter uses glyph metric boxes and the bounds of clip paths, and treats white device-color text as invisible against the assumed paper background. It does not sample the composited page.
+
+- `none` means there were zero glyphs. An image-only scan and a blank page can be distinguished by their raster coverage.
+- `weak` means there were glyphs, but none yielded visible usable characters, at least half were invisible, at least 20% were unmapped, or the page had at least 75% raster coverage with fewer than 16 visible characters.
+- `usable` is the remaining case.
+
 ## Bundling
 
 `pdfCoreFileLayer` reads `new URL("./pdf-core.wasm", import.meta.url)` through the file system. The npm package ships `dist/pdf-core.wasm` next to `dist/file.js`. When deploying a server bundle, keep the package external and ship its files together so the relative URL still points to the Wasm file.
