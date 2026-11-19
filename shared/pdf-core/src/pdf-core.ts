@@ -70,8 +70,6 @@ import type {
   PdfCoreWinAnsiFont,
 } from "./config.js";
 
-import { readXmp } from "./xmp.js";
-
 export type PdfCoreRangeSource = {
   readonly size: number;
   readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, PdfCoreError>;
@@ -858,9 +856,7 @@ export const makePdfCore = (
       }
       const pageCount = view.getUint32(base + 8, true);
       const encrypted = view.getUint32(base + 12, true) === 1;
-      const xmp = yield* readXmp(bytes.slice(cursor));
       return yield* Schema.decodeUnknownEffect(PdfCoreDocumentInfoSchema)({
-        ...xmp,
         ...fields,
         pageCount,
         encrypted,

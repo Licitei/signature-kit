@@ -53,7 +53,7 @@ program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.lay
 
 With `inspect(pdf, { text, links, runs, pageIndexes })`, `pageIndexes` selects the page boxes, links and text together. Boxes follow the requested order after duplicate indexes are removed. Text and links report original zero-based page indexes. Omit the selection for every page or pass an empty array for an empty inspection.
 
-`info(pdf)` reads the page count from the page-tree root's `/Count` (an integer from 0 to 10,000) without visiting its children or decoding page content. It returns `pageCount`, `encrypted`, and the available `title`, `subject`, `author`, `keywords`, `creator`, `producer`, `creationDate`, `modificationDate`, and Catalog `language`. The dates preserve the raw PDF strings. The Info dictionary takes precedence over XMP. Missing title, subject, producer, and creator can come from `dc:title`, `dc:description`, `pdf:Producer`, and `xmp:CreatorTool`. Localized XMP values prefer `x-default`, then the first available value. Unreadable or oversized XMP is ignored (1 MiB decoded limit). Supported PDFs with an empty user password are decrypted before reading strings.
+`info(pdf)` reads the page count from the page-tree root's `/Count` (an integer from 0 to 10,000) without visiting its children, decoding page content, or following the Catalog `/Metadata` reference. It returns `pageCount`, `encrypted`, and any available Info dictionary fields (`title`, `subject`, `author`, `keywords`, `creator`, `producer`, `creationDate`, and `modificationDate`) and Catalog `/Lang` as `language`. The dates preserve the raw PDF strings. Supported PDFs with an empty user password are decrypted before reading strings.
 
 ### Without Effect
 
@@ -294,7 +294,7 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 
 ### Info payload (version 1)
 
-The header consists of `magic` (`0x464e4450`, "PDNF"), `version` (`1`), `page_count`, and `encrypted` (`0` or `1`), all little-endian `u32`. The next nine fields encode title, subject, author, keywords, creator, producer, creation date, modification date, and language. Each has a little-endian `u32` byte length followed by that many UTF-8 bytes. Length `0xffffffff` marks a missing field. The rest of the payload is the decoded XMP stream, if present.
+The header consists of `magic` (`0x464e4450`, "PDNF"), `version` (`1`), `page_count`, and `encrypted` (`0` or `1`), all little-endian `u32`. The next nine fields encode title, subject, author, keywords, creator, producer, creation date, modification date, and language. Each has a little-endian `u32` byte length followed by that many UTF-8 bytes. Length `0xffffffff` marks a missing field. The payload ends after the language field.
 
 ### Text payload (version 1)
 

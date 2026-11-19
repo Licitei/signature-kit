@@ -77,5 +77,4 @@ pub(crate) struct Metadata {
     pub encrypted: bool,
     pub fields: [Option<String>; 9],
     pub page_count: usize,
-    pub xmp: Vec<u8>,
 }

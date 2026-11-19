@@ -295,7 +295,6 @@ fn encode_info(info: &Metadata) -> Outcome<Writer> {
             out.u32(u32::MAX);
         }
     }
-    out.bytes(&info.xmp);
     out.done()
 }
 

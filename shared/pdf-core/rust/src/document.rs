@@ -504,23 +504,11 @@ impl<'data> Document<'data> {
                     .and_then(|entry| entry.get(key)),
             )?;
         }
-        let [title, subject, _, _, creator, producer, _, _, language] = &mut fields;
-        *language = self.metadata_string(dict.get(b"Lang"))?;
-        let xmp =
-            if (title.is_none() || subject.is_none() || creator.is_none() || producer.is_none())
-                && let Some(object) = self.metadata_object(dict.get(b"Metadata"))?
-                && let Object::Stream(stream) = object.as_ref()
-                && let Ok(bytes) = self.decode_stream(stream, None, 1024 * 1024)
-            {
-                bytes
-            } else {
-                Vec::new()
-            };
+        fields[8] = self.metadata_string(dict.get(b"Lang"))?;
         Ok(Metadata {
             encrypted: self.encryption.borrow().is_some(),
             fields,
             page_count,
-            xmp,
         })
     }
 

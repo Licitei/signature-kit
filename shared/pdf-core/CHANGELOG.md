@@ -4,9 +4,9 @@
 
 `openLazy` now supports `inspect(options)` for page boxes, links, and positioned text with bold and italic styles. Eager and lazy inspection apply `pageIndexes` to all three result sections. Boxes follow the deduplicated request order, and links and text retain their original page indexes.
 
-`PdfCore.info(pdf)` and `doc.info` read a validated root page count and document metadata without walking the page tree or decoding content streams. They decode Info and Catalog text strings, report encryption, preserve raw date strings, and fill missing title, subject, producer, and creator from XMP. The Promise client exposes `info(pdf)`, `doc.info()`, and `doc.inspect(options)`.
+`PdfCore.info(pdf)` and `doc.info` read a validated root page count, Info dictionary fields, and Catalog language without walking the page tree or following the Catalog `/Metadata` reference. They report encryption and preserve raw date strings. The Promise client exposes `info(pdf)`, `doc.info()`, and `doc.inspect(options)`.
 
-The optimized Wasm grows from 1,164,368 to 1,178,445 bytes (1.2%) with the new profiles. The size gate is 1152 KiB and the release build still uses `opt-level = 3`.
+The optimized Wasm is 1,166,414 bytes, within the 1152 KiB size gate. The release build uses `opt-level = 3`.
 
 ### Read selected pages from a byte-range source
 
