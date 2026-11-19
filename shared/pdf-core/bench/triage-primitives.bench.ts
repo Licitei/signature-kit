@@ -191,6 +191,11 @@ const isEffectMethod = (value: unknown): value is EffectMethod => typeof value =
 
 const MethodSchema = Schema.declare(isEffectMethod, { identifier: "TriageEffectMethod" });
 
+const isEffectValue = (value: unknown): value is Effect.Effect<unknown, unknown> =>
+  Effect.isEffect(value);
+
+const EffectValueSchema = Schema.declare(isEffectValue, { identifier: "TriageEffectValue" });
+
 const ServiceProbeSchema = Schema.Struct({
   info: Schema.optional(MethodSchema),
   headings: Schema.optional(MethodSchema),
@@ -199,7 +204,7 @@ type ServiceProbe = (typeof ServiceProbeSchema)["Type"];
 
 const LazyProbeSchema = Schema.Struct({
   inspect: Schema.optional(MethodSchema),
-  info: Schema.optional(MethodSchema),
+  info: Schema.optional(EffectValueSchema),
   headings: Schema.optional(MethodSchema),
 });
 type LazyProbe = (typeof LazyProbeSchema)["Type"];
@@ -758,9 +763,17 @@ const measureLazy = (
     );
   });
 
+const lazyInfo = (document: object): Effect.Effect<unknown, unknown> =>
+  decodeLazy(document).pipe(
+    Effect.flatMap((methods) =>
+      methods.info === undefined
+        ? Effect.fail(new BenchFailure({ reason: "Lazy document has no info." }))
+        : methods.info,
+    ),
+  );
+
 const lazyPageCount = (document: object) =>
-  lazyMethod(document, "info").pipe(
-    Effect.flatMap((method) => method()),
+  lazyInfo(document).pipe(
     Effect.flatMap((value) =>
       Schema.decodeUnknownEffect(InfoPageCountSchema)(value).pipe(
         Effect.mapError(() => new BenchFailure({ reason: "Lazy info did not include pageCount." })),
@@ -771,7 +784,7 @@ const lazyPageCount = (document: object) =>
 
 const lazyMethod = (
   document: object,
-  name: "inspect" | "info" | "headings",
+  name: "inspect" | "headings",
 ): Effect.Effect<EffectMethod, BenchFailure> =>
   decodeLazy(document).pipe(
     Effect.flatMap((methods) => {
@@ -996,14 +1009,7 @@ const runWorkload = (
       }
       case "info-lazy":
         return yield* measureAll(id, files, "lazy", (file) =>
-          measureLazy(core, file, (document) =>
-            asCall(
-              Effect.gen(function* () {
-                const method = yield* lazyMethod(document, "info");
-                return yield* Effect.exit(method());
-              }),
-            ),
-          ),
+          measureLazy(core, file, (document) => asCall(Effect.exit(lazyInfo(document)))),
         );
       case "headings-page1":
         if (features.service.headings !== undefined) {
