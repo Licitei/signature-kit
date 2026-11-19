@@ -19,6 +19,7 @@ use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::lazy::{Lazy, Plan, Tuning};
 use crate::num::widen;
+use crate::ocr;
 use crate::png;
 use crate::render::{self, RenderedPage};
 use crate::revision::{Analysis, Report, analyze, revision_complete};
@@ -36,6 +37,7 @@ const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
 const FLAG_RUNS: u32 = 32;
+const FLAG_OCR_TABLES: u32 = 64;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
@@ -596,6 +598,7 @@ pub(crate) unsafe extern "C" fn pdf_core_text(
             inner_request.pages,
             &layout::text_limits(),
             options,
+            None,
         )?;
         encode_text(&pages)
     }))
@@ -619,8 +622,50 @@ pub(crate) unsafe extern "C" fn pdf_core_tables(
             inner_request.pdf,
             inner_request.pages,
             &layout::text_limits(),
+            None,
         )?;
         encode_tables(&tables)
+    }))
+}
+
+/// # Safety
+///
+/// The PDF, page indexes and OCR payload must remain readable for the duration of the call.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_extract_ocr(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+    ocr_ptr: *const u8,
+    ocr_len: usize,
+) -> *mut u8 {
+    // SAFETY: the caller supplies valid readable buffers for this call.
+    let input = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    // SAFETY: the caller supplies a valid readable payload for this call.
+    let payload = unsafe { view(ocr_ptr, ocr_len) };
+    finish(input.and_then(|request| {
+        let limits = layout::text_limits();
+        let replacements = ocr::decode(payload?, &limits)?;
+        if request.has(FLAG_OCR_TABLES) {
+            return encode_tables(&layout::document_tables(
+                request.pdf,
+                request.pages,
+                &limits,
+                Some(&replacements),
+            )?);
+        }
+        encode_text(&layout::document_text(
+            request.pdf,
+            request.pages,
+            &limits,
+            TextOptions {
+                markdown: request.has(FLAG_MARKDOWN),
+                drop_running: request.has(FLAG_DROP_RUNNING),
+            },
+            Some(&replacements),
+        )?)
     }))
 }
 
@@ -1164,7 +1209,35 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
     flags: u32,
     scale: f64,
 ) -> *mut u8 {
-    finish(LAZY_DOCUMENTS.with(|documents| {
+    finish(lazy_run(handle, profile, flags, scale, None))
+}
+
+/// # Safety
+///
+/// The OCR payload must remain readable for the duration of the call.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_lazy_run_ocr(
+    handle: u32,
+    profile: u32,
+    flags: u32,
+    ocr_ptr: *const u8,
+    ocr_len: usize,
+) -> *mut u8 {
+    // SAFETY: the caller supplies a valid readable payload for this call.
+    let replacements = unsafe { view(ocr_ptr, ocr_len) }
+        .and_then(|bytes| ocr::decode(bytes, &layout::text_limits()));
+    finish(replacements.and_then(|pages| lazy_run(handle, profile, flags, 1.0, Some(&pages))))
+}
+
+#[inline(never)]
+fn lazy_run(
+    handle: u32,
+    profile: u32,
+    flags: u32,
+    scale: f64,
+    ocr: Option<&layout::OcrPages>,
+) -> Outcome<Writer> {
+    LAZY_DOCUMENTS.with(|documents| {
         let all = documents.borrow();
         let lazy = all
             .iter()
@@ -1181,8 +1254,9 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
                     markdown: flags & FLAG_MARKDOWN != 0,
                     drop_running: flags & FLAG_DROP_RUNNING != 0,
                 },
+                ocr,
             )?),
-            1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
+            1 => encode_tables(&layout::opened_tables(document, pages, &limits, ocr)?),
             2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
             _ => Err(Failure::invalid("invalid lazy profile")),
         })?;
@@ -1196,7 +1270,7 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
             },
             Ok,
         )
-    }))
+    })
 }
 
 #[cfg(test)]

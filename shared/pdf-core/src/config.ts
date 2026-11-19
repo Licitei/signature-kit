@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { Effect } from "effect";
 
 export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.WASM_LOAD_FAILED",
@@ -10,6 +11,9 @@ export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.PAINT_FAILED",
   "pdfCore.RANGE_READ_FAILED",
   "pdfCore.DOCUMENT_CLOSED",
+  "pdfCore.OCR_FAILED",
+  "pdfCore.PAGE_IMAGE_UNAVAILABLE",
+  "pdfCore.INVALID_OCR_RESULT",
 ]);
 export type PdfCoreErrorCode = (typeof PdfCoreErrorCodeSchema)["Type"];
 
@@ -23,6 +27,9 @@ export const PdfCoreErrorCodeValue = {
   paintFailed: "pdfCore.PAINT_FAILED",
   rangeReadFailed: "pdfCore.RANGE_READ_FAILED",
   documentClosed: "pdfCore.DOCUMENT_CLOSED",
+  ocrFailed: "pdfCore.OCR_FAILED",
+  pageImageUnavailable: "pdfCore.PAGE_IMAGE_UNAVAILABLE",
+  invalidOcrResult: "pdfCore.INVALID_OCR_RESULT",
 } satisfies Record<string, PdfCoreErrorCode>;
 
 export const PdfCoreErrorMessageLocaleSchema = Schema.Literals(["en-US", "pt-BR"]);
@@ -44,6 +51,9 @@ export const pdfCoreErrorMessages = {
     "pdfCore.PAINT_FAILED": "The PDF page could not be painted.",
     "pdfCore.RANGE_READ_FAILED": "The PDF byte range could not be read.",
     "pdfCore.DOCUMENT_CLOSED": "The PDF document is closed.",
+    "pdfCore.OCR_FAILED": "The OCR recognizer failed.",
+    "pdfCore.PAGE_IMAGE_UNAVAILABLE": "No image is available for OCR on this PDF page.",
+    "pdfCore.INVALID_OCR_RESULT": "The OCR recognizer returned an invalid result.",
   },
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
@@ -55,6 +65,9 @@ export const pdfCoreErrorMessages = {
     "pdfCore.PAINT_FAILED": "Não foi possível desenhar a página do PDF.",
     "pdfCore.RANGE_READ_FAILED": "Não foi possível ler o intervalo de bytes do PDF.",
     "pdfCore.DOCUMENT_CLOSED": "O documento PDF está fechado.",
+    "pdfCore.OCR_FAILED": "O reconhecedor de OCR falhou.",
+    "pdfCore.PAGE_IMAGE_UNAVAILABLE": "Não há imagem disponível para OCR nesta página do PDF.",
+    "pdfCore.INVALID_OCR_RESULT": "O reconhecedor de OCR retornou um resultado inválido.",
   },
 } satisfies Record<PdfCoreErrorMessageLocale, Record<PdfCoreErrorCode, string>>;
 
@@ -104,6 +117,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreInspectOptions",
   "PdfCoreInspection",
   "PdfCoreTextOptions",
+  "PdfCoreOcrResult",
+  "PdfCoreOcrOptions",
   "PdfCoreText",
   "PdfCoreTablesOptions",
   "PdfCoreTables",
@@ -127,6 +142,8 @@ export const PdfCoreSchemaNameValue = {
   inspectOptions: "PdfCoreInspectOptions",
   inspection: "PdfCoreInspection",
   textOptions: "PdfCoreTextOptions",
+  ocrResult: "PdfCoreOcrResult",
+  ocrOptions: "PdfCoreOcrOptions",
   text: "PdfCoreText",
   tablesOptions: "PdfCoreTablesOptions",
   tables: "PdfCoreTables",
@@ -152,6 +169,7 @@ export class PdfCoreError extends Schema.TaggedError<
   operation: Schema.optional(PdfCoreOperationSchema),
   reason: Schema.optional(Schema.String),
   status: Schema.optional(Schema.Int),
+  pageIndex: Schema.optional(Schema.Int),
   schemaName: Schema.optional(PdfCoreSchemaNameSchema),
   issueMessage: Schema.optional(Schema.String),
 }) {
@@ -179,12 +197,17 @@ export const PdfCoreTextOptionsSchema = Schema.Struct({
   format: Schema.optional(PdfCoreTextFormatSchema),
   dropRunningHeaders: Schema.optional(Schema.Boolean),
 });
-export type PdfCoreTextOptions = (typeof PdfCoreTextOptionsSchema)["Type"];
+export type PdfCoreTextOptions<E = never, R = never> = (typeof PdfCoreTextOptionsSchema)["Type"] & {
+  readonly ocr?: PdfCoreOcrOptions<E, R>;
+};
 
 export const PdfCoreTablesOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
 });
-export type PdfCoreTablesOptions = (typeof PdfCoreTablesOptionsSchema)["Type"];
+export type PdfCoreTablesOptions<
+  E = never,
+  R = never,
+> = (typeof PdfCoreTablesOptionsSchema)["Type"] & { readonly ocr?: PdfCoreOcrOptions<E, R> };
 
 export const PDF_CORE_DEFAULT_RENDER_SCALE = 150 / 72;
 const renderScaleSchema = Schema.Finite.check(
@@ -230,12 +253,117 @@ export const PdfCoreCellSchema = Schema.Struct({
 });
 export type PdfCoreCell = (typeof PdfCoreCellSchema)["Type"];
 
+const ocrConfidenceSchema = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+const ocrDimensionSchema = pageIndexSchema.check(Schema.isGreaterThan(0));
+const ocrDpiSchema = Schema.Finite.check(Schema.isGreaterThan(0));
+
+export const PdfCoreTextLayerSchema = Schema.Literals(["usable", "weak", "none"]);
+export type PdfCoreTextLayer = (typeof PdfCoreTextLayerSchema)["Type"];
+
+export const PdfCoreOcrImageSchema = Schema.Struct({
+  mediaType: PdfCoreImageTypeSchema,
+  bytes: Schema.instanceOf(Uint8Array),
+  width: ocrDimensionSchema,
+  height: ocrDimensionSchema,
+  dpiX: ocrDpiSchema,
+  dpiY: ocrDpiSchema,
+});
+export type PdfCoreOcrImage = (typeof PdfCoreOcrImageSchema)["Type"];
+
+export const PdfCoreOcrRequestSchema = Schema.Struct({
+  pageIndex: pageIndexSchema,
+  image: PdfCoreOcrImageSchema,
+  pageBox: PdfCoreBoxSchema,
+  rotate: Schema.Int,
+  textLayer: PdfCoreTextLayerSchema,
+});
+export type PdfCoreOcrRequest = (typeof PdfCoreOcrRequestSchema)["Type"];
+
+export const PdfCoreOcrPlacementSchema = Schema.Tuple([
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+]);
+export type PdfCoreOcrPlacement = (typeof PdfCoreOcrPlacementSchema)["Type"];
+
+export const PdfCoreOcrRasterSchema = Schema.Struct({
+  ...PdfCoreOcrImageSchema.fields,
+  placement: PdfCoreOcrPlacementSchema,
+}).check(
+  Schema.makeFilter(({ placement: [a, b, c, d], bytes }) => {
+    const determinant = a * d - b * c;
+    return (
+      (bytes.byteLength > 0 && Number.isFinite(determinant) && determinant !== 0) ||
+      "An OCR raster needs image bytes and an invertible placement."
+    );
+  }),
+);
+export type PdfCoreOcrRaster = (typeof PdfCoreOcrRasterSchema)["Type"];
+
+const ocrWordSchema = Schema.Struct({
+  text: Schema.String.check(Schema.isNonEmpty()),
+  box: PdfCoreBoxSchema,
+  confidence: Schema.optional(ocrConfidenceSchema),
+  line: Schema.optional(pageIndexSchema),
+});
+
+export const PdfCoreOcrResultSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("text"),
+    text: Schema.String,
+    markdown: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("words"),
+    width: ocrDimensionSchema,
+    height: ocrDimensionSchema,
+    words: Schema.Array(ocrWordSchema).check(Schema.isMaxLength(250_000)),
+  }).check(
+    Schema.makeFilter(
+      ({ width, height, words }) =>
+        words.every(
+          ({ box: [x0, y0, x1, y1] }) =>
+            0 <= x0 && x0 < x1 && x1 <= width && 0 <= y0 && y0 < y1 && y1 <= height,
+        ) || "OCR word boxes must be nonempty and inside the image.",
+    ),
+  ),
+]);
+export type PdfCoreOcrResult = (typeof PdfCoreOcrResultSchema)["Type"];
+
+export const PdfCoreOcrOptionsSchema = Schema.Struct({
+  policy: Schema.optional(Schema.Literals(["never", "auto", "always"])),
+  concurrency: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 8 }))),
+});
+export type PdfCoreOcrOptions<E = never, R = never> = (typeof PdfCoreOcrOptionsSchema)["Type"] & {
+  readonly recognize: (request: PdfCoreOcrRequest) => Effect.Effect<PdfCoreOcrResult, E, R>;
+  readonly render?: (
+    page: PdfCoreDisplayList,
+  ) => Effect.Effect<PdfCoreOcrRaster, E | PdfCoreError, R>;
+};
+
+const textSourceSchema = Schema.Literals(["native", "ocr"]);
+
+export const PdfCoreTextPagesSchema = Schema.Array(
+  Schema.Struct({
+    pageIndex: pageIndexSchema,
+    text: Schema.String,
+    source: textSourceSchema,
+    textLayer: PdfCoreTextLayerSchema,
+    confidence: Schema.optional(ocrConfidenceSchema),
+  }),
+);
+export type PdfCoreTextPages = (typeof PdfCoreTextPagesSchema)["Type"];
+
 export const PdfCoreTableSchema = Schema.Struct({
   pageIndex: pageIndexSchema,
   bbox: PdfCoreBoxSchema,
   rows: pageIndexSchema,
   cols: pageIndexSchema,
   cells: Schema.Array(PdfCoreCellSchema),
+  source: Schema.optional(textSourceSchema),
 });
 export type PdfCoreTable = (typeof PdfCoreTableSchema)["Type"];
 
@@ -326,6 +454,15 @@ const isDocumentFunction = (
   prefixPointer: number,
   prefixLength: number,
 ) => number => typeof value === "function" && value.length === 7;
+const isLazyOcrFunction = (
+  value: unknown,
+): value is (
+  handle: number,
+  profile: number,
+  flags: number,
+  pointer: number,
+  length: number,
+) => number => typeof value === "function" && value.length === 5;
 const isEditFunction = (
   value: unknown,
 ): value is (
@@ -383,6 +520,12 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
   pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
   pdf_core_lazy_run: Schema.declare(isLazyRunFunction, { identifier: "pdf_core_lazy_run" }),
+  pdf_core_extract_ocr: Schema.optional(
+    Schema.declare(isDocumentFunction, { identifier: "pdf_core_extract_ocr" }),
+  ),
+  pdf_core_lazy_run_ocr: Schema.optional(
+    Schema.declare(isLazyOcrFunction, { identifier: "pdf_core_lazy_run_ocr" }),
+  ),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 

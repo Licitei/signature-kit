@@ -2,7 +2,21 @@ import { Effect, Exit, Scope } from "effect";
 
 import { pdfCoreBrowserModule } from "./browser.js";
 import { PdfCoreError, PdfCoreErrorCodeValue, PdfCoreOperationValue } from "./config.js";
-import type { PdfCoreLazyOptions, PdfCoreLazyStats } from "./config.js";
+import type {
+  PdfCoreDisplayList,
+  PdfCoreLazyOptions,
+  PdfCoreLazyStats,
+  PdfCoreOcrOptions,
+  PdfCoreOcrRaster,
+  PdfCoreOcrRequest,
+  PdfCoreOcrResult,
+  PdfCoreOperation,
+  PdfCoreTables,
+  PdfCoreTablesOptions,
+  PdfCoreText,
+  PdfCoreTextOptions,
+  PdfCoreTextPages,
+} from "./config.js";
 import { makePdfCore } from "./pdf-core.js";
 import type { PdfCoreLazyDocument, PdfCoreService } from "./pdf-core.js";
 
@@ -19,13 +33,44 @@ type PromiseMethods<Service> = {
     : never;
 };
 
-export type PdfCorePromiseDocument = PromiseMethods<Omit<PdfCoreLazyDocument, "stats">> & {
+export type PdfCorePromiseOcrOptions = Omit<PdfCoreOcrOptions, "recognize" | "render"> & {
+  readonly recognize: (
+    request: PdfCoreOcrRequest,
+    signal: AbortSignal,
+  ) => Promise<PdfCoreOcrResult>;
+  readonly render?: (page: PdfCoreDisplayList, signal: AbortSignal) => Promise<PdfCoreOcrRaster>;
+};
+
+export type PdfCorePromiseTextOptions = Omit<PdfCoreTextOptions, "ocr"> & {
+  readonly ocr?: PdfCorePromiseOcrOptions;
+};
+export type PdfCorePromiseTablesOptions = Omit<PdfCoreTablesOptions, "ocr"> & {
+  readonly ocr?: PdfCorePromiseOcrOptions;
+};
+
+type Extraction = "text" | "textPages" | "tables";
+
+export type PdfCorePromiseDocument = PromiseMethods<
+  Omit<PdfCoreLazyDocument, "stats" | Extraction>
+> & {
+  readonly text: (options?: PdfCorePromiseTextOptions) => Promise<PdfCoreText>;
+  readonly textPages: (options?: PdfCorePromiseTextOptions) => Promise<PdfCoreTextPages>;
+  readonly tables: (options?: PdfCorePromiseTablesOptions) => Promise<PdfCoreTables>;
   readonly stats: () => Promise<PdfCoreLazyStats>;
   readonly close: () => Promise<void>;
   readonly [Symbol.asyncDispose]: () => Promise<void>;
 };
 
-export type PdfCoreClient = PromiseMethods<Omit<PdfCoreService, "openLazy">> & {
+export type PdfCoreClient = PromiseMethods<Omit<PdfCoreService, "openLazy" | Extraction>> & {
+  readonly text: (pdf: Uint8Array, options?: PdfCorePromiseTextOptions) => Promise<PdfCoreText>;
+  readonly textPages: (
+    pdf: Uint8Array,
+    options?: PdfCorePromiseTextOptions,
+  ) => Promise<PdfCoreTextPages>;
+  readonly tables: (
+    pdf: Uint8Array,
+    options?: PdfCorePromiseTablesOptions,
+  ) => Promise<PdfCoreTables>;
   readonly openLazy: (
     source: PdfCorePromiseRangeSource,
     options?: PdfCoreLazyOptions,
@@ -34,6 +79,47 @@ export type PdfCoreClient = PromiseMethods<Omit<PdfCoreService, "openLazy">> & {
 const run = <A>(effect: Effect.Effect<A, PdfCoreError>): Promise<A> =>
   // effect-boundary: promise entry point for apps without Effect [allow-run: rejects with the PdfCoreError]
   Effect.runPromise(effect);
+
+const effectOptions = <Options extends PdfCorePromiseTablesOptions>(
+  operation: PdfCoreOperation,
+  options?: Options,
+): (Omit<Options, "ocr"> & { readonly ocr?: PdfCoreOcrOptions<PdfCoreError> }) | undefined => {
+  if (options === undefined) return undefined;
+  const { ocr, ...base } = options;
+  if (ocr === undefined) return base;
+  const { recognize, render, ...policy } = ocr;
+  return {
+    ...base,
+    ocr: {
+      ...policy,
+      recognize: (request) =>
+        Effect.tryPromise({
+          try: (signal) => recognize(request, signal),
+          catch: () =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.ocrFailed,
+              operation,
+              pageIndex: request.pageIndex,
+            }),
+        }),
+      ...(render === undefined
+        ? {}
+        : {
+            render: (page: PdfCoreDisplayList) =>
+              Effect.tryPromise({
+                try: (signal) => render(page, signal),
+                catch: () =>
+                  new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.ocrFailed,
+                    operation,
+                    pageIndex: page.pageIndex,
+                    reason: "The OCR page renderer failed.",
+                  }),
+              }),
+          }),
+    },
+  };
+};
 
 const openLazy = (
   core: PdfCoreService,
@@ -66,9 +152,12 @@ const openLazy = (
         );
       const close = () => run(Scope.close(scope, Exit.void));
       return {
-        text: (...args: Parameters<PdfCoreLazyDocument["text"]>) => run(document.text(...args)),
-        tables: (...args: Parameters<PdfCoreLazyDocument["tables"]>) =>
-          run(document.tables(...args)),
+        text: (opts?: PdfCorePromiseTextOptions) =>
+          run(document.text(effectOptions(PdfCoreOperationValue.text, opts))),
+        textPages: (opts?: PdfCorePromiseTextOptions) =>
+          run(document.textPages(effectOptions(PdfCoreOperationValue.text, opts))),
+        tables: (opts?: PdfCorePromiseTablesOptions) =>
+          run(document.tables(effectOptions(PdfCoreOperationValue.tables, opts))),
         renderPages: (...args: Parameters<PdfCoreLazyDocument["renderPages"]>) =>
           run(document.renderPages(...args)),
         stats: () => run(document.stats),
@@ -82,8 +171,11 @@ const toClient = (core: PdfCoreService): PdfCoreClient => ({
   openLazy: (source, options) => openLazy(core, source, options),
   wasmMemoryBytes: () => run(core.wasmMemoryBytes()),
   inspect: (...args) => run(core.inspect(...args)),
-  text: (...args) => run(core.text(...args)),
-  tables: (...args) => run(core.tables(...args)),
+  text: (pdf, options) => run(core.text(pdf, effectOptions(PdfCoreOperationValue.text, options))),
+  textPages: (pdf, options) =>
+    run(core.textPages(pdf, effectOptions(PdfCoreOperationValue.text, options))),
+  tables: (pdf, options) =>
+    run(core.tables(pdf, effectOptions(PdfCoreOperationValue.tables, options))),
   signatures: (...args) => run(core.signatures(...args)),
   revisionComplete: (...args) => run(core.revisionComplete(...args)),
   document: (...args) => run(core.document(...args)),
