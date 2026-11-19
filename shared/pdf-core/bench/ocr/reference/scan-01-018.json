@@ -1,0 +1,41 @@
+{
+  "id": "scan-01-018",
+  "dpi": 150,
+  "width": 1239,
+  "height": 1752,
+  "source": "0018p_selecao-de-melhor-proposta-atraves-de-registro-de_07891682000119-2026-87/edital.pdf#page=18",
+  "degradation": {
+    "real": true,
+    "encoding": "ccitt"
+  },
+  "imageSha256": "e8585909d6793444fb8141fcccda878044964c5a4d4f4948ff36a3c2b35a04a8",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 127,
+  "text": "ESTADO DO CEARÁ\nGOVERNO MUNICIPAL\nTABULEIRO\nDO NORTE\nTrabalho e Desenvolvimento\n15.8. O desatendimento de exigências formais não essenciais não importará o\nafastamento do licitante, desde que seja possível o aproveitamento do ato,\nobservados os princípios da isonomia e do interesse público.\n15.9. Em caso de divergência entre disposições deste Edital e de seus anexos ou\ndemais peças que compõem o processo, prevalecerá as deste Edital.\n15.10. O Edital e seus anexos estão disponíveis, na íntegra, no Portal Nacional de\nContratações Públicas (PNCP) e no endereço eletrônico\ncompras.m2atecnologia.com.br.\n15.11. Integram este Edital, para todos os fins e efeitos, os seguintes anexos:\nANEXO I - Termo de Referência\nANEXO II - Minuta de Termo de Contrato\nANEXO III - Minuta da Ata de Registro de Preços\nTabuleiro do Norte/CE, 28 de Outubro 2026.\nRonaldo Guimarães Malveira\nSecretário de Educação\nPREFEITURA MUNICIPAL DE TABULEIRO DO NORTE\nGOVERNO MUNICIPAL - TRABALHO E DESENVOLVIMENTO\nCENTRO ADMINISTRATIVO PREFEITO RAIMUNDO RODRIGUES CHAVES\nRUA PADRE CLICÉRIO, 4605 - BAIRRO SÃO FRANCISCO - TABULEIRO DO NORTE - CEARÁ",
+  "lines": [
+    "ESTADO DO CEARÁ",
+    "GOVERNO MUNICIPAL",
+    "TABULEIRO",
+    "DO NORTE",
+    "Trabalho e Desenvolvimento",
+    "15.8. O desatendimento de exigências formais não essenciais não importará o",
+    "afastamento do licitante, desde que seja possível o aproveitamento do ato,",
+    "observados os princípios da isonomia e do interesse público.",
+    "15.9. Em caso de divergência entre disposições deste Edital e de seus anexos ou",
+    "demais peças que compõem o processo, prevalecerá as deste Edital.",
+    "15.10. O Edital e seus anexos estão disponíveis, na íntegra, no Portal Nacional de",
+    "Contratações Públicas (PNCP) e no endereço eletrônico",
+    "compras.m2atecnologia.com.br.",
+    "15.11. Integram este Edital, para todos os fins e efeitos, os seguintes anexos:",
+    "ANEXO I - Termo de Referência",
+    "ANEXO II - Minuta de Termo de Contrato",
+    "ANEXO III - Minuta da Ata de Registro de Preços",
+    "Tabuleiro do Norte/CE, 28 de Outubro 2026.",
+    "Ronaldo Guimarães Malveira",
+    "Secretário de Educação",
+    "PREFEITURA MUNICIPAL DE TABULEIRO DO NORTE",
+    "GOVERNO MUNICIPAL - TRABALHO E DESENVOLVIMENTO",
+    "CENTRO ADMINISTRATIVO PREFEITO RAIMUNDO RODRIGUES CHAVES",
+    "RUA PADRE CLICÉRIO, 4605 - BAIRRO SÃO FRANCISCO - TABULEIRO DO NORTE - CEARÁ"
+  ]
+}
