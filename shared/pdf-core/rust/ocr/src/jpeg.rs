@@ -1,15 +1,6 @@
-use crate::raster::{Gray, RasterError, pixel_count};
+use core::array;
 
-const BASIS: [[i32; 8]; 8] = [
-    [1448, 1448, 1448, 1448, 1448, 1448, 1448, 1448],
-    [2009, 1703, 1138, 400, -400, -1138, -1703, -2009],
-    [1892, 784, -784, -1892, -1892, -784, 784, 1892],
-    [1703, -400, -2009, -1138, 1138, 2009, 400, -1703],
-    [1448, -1448, -1448, 1448, 1448, -1448, -1448, 1448],
-    [1138, -2009, 400, 1703, -1703, -400, 2009, -1138],
-    [784, -1892, 1892, -784, -784, 1892, -1892, 784],
-    [400, -1138, 1703, -2009, 2009, -1703, 1138, -400],
-];
+use crate::raster::{Gray, RasterError, pixel_count};
 
 const ZIGZAG: [usize; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
@@ -719,7 +710,56 @@ fn read_scan<'data>(
 
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "dequantized i16 coefficients and fixed-point basis fit in i64"
+    reason = "two 8-point transforms of dequantized i16 coefficients fit i64"
+)]
+const fn transform(
+    [dc, first, second, third, fourth, fifth, sixth, seventh]: [i64; 8],
+) -> [i64; 8] {
+    if first | second | third | fourth | fifth | sixth | seventh == 0 {
+        return [dc * 1448; 8];
+    }
+    let base_sum = (dc + fourth) * 1448;
+    let base_difference = (dc - fourth) * 1448;
+    let even_start = second * 1892 + sixth * 784;
+    let even_inner = second * 784 - sixth * 1892;
+    let even_outer_left = base_sum + even_start;
+    let even_inner_left = base_difference + even_inner;
+    let even_inner_right = base_difference - even_inner;
+    let even_outer_right = base_sum - even_start;
+    let odd_outer_left = first * 2009 + third * 1703 + fifth * 1138 + seventh * 400;
+    let odd_inner_left = first * 1703 - third * 400 - fifth * 2009 - seventh * 1138;
+    let odd_inner_right = first * 1138 - third * 2009 + fifth * 400 + seventh * 1703;
+    let odd_outer_right = first * 400 - third * 1138 + fifth * 1703 - seventh * 2009;
+    [
+        even_outer_left + odd_outer_left,
+        even_inner_left + odd_inner_left,
+        even_inner_right + odd_inner_right,
+        even_outer_right + odd_outer_right,
+        even_outer_right - odd_outer_right,
+        even_inner_right - odd_inner_right,
+        even_inner_left - odd_inner_left,
+        even_outer_left - odd_outer_left,
+    ]
+}
+
+fn transpose<Value>(matrix: &[[Value; 8]; 8]) -> [[Value; 8]; 8]
+where
+    Value: Copy + Default,
+{
+    array::from_fn(|column| {
+        array::from_fn(|position| {
+            matrix
+                .get(position)
+                .and_then(|row| row.get(column))
+                .copied()
+                .unwrap_or_default()
+        })
+    })
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "dequantized i16 coefficients and fixed-point basis fit i64"
 )]
 fn inverse(block: &Block, quant: &Quant) -> [[u8; 8]; 8] {
     let mut values = block.iter().zip(quant).zip(ZIGZAG);
@@ -732,35 +772,24 @@ fn inverse(block: &Block, quant: &Quant) -> [[u8; 8]; 8] {
     {
         return [[sample((dc + 4) >> 3_u32); 8]; 8];
     }
-    let mut intermediate = [[0_i64; 8]; 8];
-    if let Some(first) = intermediate.first_mut() {
-        first.fill(dc * 1448);
+    let mut frequencies = [[0_i64; 8]; 8];
+    if let Some(coefficient) = frequencies.first_mut().and_then(|row| row.first_mut()) {
+        *coefficient = dc;
     }
     for ((&coefficient, &scale), index) in values {
-        if coefficient == 0 {
-            continue;
-        }
-        if let (Some(row), Some(basis)) =
-            (intermediate.get_mut(index >> 3_u32), BASIS.get(index & 7))
+        if coefficient != 0
+            && let Some(slot) = frequencies
+                .get_mut(index >> 3_u32)
+                .and_then(|row| row.get_mut(index & 7))
         {
-            let value = i64::from(coefficient) * i64::from(scale);
-            for (slot, &weight) in row.iter_mut().zip(basis) {
-                *slot += value * i64::from(weight);
-            }
+            *slot = i64::from(coefficient) * i64::from(scale);
         }
     }
-    let mut output = [[0_i64; 8]; 8];
-    for (row, weights) in intermediate.iter().zip(BASIS) {
-        if row.iter().all(|&value| value == 0) {
-            continue;
-        }
-        for (destination, weight) in output.iter_mut().zip(weights) {
-            for (slot, &value) in destination.iter_mut().zip(row) {
-                *slot += value * i64::from(weight);
-            }
-        }
-    }
-    output.map(|row| row.map(|value| sample((value + (1 << 23_u32)) >> 24_u32)))
+    let columns = transpose(&frequencies.map(transform));
+    transpose(
+        &columns
+            .map(|column| transform(column).map(|value| sample((value + (1 << 23_u32)) >> 24_u32))),
+    )
 }
 
 fn sample(value: i64) -> u8 {
@@ -771,21 +800,24 @@ fn sample(value: i64) -> u8 {
     clippy::arithmetic_side_effects,
     reason = "decoded plane dimensions bound row and block indexes"
 )]
-fn render_plane(component: &Component) -> Decode<Vec<u8>> {
+fn render_plane(component: &Component, width: usize, height: usize) -> Decode<Vec<u8>> {
     let quant = component.quant.as_ref().ok_or(DecodeError::Format)?;
-    if component.precision.first().is_none_or(Option::is_none) {
-        return Err(DecodeError::Format);
-    }
-    let stride = component.columns * 8;
-    let mut samples = vec![0; component.blocks.len() * 64];
-    for (block_row, row) in component.blocks.chunks_exact(component.columns).enumerate() {
-        for (block_column, block) in row.iter().enumerate() {
-            for (delta_y, decoded) in inverse(block, quant).iter().enumerate() {
-                let start = (block_row * 8 + delta_y) * stride + block_column * 8;
+    let mut samples = vec![0; width * height];
+    for (block_row, row) in component
+        .blocks
+        .chunks_exact(component.columns)
+        .take(height.div_ceil(8))
+        .enumerate()
+    {
+        let rows = (height - block_row * 8).min(8);
+        for (block_column, block) in row.iter().take(width.div_ceil(8)).enumerate() {
+            let columns = (width - block_column * 8).min(8);
+            for (delta_y, decoded) in inverse(block, quant).iter().take(rows).enumerate() {
+                let start = (block_row * 8 + delta_y) * width + block_column * 8;
                 let destination = samples
-                    .get_mut(start..start + 8)
+                    .get_mut(start..start + columns)
                     .ok_or(DecodeError::Format)?;
-                destination.copy_from_slice(decoded);
+                destination.copy_from_slice(decoded.get(..columns).ok_or(DecodeError::Format)?);
             }
         }
     }
@@ -821,17 +853,15 @@ fn render(frame: &Frame, adobe: Option<u8>) -> Decode<Gray> {
     if !rgb {
         let component = frame.components.first().ok_or(DecodeError::Format)?;
         if component.horizontal == frame.max_h && component.vertical == frame.max_v {
-            let plane = render_plane(component)?;
-            let mut pixels = Vec::with_capacity(width * height);
-            for row in plane.chunks_exact(component.columns * 8).take(height) {
-                pixels.extend_from_slice(row.get(..width).ok_or(DecodeError::Format)?);
-            }
+            let pixels = render_plane(component, width, height)?;
             return Gray::new(frame.width, frame.height, pixels).map_err(DecodeError::Raster);
         }
     }
     let mut planes = Vec::with_capacity(if rgb { 3 } else { 1 });
     for component in frame.components.iter().take(if rgb { 3 } else { 1 }) {
-        planes.push((component, render_plane(component)?));
+        let stride = component.columns * 8;
+        let rows = component.blocks.len() / component.columns * 8;
+        planes.push((component, render_plane(component, stride, rows)?));
     }
     let mut pixels = Vec::with_capacity(width * height);
     for yy in 0..height {

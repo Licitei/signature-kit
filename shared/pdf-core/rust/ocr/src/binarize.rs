@@ -1,3 +1,8 @@
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+use core::arch::wasm32::{
+    i8x16_bitmask, u8x16_lt, u8x16_max, u8x16_min, u8x16_splat, v128, v128_load, v128_store,
+};
+
 use crate::raster::{Bits, Gray, RasterError, pixel_count};
 
 const TILE: usize = 32;
@@ -32,6 +37,76 @@ impl Tone {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[expect(
+    unsafe_code,
+    clippy::cast_ptr_alignment,
+    reason = "v128_load accepts unaligned 16-byte chunks"
+)]
+fn load_lanes(bytes: &[u8; 16]) -> v128 {
+    // SAFETY: A 16-byte array is readable and v128_load accepts unaligned addresses.
+    unsafe { v128_load(bytes.as_ptr().cast::<v128>()) }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[expect(
+    unsafe_code,
+    clippy::cast_ptr_alignment,
+    reason = "v128_store accepts unaligned 16-byte arrays"
+)]
+fn lanes(vector: v128) -> [u8; 16] {
+    let mut bytes = [0_u8; 16];
+    // SAFETY: The output array has 16 writable bytes and v128_store accepts unaligned addresses.
+    unsafe { v128_store(bytes.as_mut_ptr().cast::<v128>(), vector) };
+    bytes
+}
+
+fn include_pixels(tone: &mut Tone, pixels: &[u8]) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let tail_pixels = {
+        let (blocks, tail) = pixels.as_chunks::<16>();
+        if !blocks.is_empty() {
+            let mut darkest = u8x16_splat(tone.darkest);
+            let mut lightest = u8x16_splat(tone.lightest);
+            for block in blocks {
+                let values = load_lanes(block);
+                darkest = u8x16_min(darkest, values);
+                lightest = u8x16_max(lightest, values);
+            }
+            tone.darkest = lanes(darkest).into_iter().min().unwrap_or(tone.darkest);
+            tone.lightest = lanes(lightest).into_iter().max().unwrap_or(tone.lightest);
+        }
+        tail
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    let tail_pixels = pixels;
+    for &pixel in tail_pixels {
+        tone.include(pixel);
+    }
+}
+
+fn tile_bits(pixels: &[u8], threshold: u8) -> u32 {
+    let mut bits = 0_u32;
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let (tail_pixels, start) = {
+        let cutoff = u8x16_splat(threshold);
+        let (blocks, tail) = pixels.as_chunks::<16>();
+        let mut offset = 0_u32;
+        for block in blocks {
+            let ink = u8x16_lt(load_lanes(block), cutoff);
+            bits |= u32::from(i8x16_bitmask(ink)).wrapping_shl(offset);
+            offset = offset.saturating_add(16);
+        }
+        (tail, offset)
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    let (tail_pixels, start) = (pixels, 0_u32);
+    for (bit, &value) in (start..32).zip(tail_pixels) {
+        bits |= u32::from(value < threshold).wrapping_shl(bit);
+    }
+    bits
+}
+
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "the validated pixel count bounds tile addressing"
@@ -44,9 +119,7 @@ fn thresholds(gray: &Gray, width: usize, height: usize) -> Vec<u8> {
         let start = (yy >> 5_u32) * columns;
         if let Some(row_tiles) = tiles.get_mut(start..start + columns) {
             for (tile, pixels) in row_tiles.iter_mut().zip(row.chunks(TILE)) {
-                for &pixel in pixels {
-                    tile.include(pixel);
-                }
+                include_pixels(tile, pixels);
             }
         }
     }
@@ -81,10 +154,7 @@ fn thresholds(gray: &Gray, width: usize, height: usize) -> Vec<u8> {
 fn pack(row: &[u8], thresholds: &[u8]) -> u64 {
     let mut word = 0_u64;
     for (index, (tile, &threshold)) in row.chunks(TILE).zip(thresholds).enumerate() {
-        let mut bits = 0_u32;
-        for (bit, &value) in (0_u32..32).zip(tile) {
-            bits |= u32::from(value < threshold) << bit;
-        }
+        let bits = tile_bits(tile, threshold);
         word |= u64::from(bits) << (TILE * index);
     }
     word

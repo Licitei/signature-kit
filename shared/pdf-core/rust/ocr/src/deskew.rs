@@ -1,4 +1,4 @@
-use crate::raster::{Bits, RasterError, ink_runs};
+use crate::raster::{Bits, RasterError, ink_counts, ink_runs};
 
 const MARGIN: usize = 128;
 const SAMPLE_X: u32 = 32;
@@ -140,18 +140,10 @@ fn axis_score(profile: &[u32], rises: f64, falls: f64) -> f64 {
 fn estimate(page: &Bits) -> i32 {
     let columns = usize::try_from(page.width.div_ceil(SAMPLE_X)).unwrap_or_default();
     let row_step = usize::try_from(SAMPLE_Y).unwrap_or(1);
-    let mut bins = vec![0_u32; columns];
+    let mut bins = Vec::with_capacity(columns.saturating_add(1));
     let mut samples = Vec::new();
     for yy in (0..page.height).step_by(row_step) {
-        bins.fill(0);
-        ink_runs(page.row(yy), page.width, |left, right| {
-            let center = u32::midpoint(left, right);
-            if let Ok(index) = usize::try_from(center >> 5_u32)
-                && let Some(bin) = bins.get_mut(index)
-            {
-                *bin += (right - left).min(SAMPLE_X);
-            }
-        });
+        ink_counts(page.row(yy), &mut bins);
         samples.extend(bins.iter().enumerate().filter_map(|(index, &count)| {
             let xx = u32::try_from(index).ok()? * SAMPLE_X + (SAMPLE_X >> 1_u32);
             (count > 0).then_some((xx, yy, count))
