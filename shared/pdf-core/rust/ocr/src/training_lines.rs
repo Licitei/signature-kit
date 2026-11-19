@@ -16,10 +16,13 @@ pub(crate) fn read(
     mut input: BufReader<File>,
     hash: &mut u64,
     samples: &mut Vec<Example>,
+    stride: usize,
 ) -> io::Result<()> {
     *hash = digest(MAGIC, *hash);
     let initial = samples.len();
+    let mut record_index = 0_usize;
     let mut skipped = 0_usize;
+    let mut sampled_out = 0_usize;
     let mut record = Vec::new();
     while !input.fill_buf()?.is_empty() {
         let mut header = [0_u8; 8];
@@ -34,6 +37,12 @@ pub(crate) fn read(
         record.resize(pixels.saturating_add(text_size), 0);
         input.read_exact(&mut record)?;
         *hash = digest(&record, digest(&header, *hash));
+        let consume = record_index.checked_rem(stride) == Some(0);
+        record_index = record_index.saturating_add(1);
+        if !consume {
+            sampled_out = sampled_out.saturating_add(1);
+            continue;
+        }
         let (raster, label) = record
             .split_at_checked(pixels)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed OCRL record"))?;
@@ -66,15 +75,9 @@ pub(crate) fn read(
             text: text.chars().collect(),
         });
     }
-    if samples.len() == initial {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "no single-line OCRL records",
-        ));
-    }
     writeln!(
         io::stdout().lock(),
-        "lines={} skipped={skipped} archive={}",
+        "lines={} skipped={skipped} sampled_out={sampled_out} archive={}",
         samples.len().saturating_sub(initial),
         archive.display()
     )

@@ -1,3 +1,7 @@
+#[cfg(all(target_arch = "x86_64", feature = "ctc-v3"))]
+#[path = "sequence_int8_avx2.rs"]
+mod int8_avx2;
+
 use core::array;
 
 #[cfg(feature = "ctc-beam")]
@@ -59,9 +63,12 @@ impl Frame {
     }
 }
 
+type Dot = fn(&[i8], &[u8]) -> i32;
+
 #[derive(Clone, Copy)]
 pub(crate) struct Layer<'model> {
     bias_and_weights: &'model [u8],
+    dot: Dot,
     scale: f32,
 }
 
@@ -251,11 +258,16 @@ impl<'model> Sequence<'model> {
         let [left, top, right, bottom] = line.bbox;
         let mut words = Vec::<Word>::new();
         let mut starts_word = true;
-        self.predict(
+        #[cfg(feature = "ctc-beam")]
+        let recognize = Self::predict_beam;
+        #[cfg(not(feature = "ctc-beam"))]
+        let recognize = Self::predict;
+        recognize(
+            self,
             page,
             geometry,
             scratch,
-            |position, character, confidence| {
+            |position: u32, character: char, confidence: f32| {
                 if character.is_whitespace() {
                     starts_word = true;
                     return;
@@ -342,6 +354,7 @@ fn decode_layer(
     Some((
         Layer {
             bias_and_weights,
+            dot: dot_kernel(),
             scale,
         },
         rest,
@@ -436,7 +449,7 @@ fn convolve<const WIDTH: usize>(
                 if let Some(window) =
                     tap(frame, tap_index, size, dilation).and_then(|index| input.get(index))
                 {
-                    sum = sum.wrapping_add(dot(window, kernel));
+                    sum = sum.wrapping_add((layer.dot)(window, kernel));
                 }
             }
             let value = signed(sum) * scale + bias;
@@ -452,8 +465,22 @@ fn convolve<const WIDTH: usize>(
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
-fn dot<const WIDTH: usize>(input: &[i8; WIDTH], weights: &[u8; WIDTH]) -> i32 {
+fn dot_kernel() -> Dot {
+    #[cfg(all(target_arch = "x86_64", feature = "ctc-v3"))]
+    if std::is_x86_feature_detected!("avx2") {
+        return int8_avx2::dot;
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        wasm_dot
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    {
+        scalar_dot
+    }
+}
+
+fn scalar_dot(input: &[i8], weights: &[u8]) -> i32 {
     input
         .iter()
         .zip(weights)
@@ -468,20 +495,17 @@ fn dot<const WIDTH: usize>(input: &[i8; WIDTH], weights: &[u8; WIDTH]) -> i32 {
     unsafe_code,
     reason = "full 16-byte records are valid unaligned wasm SIMD inputs"
 )]
-fn dot<const WIDTH: usize>(input: &[i8; WIDTH], weights: &[u8; WIDTH]) -> i32 {
+fn wasm_dot(input: &[i8], weights: &[u8]) -> i32 {
     use core::arch::wasm32::{
         i16x8_extmul_high_i8x16, i16x8_extmul_low_i8x16, i32x4_add, i32x4_extadd_pairwise_i16x8,
         i32x4_extract_lane, i32x4_splat, v128_load,
     };
+    let (features, feature_tail) = input.as_chunks::<16>();
+    let (matrix, weight_tail) = weights.as_chunks::<16>();
     let mut sums = i32x4_splat(0);
-    for (features, kernel) in input
-        .as_chunks::<16>()
-        .0
-        .iter()
-        .zip(weights.as_chunks::<16>().0)
-    {
+    for (input_chunk, kernel) in features.iter().zip(matrix) {
         // SAFETY: Both arguments point to initialized arrays of exactly 16 bytes.
-        let lhs = unsafe { v128_load(features.as_ptr().cast()) };
+        let lhs = unsafe { v128_load(input_chunk.as_ptr().cast()) };
         // SAFETY: The weight table contains an initialized 16-byte record.
         let rhs = unsafe { v128_load(kernel.as_ptr().cast()) };
         let low = i32x4_extadd_pairwise_i16x8(i16x8_extmul_low_i8x16(lhs, rhs));
@@ -492,6 +516,7 @@ fn dot<const WIDTH: usize>(input: &[i8; WIDTH], weights: &[u8; WIDTH]) -> i32 {
         .wrapping_add(i32x4_extract_lane::<1>(sums))
         .wrapping_add(i32x4_extract_lane::<2>(sums))
         .wrapping_add(i32x4_extract_lane::<3>(sums))
+        .wrapping_add(scalar_dot(feature_tail, weight_tail))
 }
 
 fn signed(value: i32) -> f32 {
@@ -509,8 +534,7 @@ fn scores<'input>(
         .as_chunks::<{ CHANNELS.saturating_add(RECORD_HEADER) }>();
     labels.iter().zip(rows).filter_map(move |(codepoint, row)| {
         let (bias, scale, kernel) = layer_row(row, layer.scale)?;
-        let weights = kernel.try_into().ok()?;
-        let score = signed(dot(window, weights)) * scale + bias;
+        let score = signed((layer.dot)(window, kernel)) * scale + bias;
         let label = char::from_u32(u32::from_le_bytes(*codepoint))?;
         Some((label, score))
     })

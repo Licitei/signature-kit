@@ -356,19 +356,6 @@ impl Parameters {
         Some(loss)
     }
 
-    fn new(labels: usize, rng: &mut Random) -> Self {
-        let [first, second, third, output] = KERNELS;
-        Self {
-            kernels: Kernels::detect(),
-            layers: [
-                Layer::new(INPUT, CHANNELS, first, rng),
-                Layer::new(CHANNELS, CHANNELS, second, rng),
-                Layer::new(CHANNELS, CHANNELS, third, rng),
-                Layer::new(CHANNELS, labels, output, rng),
-            ],
-        }
-    }
-
     fn initialize(&mut self, source: &Sequence<'_>, labels: &[char]) {
         source.visit_weights(labels, |layer_index, row_index, bias, scale, weights| {
             let Some(layer) = self.layers.get_mut(layer_index) else {
@@ -384,6 +371,19 @@ impl Parameters {
                 }
             }
         });
+    }
+
+    fn new(labels: usize, rng: &mut Random) -> Self {
+        let [first, second, third, output] = KERNELS;
+        Self {
+            kernels: Kernels::detect(),
+            layers: [
+                Layer::new(INPUT, CHANNELS, first, rng),
+                Layer::new(CHANNELS, CHANNELS, second, rng),
+                Layer::new(CHANNELS, CHANNELS, third, rng),
+                Layer::new(CHANNELS, labels, output, rng),
+            ],
+        }
     }
 
     fn predict<Observe>(

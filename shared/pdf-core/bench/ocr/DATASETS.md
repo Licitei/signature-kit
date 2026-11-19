@@ -117,3 +117,42 @@ Read records until EOF. Every record starts with a little-endian `u16` width,
 `u16` height, and `u32` UTF-8 byte length. Immediately following are exactly
 `width * height` top-down row-major gray8 pixels and the UTF-8 text bytes
 in NFC, with no terminator. A truncated record is invalid.
+
+## Stream the full training corpus
+
+Use the same corpus root as the held-out page generator. This mode renders
+every page of each assigned training PDF using one Poppler process per
+document. It keeps one gray page in memory and writes OCRL records directly.
+It skips pages without native text and excludes the `digitalizados` tree.
+`--dpi calibrated` chooses the source raster resolution from the scan profile.
+The line writer then applies its seeded crop augmentation.
+
+```sh
+mkdir -p .cache/t
+export TMPDIR="$PWD/.cache/t"
+r=/home/yorizel/.local/bin/resource-run
+b=shared/pdf-core/bench/ocr
+corpus=/home/yorizel/Documents/bench-parsers
+
+"$r" --cpu 6 --mem 8G bash -c '
+  jobs=()
+  for partition in 0 1 2 3 4 5; do
+    bun "$1/generate-dataset.ts" "$2" --labels poppler --mode training-shards \
+      --split train --preset calibrated --dpi calibrated --seed d3 \
+      --partition "$partition/6" --output shared/pdf-core/.cache/train/full-corpus &
+    jobs+=("$!")
+  done
+  failed=0
+  for pid in "${jobs[@]}"; do wait "$pid" || failed=1; done
+  exit "$failed"
+' -- "$b" "$corpus"
+```
+
+The partition hash subdivides the established training split. Files are
+committed one document at a time. Rerunning the same command skips complete
+shards and prints the count in `resumedDocuments`. Choose a new output
+directory when changing the corpus contents or the renderer. The trainer
+can read every shard with `--shard-stride=N`, retaining every Nth record
+within each document before binarizing. This bounds the in-memory training
+pool while preserving document coverage. Use a sufficiently large pool
+for the number of lines requested per epoch.

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -14,6 +14,7 @@ import {
 } from "./degradation";
 import type { Box, Raster } from "./degradation";
 import type { Glyph } from "./glyph-labels";
+import { augment, mix, trainingLineHeader } from "./training-raster";
 type Word = Glyph & { line: number; glyphs?: Glyph[] };
 
 const { values, positionals } = parseArgs({
@@ -26,6 +27,7 @@ const { values, positionals } = parseArgs({
     dpi: { type: "string", default: "300" },
     mode: { type: "string", default: "pages" },
     split: { type: "string", default: "all" },
+    partition: { type: "string", default: "0/1" },
     "max-docs": { type: "string" },
     "max-pages": { type: "string" },
   },
@@ -40,6 +42,8 @@ const seed = values.seed;
 const selectedSplit = values.split;
 const maxDocs = Number(values["max-docs"] ?? Number.MAX_SAFE_INTEGER);
 const maxPages = Number(values["max-pages"] ?? Number.MAX_SAFE_INTEGER);
+const [partition, partitions] = (values.partition ?? "").split("/").map(Number);
+const trainingShards = mode === "training-shards";
 
 if (
   positionals.length !== 1 ||
@@ -50,12 +54,24 @@ if (
   !presets.includes(preset) ||
   seed === undefined ||
   (labelSource !== "pdf-core" && labelSource !== "poppler") ||
-  (mode !== "pages" && mode !== "lines") ||
+  (mode !== "pages" && mode !== "lines" && !trainingShards) ||
+  (trainingShards &&
+    (labelSource !== "poppler" ||
+      selectedSplit !== "train" ||
+      !["clean", "calibrated"].includes(preset))) ||
+  !/^\d+\/\d+$/u.test(values.partition ?? "") ||
+  partition === undefined ||
+  partitions === undefined ||
+  !Number.isSafeInteger(partition) ||
+  !Number.isSafeInteger(partitions) ||
+  partitions < 1 ||
+  partition >= partitions ||
+  (!trainingShards && partitions !== 1) ||
   !["all", "train", "val", "test"].includes(selectedSplit ?? "") ||
   ![maxDocs, maxPages].every((count) => Number.isSafeInteger(count) && count >= 1)
 ) {
   console.error(
-    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N]",
+    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines|training-shards] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N] [--partition INDEX/COUNT]",
   );
   process.exit(2);
 }
@@ -203,6 +219,116 @@ async function writeSample(
   return true;
 }
 
+async function* rasterStream(source: ReadableStream<Uint8Array>): AsyncGenerator<Raster> {
+  const decoder = new TextDecoder();
+  const header = new Uint8Array(96);
+  let headerLength = 0;
+  let raster: Raster | undefined;
+  let filled = 0;
+  let newlines = 0;
+  for await (const bytes of source) {
+    let offset = 0;
+    while (offset < bytes.length) {
+      if (raster === undefined) {
+        const byte = bytes[offset];
+        if (byte === undefined || headerLength === header.length) return;
+        header[headerLength] = byte;
+        headerLength += 1;
+        offset += 1;
+        if (byte === 10) newlines += 1;
+        if (newlines !== 3) continue;
+        const match = /^P5\n(\d+) (\d+)\n255\n$/u.exec(
+          decoder.decode(header.subarray(0, headerLength)),
+        );
+        if (match === null) return;
+        const width = Number(match[1]);
+        const height = Number(match[2]);
+        const size = width * height;
+        if (!Number.isSafeInteger(size) || size < 1 || size > 32_000_000) return;
+        raster = { width, height, pixels: new Uint8Array(size) };
+        filled = 0;
+        headerLength = 0;
+        newlines = 0;
+      }
+      const count = Math.min(bytes.length - offset, raster.pixels.length - filled);
+      raster.pixels.set(bytes.subarray(offset, offset + count), filled);
+      offset += count;
+      filled += count;
+      if (filled === raster.pixels.length) {
+        yield raster;
+        raster = undefined;
+      }
+    }
+  }
+}
+
+async function streamTrainingDocument(
+  file: string,
+  target: string,
+  dpi: number,
+  labels: Map<number, Word[]>,
+  seed: number,
+) {
+  let lastPage = 0;
+  for (const page of labels.keys()) lastPage = Math.max(page, lastPage);
+  const child = Bun.spawn(
+    ["pdftoppm", "-q", "-cropbox", "-gray", "-r", String(dpi), "-l", String(lastPage), file],
+    { stdout: "pipe", stderr: "inherit" },
+  );
+  const temporary = `${target}.${process.pid}.partial`;
+  const writer = Bun.file(temporary).writer({ highWaterMark: 1024 * 1024 });
+  const encoder = new TextEncoder();
+  let page = 0;
+  let pages = 0;
+  let samples = 0;
+  let words = 0;
+  let closed = false;
+  try {
+    writer.write(trainingLineHeader);
+    for await (const raster of rasterStream(child.stdout)) {
+      page += 1;
+      const groups = Map.groupBy(labels.get(page) ?? [], (word) => word.line);
+      if (groups.size === 0) continue;
+      pages += 1;
+      for (const [line, items] of groups) {
+        const [left, top, right, bottom] = enclosingBox(items, raster);
+        const text = items
+          .map((word) => word.text.replace(/\p{Cc}/gu, " "))
+          .join(" ")
+          .normalize("NFC")
+          .trim();
+        if (left >= right || top >= bottom || text.length === 0) continue;
+        writer.write(
+          augment(
+            raster,
+            Math.max(0, left - 2),
+            Math.max(0, top - 1),
+            Math.min(raster.width, right + 2),
+            Math.min(raster.height, bottom + 1),
+            encoder.encode(text),
+            mix(seed ^ mix(page) ^ mix(line)),
+          ),
+        );
+        samples += 1;
+        words += items.length;
+      }
+    }
+    if (page !== lastPage) child.kill();
+    const status = await child.exited;
+    await writer.end();
+    closed = true;
+    if (status !== 0 || page !== lastPage) return undefined;
+    if (samples > 0) await rename(temporary, target);
+    return { pages, samples, words };
+  } finally {
+    if (!closed) {
+      child.kill();
+      await writer.end();
+    }
+    await rm(temporary, { force: true });
+  }
+}
+
 const started = performance.now();
 let documents = 0;
 let pages = 0;
@@ -210,6 +336,8 @@ let samples = 0;
 let failed = 0;
 let sourceWords = 0;
 let matchedWords = 0;
+let resumedDocuments = 0;
+if (trainingShards) await mkdir(join(output, "train"), { recursive: true });
 
 for await (const file of pdfFiles(pdfRoot)) {
   const key = relative(root, file).split(sep).join("/");
@@ -223,9 +351,18 @@ for await (const file of pdfFiles(pdfRoot)) {
   const bucket = Number.parseInt(digest.slice(0, 8), 16) % 100;
   const split = bucket < 80 ? "train" : bucket < 90 ? "val" : "test";
   if (selectedSplit !== "all" && selectedSplit !== split) continue;
+  if (Number.parseInt(digest.slice(8, 16), 16) % partitions !== partition) continue;
   if (documents >= maxDocs) break;
   documents += 1;
   const directory = join(output, split);
+  const shardId = createHash("sha256")
+    .update(JSON.stringify({ key, seed, dpi, maxPages, preset }))
+    .digest("hex");
+  const target = join(directory, `${shardId}.ocrl`);
+  if (trainingShards && (await Bun.file(target).exists())) {
+    resumedDocuments += 1;
+    continue;
+  }
   const pagesArgs = maxPages === Number.MAX_SAFE_INTEGER ? [] : ["-l", String(maxPages)];
   const extracted = await run([
     "pdftotext",
@@ -243,8 +380,30 @@ for await (const file of pdfFiles(pdfRoot)) {
     console.error(`Could not extract labels from ${file}`);
     continue;
   }
+  const labelsByPage = parsePages(new TextDecoder().decode(extracted));
+  if (trainingShards) {
+    if (![...labelsByPage.values()].some((words) => words.length > 0)) continue;
+    const result = await streamTrainingDocument(
+      file,
+      target,
+      dpi,
+      labelsByPage,
+      Number.parseInt(shardId.slice(0, 8), 16),
+    );
+    if (result === undefined) {
+      failed += 1;
+      console.error(`Could not stream training pages from ${file}`);
+    } else {
+      samples += result.samples;
+      pages += result.pages;
+      sourceWords += result.words;
+      matchedWords += result.words;
+      console.log(JSON.stringify({ partition, documents, pages, samples, failed }));
+    }
+    continue;
+  }
   const input = pdfCore === undefined ? undefined : await Bun.file(file).bytes();
-  for (const [page, words] of parsePages(new TextDecoder().decode(extracted))) {
+  for (const [page, words] of labelsByPage) {
     if (words.length === 0) continue;
     const bytes = await run([
       "pdftoppm",
@@ -365,6 +524,7 @@ for await (const file of pdfFiles(pdfRoot)) {
 console.log(
   JSON.stringify({
     documents,
+    resumedDocuments,
     pages,
     samples,
     failed,
@@ -374,4 +534,4 @@ console.log(
     output,
   }),
 );
-if (samples === 0 || failed > 0) process.exitCode = 1;
+if ((samples === 0 && resumedDocuments === 0) || failed > 0) process.exitCode = 1;

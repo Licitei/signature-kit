@@ -95,7 +95,7 @@ done
 Train the bootstrap experiment using the generated Liberation archive and
 the distinct GNU FreeFont validation archive described below. Tesseract
 compares the same thresholded OCRT images using Portuguese LSTM and PSM 7.
-The reviewed lookups reserve the real test crops for evaluation.
+Use the real dev split for model selection and reserve real test crops for evaluation.
 
 ```sh
 "$runner" --cpu 12 --mem 12G "$trainer" train-sequence "$out/v3-bootstrap.bin" \

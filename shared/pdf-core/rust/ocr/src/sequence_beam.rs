@@ -38,6 +38,21 @@ pub(crate) struct Decoder {
 }
 
 impl Decoder {
+    pub(crate) fn finish<Observe>(&mut self, mut observe: Observe)
+    where
+        Observe: FnMut(u32, char, f32),
+    {
+        self.result.clear();
+        let mut tail = self.active.first().and_then(|path| path.node);
+        while let Some(emission) = tail.and_then(|index| self.history.get(index)) {
+            self.result.push(*emission);
+            tail = emission.parent;
+        }
+        for emission in self.result.iter().rev() {
+            observe(emission.x, emission.label, emission.confidence);
+        }
+    }
+
     pub(crate) fn reset(&mut self) {
         self.history.clear();
         self.pending.clear();
@@ -94,21 +109,6 @@ impl Decoder {
             path.score -= peak;
         }
         mem::swap(&mut self.active, &mut self.pending);
-    }
-
-    pub(crate) fn finish<Observe>(&mut self, mut observe: Observe)
-    where
-        Observe: FnMut(u32, char, f32),
-    {
-        self.result.clear();
-        let mut tail = self.active.first().and_then(|path| path.node);
-        while let Some(emission) = tail.and_then(|index| self.history.get(index)) {
-            self.result.push(*emission);
-            tail = emission.parent;
-        }
-        for emission in self.result.iter().rev() {
-            observe(emission.x, emission.label, emission.confidence);
-        }
     }
 }
 

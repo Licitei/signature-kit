@@ -911,12 +911,13 @@ fn load_sequence_archive(
     archive: &Path,
     hash: &mut u64,
     output: &mut Vec<Example>,
+    shard_stride: usize,
 ) -> io::Result<()> {
     let mut file = fs::File::open(archive)?;
     let mut signature = [0_u8; 8];
     file.read_exact(&mut signature)?;
     if &signature == training_lines::MAGIC {
-        return training_lines::read(archive, BufReader::new(file), hash, output);
+        return training_lines::read(archive, BufReader::new(file), hash, output, shard_stride);
     }
     file.rewind()?;
     let mut input = BufReader::new(file);
@@ -953,16 +954,20 @@ fn train_sequence(
     archives: &[OsString],
     validation: Option<&Path>,
     initial_path: Option<&Path>,
+    shard_stride: usize,
 ) -> io::Result<()> {
     let mut examples = Vec::new();
     let mut hash = FNV_OFFSET;
+    if shard_stride != 1 {
+        hash = digest(&shard_stride.to_le_bytes(), digest(b"shard stride", hash));
+    }
     for archive in archives {
-        load_sequence_archive(Path::new(archive), &mut hash, &mut examples)?;
+        load_sequence_archive(Path::new(archive), &mut hash, &mut examples, shard_stride)?;
     }
     let mut held_out = Vec::new();
     hash = digest(b"validation", hash);
     if let Some(path) = validation {
-        load_sequence_archive(path, &mut hash, &mut held_out)?;
+        load_sequence_archive(path, &mut hash, &mut held_out, 1)?;
     }
     let initial_bytes = initial_path.map(fs::read).transpose()?;
     let initial = if let Some(bytes) = initial_bytes.as_deref() {
@@ -1022,6 +1027,7 @@ fn sequence_arguments(
     };
     let mut initial = None;
     let mut validation = None;
+    let mut shard_stride = 1_usize;
     for option in options {
         if option == "--resume" {
             training.resume = true;
@@ -1048,6 +1054,7 @@ fn sequence_arguments(
         match parsed {
             Some(("--warm", rounds)) if rounds < training.epochs => training.warm_epochs = rounds,
             Some(("--lines", limit)) if limit > 0 => training.lines_per_epoch = limit,
+            Some(("--shard-stride", stride)) if stride > 0 => shard_stride = stride,
             Some(("--patience", rounds)) if rounds > 0 => training.patience = rounds,
             Some(("--qat", rounds)) if rounds < training.epochs => {
                 training.quantized_epochs = rounds;
@@ -1076,7 +1083,14 @@ fn sequence_arguments(
             "choose separate initial and output tables",
         ));
     }
-    train_sequence(Path::new(output), training, archives, validation, initial)
+    train_sequence(
+        Path::new(output),
+        training,
+        archives,
+        validation,
+        initial,
+        shard_stride,
+    )
 }
 
 fn evaluate_sequence(input: &Path, weights: &Path) -> io::Result<()> {
@@ -1201,7 +1215,7 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--initial=MODEL] [--patience=N] [--qat=N] [--resume] <samples.ocrt|shard.ocrl>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--initial=MODEL] [--patience=N] [--qat=N] [--shard-stride=N] [--resume] <samples.ocrt|shard.ocrl>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }
