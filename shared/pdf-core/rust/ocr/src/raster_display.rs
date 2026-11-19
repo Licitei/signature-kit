@@ -477,7 +477,7 @@ impl Image {
         &self,
         blobs: &[&[u8]],
         decoded: Option<&Gray>,
-        mask: Option<&Gray>,
+        decoded_mask: Option<&Gray>,
         image_x: f64,
         image_y: f64,
     ) -> Option<Color> {
@@ -506,7 +506,8 @@ impl Image {
                 .copied()
                 .unwrap_or(255)
         } else {
-            mask.and_then(|gray| jpeg_sample(gray, image_x, image_y))
+            decoded_mask
+                .and_then(|gray| jpeg_sample(gray, image_x, image_y))
                 .unwrap_or(255)
         };
         let tone = if self.flags & 4 != 0 && mask_alpha > 0 && mask_alpha < 255 {
@@ -532,7 +533,7 @@ impl Image {
 impl Painter<'_> {
     fn available_clip_budget(&self) -> usize {
         let mut bytes = 0_usize;
-        let mut held = Vec::new();
+        let mut held = Vec::<&Rc<Clip>>::new();
         for mask in self
             .stack
             .iter()
@@ -653,7 +654,7 @@ impl Painter<'_> {
             return;
         }
         let decoded = image.decode(&self.blobs, 1, image.blob);
-        let mask = image.decode(&self.blobs, 2, image.mask);
+        let decoded_mask = image.decode(&self.blobs, 2, image.mask);
         for y in area.top..area.bottom {
             for x in area.left..area.right {
                 let [image_x, pdf_v] = transform(back, [scalar(x) + 0.5_f64, scalar(y) + 0.5_f64]);
@@ -663,7 +664,7 @@ impl Painter<'_> {
                     && let Some(color) = image.sample(
                         &self.blobs,
                         decoded.as_ref(),
-                        mask.as_ref(),
+                        decoded_mask.as_ref(),
                         image_x,
                         image_y,
                     )
