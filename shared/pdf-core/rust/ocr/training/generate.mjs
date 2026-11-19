@@ -629,7 +629,10 @@ async function importDataset(directory, output, jpeg, limit, textOnly) {
   const count = Math.min(limit, files.length);
   const samples = [];
   for (const [index, name] of files.entries()) {
-    if (Math.floor((index * count) / files.length) === Math.floor(((index + 1) * count) / files.length))
+    if (
+      Math.floor((index * count) / files.length) ===
+      Math.floor(((index + 1) * count) / files.length)
+    )
       continue;
     const label = JSON.parse(await readFile(join(directory, name), "utf8"));
     const base = join(directory, name.replace(/\.json$/u, ""));
@@ -736,7 +739,13 @@ if (command === "bootstrap" && args.length === 5) {
   ) {
     fail("Expected --jpeg, --text-only-lines or --limit=<positive integer>");
   }
-  await importDataset(directory, output, flags.includes("--jpeg"), limit, flags.includes("--text-only-lines"));
+  await importDataset(
+    directory,
+    output,
+    flags.includes("--jpeg"),
+    limit,
+    flags.includes("--text-only-lines"),
+  );
 } else if (command === "scans" && args.length === 3) {
   await importScans(...args);
 } else if (command === "corpus" && args.length === 3) {
@@ -745,7 +754,9 @@ if (command === "bootstrap" && args.length === 5) {
   console.error(
     "Usage: bun generate.mjs bootstrap <pdf-core.wasm> <out-dir> <train-font-dir> <val-font-dir> <test-font-dir>",
   );
-  console.error("       bun generate.mjs import <dataset-split-dir> <output.ocrt> [--jpeg] [--limit=N] [--text-only-lines]");
+  console.error(
+    "       bun generate.mjs import <dataset-split-dir> <output.ocrt> [--jpeg] [--limit=N] [--text-only-lines]",
+  );
   console.error("       bun generate.mjs scans <fixture-dir> <manifest.json> <output.ocrt>");
   console.error("       bun generate.mjs corpus <pdf-core.wasm> <native-pdf-root> <corpus.txt>");
   process.exitCode = 2;
