@@ -1,19 +1,15 @@
 import { Effect, FileSystem, Layer, Path } from "effect";
 
 import { PdfCoreError, PdfCoreErrorCodeValue, PdfCoreOperationValue } from "./config.js";
+import { PdfCoreOcr, makePdfCoreOcr } from "./ocr.js";
 import { PdfCore, makePdfCore } from "./pdf-core.js";
 import type { PdfCoreRangeSource } from "./pdf-core.js";
 
-export const pdfCoreFileLayer: Layer.Layer<
-  PdfCore,
-  PdfCoreError,
-  FileSystem.FileSystem | Path.Path
-> = Layer.effect(
-  PdfCore,
+const compileFileModule = (url: URL) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const location = yield* path.fromFileUrl(new URL("./pdf-core.wasm", import.meta.url)).pipe(
+    const location = yield* path.fromFileUrl(url).pipe(
       Effect.mapError(
         () =>
           new PdfCoreError({
@@ -33,7 +29,7 @@ export const pdfCoreFileLayer: Layer.Layer<
           }),
       ),
     );
-    const module = yield* Effect.tryPromise({
+    return yield* Effect.tryPromise({
       try: () => WebAssembly.compile(bytes),
       catch: () =>
         new PdfCoreError({
@@ -42,8 +38,27 @@ export const pdfCoreFileLayer: Layer.Layer<
           reason: "The PDF core WebAssembly module could not be compiled.",
         }),
     });
-    return yield* makePdfCore(module);
-  }),
+  });
+
+export const pdfCoreFileLayer: Layer.Layer<
+  PdfCore,
+  PdfCoreError,
+  FileSystem.FileSystem | Path.Path
+> = Layer.effect(
+  PdfCore,
+  Effect.flatMap(compileFileModule(new URL("./pdf-core.wasm", import.meta.url)), makePdfCore),
+);
+
+export const pdfCoreOcrFileLayer: Layer.Layer<
+  PdfCoreOcr,
+  PdfCoreError,
+  FileSystem.FileSystem | Path.Path
+> = Layer.effect(
+  PdfCoreOcr,
+  Effect.flatMap(
+    compileFileModule(new URL("./pdf-core-ocr.wasm", import.meta.url)),
+    makePdfCoreOcr,
+  ),
 );
 
 export const pdfCoreFileSource = Effect.fn(function* (location: string) {

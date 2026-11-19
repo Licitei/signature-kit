@@ -43,7 +43,12 @@
       "types": "./dist/canvas.d.ts",
       "import": "./dist/canvas.js"
     },
-    "./pdf-core.wasm": "./dist/pdf-core.wasm"
+    "./pdf-core.wasm": "./dist/pdf-core.wasm",
+    "./ocr": {
+      "types": "./dist/ocr.d.ts",
+      "import": "./dist/ocr.js"
+    },
+    "./pdf-core-ocr.wasm": "./dist/pdf-core-ocr.wasm"
   },
   "publishConfig": {
     "access": "public"
@@ -89,7 +94,8 @@
       "build": {
         "dependsOn": [
           "...",
-          "build-wasm"
+          "build-wasm",
+          "build-ocr-wasm"
         ]
       },
       "rust-check": {
@@ -124,6 +130,27 @@
         "executor": "nx:run-commands",
         "options": {
           "command": "npm publish --access public",
+          "cwd": "{projectRoot}"
+        }
+      },
+      "build-ocr-wasm": {
+        "executor": "nx:run-commands",
+        "cache": true,
+        "inputs": [
+          "{projectRoot}/rust/Cargo.toml",
+          "{projectRoot}/rust/Cargo.lock",
+          "{projectRoot}/rust/ocr/**/*",
+          "{projectRoot}/scripts/build-ocr-wasm.sh",
+          "{projectRoot}/node_modules/binaryen/package.json",
+          {
+            "runtime": "rustc --version"
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/dist/pdf-core-ocr.wasm"
+        ],
+        "options": {
+          "command": "bash scripts/build-ocr-wasm.sh",
           "cwd": "{projectRoot}"
         }
       }

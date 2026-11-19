@@ -37,6 +37,7 @@
       "@signature-kit/cms/sign": ["../../shared/cms/src/sign.ts"],
       "@signature-kit/cms/verify": ["../../shared/cms/src/verify.ts"],
       "@signature-kit/cms/inspect": ["../../shared/cms/src/inspect.ts"],
+      "@signature-kit/pdf-core/ocr": ["../../shared/pdf-core/src/ocr.ts"],
       "@signature-kit/pdf-core/config": ["../../shared/pdf-core/src/config.ts"],
       "@signature-kit/pdf-core/pdf-core": ["../../shared/pdf-core/src/pdf-core.ts"],
       "@signature-kit/pdf-core/browser": ["../../shared/pdf-core/src/browser.ts"],
