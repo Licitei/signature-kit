@@ -111,6 +111,56 @@ datasets. Set `OCR_BENCH_NATIVE="$native"` and `OCR_BENCH_CTC_MODEL` to the
 experimental table to route the native benchmark through the full OCR
 pipeline. Fit and compare on the dev split before interpreting test scores.
 
+### D3 pilot measurements
+
+Line CER below excludes whitespace and uses identical thresholded OCRT
+inputs for each engine. That measurement supplies crop geometry directly
+to CTC. The raw grayscale page and single-line benchmarks also exercise
+the page preprocessing and segmentation pipeline.
+
+| Model                             | Training pool                                     | Epochs | Training wall time | Parameters | Table bytes | Clean CER | Degraded CER | Reviewed scan CER | Native clean ms/line |
+| --------------------------------- | ------------------------------------------------- | -----: | -----------------: | ---------: | ----------: | --------: | -----------: | ----------------: | -------------------: |
+| v3 bootstrap                      | 792 Liberation lines                              |     24 |         1,082.20 s |    592,004 |     599,880 |    23.51% |       26.49% |            93.70% |                29.17 |
+| v3 mixed, QAT in final two epochs | 54,579 accepted entries before alphabet filtering |      6 |           240.47 s |    593,738 |     601,680 |    21.09% |       26.35% |            76.17% |                31.52 |
+| Tesseract LSTM 5.3.0              | Published Portuguese model                        |      — |                  — |          — |  15,336,931 |     0.49% |        0.82% |            12.92% |                96.69 |
+| Tesseract fast 5.3.0              | Published Portuguese fast model                   |      — |                  — |          — |   1,982,756 |     0.75% |        1.36% |            13.11% |                61.65 |
+
+The clean and degraded line sets each contain 96 lines and 4,254
+non-whitespace characters. The reviewed scan column uses 431 lines and
+15,877 non-whitespace characters. Native inference timings use three
+repetitions over preloaded archives. Tesseract timings include one process
+startup and image decoding for each archive. The hosts shared CPU with
+other jobs during these runs.
+
+Bootstrap selected epoch 24 on the independent GNU FreeFont validation
+set, with 2,318 int8 and 2,314 f32 edits over 8,100 characters. The mixed
+run started from the selected bootstrap table. It mixed 9,504 Liberation
+entries, 24,000 clean PDF lines, and 21,075 accepted records from 24,000
+augmented OCRL records. The clean PDF archive was a systematic sample of
+335,305 complete line labels from a bounded all-page render stopped during
+the initial corpus pilot. The OCRL set came from 144 pages across 24 train
+documents. The mixed run processed 5,960 lines after CTC filtering and
+selected epoch 6 on the degraded font validation and 186 real dev crops,
+with 8,043 int8 and 8,003 f32 edits over 14,832 characters. The remaining
+int8 gap was 0.27 percentage points. The 431 real test crops were evaluated
+after model selection.
+
+The mixed weights are in [sequence-v3-mixed.bin](../data/sequence-v3-mixed.bin)
+with SHA-256 `dcae460143972ad7b0f0b25b333b89860cf31ae22b5286e7d65a9cd27fcbb836`.
+Use the exported table to reproduce the comparisons directly.
+
+```sh
+for dataset in "$out/bootstrap/test.ocrt" "$out/bootstrap/test-degraded.ocrt" "$out/reviewed-test.ocrt"; do
+  "$runner" --cpu 3 --mem 6G "$trainer" evaluate-sequence "$dataset" \
+    "$rust/ocr/data/sequence-v3-mixed.bin" --repeats=3
+done
+OCR_BENCH_CTC_MODEL="$rust/ocr/data/sequence-v3-mixed.bin" \
+  "$runner" --cpu 3 --mem 6G bun "$bench/run.ts" \
+  --dataset "$out/line-reviews/test" --engines ours-native --psm 7
+"$runner" --cpu 2 --mem 4G bun "$bench/run.ts" \
+  --dataset "$out/line-reviews/test" --engines tesseract-lstm,tesseract-fast --psm 7
+```
+
 ## Training and evaluation
 
 From the workspace root, install the repository dependencies and make Bun,

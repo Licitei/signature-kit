@@ -139,7 +139,7 @@ corpus=/home/yorizel/Documents/bench-parsers
   for partition in 0 1 2 3 4 5; do
     bun "$1/generate-dataset.ts" "$2" --labels poppler --mode training-shards \
       --split train --preset calibrated --dpi calibrated --seed d3 \
-      --partition "$partition/6" --output shared/pdf-core/.cache/train/full-corpus &
+      --partition "$partition/6" --lines-per-page 12 --output shared/pdf-core/.cache/train/full-corpus &
     jobs+=("$!")
   done
   failed=0
@@ -148,7 +148,10 @@ corpus=/home/yorizel/Documents/bench-parsers
 ' -- "$b" "$corpus"
 ```
 
-The partition hash subdivides the established training split. Files are
+The partition hash subdivides the established training split.
+`--lines-per-page 12` retains a deterministic sample of up to 12 lines on
+each usable page to keep dense tables from dominating the pool. Omit this
+option to write every usable line. Files are
 committed one document at a time. Rerunning the same command skips complete
 shards and prints the count in `resumedDocuments`. Choose a new output
 directory when changing the corpus contents or the renderer. The trainer

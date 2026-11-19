@@ -153,9 +153,24 @@ impl<'model> Sequence<'model> {
         );
         let [first, second, third, output] = self.layers;
         let [first_spec, second_spec, third_spec, _] = KERNELS;
-        convolve(first, first_spec, &scratch.features, &mut scratch.first);
-        convolve(second, second_spec, &scratch.first, &mut scratch.second);
-        convolve(third, third_spec, &scratch.second, &mut scratch.third);
+        convolve::<INPUT, { INPUT.saturating_mul(5) }>(
+            first,
+            first_spec,
+            &scratch.features,
+            &mut scratch.first,
+        );
+        convolve::<CHANNELS, { CHANNELS.saturating_mul(3) }>(
+            second,
+            second_spec,
+            &scratch.first,
+            &mut scratch.second,
+        );
+        convolve::<CHANNELS, { CHANNELS.saturating_mul(3) }>(
+            third,
+            third_spec,
+            &scratch.second,
+            &mut scratch.third,
+        );
         output
     }
 
@@ -427,15 +442,25 @@ pub(crate) fn activate(value: f32) -> f32 {
     }
 }
 
-fn convolve<const WIDTH: usize>(
+fn convolve<const WIDTH: usize, const WINDOW: usize>(
     layer: Layer<'_>,
     (size, dilation): (usize, usize),
     input: &[[i8; WIDTH]],
     output: &mut Vec<[i8; CHANNELS]>,
 ) {
     output.clear();
-    let record = WIDTH.saturating_mul(size).saturating_add(RECORD_HEADER);
+    let record = WINDOW.saturating_add(RECORD_HEADER);
+    let mut projected = [0_i8; WINDOW];
     for (frame, _) in input.iter().enumerate() {
+        for (tap_index, column) in projected.as_chunks_mut::<WIDTH>().0.iter_mut().enumerate() {
+            if let Some(window) =
+                tap(frame, tap_index, size, dilation).and_then(|index| input.get(index))
+            {
+                column.copy_from_slice(window);
+            } else {
+                column.fill(0);
+            }
+        }
         let mut values = [0_i8; CHANNELS];
         for (activation, row) in values
             .iter_mut()
@@ -444,14 +469,7 @@ fn convolve<const WIDTH: usize>(
             let Some((bias, scale, weights)) = layer_row(row, layer.scale) else {
                 break;
             };
-            let mut sum = 0_i32;
-            for (tap_index, kernel) in weights.as_chunks::<WIDTH>().0.iter().enumerate() {
-                if let Some(window) =
-                    tap(frame, tap_index, size, dilation).and_then(|index| input.get(index))
-                {
-                    sum = sum.wrapping_add((layer.dot)(window, kernel));
-                }
-            }
+            let sum = (layer.dot)(&projected, weights);
             let value = signed(sum) * scale + bias;
             let magnitude =
                 i8::try_from(quantize(activate(value).abs(), 16.0).min(127)).unwrap_or_default();

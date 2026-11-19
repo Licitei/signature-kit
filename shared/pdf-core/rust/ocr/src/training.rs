@@ -1093,7 +1093,7 @@ fn sequence_arguments(
     )
 }
 
-fn evaluate_sequence(input: &Path, weights: &Path) -> io::Result<()> {
+fn evaluate_sequence(input: &Path, weights: &Path, repetitions: u32) -> io::Result<()> {
     let data = fs::read(input)?;
     let samples = load(&data)?;
     let table = fs::read(weights)?;
@@ -1136,7 +1136,6 @@ fn evaluate_sequence(input: &Path, weights: &Path) -> io::Result<()> {
         characters = characters.saturating_add(expected.chars().count());
         confusions(&expected, &actual, &mut counts);
     }
-    let repetitions = 10_u32;
     let started = Instant::now();
     for _ in 0..repetitions {
         for sample in &samples {
@@ -1187,7 +1186,21 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
             sequence_arguments(output, seed, workers, epochs, archives)
         }
         [command, archive, weights] if command == "evaluate-sequence" => {
-            evaluate_sequence(Path::new(archive), Path::new(weights))
+            evaluate_sequence(Path::new(archive), Path::new(weights), 10)
+        }
+        [command, archive, weights, repeats] if command == "evaluate-sequence" => {
+            let count = repeats
+                .to_str()
+                .and_then(|value| value.strip_prefix("--repeats="))
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|&count| count > 0)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "expected --repeats=N with N > 0",
+                    )
+                })?;
+            evaluate_sequence(Path::new(archive), Path::new(weights), count)
         }
         [command, output, seed, shape, corpus, archives @ ..] if command == "train-network" => {
             train_network(Path::new(output), seed, shape, Path::new(corpus), archives)
@@ -1215,7 +1228,7 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--initial=MODEL] [--patience=N] [--qat=N] [--shard-stride=N] [--resume] <samples.ocrt|shard.ocrl>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--initial=MODEL] [--patience=N] [--qat=N] [--shard-stride=N] [--resume] <samples.ocrt|shard.ocrl>... | evaluate-sequence <samples.ocrt> <model.bin> [--repeats=N] | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }

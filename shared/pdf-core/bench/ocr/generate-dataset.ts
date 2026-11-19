@@ -28,6 +28,7 @@ const { values, positionals } = parseArgs({
     mode: { type: "string", default: "pages" },
     split: { type: "string", default: "all" },
     partition: { type: "string", default: "0/1" },
+    "lines-per-page": { type: "string" },
     "max-docs": { type: "string" },
     "max-pages": { type: "string" },
   },
@@ -44,6 +45,7 @@ const maxDocs = Number(values["max-docs"] ?? Number.MAX_SAFE_INTEGER);
 const maxPages = Number(values["max-pages"] ?? Number.MAX_SAFE_INTEGER);
 const [partition, partitions] = (values.partition ?? "").split("/").map(Number);
 const trainingShards = mode === "training-shards";
+const linesPerPage = Number(values["lines-per-page"] ?? Number.MAX_SAFE_INTEGER);
 
 if (
   positionals.length !== 1 ||
@@ -66,12 +68,14 @@ if (
   !Number.isSafeInteger(partitions) ||
   partitions < 1 ||
   partition >= partitions ||
-  (!trainingShards && partitions !== 1) ||
+  (!trainingShards && (partitions !== 1 || values["lines-per-page"] !== undefined)) ||
+  !Number.isSafeInteger(linesPerPage) ||
+  linesPerPage < 1 ||
   !["all", "train", "val", "test"].includes(selectedSplit ?? "") ||
   ![maxDocs, maxPages].every((count) => Number.isSafeInteger(count) && count >= 1)
 ) {
   console.error(
-    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines|training-shards] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N] [--partition INDEX/COUNT]",
+    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines|training-shards] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N] [--partition INDEX/COUNT] [--lines-per-page N]",
   );
   process.exit(2);
 }
@@ -244,7 +248,7 @@ async function* rasterStream(source: ReadableStream<Uint8Array>): AsyncGenerator
         const width = Number(match[1]);
         const height = Number(match[2]);
         const size = width * height;
-        if (!Number.isSafeInteger(size) || size < 1 || size > 32_000_000) return;
+        if (!Number.isSafeInteger(size) || size < 1 || size > 256 * 1024 * 1024) return;
         raster = { width, height, pixels: new Uint8Array(size) };
         filled = 0;
         headerLength = 0;
@@ -268,6 +272,7 @@ async function streamTrainingDocument(
   dpi: number,
   labels: Map<number, Word[]>,
   seed: number,
+  linesPerPage: number,
 ) {
   let lastPage = 0;
   for (const page of labels.keys()) lastPage = Math.max(page, lastPage);
@@ -289,8 +294,16 @@ async function streamTrainingDocument(
       page += 1;
       const groups = Map.groupBy(labels.get(page) ?? [], (word) => word.line);
       if (groups.size === 0) continue;
-      pages += 1;
-      for (const [line, items] of groups) {
+      const previousSamples = samples;
+      const entries = [...groups];
+      if (entries.length > linesPerPage) {
+        entries.sort(
+          ([left], [right]) =>
+            mix(seed ^ mix(page) ^ mix(left)) - mix(seed ^ mix(page) ^ mix(right)),
+        );
+        entries.length = linesPerPage;
+      }
+      for (const [line, items] of entries) {
         const [left, top, right, bottom] = enclosingBox(items, raster);
         const text = items
           .map((word) => word.text.replace(/\p{Cc}/gu, " "))
@@ -312,6 +325,7 @@ async function streamTrainingDocument(
         samples += 1;
         words += items.length;
       }
+      if (samples > previousSamples) pages += 1;
     }
     if (page !== lastPage) child.kill();
     const status = await child.exited;
@@ -319,7 +333,7 @@ async function streamTrainingDocument(
     closed = true;
     if (status !== 0 || page !== lastPage) return undefined;
     if (samples > 0) await rename(temporary, target);
-    return { pages, samples, words };
+    return { pages, renderedPages: page, samples, words };
   } finally {
     if (!closed) {
       child.kill();
@@ -337,6 +351,7 @@ let failed = 0;
 let sourceWords = 0;
 let matchedWords = 0;
 let resumedDocuments = 0;
+let renderedPages = 0;
 if (trainingShards) await mkdir(join(output, "train"), { recursive: true });
 
 for await (const file of pdfFiles(pdfRoot)) {
@@ -356,7 +371,7 @@ for await (const file of pdfFiles(pdfRoot)) {
   documents += 1;
   const directory = join(output, split);
   const shardId = createHash("sha256")
-    .update(JSON.stringify({ key, seed, dpi, maxPages, preset }))
+    .update(JSON.stringify({ key, seed, dpi, maxPages, preset, linesPerPage }))
     .digest("hex");
   const target = join(directory, `${shardId}.ocrl`);
   if (trainingShards && (await Bun.file(target).exists())) {
@@ -389,6 +404,7 @@ for await (const file of pdfFiles(pdfRoot)) {
       dpi,
       labelsByPage,
       Number.parseInt(shardId.slice(0, 8), 16),
+      linesPerPage,
     );
     if (result === undefined) {
       failed += 1;
@@ -396,9 +412,10 @@ for await (const file of pdfFiles(pdfRoot)) {
     } else {
       samples += result.samples;
       pages += result.pages;
+      renderedPages += result.renderedPages;
       sourceWords += result.words;
       matchedWords += result.words;
-      console.log(JSON.stringify({ partition, documents, pages, samples, failed }));
+      console.log(JSON.stringify({ partition, documents, pages, renderedPages, samples, failed }));
     }
     continue;
   }
@@ -526,6 +543,7 @@ console.log(
     documents,
     resumedDocuments,
     pages,
+    ...(trainingShards ? { renderedPages } : {}),
     samples,
     failed,
     sourceWords,
