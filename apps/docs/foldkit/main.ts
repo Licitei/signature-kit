@@ -1260,7 +1260,7 @@ export const createView = (source: {
                       {
                         id: "overlay-search",
                         name: "q",
-                        type: "search",
+                        type: "text",
                         value: model.query,
                         onInput: (value) => Message.QueryChanged({ value }),
                         toView: ({ input }) =>
@@ -1271,6 +1271,7 @@ export const createView = (source: {
                             h.Attribute("maxlength", "200"),
                             h.AriaLabel(copy.footer_search),
                             h.Attribute("placeholder", copy.search_placeholder),
+                            h.EnterKeyHint("search"),
                           ]),
                       },
                       h,

@@ -212,7 +212,7 @@ export const landing = stylex.create({
   features: {
     display: "grid",
     gap: "8px",
-    margin: 0,
+    margin: "32px 0 0",
     padding: 0,
     listStyle: "none",
   },
