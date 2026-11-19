@@ -52,13 +52,13 @@ export async function loadRasterizer(bytes: ArrayBuffer) {
   }
   return (payload: Uint8Array, scale: number) => {
     const input = Number(allocate(payload.length));
-    if (!input) return undefined;
+    if (input === 0) return undefined;
     new Uint8Array(memory.buffer, input, payload.length).set(payload);
     const started = performance.now();
     const output = Number(rasterize(input, payload.length, Math.round(scale * 1000)));
     const ms = performance.now() - started;
     free(input, payload.length);
-    if (!output) return undefined;
+    if (output === 0) return undefined;
     const view = new DataView(memory.buffer, output, 8);
     const width = view.getUint32(0, true);
     const height = view.getUint32(4, true);

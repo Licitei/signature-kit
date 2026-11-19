@@ -15,10 +15,12 @@ pub(crate) const extern "C" fn pdf_core_ocr_version() -> u32 {
 
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn pdf_core_ocr_raster_alloc(len: usize) -> *mut u8 {
-    if len == 0 {
+    let mut bytes = Vec::<u8>::new();
+    if len == 0 || bytes.try_reserve_exact(len).is_err() {
         return ptr::null_mut();
     }
-    Box::into_raw(vec![0; len].into_boxed_slice()).cast()
+    bytes.resize(len, 0);
+    Box::into_raw(bytes.into_boxed_slice()).cast()
 }
 
 #[unsafe(no_mangle)]

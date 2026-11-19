@@ -102,7 +102,12 @@ function parsePages(tsv: string): Map<number, Word[]> {
     const y = Number(top);
     const right = x + Number(width);
     const bottom = y + Number(height);
-    if (text && [x, y, right, bottom].every(Number.isFinite) && x < right && y < bottom) {
+    if (
+      text.length > 0 &&
+      [x, y, right, bottom].every(Number.isFinite) &&
+      x < right &&
+      y < bottom
+    ) {
       words.push({
         text,
         box: [Math.floor(x), Math.floor(y), Math.ceil(right), Math.ceil(bottom)],
@@ -223,7 +228,7 @@ for await (const file of pdfFiles(pdfRoot)) {
   }
   const input = pdfCore === undefined ? undefined : await Bun.file(file).bytes();
   for (const [page, words] of parsePages(new TextDecoder().decode(extracted))) {
-    if (!words.length) continue;
+    if (words.length === 0) continue;
     const bytes = await run([
       "pdftoppm",
       "-q",
