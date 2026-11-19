@@ -1,0 +1,13 @@
+bytes=395485
+words=45446
+bigrams=16000
+stripped=7861
+min_count=5
+bigram_min=4
+bigram_cap=16000
+train_docs=2648
+heldout_docs=662
+failures=0
+heldout_lines=400
+raw_types=173788
+sample=false
