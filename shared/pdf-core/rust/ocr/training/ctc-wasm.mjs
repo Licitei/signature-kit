@@ -43,7 +43,9 @@ function recognize(wasm, input) {
   return { elapsed, text };
 }
 
-const [scalarPath, simdPath, modelPath, cases, tess = "tesseract"] = process.argv.slice(2);
+const [scalarPath, simdPath, modelPath, cases, tess = "tesseract", psm = "3"] =
+  process.argv.slice(2);
+assert.ok(psm === "3" || psm === "7", "Expected page mode 3 or line mode 7");
 const [scalar, simd, model, files] = await Promise.all([
   loadWasm(scalarPath),
   loadWasm(simdPath),
@@ -72,7 +74,7 @@ const [result] = await Promise.allSettled([
     const list = join(directory, "pages.txt");
     await writeFile(list, `${pages.map((page) => resolve(cases, page)).join("\n")}\n`);
     const clock = performance.now();
-    const process = Bun.spawn([tess, list, "stdout", "-l", "por", "--oem", "1", "--psm", "3"], {
+    const process = Bun.spawn([tess, list, "stdout", "-l", "por", "--oem", "1", "--psm", psm], {
       stdout: "ignore",
       stderr: "inherit",
       env: { ...globalThis.process.env, OMP_THREAD_LIMIT: "1" },

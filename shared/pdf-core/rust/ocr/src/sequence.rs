@@ -1,5 +1,7 @@
 use core::array;
 
+#[cfg(feature = "ctc-beam")]
+use crate::model::model;
 use crate::model::{Metrics, coordinate};
 use crate::network::{nearest, quantize};
 use crate::raster::Bits;
@@ -7,6 +9,8 @@ use crate::raster::Bits;
 use crate::recognize::Word;
 #[cfg(feature = "ctc-probe")]
 use crate::segment::Line;
+#[cfg(feature = "ctc-beam")]
+use crate::sequence_beam::Decoder;
 
 #[cfg(not(any(feature = "ctc-wide", feature = "ctc-v3")))]
 pub(crate) const MAGIC: &[u8; 4] = b"OCRS";
@@ -69,6 +73,8 @@ pub(crate) struct Sequence<'model> {
 
 #[derive(Default)]
 pub(crate) struct Scratch {
+    #[cfg(feature = "ctc-beam")]
+    beam: Decoder,
     features: Vec<[i8; INPUT]>,
     first: Vec<[i8; CHANNELS]>,
     frames: Vec<Frame>,
@@ -81,6 +87,8 @@ impl Scratch {
     pub(crate) fn for_page(width: u32) -> Self {
         let capacity = usize::try_from(width.saturating_mul(2).min(0x8000)).unwrap_or_default();
         Self {
+            #[cfg(feature = "ctc-beam")]
+            beam: Decoder::default(),
             features: Vec::with_capacity(capacity),
             first: Vec::with_capacity(capacity),
             frames: Vec::with_capacity(capacity),
@@ -127,15 +135,7 @@ impl<'model> Sequence<'model> {
         })
     }
 
-    pub(crate) fn predict<Observe>(
-        &self,
-        page: &Bits,
-        geometry: Geometry,
-        scratch: &mut Scratch,
-        mut observe: Observe,
-    ) where
-        Observe: FnMut(u32, char, f32),
-    {
+    fn forward(&self, page: &Bits, geometry: Geometry, scratch: &mut Scratch) -> Layer<'model> {
         frames(geometry, &mut scratch.frames);
         scratch.features.clear();
         scratch.features.extend(
@@ -149,6 +149,20 @@ impl<'model> Sequence<'model> {
         convolve(first, first_spec, &scratch.features, &mut scratch.first);
         convolve(second, second_spec, &scratch.first, &mut scratch.second);
         convolve(third, third_spec, &scratch.second, &mut scratch.third);
+        output
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), not(feature = "ctc-beam")))]
+    pub(crate) fn predict<Observe>(
+        &self,
+        page: &Bits,
+        geometry: Geometry,
+        scratch: &mut Scratch,
+        mut observe: Observe,
+    ) where
+        Observe: FnMut(u32, char, f32),
+    {
+        let output = self.forward(page, geometry, scratch);
         let mut active = ('\0', 0, 0.0_f32);
         for (&frame, window) in scratch.frames.iter().zip(&scratch.third) {
             let (label, confidence) = winner(output, self.classes, window);
@@ -163,6 +177,65 @@ impl<'model> Sequence<'model> {
         }
         if active.0 != '\0' {
             observe(active.1, active.0, active.2);
+        }
+    }
+
+    #[cfg(feature = "ctc-beam")]
+    fn predict_beam<Observe>(
+        &self,
+        page: &Bits,
+        geometry: Geometry,
+        scratch: &mut Scratch,
+        observe: Observe,
+    ) where
+        Observe: FnMut(u32, char, f32),
+    {
+        let output = self.forward(page, geometry, scratch);
+        let language = model();
+        scratch.beam.reset();
+        for (&frame, window) in scratch.frames.iter().zip(&scratch.third) {
+            scratch.beam.step(
+                frame.position(),
+                scores(output, self.classes, window),
+                language.as_ref(),
+            );
+        }
+        scratch.beam.finish(observe);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn visit_weights<Restore>(&self, labels: &[char], mut restore: Restore)
+    where
+        Restore: FnMut(usize, usize, f32, f32, &[u8]),
+    {
+        for (layer_index, (layer, (inputs, unit))) in self
+            .layers
+            .iter()
+            .zip(
+                [INPUT, CHANNELS, CHANNELS, CHANNELS]
+                    .into_iter()
+                    .zip(SCALES),
+            )
+            .enumerate()
+        {
+            let (kernel, _) = KERNELS.get(layer_index).copied().unwrap_or_default();
+            let stride = inputs.saturating_mul(kernel).saturating_add(RECORD_HEADER);
+            let terminal = layer_index == self.layers.len().saturating_sub(1);
+            for (index, row) in layer.bias_and_weights.chunks_exact(stride).enumerate() {
+                let target_index = if terminal {
+                    self.classes
+                        .get(index)
+                        .and_then(|encoded| char::from_u32(u32::from_le_bytes(*encoded)))
+                        .and_then(|label| labels.binary_search(&label).ok())
+                } else {
+                    Some(index)
+                };
+                if let Some(target) = target_index
+                    && let Some((bias, scale, weights)) = layer_row(row, layer.scale)
+                {
+                    restore(layer_index, target, bias, scale * unit, weights);
+                }
+            }
         }
     }
 
@@ -426,22 +499,30 @@ fn signed(value: i32) -> f32 {
     if value < 0 { -absolute } else { absolute }
 }
 
+fn scores<'input>(
+    layer: Layer<'input>,
+    labels: &'input [[u8; 4]],
+    window: &'input [i8; CHANNELS],
+) -> impl Iterator<Item = (char, f32)> + 'input {
+    let (rows, _) = layer
+        .bias_and_weights
+        .as_chunks::<{ CHANNELS.saturating_add(RECORD_HEADER) }>();
+    labels.iter().zip(rows).filter_map(move |(codepoint, row)| {
+        let (bias, scale, kernel) = layer_row(row, layer.scale)?;
+        let weights = kernel.try_into().ok()?;
+        let score = signed(dot(window, weights)) * scale + bias;
+        let label = char::from_u32(u32::from_le_bytes(*codepoint))?;
+        Some((label, score))
+    })
+}
+
+#[cfg(any(not(target_arch = "wasm32"), not(feature = "ctc-beam")))]
 fn winner(layer: Layer<'_>, labels: &[[u8; 4]], window: &[i8; CHANNELS]) -> (char, f32) {
     let mut label = '\0';
     let mut first = f32::NEG_INFINITY;
     let mut second = f32::NEG_INFINITY;
     let mut exp_sum = 0.0_f32;
-    let (rows, _) = layer
-        .bias_and_weights
-        .as_chunks::<{ CHANNELS.saturating_add(RECORD_HEADER) }>();
-    for (codepoint, row) in labels.iter().zip(rows) {
-        let Some((bias, scale, kernel)) = layer_row(row, layer.scale) else {
-            break;
-        };
-        let Ok(weights) = kernel.try_into() else {
-            break;
-        };
-        let score = signed(dot(window, weights)) * scale + bias;
+    for (class, score) in scores(layer, labels, window) {
         if CHANNELWISE {
             if score > first {
                 exp_sum = 1.0 + exp_sum * (first - score).exp();
@@ -452,7 +533,7 @@ fn winner(layer: Layer<'_>, labels: &[[u8; 4]], window: &[i8; CHANNELS]) -> (cha
         if score > first {
             second = first;
             first = score;
-            label = char::from_u32(u32::from_le_bytes(*codepoint)).unwrap_or('\0');
+            label = class;
         } else if score > second {
             second = score;
         }

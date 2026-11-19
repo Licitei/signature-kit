@@ -18,6 +18,99 @@ The pdf-core WASM does not load the model. The OCR engine calls this Rust API
 through its existing page recognition function. Recognition adds no C ABI
 exports.
 
+## Experimental CTC v3
+
+Build the native recognizer and trainer from the repository root.
+
+```sh
+mkdir -p "$PWD/.cache/t" "$PWD/shared/pdf-core/.cache/train"
+export TMPDIR="$PWD/.cache/t"
+runner=/home/yorizel/.local/bin/resource-run
+rust="$PWD/shared/pdf-core/rust"
+training="$rust/ocr/training"
+trainer="$rust/target/release/pdf-core-ocr-train"
+native="$rust/target/release/pdf-core-ocr"
+bench="$PWD/shared/pdf-core/bench/ocr"
+out="$PWD/shared/pdf-core/.cache/train"
+corpus=/home/yorizel/Documents/bench-parsers
+
+"$runner" --cpu 4 --mem 8G cargo build --manifest-path "$rust/Cargo.toml" --release \
+  -p signature-kit-pdf-core-ocr --features ctc-v3,ctc-probe,synth --bins
+```
+
+The v3 table uses `OCRV`, 32 x-height-normalized samples in each input
+column, and 288 hidden channels. Three temporal convolutions have kernels
+5/3/3 at dilations 1/3/16, for a receptive field of 43 frames. The input
+stride is one-eighth of the measured x-height, bounded below by half a
+source pixel. The four layers each have per-output-channel int8 weights,
+an f32 bias and an f32 scale. The table is supplied to the experimental
+CLI with `--ctc-model` or to the development-only wasm probe. Greedy CTC
+uses the highest-posterior frame in each emitted run for its x position.
+The page engine refines word boxes against segmentation and projects them
+back to the original image. The reported word confidence is the lowest
+selected frame confidence in the word.
+
+`ctc-beam` enables width-eight Viterbi search over the CTC lattice for page
+recognition. It applies the glyph model's corpus character bigram on new
+emissions. It retains the blank transition separately to handle repeated
+letters. `ocr-lexicon` enables Portuguese word correction at the page
+boundary. These are separate experimental build options.
+
+The native trainer uses f32 minibatches with width bucketing, seeded
+augmentation, independent gradient workers, deterministic worker reduction,
+norm clipping, bias-corrected Adam, warmup and cosine decay. On x86-64 it
+probes AVX2 and FMA once and falls back to scalar kernels on unsupported
+CPUs. The best int8 table is selected by CER on the validation archive.
+The log includes both f32 and int8 validation error counts for each selected
+epoch. The `.bin.checkpoint` file records the model, optimizer moments and
+progress after each epoch. Pass `--resume` with the original arguments and
+same input and hardware. `--initial=MODEL` initializes matching weights
+from another v3 table and starts a new optimizer. `--qat=N` uses fake
+quantized weights and activations in the final N epochs and completes
+the fixed schedule. Ordinary runs support `--patience=N` for early stopping.
+
+The [dataset pipeline](../../../bench/ocr/DATASETS.md) can write clean
+train pages from the full native PDF tree. Use one corpus root for train,
+validation, and test so document assignment stays stable. Omit the
+page and document caps for a full-data build. The trainer consumes
+`OCRT` archives and the calibrated `OCRL` line shards from that pipeline.
+It reads shards one record at a time, binarizes each crop once, and retains
+packed lines that segment as a single line. The following commands create
+the bounded corpus used to exercise the shard path.
+
+```sh
+"$runner" --cpu 4 --mem 8G bun "$bench/generate-dataset.ts" "$corpus" \
+  --labels poppler --mode pages --split train --dpi 150 --max-docs 24 --max-pages 6 \
+  --output "$out/clean-train-pages"
+"$runner" --cpu 4 --mem 8G bun "$bench/training-lines.ts" generate \
+  "$out/clean-train-pages/train" "$out/mixed-shards" 24000 4 137
+"$runner" --cpu 2 --mem 4G python "$bench/real_lines.py" regenerate \
+  "$corpus/editais-extra/digitalizados" "$out/line-reviews"
+for split in dev test; do
+  "$runner" --cpu 2 --mem 4G bun "$training/generate.mjs" import \
+    "$out/line-reviews/$split" "$out/reviewed-$split.ocrt" --text-only-lines
+done
+```
+
+Train the bootstrap experiment using the generated Liberation archive and
+the distinct GNU FreeFont validation archive described below. Tesseract
+compares the same thresholded OCRT images using Portuguese LSTM and PSM 7.
+The reviewed lookups reserve the real test crops for evaluation.
+
+```sh
+"$runner" --cpu 12 --mem 12G "$trainer" train-sequence "$out/v3-bootstrap.bin" \
+  1729 12 24 --warm=6 --patience=6 --validation="$out/bootstrap/val.ocrt" "$out/bootstrap/train.ocrt"
+for dataset in "$out/bootstrap/test.ocrt" "$out/bootstrap/test-degraded.ocrt" \
+  "$out/real-scans.ocrt" "$out/reviewed-test.ocrt"; do
+  "$runner" --cpu 1 --mem 4G "$trainer" evaluate-sequence "$dataset" "$out/v3-bootstrap.bin"
+done
+```
+
+Use the [page benchmark](../../../bench/ocr/README.md) on the held-out page
+datasets. Set `OCR_BENCH_NATIVE="$native"` and `OCR_BENCH_CTC_MODEL` to the
+experimental table to route the native benchmark through the full OCR
+pipeline. Fit and compare on the dev split before interpreting test scores.
+
 ## Training and evaluation
 
 From the workspace root, install the repository dependencies and make Bun,

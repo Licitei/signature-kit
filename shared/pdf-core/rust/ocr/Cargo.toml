@@ -22,6 +22,7 @@ workspace = true
 
 [features]
 ctc-probe = []
+ctc-beam = ["ctc-probe"]
 ctc-wide = []
 ctc-v3 = []
 ocr-lexicon = []

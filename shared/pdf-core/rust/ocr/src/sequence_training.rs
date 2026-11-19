@@ -369,6 +369,23 @@ impl Parameters {
         }
     }
 
+    fn initialize(&mut self, source: &Sequence<'_>, labels: &[char]) {
+        source.visit_weights(labels, |layer_index, row_index, bias, scale, weights| {
+            let Some(layer) = self.layers.get_mut(layer_index) else {
+                return;
+            };
+            let record = layer.record();
+            if let Some(row) = layer.values.chunks_exact_mut(record).nth(row_index)
+                && let Some((intercept, target)) = row.split_first_mut()
+            {
+                *intercept = bias;
+                for (value, &byte) in target.iter_mut().zip(weights) {
+                    *value = f32::from(i8::from_le_bytes([byte])) * scale;
+                }
+            }
+        });
+    }
+
     fn predict<Observe>(
         &self,
         example: &Example,
@@ -898,6 +915,7 @@ pub(crate) fn train(
     training: Training,
     hash: u64,
     output: &Path,
+    initial: Option<&Sequence<'_>>,
 ) -> io::Result<()> {
     let labels = alphabet(examples);
     let dataset = training_dataset(examples, &labels);
@@ -908,6 +926,9 @@ pub(crate) fn train(
         ));
     }
     let mut model = Parameters::new(labels.len(), &mut Random(training.seed.max(1)));
+    if let Some(weights) = initial {
+        model.initialize(weights, &labels);
+    }
     let mut optimizer = Optimizer {
         bias1: 1.0,
         bias2: 1.0,
@@ -940,7 +961,10 @@ pub(crate) fn train(
         }
     };
     for epoch in progress.epoch..training.epochs {
-        if progress.stale >= training.patience {
+        if training.quantized_epochs == 0
+            && epoch >= training.warm_epochs
+            && progress.stale >= training.patience
+        {
             break;
         }
         let mut rng = Random(

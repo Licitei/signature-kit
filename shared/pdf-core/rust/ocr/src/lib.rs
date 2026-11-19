@@ -22,6 +22,8 @@ pub mod recognize;
 pub mod segment;
 #[cfg(any(not(target_arch = "wasm32"), feature = "ctc-probe"))]
 mod sequence;
+#[cfg(feature = "ctc-beam")]
+mod sequence_beam;
 #[cfg(all(target_arch = "wasm32", feature = "ctc-probe"))]
 mod sequence_probe;
 #[cfg(not(target_arch = "wasm32"))]

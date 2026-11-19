@@ -952,6 +952,7 @@ fn train_sequence(
     training: Training,
     archives: &[OsString],
     validation: Option<&Path>,
+    initial_path: Option<&Path>,
 ) -> io::Result<()> {
     let mut examples = Vec::new();
     let mut hash = FNV_OFFSET;
@@ -963,7 +964,23 @@ fn train_sequence(
     if let Some(path) = validation {
         load_sequence_archive(path, &mut hash, &mut held_out)?;
     }
-    sequence_training::train(&examples, &held_out, training, hash, output)
+    let initial_bytes = initial_path.map(fs::read).transpose()?;
+    let initial = if let Some(bytes) = initial_bytes.as_deref() {
+        hash = digest(bytes, digest(b"initial model", hash));
+        Some(Sequence::decode(bytes).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid initial CTC table")
+        })?)
+    } else {
+        None
+    };
+    sequence_training::train(
+        &examples,
+        &held_out,
+        training,
+        hash,
+        output,
+        initial.as_ref(),
+    )
 }
 
 fn sequence_arguments(
@@ -1003,6 +1020,7 @@ fn sequence_arguments(
         warm_epochs: 0,
         workers: worker_count,
     };
+    let mut initial = None;
     let mut validation = None;
     for option in options {
         if option == "--resume" {
@@ -1016,6 +1034,13 @@ fn sequence_arguments(
             validation = Some(Path::new(path));
             continue;
         }
+        if let Some(path) = option
+            .to_str()
+            .and_then(|value| value.strip_prefix("--initial="))
+        {
+            initial = Some(Path::new(path));
+            continue;
+        }
         let parsed = option
             .to_str()
             .and_then(|value| value.split_once('='))
@@ -1025,7 +1050,7 @@ fn sequence_arguments(
             Some(("--lines", limit)) if limit > 0 => training.lines_per_epoch = limit,
             Some(("--patience", rounds)) if rounds > 0 => training.patience = rounds,
             Some(("--qat", rounds)) if rounds < training.epochs => {
-                training.quantized_epochs = rounds
+                training.quantized_epochs = rounds;
             }
             _ => {
                 return Err(io::Error::new(
@@ -1045,7 +1070,13 @@ fn sequence_arguments(
             "CTC requires an epoch between alignment and quantized fine-tuning",
         ));
     }
-    train_sequence(Path::new(output), training, archives, validation)
+    if initial == Some(Path::new(output)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "choose separate initial and output tables",
+        ));
+    }
+    train_sequence(Path::new(output), training, archives, validation, initial)
 }
 
 fn evaluate_sequence(input: &Path, weights: &Path) -> io::Result<()> {
@@ -1170,7 +1201,7 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--patience=N] [--qat=N] [--resume] <samples.ocrt>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--initial=MODEL] [--patience=N] [--qat=N] [--resume] <samples.ocrt|shard.ocrl>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }
