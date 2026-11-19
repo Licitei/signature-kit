@@ -7,6 +7,9 @@ mod deskew;
 pub mod engine;
 pub mod jpeg;
 mod model;
+mod network;
+#[cfg(not(target_arch = "wasm32"))]
+mod neural_training;
 mod postprocess;
 pub mod raster;
 mod raster_display;

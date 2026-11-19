@@ -1,5 +1,6 @@
 use core::array;
 
+use crate::network::{Network, inputs};
 use crate::raster::Bits;
 
 const GRID: u32 = 16;
@@ -8,7 +9,7 @@ pub(crate) const PROTOTYPE_BYTES: usize = 48;
 pub(crate) const TRANSITION_BYTES: usize = 12;
 pub(crate) const MAGIC: &[u8; 4] = b"OCR1";
 
-const UNCLASSIFIED: Choice = Choice {
+pub(crate) const UNCLASSIFIED: Choice = Choice {
     distance: f32::INFINITY,
     label: '\0',
 };
@@ -33,6 +34,18 @@ pub(crate) struct Choice {
     pub(crate) label: char,
 }
 
+#[derive(Clone, Copy)]
+enum Glyphs<'model> {
+    Network(Network<'model>),
+    Prototypes(&'model [[u8; PROTOTYPE_BYTES]]),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Model<'model> {
+    glyphs: Glyphs<'model>,
+    transitions: &'model [[u8; TRANSITION_BYTES]],
+}
+
 fn sample_axis(low: u32, high: u32) -> [u32; 16] {
     let extent = high.saturating_sub(low);
     array::from_fn(|index| {
@@ -43,7 +56,9 @@ fn sample_axis(low: u32, high: u32) -> [u32; 16] {
 }
 
 pub(crate) fn coordinate(value: u32) -> f32 {
-    f32::from(u16::try_from(value).unwrap_or(u16::MAX))
+    let high = u16::try_from(value >> 16_u32).unwrap_or_default();
+    let low = u16::try_from(value & 0xffff).unwrap_or_default();
+    f32::from(high) * 65_536.0 + f32::from(low)
 }
 
 fn pixel(row: &[u64], x: u32) -> bool {
@@ -131,31 +146,27 @@ fn decode_prototype(record: &[u8; PROTOTYPE_BYTES]) -> Option<(char, Features)> 
     ))
 }
 
-fn tables() -> (
-    &'static [[u8; PROTOTYPE_BYTES]],
-    &'static [[u8; TRANSITION_BYTES]],
-) {
-    if !MODEL.starts_with(MAGIC) {
+fn tables(data: &[u8]) -> (&[[u8; PROTOTYPE_BYTES]], &[[u8; TRANSITION_BYTES]]) {
+    if !data.starts_with(MAGIC) {
         return (&[], &[]);
     }
-    let count = MODEL
+    let count = data
         .get(20..HEADER)
         .and_then(<[u8]>::first_chunk::<4>)
         .map_or(0, |bytes| u32::from_le_bytes(*bytes));
     let offset = usize::try_from(count)
         .unwrap_or(0)
         .saturating_mul(PROTOTYPE_BYTES);
-    let Some((prototypes, transitions)) = MODEL
+    let Some((prototypes, transitions)) = data
         .get(HEADER..)
-        .and_then(|data| data.split_at_checked(offset))
+        .and_then(|tail| tail.split_at_checked(offset))
     else {
         return (&[], &[]);
     };
     (prototypes.as_chunks().0, transitions.as_chunks().0)
 }
 
-pub(crate) fn classify(sample: &Features) -> [Choice; 4] {
-    let (records, _) = tables();
+fn classify_prototypes(sample: &Features, records: &[[u8; PROTOTYPE_BYTES]]) -> [Choice; 4] {
     let mut choices = [UNCLASSIFIED; 4];
     let mut best = UNCLASSIFIED;
     let mut threshold = f32::INFINITY;
@@ -181,7 +192,7 @@ pub(crate) fn classify(sample: &Features) -> [Choice; 4] {
     choices
 }
 
-fn retain_choice(choices: &mut [Choice], candidate: Choice) {
+pub(crate) fn retain_choice(choices: &mut [Choice], candidate: Choice) {
     if let Some(index) = choices
         .iter()
         .position(|choice| candidate.distance < choice.distance)
@@ -194,8 +205,7 @@ fn retain_choice(choices: &mut [Choice], candidate: Choice) {
     }
 }
 
-pub(crate) fn transition(previous: char, next: char) -> f32 {
-    let (_, transitions) = tables();
+fn transition(transitions: &[[u8; TRANSITION_BYTES]], previous: char, next: char) -> f32 {
     let key = (u32::from(previous), u32::from(next));
     let found = transitions.binary_search_by_key(&key, |record| {
         let [a0, a1, a2, a3, b0, b1, b2, b3, _, _, _, _] = *record;
@@ -211,4 +221,38 @@ pub(crate) fn transition(previous: char, next: char) -> f32 {
             let [_, _, _, _, _, _, _, _, s0, s1, s2, s3] = *record;
             f32::from_le_bytes([s0, s1, s2, s3])
         })
+}
+
+impl<'model> Model<'model> {
+    pub(crate) fn classify(self, page: &Bits, bbox: [u32; 4], metrics: Metrics) -> [Choice; 4] {
+        match self.glyphs {
+            Glyphs::Network(network) => {
+                network.classify(&inputs(page, bbox, metrics, network.shape))
+            }
+            Glyphs::Prototypes(records) => {
+                classify_prototypes(&features(page, bbox, metrics), records)
+            }
+        }
+    }
+
+    pub(crate) fn decode(data: &'model [u8]) -> Self {
+        if let Some((network, transitions)) = Network::decode(data) {
+            return Self {
+                glyphs: Glyphs::Network(network),
+                transitions: transitions.as_chunks().0,
+            };
+        }
+        let (prototypes, transitions) = tables(data);
+        Self {
+            glyphs: Glyphs::Prototypes(prototypes),
+            transitions,
+        }
+    }
+    pub(crate) fn transition(self, previous: char, next: char) -> f32 {
+        transition(self.transitions, previous, next)
+    }
+}
+
+pub(crate) fn model() -> Model<'static> {
+    Model::decode(MODEL)
 }

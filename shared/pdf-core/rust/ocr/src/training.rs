@@ -10,11 +10,12 @@ use std::process;
 use std::time::Instant;
 
 use crate::model::{
-    Features, MAGIC, Metrics, PROTOTYPE_BYTES, TRANSITION_BYTES, classify, coordinate, distance,
-    features,
+    Features, MAGIC, Metrics, Model, PROTOTYPE_BYTES, TRANSITION_BYTES, distance, features, model,
 };
+use crate::network::{Shape, inputs};
+use crate::neural_training;
 use crate::raster::Bits;
-use crate::recognize::{ink_box, recognize_line};
+use crate::recognize::{ink_box, recognize_line_with_model};
 use crate::segment::{Line, WordBox};
 
 const ARCHIVE_MAGIC: &[u8; 4] = b"OCRT";
@@ -214,24 +215,134 @@ impl Evidence {
                 result.extend(u32::from(label).to_le_bytes());
             }
         }
+        Self::encode_transitions(self.bigrams, &mut result)?;
+        Some(result)
+    }
+
+    fn encode_transitions(
+        bigrams: BTreeMap<(char, char), u32>,
+        result: &mut Vec<u8>,
+    ) -> Option<()> {
         let mut contexts = BTreeMap::<char, u32>::new();
-        for (&(previous, _), &frequency) in &self.bigrams {
+        for (&(previous, _), &frequency) in &bigrams {
             let total = contexts.entry(previous).or_default();
             *total = total.saturating_add(frequency);
         }
-        for ((previous, label), frequency) in self.bigrams {
+        for ((previous, label), frequency) in bigrams {
             if frequency < 3 {
                 continue;
             }
             let total = contexts.get(&previous).copied()?;
-            let probability = coordinate(frequency) / coordinate(total);
+            let probability = u32_ratio(frequency, total);
             let weight = (64.0 * probability).ln_1p().min(4.0) * 1.25;
             result.extend(u32::from(previous).to_le_bytes());
             result.extend(u32::from(label).to_le_bytes());
             result.extend(weight.to_le_bytes());
         }
-        Some(result)
+        Some(())
     }
+}
+
+fn u32_ratio(part: u32, total: u32) -> f32 {
+    let wide = |value| {
+        let high = u16::try_from(value >> 16_u32).unwrap_or_default();
+        let low = u16::try_from(value & 0xffff).unwrap_or_default();
+        f32::from(high) * 65_536.0 + f32::from(low)
+    };
+    wide(part) / wide(total)
+}
+
+fn network_samples(
+    samples: &[Sample<'_>],
+    shape: Shape,
+    glyphs: &mut neural_training::Samples,
+    evidence: &mut Evidence,
+) {
+    for sample in samples {
+        let metrics = Metrics {
+            baseline: sample.line.baseline,
+            x_height: sample.line.x_height,
+        };
+        for glyph in &sample.glyphs {
+            let mut chars = glyph.text.chars();
+            if let (Some(label), None) = (chars.next(), chars.next())
+                && !label.is_whitespace()
+                && !label.is_control()
+                && let Some(bounds) = ink_box(&sample.page, glyph.bbox)
+            {
+                glyphs
+                    .entry(label)
+                    .or_default()
+                    .push(inputs(&sample.page, bounds, metrics, shape));
+            }
+        }
+        for word in &sample.words {
+            evidence.add_word(word.text);
+        }
+    }
+}
+
+fn train_network(
+    output: &Path,
+    seed_arg: &OsString,
+    shape_arg: &OsString,
+    corpus: &Path,
+    archives: &[OsString],
+) -> io::Result<()> {
+    let seed = seed_arg
+        .to_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid seed"))?;
+    let shape = match shape_arg.to_str() {
+        Some("glyph") => Shape::Glyph,
+        Some("line") => Shape::Line,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "shape must be glyph or line",
+            ));
+        }
+    };
+    let started = Instant::now();
+    let mut evidence = Evidence::default();
+    let mut glyphs = neural_training::Samples::new();
+    let mut hash = FNV_OFFSET;
+    for archive in archives {
+        let bytes = fs::read(archive)?;
+        hash = digest(&bytes, hash);
+        network_samples(&load(&bytes)?, shape, &mut glyphs, &mut evidence);
+        writeln!(
+            io::stdout().lock(),
+            "{}: {} glyphs",
+            Path::new(archive).display(),
+            glyphs.values().map(Vec::len).sum::<usize>()
+        )?;
+    }
+    let corpus_text = fs::read_to_string(corpus)?;
+    hash = digest(corpus_text.as_bytes(), hash);
+    for word in corpus_text.split_whitespace() {
+        evidence.add_word(word);
+    }
+    glyphs.retain(|_, examples| examples.len() >= 24);
+    if glyphs.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "insufficient labeled glyphs",
+        ));
+    }
+    let mut weights = neural_training::train(&glyphs, shape, seed, hash)
+        .ok_or_else(|| io::Error::other("could not train neural classifier"))?;
+    Evidence::encode_transitions(evidence.bigrams, &mut weights)
+        .ok_or_else(|| io::Error::other("could not encode transition counts"))?;
+    write_model(output, &weights)?;
+    writeln!(
+        io::stdout().lock(),
+        "labels={} glyphs={} hash={hash:016x} seed={seed} bytes={} train_s={:.2}",
+        glyphs.len(),
+        glyphs.values().map(Vec::len).sum::<usize>(),
+        weights.len(),
+        started.elapsed().as_secs_f64()
+    )
 }
 
 fn pack(width: u32, height: u32, bytes: &[u8]) -> Option<Bits> {
@@ -388,15 +499,37 @@ fn load(data: &[u8]) -> io::Result<Vec<Sample<'_>>> {
         .samples()
 }
 
-fn evaluate(input: &Path) -> io::Result<()> {
+fn evaluate(input: &Path, model: Model<'_>) -> io::Result<()> {
     let data = fs::read(input)?;
     let samples = load(&data)?;
     let mut counts: BTreeMap<(char, char), usize> = BTreeMap::new();
     let mut characters = 0_usize;
+    let mut line_edits = 0_usize;
     let mut exact_words = 0_usize;
     let mut total_words = 0_usize;
     for sample in &samples {
-        let words = recognize_line(&sample.page, &sample.line);
+        let words = recognize_line_with_model(&sample.page, &sample.line, model);
+        let reference_line: String = sample
+            .words
+            .iter()
+            .flat_map(|word| word.text.chars())
+            .filter(|label| !label.is_whitespace())
+            .collect();
+        let prediction: String = words
+            .iter()
+            .flat_map(|word| word.text.chars())
+            .filter(|label| !label.is_whitespace())
+            .collect();
+        line_edits = line_edits.saturating_add(
+            edit_distances(
+                &reference_line.chars().collect::<Vec<_>>(),
+                &prediction.chars().collect::<Vec<_>>(),
+            )
+            .last()
+            .and_then(|row| row.last())
+            .copied()
+            .unwrap_or_default(),
+        );
         let mut results = words.iter().peekable();
         for reference in &sample.words {
             let predicted = if results
@@ -417,7 +550,11 @@ fn evaluate(input: &Path) -> io::Result<()> {
     let started = Instant::now();
     for _ in 0..repetitions {
         for sample in &samples {
-            drop(hint::black_box(recognize_line(&sample.page, &sample.line)));
+            drop(hint::black_box(recognize_line_with_model(
+                &sample.page,
+                &sample.line,
+                model,
+            )));
         }
     }
     let elapsed = started.elapsed().as_secs_f64() * 1000.0_f64;
@@ -437,7 +574,16 @@ fn evaluate(input: &Path) -> io::Result<()> {
         "lines={sample_count} characters={characters} edits={edits} accuracy={accuracy:.4} words={exact_words}/{total_words} ms_per_line={line_ms:.3} ms_per_50_lines={:.2}",
         line_ms * 50.0_f64
     )?;
-    let (matched_glyphs, total_glyphs) = oracle_glyphs(&samples);
+    let line_accuracy = 1.0
+        - u32_ratio(
+            u32::try_from(line_edits).unwrap_or(u32::MAX),
+            u32::try_from(characters.max(1)).unwrap_or(u32::MAX),
+        );
+    writeln!(
+        out,
+        "line_edits={line_edits} line_accuracy={line_accuracy:.4}"
+    )?;
+    let (matched_glyphs, total_glyphs) = oracle_glyphs(&samples, model);
     writeln!(
         out,
         "with_labeled_glyph_boxes={matched_glyphs}/{total_glyphs}"
@@ -453,7 +599,7 @@ fn evaluate(input: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn oracle_glyphs(samples: &[Sample<'_>]) -> (usize, usize) {
+fn oracle_glyphs(samples: &[Sample<'_>], model: Model<'_>) -> (usize, usize) {
     let mut matched = 0_usize;
     let mut total = 0_usize;
     for sample in samples {
@@ -470,7 +616,7 @@ fn oracle_glyphs(samples: &[Sample<'_>]) -> (usize, usize) {
             let Some(bbox) = ink_box(&sample.page, glyph.bbox) else {
                 continue;
             };
-            let choices = classify(&features(&sample.page, bbox, metrics));
+            let choices = model.classify(&sample.page, bbox, metrics);
             if choices
                 .first()
                 .is_some_and(|choice| choice.label == expected)
@@ -480,6 +626,78 @@ fn oracle_glyphs(samples: &[Sample<'_>]) -> (usize, usize) {
         }
     }
     (matched, total)
+}
+
+fn inspect(input: &Path, output: &Path, model: Model<'_>) -> io::Result<()> {
+    let bytes = fs::read(input)?;
+    let samples = load(&bytes)?;
+    fs::create_dir_all(output)?;
+    let mut classes = BTreeMap::<char, (usize, usize)>::new();
+    let mut sizes = BTreeMap::<u32, (usize, usize)>::new();
+    let mut failures = 0_usize;
+    for sample in &samples {
+        let metrics = Metrics {
+            baseline: sample.line.baseline,
+            x_height: sample.line.x_height,
+        };
+        for glyph in &sample.glyphs {
+            let (Some(label), None) = (glyph.text.chars().next(), glyph.text.chars().nth(1)) else {
+                continue;
+            };
+            let Some(bounds) = ink_box(&sample.page, glyph.bbox) else {
+                continue;
+            };
+            let [choice, ..] = model.classify(&sample.page, bounds, metrics);
+            let correct = usize::from(choice.label == label);
+            let [_, top, _, bottom] = bounds;
+            let height_band = bottom.saturating_sub(top) >> 2_u32;
+            for (matched, total) in [
+                classes.entry(label).or_default(),
+                sizes.entry(height_band).or_default(),
+            ] {
+                *matched = matched.saturating_add(correct);
+                *total = total.saturating_add(1);
+            }
+            if correct == 0 && failures < 48 {
+                let name = format!(
+                    "{failures:03}-{:04x}-{:04x}.pgm",
+                    u32::from(label),
+                    u32::from(choice.label)
+                );
+                save_crop(&sample.page, bounds, &output.join(name))?;
+                failures = failures.saturating_add(1);
+            }
+        }
+    }
+    let mut stdout = io::stdout().lock();
+    for (label, (matched, total)) in classes {
+        writeln!(
+            stdout,
+            "class={} matches={matched}/{total}",
+            label.escape_default()
+        )?;
+    }
+    for (height, (matched, total)) in sizes {
+        writeln!(
+            stdout,
+            "glyph_height={}..{} matches={matched}/{total}",
+            height << 2_u32,
+            height.saturating_add(1) << 2_u32
+        )?;
+    }
+    Ok(())
+}
+
+fn save_crop(page: &Bits, [left, top, right, bottom]: [u32; 4], path: &Path) -> io::Result<()> {
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    let mut data = format!("P5\n{width} {height}\n255\n").into_bytes();
+    for row in top..bottom {
+        for column in left..right {
+            data.push(if page.get(column, row) { 0 } else { 255 });
+        }
+    }
+    fs::write(path, data)
 }
 
 fn confusions(expected: &str, predicted: &str, counts: &mut BTreeMap<(char, char), usize>) {
@@ -560,16 +778,30 @@ fn cell(distances: &[Vec<usize>], row: usize, col: usize) -> usize {
 #[inline]
 pub fn run(arguments: &[OsString]) -> io::Result<()> {
     match arguments {
+        [command, output, seed, shape, corpus, archives @ ..] if command == "train-network" => {
+            train_network(Path::new(output), seed, shape, Path::new(corpus), archives)
+        }
         [command, archive, output, seed] if command == "train" => {
             train(Path::new(archive), Path::new(output), seed, None)
         }
         [command, archive, output, seed, corpus] if command == "train" => {
             train(Path::new(archive), Path::new(output), seed, Some(corpus))
         }
-        [command, archive] if command == "evaluate" => evaluate(Path::new(archive)),
+        [command, archive, output] if command == "inspect" => {
+            inspect(Path::new(archive), Path::new(output), model())
+        }
+        [command, archive, output, weights] if command == "inspect" => inspect(
+            Path::new(archive),
+            Path::new(output),
+            Model::decode(&fs::read(weights)?),
+        ),
+        [command, archive] if command == "evaluate" => evaluate(Path::new(archive), model()),
+        [command, archive, weights] if command == "evaluate" => {
+            evaluate(Path::new(archive), Model::decode(&fs::read(weights)?))
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train <samples.ocrt> <model.bin> <seed> [corpus.txt] | evaluate <samples.ocrt>",
+            "usage: pdf-core-ocr-train train-network <model.bin> <seed> <glyph|line> <corpus.txt> <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }

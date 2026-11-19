@@ -1,6 +1,6 @@
 use core::iter;
 
-use crate::model::{Metrics, classify, coordinate, features, transition};
+use crate::model::{Choice, Metrics, Model, coordinate, model};
 use crate::raster::Bits;
 use crate::segment::Line;
 
@@ -44,6 +44,10 @@ struct Path {
     reason = "the line recognizer is the agreed OCR engine seam"
 )]
 pub fn recognize_line(page: &Bits, line: &Line) -> Vec<Word> {
+    recognize_line_with_model(page, line, model())
+}
+
+pub(crate) fn recognize_line_with_model(page: &Bits, line: &Line, model: Model<'_>) -> Vec<Word> {
     let [_, top, _, bottom] = line.bbox;
     let height = coordinate(bottom.saturating_sub(top));
     let metrics = Metrics {
@@ -60,7 +64,7 @@ pub fn recognize_line(page: &Bits, line: &Line) -> Vec<Word> {
     };
     line.words
         .iter()
-        .filter_map(|word| recognize_word(page, word.bbox, metrics))
+        .filter_map(|word| recognize_word(page, word.bbox, metrics, model))
         .collect()
 }
 
@@ -197,7 +201,7 @@ pub(crate) fn ink_box(page: &Bits, bbox: [u32; 4]) -> Option<[u32; 4]> {
     tight_box(&project(page, bbox)?, left)
 }
 
-fn recognize_word(page: &Bits, bbox: [u32; 4], metrics: Metrics) -> Option<Word> {
+fn recognize_word(page: &Bits, bbox: [u32; 4], metrics: Metrics, model: Model<'_>) -> Option<Word> {
     let [left, top, right, bottom] = bbox;
     let columns = project(
         page,
@@ -239,7 +243,13 @@ fn recognize_word(page: &Bits, bbox: [u32; 4], metrics: Metrics) -> Option<Word>
                 } else {
                     break;
                 };
-            extend_paths(page, metrics, bounds, beam, penalty, &mut paths);
+            extend_paths(
+                model.classify(page, bounds, metrics),
+                beam,
+                penalty,
+                model,
+                &mut paths,
+            );
         }
         *beams.get_mut(end)? = paths;
     }
@@ -272,18 +282,16 @@ fn merge_penalty(
 }
 
 fn extend_paths(
-    page: &Bits,
-    metrics: Metrics,
-    bounds: [u32; 4],
+    choices: [Choice; 4],
     beam: &[Path],
     penalty: f32,
+    model: Model<'_>,
     paths: &mut Vec<Path>,
 ) {
-    let choices = classify(&features(page, bounds, metrics));
     for candidate in choices.iter().filter(|choice| choice.distance.is_finite()) {
         for prefix in beam {
             let cost = prefix.cost + candidate.distance + 21.0 + penalty
-                - transition(prefix.last, candidate.label);
+                - model.transition(prefix.last, candidate.label);
             if paths.len() == BEAM_WIDTH && paths.last().is_some_and(|last| last.cost <= cost) {
                 continue;
             }
