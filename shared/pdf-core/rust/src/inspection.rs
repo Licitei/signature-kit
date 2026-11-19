@@ -71,3 +71,11 @@ pub(crate) struct Inspection {
     pub pages: Vec<PageInfo>,
     pub text: Vec<PageText>,
 }
+
+#[derive(Debug)]
+pub(crate) struct Metadata {
+    pub encrypted: bool,
+    pub fields: [Option<String>; 9],
+    pub page_count: usize,
+    pub xmp: Vec<u8>,
+}

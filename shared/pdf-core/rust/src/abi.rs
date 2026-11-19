@@ -15,9 +15,9 @@ use crate::document;
 use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
-use crate::inspection::{InspectOptions, Inspection, Limits};
+use crate::inspection::{InspectOptions, Inspection, Limits, Metadata};
 use crate::layout::{self, TextOptions};
-use crate::lazy::{Lazy, Plan, Tuning};
+use crate::lazy::{Lazy, PageProfile, Plan, Tuning};
 use crate::num::widen;
 use crate::png;
 use crate::render::{self, RenderedPage};
@@ -60,6 +60,9 @@ const DOCUMENT_ANNOTATION_RECORD_LEN: usize = 72;
 const MERGE_DROP_WIDGETS: u32 = 1;
 const MERGE_OBJECT_STREAMS: u32 = 2;
 const ALL_PAGES: u32 = u32::MAX;
+const INFO_MAGIC: u32 = 0x464e_4450;
+const INFO_VERSION: u32 = 1;
+const PROFILE_INFO: u32 = 4;
 const METRICS_MAGIC: u32 = 0x4d46_4450;
 const METRICS_VERSION: u32 = 1;
 
@@ -271,6 +274,24 @@ fn padded(value: usize) -> Outcome<usize> {
         .checked_add(ALIGNMENT - 1)
         .map(|sum| sum & !(ALIGNMENT - 1))
         .ok_or_else(|| Failure::limit("result size overflow"))
+}
+
+fn encode_info(info: &Metadata) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(52);
+    out.u32(INFO_MAGIC);
+    out.u32(INFO_VERSION);
+    out.u32(len32(info.page_count)?);
+    out.u32(u32::from(info.encrypted));
+    for field in &info.fields {
+        if let Some(text) = field {
+            out.u32(len32(text.len())?);
+            out.bytes(text.as_bytes());
+        } else {
+            out.u32(u32::MAX);
+        }
+    }
+    out.bytes(&info.xmp);
+    out.done()
 }
 
 fn encode(inspection: &Inspection) -> Outcome<Writer> {
@@ -562,14 +583,32 @@ pub(crate) unsafe extern "C" fn pdf_core_inspect(
     // SAFETY: forwarded from this function's contract.
     let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
     finish(request.and_then(|inner_request| {
-        let options = InspectOptions {
-            text: inner_request.has(FLAG_TEXT),
-            links: inner_request.has(FLAG_LINKS),
-            page_indexes: inner_request.pages.map(<[u32]>::to_vec),
-            runs: inner_request.has(FLAG_RUNS),
-        };
+        let options = inspect_options(inner_request.flags, inner_request.pages);
         let inspection = document::inspect(inner_request.pdf, &options, &layout::text_limits())?;
         encode(&inspection)
+    }))
+}
+
+fn inspect_options(flags: u32, pages: Option<&[u32]>) -> InspectOptions {
+    InspectOptions {
+        text: flags & FLAG_TEXT != 0,
+        links: flags & FLAG_LINKS != 0,
+        page_indexes: pages.map(<[u32]>::to_vec),
+        runs: flags & FLAG_RUNS != 0,
+    }
+}
+
+/// # Safety
+///
+/// `pdf_ptr` must satisfy [`view`] for `pdf_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_info(pdf_ptr: *const u8, pdf_len: usize) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    finish(pdf.and_then(|bytes| {
+        let limits = Limits::default();
+        let opened = document::Document::open(bytes, &limits)?;
+        encode_info(&opened.metadata()?)
     }))
 }
 
@@ -1139,18 +1178,30 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_plan(
                 .map(|(_, document)| document)
                 .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
             let limits = lazy_limits(profile);
-            let plan = document.plan(
-                (flags & FLAG_PAGE_INDEXES != 0).then_some(indexes),
-                profile == 2,
-                &limits,
-            );
+            let plan = if profile == PROFILE_INFO {
+                document.plan_info(&limits)
+            } else {
+                let page_profile = match profile {
+                    0 | 1 => PageProfile::Extract,
+                    2 => PageProfile::Render,
+                    3 => PageProfile::Inspect {
+                        text: flags & FLAG_TEXT != 0,
+                    },
+                    _ => return Err(Failure::request("invalid lazy profile")),
+                };
+                document.plan(
+                    (flags & FLAG_PAGE_INDEXES != 0).then_some(indexes),
+                    page_profile,
+                    &limits,
+                )
+            };
             encode_plan(plan)
         })
     }))
 }
 
 fn lazy_limits(profile: u32) -> Limits {
-    if profile == 2 {
+    if matches!(profile, 2 | PROFILE_INFO) {
         Limits::default()
     } else {
         layout::text_limits()
@@ -1172,20 +1223,30 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
             .map(|(_, document)| document)
             .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
         let limits = lazy_limits(profile);
-        let payload = lazy.execute(&limits, |document, pages| match profile {
-            0 => encode_text(&layout::opened_text(
-                document,
-                pages,
-                &limits,
-                TextOptions {
-                    markdown: flags & FLAG_MARKDOWN != 0,
-                    drop_running: flags & FLAG_DROP_RUNNING != 0,
-                },
-            )?),
-            1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
-            2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
-            _ => Err(Failure::invalid("invalid lazy profile")),
-        })?;
+        let payload = if profile == PROFILE_INFO {
+            lazy.info(&limits)?.as_ref().map(encode_info).transpose()?
+        } else {
+            lazy.execute(&limits, |document, pages| match profile {
+                0 => encode_text(&layout::opened_text(
+                    document,
+                    pages,
+                    &limits,
+                    TextOptions {
+                        markdown: flags & FLAG_MARKDOWN != 0,
+                        drop_running: flags & FLAG_DROP_RUNNING != 0,
+                    },
+                )?),
+                1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
+                2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
+                3 => encode(&document::inspect_opened(
+                    document,
+                    pages,
+                    &inspect_options(flags, None),
+                    &limits,
+                )?),
+                _ => Err(Failure::request("invalid lazy profile")),
+            })?
+        };
         payload.map_or_else(
             || {
                 if lazy.needs_ranges() {

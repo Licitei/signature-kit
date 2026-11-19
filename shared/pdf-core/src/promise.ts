@@ -2,7 +2,7 @@ import { Effect, Exit, Scope } from "effect";
 
 import { pdfCoreBrowserModule } from "./browser.js";
 import { PdfCoreError, PdfCoreErrorCodeValue, PdfCoreOperationValue } from "./config.js";
-import type { PdfCoreLazyOptions, PdfCoreLazyStats } from "./config.js";
+import type { PdfCoreDocumentInfo, PdfCoreLazyOptions, PdfCoreLazyStats } from "./config.js";
 import { makePdfCore } from "./pdf-core.js";
 import type { PdfCoreLazyDocument, PdfCoreService } from "./pdf-core.js";
 
@@ -19,7 +19,8 @@ type PromiseMethods<Service> = {
     : never;
 };
 
-export type PdfCorePromiseDocument = PromiseMethods<Omit<PdfCoreLazyDocument, "stats">> & {
+export type PdfCorePromiseDocument = PromiseMethods<Omit<PdfCoreLazyDocument, "info" | "stats">> & {
+  readonly info: () => Promise<PdfCoreDocumentInfo>;
   readonly stats: () => Promise<PdfCoreLazyStats>;
   readonly close: () => Promise<void>;
   readonly [Symbol.asyncDispose]: () => Promise<void>;
@@ -66,6 +67,9 @@ const openLazy = (
         );
       const close = () => run(Scope.close(scope, Exit.void));
       return {
+        info: () => run(document.info),
+        inspect: (...args: Parameters<PdfCoreLazyDocument["inspect"]>) =>
+          run(document.inspect(...args)),
         text: (...args: Parameters<PdfCoreLazyDocument["text"]>) => run(document.text(...args)),
         tables: (...args: Parameters<PdfCoreLazyDocument["tables"]>) =>
           run(document.tables(...args)),
@@ -82,6 +86,7 @@ const toClient = (core: PdfCoreService): PdfCoreClient => ({
   openLazy: (source, options) => openLazy(core, source, options),
   wasmMemoryBytes: () => run(core.wasmMemoryBytes()),
   inspect: (...args) => run(core.inspect(...args)),
+  info: (...args) => run(core.info(...args)),
   text: (...args) => run(core.text(...args)),
   tables: (...args) => run(core.tables(...args)),
   signatures: (...args) => run(core.signatures(...args)),

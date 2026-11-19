@@ -22,7 +22,7 @@ const stream = (data: Buffer, entries: string): string =>
   `<< /Length ${data.length}${entries} >>\nstream\n${data.toString("latin1")}\nendstream`;
 
 const link = (uri: string): string =>
-  `<< /Type /Annot /Subtype /Link /Rect [0 0 40 40] /A << /S /URI /URI ${uri} >> >>`;
+  `<< /Title ${uri} /Type /Annot /Subtype /Link /Rect [0 0 40 40] /A << /S /URI /URI ${uri} >> >>`;
 
 const pageObjects = (content: Buffer, uri: string, streamFilters: string): Array<string> => [
   "<< /Type /Catalog /Pages 2 0 R >>",
@@ -65,7 +65,7 @@ const pdf = (
   const objects = pageObjects(content, uri, streamFilters);
   return encryption === undefined
     ? xrefTablePdf(objects)
-    : xrefTablePdf([...objects, encryption], encryptedTrailer);
+    : xrefTablePdf([...objects, encryption], `${encryptedTrailer} /Info 4 0 R`);
 };
 
 const r5Dictionary =
@@ -168,8 +168,13 @@ const compareLazy = Effect.fn(function* (
 ) {
   const core = yield* PdfCore;
   const doc = yield* core.openLazy(pdfCoreBytesSource(input));
+  const info = yield* doc.info;
+  expect(info).toStrictEqual(yield* core.info(input));
+  expect(info.encrypted).toBe(true);
   for (const pageIndexes of [[0], [0, 0], []]) {
     const plain = { pageIndexes };
+    const inspect = { pageIndexes, text: true, links: true, runs: true };
+    expect(yield* doc.inspect(inspect)).toStrictEqual(yield* core.inspect(input, inspect));
     const markdown = { pageIndexes, format: "markdown" } satisfies Parameters<typeof doc.text>[0];
     expect(yield* doc.text(plain)).toStrictEqual(yield* core.text(input, plain));
     expect(yield* doc.text(markdown)).toStrictEqual(yield* core.text(input, markdown));
@@ -190,6 +195,11 @@ describe("PdfCore encrypted PDFs", () => {
         const core = yield* PdfCore;
         const input = fixture(vector);
         yield* Effect.scoped(compareLazy(input));
+        expect(yield* core.info(input)).toStrictEqual({
+          pageCount: 1,
+          encrypted: true,
+          title: "https://example.test",
+        });
         const expected = yield* core.inspect(plain, options);
         expect(expected.links[0]?.uri).toBe("https://example.test");
         expect(yield* core.inspect(input, options)).toEqual(expected);

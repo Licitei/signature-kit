@@ -5,6 +5,7 @@ import {
   PdfCoreCreateOptionsSchema,
   PDF_CORE_DEFAULT_RENDER_SCALE,
   PdfCoreDisplayListsSchema,
+  PdfCoreDocumentInfoSchema,
   PdfCoreDocumentOptionsSchema,
   PdfCoreDocumentSchema,
   PdfCoreEditOperationsSchema,
@@ -37,6 +38,7 @@ import type {
   PdfCoreCreateOptions,
   PdfCoreDisplayLists,
   PdfCoreDocument,
+  PdfCoreDocumentInfo,
   PdfCoreDocumentOptions,
   PdfCoreEditOperation,
   PdfCoreEditOperations,
@@ -63,12 +65,18 @@ import type {
   PdfCoreWinAnsiFont,
 } from "./config.js";
 
+import { readXmp } from "./xmp.js";
+
 export type PdfCoreRangeSource = {
   readonly size: number;
   readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, PdfCoreError>;
 };
 
 export type PdfCoreLazyDocument = {
+  readonly info: Effect.Effect<PdfCoreDocumentInfo, PdfCoreError>;
+  readonly inspect: (
+    options: PdfCoreInspectOptions,
+  ) => Effect.Effect<PdfCoreInspection, PdfCoreError>;
   readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
   readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
   readonly renderPages: (
@@ -101,6 +109,7 @@ export type PdfCoreService = {
     source: PdfCoreRangeSource,
     options?: PdfCoreLazyOptions,
   ) => Effect.Effect<PdfCoreLazyDocument, PdfCoreError, Scope.Scope>;
+  readonly info: (pdf: Uint8Array) => Effect.Effect<PdfCoreDocumentInfo, PdfCoreError>;
   readonly wasmMemoryBytes: () => Effect.Effect<number>;
   readonly inspect: (
     pdf: Uint8Array,
@@ -216,6 +225,20 @@ const EDIT_OPCODES = {
   repairCatalog: 13,
   png: 14,
 } satisfies Record<PdfCoreEditOperation["op"], number>;
+
+const INFO_MAGIC = 0x464e4450;
+const INFO_VERSION = 1;
+const infoFields = [
+  "title",
+  "subject",
+  "author",
+  "keywords",
+  "creator",
+  "producer",
+  "creationDate",
+  "modificationDate",
+  "language",
+] satisfies ReadonlyArray<keyof PdfCoreDocumentInfo>;
 
 const utf8 = new TextDecoder();
 const utf8Encoder = new TextEncoder();
@@ -407,6 +430,8 @@ const lazyProfiles = {
   [PdfCoreOperationValue.text]: 0,
   [PdfCoreOperationValue.tables]: 1,
   [PdfCoreOperationValue.render]: 2,
+  [PdfCoreOperationValue.inspect]: 3,
+  [PdfCoreOperationValue.info]: 4,
 };
 
 export const makePdfCore = (
@@ -751,35 +776,85 @@ export const makePdfCore = (
         );
       });
 
-    const inspect = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreInspectOptions) {
+    const runInspect = Effect.fn(function* (read: BlockReader, rawOptions: PdfCoreInspectOptions) {
+      const operation = PdfCoreOperationValue.inspect;
       const options = yield* Schema.decodeUnknownEffect(PdfCoreInspectOptionsSchema)(
         rawOptions,
-      ).pipe(
-        Effect.mapError(
-          (issue) =>
-            new PdfCoreError({
-              code: PdfCoreErrorCodeValue.invalidOptions,
-              operation: PdfCoreOperationValue.inspect,
-              schemaName: PdfCoreSchemaNameValue.inspectOptions,
-              issueMessage: String(issue),
-            }),
-        ),
-      );
-      const pageIndexes = options.pageIndexes ?? [];
+      ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.inspectOptions)));
       const flags =
         (options.text ? FLAG_TEXT : 0) |
         (options.links ? FLAG_LINKS : 0) |
         (options.runs === true ? FLAG_RUNS : 0) |
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES);
-      return yield* readBlock(
-        PdfCoreOperationValue.inspect,
+      return yield* read(
+        operation,
         core.pdf_core_inspect,
-        pdf,
         flags,
-        pageIndexes,
+        options.pageIndexes ?? [],
         decodeBlock,
       );
     });
+
+    const decodeInfo = Effect.fn(function* (block: ResultBlock) {
+      const operation = PdfCoreOperationValue.info;
+      const view = new DataView(block.memory, block.pointer, block.length);
+      if (view.getUint32(4, true) !== STATUS_OK) {
+        return yield* failStatus(operation, block);
+      }
+      const base = RESULT_HEADER_BYTES;
+      if (
+        block.length < base + 16 + infoFields.length * 4 ||
+        view.getUint32(base, true) !== INFO_MAGIC ||
+        view.getUint32(base + 4, true) !== INFO_VERSION ||
+        view.getUint32(base + 12, true) > 1
+      ) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.wasmLoadFailed,
+          operation,
+          reason: "The PDF core returned an invalid document info header.",
+        });
+      }
+      const bytes = new Uint8Array(block.memory, block.pointer, block.length);
+      const fields: Partial<Record<(typeof infoFields)[number], string>> = {};
+      let cursor = base + 16;
+      for (const field of infoFields) {
+        const length = cursor + 4 <= block.length ? view.getUint32(cursor, true) : undefined;
+        cursor += 4;
+        if (length === 0xffffffff) continue;
+        if (length === undefined || cursor + length > block.length) {
+          return yield* new PdfCoreError({
+            code: PdfCoreErrorCodeValue.wasmLoadFailed,
+            operation,
+            reason: "The PDF core returned an out-of-bounds document info field.",
+          });
+        }
+        fields[field] = utf8.decode(bytes.subarray(cursor, cursor + length));
+        cursor += length;
+      }
+      const pageCount = view.getUint32(base + 8, true);
+      const encrypted = view.getUint32(base + 12, true) === 1;
+      const xmp = yield* readXmp(bytes.slice(cursor));
+      return yield* Schema.decodeUnknownEffect(PdfCoreDocumentInfoSchema)({
+        ...xmp,
+        ...fields,
+        pageCount,
+        encrypted,
+      }).pipe(
+        Effect.mapError(
+          (issue) =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.wasmLoadFailed,
+              operation,
+              schemaName: PdfCoreSchemaNameValue.documentInfo,
+              reason: "The PDF core returned invalid document info.",
+              issueMessage: String(issue),
+            }),
+        ),
+      );
+    });
+
+    const runInfo = (read: BlockReader) =>
+      read(PdfCoreOperationValue.info, core.pdf_core_info, 0, [], decodeInfo);
 
     const decodeTextBlock = (block: ResultBlock): Effect.Effect<PdfCoreText, PdfCoreError> =>
       Effect.gen(function* () {
@@ -1702,7 +1777,9 @@ export const makePdfCore = (
               const profile =
                 operation === PdfCoreOperationValue.text ||
                 operation === PdfCoreOperationValue.tables ||
-                operation === PdfCoreOperationValue.render
+                operation === PdfCoreOperationValue.render ||
+                operation === PdfCoreOperationValue.inspect ||
+                operation === PdfCoreOperationValue.info
                   ? lazyProfiles[operation]
                   : undefined;
               if (profile === undefined) {
@@ -1771,6 +1848,8 @@ export const makePdfCore = (
         );
 
       return {
+        info: runInfo(read),
+        inspect: (options: PdfCoreInspectOptions) => runInspect(read, options),
         text: (options?: PdfCoreTextOptions) => runText(read, options),
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
@@ -1783,7 +1862,8 @@ export const makePdfCore = (
     return {
       openLazy,
       wasmMemoryBytes: () => Effect.sync(() => core.memory.buffer.byteLength),
-      inspect,
+      info: (pdf) => runInfo(full(pdf)),
+      inspect: (pdf, options) => runInspect(full(pdf), options),
       text: (pdf, options) => runText(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),

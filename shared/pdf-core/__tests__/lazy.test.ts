@@ -41,6 +41,8 @@ describe("PdfCore byte-range documents", () => {
             });
             for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
               const pageIndexes = [pageIndex];
+              const inspect = { pageIndexes, text: true, links: true, runs: true };
+              expect(yield* doc.inspect(inspect)).toStrictEqual(yield* core.inspect(pdf, inspect));
               const markdown = { pageIndexes, format: "markdown" } satisfies Parameters<
                 typeof doc.text
               >[0];
@@ -64,6 +66,12 @@ describe("PdfCore byte-range documents", () => {
             }
             for (const pageIndexes of [[], [pageCount - 1, 0, pageCount - 1], undefined]) {
               const options = pageIndexes === undefined ? {} : { pageIndexes };
+              const inspect = { ...options, text: true, links: true, runs: true };
+              expect(yield* doc.inspect(inspect)).toStrictEqual(yield* core.inspect(pdf, inspect));
+              const boxesOnly = { ...options, text: false, links: false };
+              expect(yield* doc.inspect(boxesOnly)).toStrictEqual(
+                yield* core.inspect(pdf, boxesOnly),
+              );
               const markdown = { ...options, format: "markdown" } satisfies Parameters<
                 typeof doc.text
               >[0];
@@ -84,6 +92,32 @@ describe("PdfCore byte-range documents", () => {
       60_000,
     );
   }
+
+  it.effect("reads first-page inspection in a bounded number of ranges", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const pdf = readFileSync(new URL("habilitacao-150.pdf", fixtures));
+        const source = pdfCoreBytesSource(pdf);
+        const requests = yield* Ref.make(0);
+        const doc = yield* core.openLazy({
+          size: source.size,
+          read: (offset, length) =>
+            Ref.update(requests, (count) => count + 1).pipe(
+              Effect.andThen(source.read(offset, length)),
+            ),
+        });
+        const options = { pageIndexes: [0], text: true, links: true, runs: true };
+        const inspected = yield* doc.inspect(options);
+        expect(inspected.pages).toHaveLength(1);
+        expect(inspected).toStrictEqual(yield* core.inspect(pdf, options));
+        const stats = yield* doc.stats;
+        expect(stats.strategy).toBe("lazy");
+        expect(yield* Ref.get(requests)).toBeLessThanOrEqual(10);
+        expect(stats.bytesRead).toBeLessThan(source.size);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
 
   it.effect("caches ranges across operations and closes with the scope", () =>
     Effect.gen(function* () {
@@ -233,6 +267,9 @@ describe("PdfCore byte-range documents", () => {
     const options = { pageIndexes: [0], format: "markdown" } satisfies Parameters<
       typeof doc.text
     >[0];
+    expect(await doc.info()).toEqual(await core.info(pdf));
+    const inspect = { pageIndexes: [0], text: true, links: true, runs: true };
+    expect(await doc.inspect(inspect)).toStrictEqual(await core.inspect(pdf, inspect));
     expect(await doc.text(options)).toEqual(await core.text(pdf, options));
     const stats = await doc.stats();
     expect(await doc.text(options)).toEqual(await core.text(pdf, options));
@@ -242,5 +279,6 @@ describe("PdfCore byte-range documents", () => {
     await expect(doc.text(options)).rejects.toMatchObject({
       code: PdfCoreErrorCodeValue.documentClosed,
     });
+    await expect(doc.info()).rejects.toMatchObject({ code: PdfCoreErrorCodeValue.documentClosed });
   });
 });
