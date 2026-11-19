@@ -1,8 +1,10 @@
 mod degrade;
 mod jpeg;
 
+use core::str;
+
 use std::env;
-use std::io::{self, Read, Write};
+use std::io::{self, Read as _, Write as _};
 use std::process::ExitCode;
 
 use signature_kit_pdf_core_ocr as _;
@@ -23,15 +25,16 @@ impl Raster {
             .copied()
             .unwrap_or(255)
     }
+
     fn parse(input: &[u8]) -> Option<Self> {
         let mut header = input.splitn(4, |byte| *byte == b'\n');
         if header.next()? != b"P5" {
             return None;
         }
-        let dimensions = core::str::from_utf8(header.next()?).ok()?;
-        let (width, height) = dimensions.split_once(' ')?;
-        let width = width.parse::<u16>().ok().map(usize::from)?;
-        let height = height.parse::<u16>().ok().map(usize::from)?;
+        let dimensions = str::from_utf8(header.next()?).ok()?;
+        let (raw_width, raw_height) = dimensions.split_once(' ')?;
+        let width = raw_width.parse::<u16>().ok().map(usize::from)?;
+        let height = raw_height.parse::<u16>().ok().map(usize::from)?;
         if header.next()? != b"255" || width == 0 || height == 0 {
             return None;
         }
@@ -62,7 +65,7 @@ fn execute() -> io::Result<()> {
         shade,
         morph,
         threshold,
-        quality,
+        jpeg_quality,
     ] = args.as_slice()
     else {
         return Err(io::Error::other(
@@ -77,20 +80,20 @@ fn execute() -> io::Result<()> {
             .ok_or_else(|| io::Error::other("invalid numeric degradation parameter"))
     };
     let params = degrade::Params {
-        seed: seed.parse().map_err(io::Error::other)?,
         angle: real(angle)?,
-        warp: real(warp)?,
         blur: real(blur)?.clamp(0.0_f64, 4.0_f64),
-        noise: real(noise)?,
-        impulse: real(impulse)?.clamp(0.0_f64, 1.0_f64),
         brightness: real(brightness)?,
         contrast: real(contrast)?,
         gamma: real(gamma)?.clamp(0.1_f64, 5.0_f64),
-        shade: real(shade)?,
+        impulse: real(impulse)?.clamp(0.0_f64, 1.0_f64),
         morph: morph.parse().map_err(io::Error::other)?,
+        noise: real(noise)?,
+        seed: seed.parse().map_err(io::Error::other)?,
+        shade: real(shade)?,
         threshold: threshold.parse().map_err(io::Error::other)?,
+        warp: real(warp)?,
     };
-    let quality = quality.parse::<u8>().map_err(io::Error::other)?;
+    let quality = jpeg_quality.parse::<u8>().map_err(io::Error::other)?;
     let mut input = Vec::new();
     let _count = io::stdin()
         .lock()

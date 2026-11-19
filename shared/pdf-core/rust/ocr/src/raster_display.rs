@@ -4,6 +4,7 @@ use core::f64::consts::TAU;
 
 const BLACK: Color = [0, 255];
 const MAX_PIXELS: usize = 32_000_000;
+const CLIP_BUDGET: usize = 128_000_000;
 
 type Matrix = [f64; 6];
 type Point = [f64; 2];
@@ -45,7 +46,7 @@ struct Rect {
 #[derive(Debug)]
 struct Clip {
     bounds: Rect,
-    pixels: Vec<u8>,
+    pixels: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +63,7 @@ struct State {
 struct Painter<'data> {
     base: Matrix,
     blobs: Vec<&'data [u8]>,
+    clip_budget: usize,
     glyphs: BTreeMap<u32, Vec<Segment>>,
     path: Path,
     raster: GrayRaster,
@@ -117,6 +119,7 @@ impl<'data> Reader<'data> {
         let [red, green, blue, alpha] = self.bytes(4)?.try_into().ok()?;
         Some([gray(red, green, blue), alpha])
     }
+
     fn float(&mut self) -> Option<f64> {
         let value = f32::from_le_bytes(self.bytes(4)?.try_into().ok()?);
         value.is_finite().then_some(f64::from(value))
@@ -278,6 +281,29 @@ impl Path {
         edges
     }
 
+    fn pixel_rectangle(&self) -> bool {
+        let [contour] = self.0.as_slice() else {
+            return false;
+        };
+        let [[ax, ay], [bx, by], [cx, cy], [dx, dy]] = contour.points.as_slice() else {
+            return false;
+        };
+        let horizontal = (ay - by).abs() < f64::EPSILON
+            && (bx - cx).abs() < f64::EPSILON
+            && (cy - dy).abs() < f64::EPSILON
+            && (dx - ax).abs() < f64::EPSILON;
+        let vertical = (ax - bx).abs() < f64::EPSILON
+            && (by - cy).abs() < f64::EPSILON
+            && (cx - dx).abs() < f64::EPSILON
+            && (dy - ay).abs() < f64::EPSILON;
+        (horizontal || vertical)
+            && contour
+                .points
+                .iter()
+                .flatten()
+                .all(|value| value.fract().abs() < f64::EPSILON)
+    }
+
     fn stroke(&self, radius: f64, cap: u8) -> Self {
         let mut output = Vec::new();
         for Contour { closed, points } in &self.0 {
@@ -385,7 +411,10 @@ impl Clip {
         if x < left || x >= right || y < top || y >= bottom {
             return 0;
         }
-        self.pixels
+        let Some(pixels) = self.pixels.as_ref() else {
+            return 255;
+        };
+        pixels
             .get(
                 y.saturating_sub(top)
                     .saturating_mul(self.bounds.width())
@@ -504,7 +533,8 @@ impl Painter<'_> {
                     &self.path,
                     self.state.clip.as_deref(),
                     reader.byte()? == 1,
-                ));
+                    &mut self.clip_budget,
+                )?);
             }
             8 => self.state.fill = reader.color()?,
             9 => self.state.stroke = reader.color()?,
@@ -551,6 +581,7 @@ impl Painter<'_> {
         }
         Some(())
     }
+
     fn image(&mut self, image: &Image) {
         let matrix = self.state.matrix;
         let Some(back) = inverse(matrix) else { return };
@@ -620,7 +651,8 @@ impl Painter<'_> {
                             &self.text_clip,
                             self.state.clip.as_deref(),
                             false,
-                        ));
+                            &mut self.clip_budget,
+                        )?);
                         self.text_clip.0.clear();
                     }
                 }
@@ -824,15 +856,27 @@ fn paint(raster: &mut GrayRaster, path: &Path, clip: Option<&Clip>, color: Color
     });
 }
 
-fn clip_path(raster: &GrayRaster, path: &Path, clip: Option<&Clip>, even_odd: bool) -> Rc<Clip> {
+fn clip_path(
+    raster: &GrayRaster,
+    path: &Path,
+    clip: Option<&Clip>,
+    even_odd: bool,
+    budget: &mut usize,
+) -> Option<Rc<Clip>> {
     let edges = path.edges();
     let bounds = Rect::points(edges.iter().flat_map(|edge| [edge.start, edge.end]), raster);
     let area = clip.map_or(bounds, |mask| bounds.intersect(mask.bounds));
-    let mut pixels = vec![
-        0;
-        area.width()
-            .saturating_mul(area.bottom.saturating_sub(area.top))
-    ];
+    if path.pixel_rectangle() && clip.is_none_or(|mask| mask.pixels.is_none()) {
+        return Some(Rc::new(Clip {
+            bounds: area,
+            pixels: None,
+        }));
+    }
+    let len = area
+        .width()
+        .checked_mul(area.bottom.saturating_sub(area.top))?;
+    *budget = budget.checked_sub(len)?;
+    let mut pixels = vec![0; len];
     scan(&edges, area, even_odd, |x, y, coverage| {
         let at = y
             .saturating_sub(area.top)
@@ -842,10 +886,10 @@ fn clip_path(raster: &GrayRaster, path: &Path, clip: Option<&Clip>, even_odd: bo
             *slot = channel(coverage * f64::from(clip.map_or(255, |mask| mask.alpha(x, y))));
         }
     });
-    Rc::new(Clip {
+    Some(Rc::new(Clip {
         bounds: area,
-        pixels,
-    })
+        pixels: Some(pixels),
+    }))
 }
 
 fn inverse([a, b, c, d, e, f]: Matrix) -> Option<Matrix> {
@@ -874,6 +918,7 @@ pub(crate) fn rasterize(payload: &[u8], scale_x1000: u32) -> Option<GrayRaster> 
     let mut painter = Painter {
         base,
         blobs,
+        clip_budget: CLIP_BUDGET,
         glyphs: BTreeMap::new(),
         path: Path::default(),
         raster: GrayRaster {

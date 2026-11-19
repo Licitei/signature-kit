@@ -16,8 +16,8 @@ const QUANT: [u16; 64] = [
 ];
 
 struct Entropy {
-    bytes: Vec<u8>,
     bits: u32,
+    bytes: Vec<u8>,
     used: u32,
 }
 
@@ -53,6 +53,7 @@ impl Entropy {
             self.write(0, 8);
         }
     }
+
     fn value(&mut self, value: i16, count: u32) {
         if count != 0 {
             let limit = 1_u32.wrapping_shl(count).saturating_sub(1);
@@ -196,8 +197,8 @@ pub(super) fn encode(raster: &Raster, quality: u8) -> Vec<u8> {
         u8::try_from(scaled.clamp(1, 255)).unwrap_or(255)
     });
     let mut entropy = Entropy {
-        bytes: vec![255, 0xD8],
         bits: 0,
+        bytes: vec![255, 0xD8],
         used: 0,
     };
     let mut table = vec![0];
@@ -218,11 +219,11 @@ pub(super) fn encode(raster: &Raster, quality: u8) -> Vec<u8> {
     marker(&mut entropy.bytes, 0xC0, &frame);
     huffman(&mut entropy.bytes);
     marker(&mut entropy.bytes, 0xDA, &[1, 1, 0, 0, 63, 0]);
-    let basis = basis();
-    let mut previous = 0;
+    let filters = basis();
+    let mut previous = 0_i16;
     for y in (0..raster.height).step_by(8) {
         for x in (0..raster.width).step_by(8) {
-            entropy.block(&dct(raster, x, y, &basis, &quant), &mut previous);
+            entropy.block(&dct(raster, x, y, &filters, &quant), &mut previous);
         }
     }
     if entropy.used != 0 {

@@ -10,7 +10,12 @@ export async function glyphLabels(
   pageIndex: number,
   dpi: number,
 ) {
-  const inspection = await core.inspect(input, { glyphs: true, pageIndexes: [pageIndex] });
+  const inspection = await core.inspect(input, {
+    text: true,
+    links: false,
+    glyphs: true,
+    pageIndexes: [pageIndex],
+  });
   const page = inspection.pages[pageIndex];
   const text = inspection.text.find((item) => item.pageIndex === pageIndex);
   if (page === undefined || text === undefined) return [];

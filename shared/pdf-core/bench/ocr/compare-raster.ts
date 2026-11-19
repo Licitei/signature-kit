@@ -83,7 +83,12 @@ await (async () => {
       pages: timings.length,
       wasmBytes: wasm.size,
       rasterMeanMs: timings.reduce((a, b) => a + b, 0) / timings.length,
-      rasterMedianMs: sorted[Math.floor(sorted.length / 2)],
+      rasterMedianMs:
+        sorted.length === 0
+          ? null
+          : ((sorted[Math.floor((sorted.length - 1) / 2)] ?? 0) +
+              (sorted[Math.floor(sorted.length / 2)] ?? 0)) /
+            2,
       meanAbsoluteDifference: absolute / pixels,
       psnrDb: 10 * Math.log10((255 ** 2 * pixels) / squared),
     }),

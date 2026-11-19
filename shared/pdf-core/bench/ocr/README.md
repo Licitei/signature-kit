@@ -26,11 +26,11 @@ image and a JSON label. Word and glyph boxes use a top-left origin with exclusiv
 right and bottom edges. Page indexes and line numbers are zero-based. Line
 samples use crop-local boxes.
 
-The default label source calls pdf-core's `inspect({ glyphs: true })` to obtain
+The default label source calls pdf-core's `inspect({ text: true, links: false, glyphs: true })` to obtain
 glyph advance boxes and text. It projects them through the crop box, rotation
 and DPI, checks local grayscale contrast, then matches them against Poppler's
-word and line ordering. Only words whose glyph text matches appear in these
-labels. White device colors, nonpainting text modes and fully outside
+word and line ordering. Matching glyph boxes supply each word’s bounding box.
+Only words whose glyph text matches appear in these labels. White device colors, nonpainting text modes and fully outside
 rectangular clips are filtered by glyph inspection. Other PDF paint effects
 can still leave unmatched visible text. Use `--labels poppler` for word-only
 bootstrap output without a pdf-core build.

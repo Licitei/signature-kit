@@ -124,21 +124,21 @@ function crop(raster: Raster, [x0, y0, x1, y1]: Box, pad: number): Raster {
   return { width, height, pixels };
 }
 
-function lineBox(words: readonly Word[], raster: Raster): Box {
+function enclosingBox(items: readonly Glyph[], raster: Raster, padding = 0): Box {
   const bounds: Box = [raster.width, raster.height, 0, 0];
   for (const {
     box: [x0, y0, x1, y1],
-  } of words) {
+  } of items) {
     bounds[0] = Math.min(bounds[0], x0);
     bounds[1] = Math.min(bounds[1], y0);
     bounds[2] = Math.max(bounds[2], x1);
     bounds[3] = Math.max(bounds[3], y1);
   }
   return [
-    Math.max(0, bounds[0] - 4),
-    Math.max(0, bounds[1] - 4),
-    Math.min(raster.width, bounds[2] + 4),
-    Math.min(raster.height, bounds[3] + 4),
+    Math.max(0, bounds[0] - padding),
+    Math.max(0, bounds[1] - padding),
+    Math.min(raster.width, bounds[2] + padding),
+    Math.min(raster.height, bounds[3] + padding),
   ];
 }
 
@@ -192,6 +192,8 @@ let documents = 0;
 let pages = 0;
 let samples = 0;
 let failed = 0;
+let sourceWords = 0;
+let matchedWords = 0;
 
 for await (const file of pdfFiles(pdfRoot)) {
   const key = relative(root, file).split(sep).join("/");
@@ -242,10 +244,20 @@ for await (const file of pdfFiles(pdfRoot)) {
       console.error(`Could not render ${file} page ${page}`);
       continue;
     }
-    const glyphs =
-      input === undefined || pdfCore === undefined || labeler === undefined
-        ? undefined
-        : labeler.indexGlyphs(await labeler.glyphLabels(pdfCore, input, page - 1, dpi), raster);
+    let glyphs: ReturnType<NonNullable<typeof labeler>["indexGlyphs"]> | undefined;
+    if (input !== undefined && pdfCore !== undefined && labeler !== undefined) {
+      const labels = await labeler
+        .glyphLabels(pdfCore, input, page - 1, dpi)
+        .catch((cause: unknown) => {
+          console.error(`Could not inspect glyphs in ${file} page ${page}: ${String(cause)}`);
+          return undefined;
+        });
+      if (labels === undefined) {
+        failed += 1;
+        continue;
+      }
+      glyphs = labeler.indexGlyphs(labels, raster);
+    }
     const lines = new Map<number, Word[]>();
     for (const word of words) {
       const [x0, y0, x1, y1] = word.box;
@@ -256,10 +268,16 @@ for await (const file of pdfFiles(pdfRoot)) {
         Math.min(raster.height, y1),
       ];
       if (box[0] >= box[2] || box[1] >= box[3]) continue;
+      sourceWords += 1;
       const matching = glyphs?.({ text: word.text, box });
       if (matching?.length === 0) continue;
+      matchedWords += 1;
       const line = lines.get(word.line) ?? [];
-      line.push(matching === undefined ? { ...word, box } : { ...word, box, glyphs: matching });
+      line.push(
+        matching === undefined
+          ? { ...word, box }
+          : { ...word, box: enclosingBox(matching, raster), glyphs: matching },
+      );
       lines.set(word.line, line);
     }
     if (lines.size === 0) continue;
@@ -272,7 +290,7 @@ for await (const file of pdfFiles(pdfRoot)) {
       else failed += 1;
     } else {
       for (const [line, items] of lines) {
-        const box = lineBox(items, raster);
+        const box = enclosingBox(items, raster, 4);
         const [left, top, right] = box;
         const padding = preset === "clean" ? 0 : Math.ceil((right - left) * 0.027) + 4;
         const relocate = ([x0, y0, x1, y1]: Box): Box => [
@@ -314,6 +332,8 @@ console.log(
     pages,
     samples,
     failed,
+    sourceWords,
+    matchedWords,
     seconds: (performance.now() - started) / 1000,
     output,
   }),
