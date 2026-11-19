@@ -43,11 +43,8 @@ impl PageScan {
             .map_err(|_conversion| Failure::limit("page index exceeds 32-bit limit"))?;
         let [x0, y0, x1, y1] = self.crop;
         let page_area = (x1 - x0) * (y1 - y0);
-        if page_area.is_finite() && page_area > 0.0_f64 {
-            diagnostics.text_area = (union_area(&self.glyph_boxes) / page_area).clamp(0.0_f64, 1.0);
-            diagnostics.raster_coverage =
-                (union_area(&self.image_boxes) / page_area).clamp(0.0_f64, 1.0);
-        }
+        diagnostics.text_area = fraction(&self.glyph_boxes, page_area);
+        diagnostics.raster_coverage = fraction(&self.image_boxes, page_area);
         diagnostics.text_layer = if diagnostics.glyphs == 0 {
             TextLayer::None
         } else if diagnostics.visible_chars == 0
@@ -130,6 +127,12 @@ impl PageScan {
     }
 }
 
+struct SweepEvent {
+    add: bool,
+    next: usize,
+    span: [usize; 2],
+}
+
 #[derive(Clone, Copy, Default)]
 struct Span {
     cover: u32,
@@ -194,40 +197,82 @@ impl Sweep<'_> {
     }
 }
 
+#[inline(never)]
+fn fraction(boxes: &[Rect], area: f64) -> f64 {
+    if area.is_finite() && area > 0.0_f64 {
+        (union_area(boxes) / area).min(1.0_f64)
+    } else {
+        0.0_f64
+    }
+}
+
 pub(crate) fn intersection([x0, y0, x1, y1]: Rect, [a0, b0, a1, b1]: Rect) -> Option<Rect> {
     let rect = [x0.max(a0), y0.max(b0), x1.min(a1), y1.min(b1)];
     let [left, bottom, right, top] = rect;
     (left < right && bottom < top && rect.iter().all(|value| value.is_finite())).then_some(rect)
 }
 
+#[inline(never)]
+fn sorted_edges(boxes: &[Rect], horizontal: bool) -> Vec<f64> {
+    let mut edges = Vec::with_capacity(boxes.len().saturating_mul(2));
+    for &[x0, y0, x1, y1] in boxes {
+        edges.extend_from_slice(&if horizontal { [x0, x1] } else { [y0, y1] });
+    }
+    edges.sort_unstable_by(f64::total_cmp);
+    edges.dedup_by(|left, right| left.total_cmp(right).is_eq());
+    edges
+}
+
+fn edge_index(edges: &[f64], target: f64) -> Option<usize> {
+    edges.binary_search_by(|edge| edge.total_cmp(&target)).ok()
+}
+
 fn union_area(boxes: &[Rect]) -> f64 {
     if let [[x0, y0, x1, y1]] = boxes {
         return (x1 - x0) * (y1 - y0);
     }
-    let mut edges: Vec<f64> = boxes.iter().flat_map(|[x0, _, x1, _]| [*x0, *x1]).collect();
-    edges.sort_unstable_by(f64::total_cmp);
-    edges.dedup_by(|a, b| a.total_cmp(b).is_eq());
-    let edge = |x: f64| edges.binary_search_by(|probe| probe.total_cmp(&x)).ok();
-    let mut events: Vec<_> = boxes
-        .iter()
-        .filter_map(|&[x0, y0, x1, y1]| {
-            let range = [edge(x0)?, edge(x1)?];
-            Some([(y0, range, true), (y1, range, false)])
-        })
-        .flatten()
-        .collect();
-    events.sort_unstable_by(|(a, _, _), (b, _, _)| a.total_cmp(b));
+    let horizontal = sorted_edges(boxes, true);
+    let vertical = sorted_edges(boxes, false);
+    let mut heads = vec![usize::MAX; vertical.len()];
+    let mut events = Vec::with_capacity(boxes.len().saturating_mul(2));
+    for &[x0, y0, x1, y1] in boxes {
+        let (Some(left), Some(right)) = (edge_index(&horizontal, x0), edge_index(&horizontal, x1))
+        else {
+            continue;
+        };
+        for (y, add) in [(y0, true), (y1, false)] {
+            if let Some(head) = edge_index(&vertical, y).and_then(|index| heads.get_mut(index)) {
+                let next = *head;
+                *head = events.len();
+                events.push(SweepEvent {
+                    add,
+                    next,
+                    span: [left, right],
+                });
+            }
+        }
+    }
     let mut sweep = Sweep {
-        edges: &edges,
-        nodes: vec![Span::default(); edges.len().saturating_mul(4)],
+        edges: &horizontal,
+        nodes: vec![Span::default(); horizontal.len().saturating_mul(4)],
     };
     let mut last = 0.0_f64;
     let mut width = 0.0_f64;
     let mut area = 0.0_f64;
-    for (y, range, add) in events {
+    for (&y, first) in vertical.iter().zip(heads) {
         area += (y - last) * width;
-        width = sweep.update(1, 0, edges.len().saturating_sub(1), range, add);
         last = y;
+        let mut cursor = first;
+        while let Some(event) = events.get(cursor) {
+            width = sweep.update(
+                1,
+                0,
+                horizontal.len().saturating_sub(1),
+                event.span,
+                event.add,
+            );
+            cursor = event.next;
+        }
     }
     area
 }
@@ -238,21 +283,20 @@ pub(crate) fn opened_diagnostics(
     limits: &Limits,
 ) -> Outcome<Vec<PageDiagnostics>> {
     let mut session = Session::default();
-    selected
-        .iter()
-        .map(|&(index, page)| {
-            let mut scan = PageScan::new(page.info.crop_box);
-            drop(scan_page(
-                document,
-                page,
-                limits,
-                Capture::default(),
-                &mut session,
-                Some(&mut scan),
-            )?);
-            scan.finish(index)
-        })
-        .collect()
+    let mut diagnostics = Vec::with_capacity(selected.len());
+    for &(index, page) in selected {
+        let mut scan = PageScan::new(page.info.crop_box);
+        drop(scan_page(
+            document,
+            page,
+            limits,
+            Capture::default(),
+            &mut session,
+            Some(&mut scan),
+        )?);
+        diagnostics.push(scan.finish(index)?);
+    }
+    Ok(diagnostics)
 }
 
 #[cfg(test)]

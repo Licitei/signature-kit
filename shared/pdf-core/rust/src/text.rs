@@ -241,9 +241,14 @@ impl ScanState {
     const fn paints_text(self) -> bool {
         let [fill_white, stroke_white] = self.white;
         let [fill_clear, stroke_clear] = self.transparent;
-        let fill = self.render_mode & 3 != 1 && !fill_clear && !fill_white;
-        let stroke = matches!(self.render_mode & 3, 1 | 2) && !stroke_clear && !stroke_white;
-        self.render_mode & 3 != 3 && (fill || stroke)
+        let fill = !fill_clear && !fill_white;
+        let stroke = !stroke_clear && !stroke_white;
+        match self.render_mode & 3 {
+            0 => fill,
+            1 => stroke,
+            2 => fill || stroke,
+            _ => false,
+        }
     }
 
     fn restrict(&mut self, bounds: [f64; 4]) {
@@ -267,17 +272,7 @@ impl ScanPath {
     fn operator(&mut self, code: u32, operands: &[Operand<'_>], state: &mut GState) {
         match code {
             OP_MOVE | OP_LINE | OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
-                let count = match code {
-                    OP_CURVE => 6,
-                    OP_CURVE_V | OP_CURVE_Y => 4,
-                    _ => 2,
-                };
-                for pair in operands
-                    .get(operands.len().saturating_sub(count)..)
-                    .unwrap_or_default()
-                    .as_chunks::<2>()
-                    .0
-                {
+                for pair in operands.as_chunks::<2>().0 {
                     if let [Some(x), Some(y)] = pair.each_ref().map(Operand::as_number) {
                         let (a, b) = apply(&state.ctm, x, y);
                         self.include([a, b, a, b]);
@@ -307,37 +302,28 @@ impl ScanPath {
             }
             _ => {
                 let [fill, stroke] = &mut state.scan.white;
-                let color = match code {
-                    key if key == op(b"g")
-                        || key == op(b"rg")
-                        || key == op(b"k")
-                        || key == op(b"cs")
-                        || key == op(b"sc")
-                        || key == op(b"scn") =>
-                    {
-                        fill
-                    }
-                    key if key == op(b"G")
-                        || key == op(b"RG")
-                        || key == op(b"K")
-                        || key == op(b"CS")
-                        || key == op(b"SC")
-                        || key == op(b"SCN") =>
-                    {
-                        stroke
-                    }
+                let (color, count) = match &code.to_be_bytes() {
+                    b"\0\0\0g" => (fill, 1),
+                    b"\0\0\0G" => (stroke, 1),
+                    b"\0\0rg" => (fill, 3),
+                    b"\0\0RG" => (stroke, 3),
+                    b"\0\0\0k" => (fill, 4),
+                    b"\0\0\0K" => (stroke, 4),
+                    b"\0\0cs" | b"\0\0sc" | b"\0scn" => (fill, 0),
+                    b"\0\0CS" | b"\0\0SC" | b"\0SCN" => (stroke, 0),
                     _ => return,
                 };
-                *color = match code {
-                    key if key == op(b"g") || key == op(b"G") => {
-                        tail_numbers::<1, _>(operands).is_some_and(|[gray]| gray >= 1.0_f64)
-                    }
-                    key if key == op(b"rg") || key == op(b"RG") => tail_numbers::<3, _>(operands)
-                        .is_some_and(|rgb| rgb.iter().all(|value| *value >= 1.0_f64)),
-                    key if key == op(b"k") || key == op(b"K") => tail_numbers::<4, _>(operands)
-                        .is_some_and(|cmyk| cmyk.iter().all(|value| *value <= 0.0_f64)),
-                    _ => false,
-                };
+                *color = count != 0
+                    && operands.len() >= count
+                    && operands.iter().rev().take(count).all(|operand| {
+                        operand.as_number().is_some_and(|value| {
+                            if count == 4 {
+                                value <= 0.0_f64
+                            } else {
+                                value >= 1.0_f64
+                            }
+                        })
+                    });
             }
         }
     }
@@ -1492,8 +1478,8 @@ impl Interpreter<'_, '_> {
             if let Some(bytes) = item.string(scratch) {
                 if let Some((entry, placement)) = &prepared {
                     self.show_with(entry, placement, state, matrices, bytes)?;
-                } else if let Some(scan) = self.scan.as_deref_mut() {
-                    scan.missing_font(bytes, state.scan.paints_text());
+                } else {
+                    self.show(state, matrices, bytes)?;
                 }
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1_000.0_f64 * state.size;

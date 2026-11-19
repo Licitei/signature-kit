@@ -406,25 +406,41 @@ fn encode_diagnostics(pages: &[PageDiagnostics]) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(
         DIAGNOSTICS_HEADER_LEN.saturating_add(pages.len().saturating_mul(DIAGNOSTICS_RECORD_LEN)),
     );
-    out.u32(DIAGNOSTICS_MAGIC);
-    out.u32(DIAGNOSTICS_VERSION);
-    out.u32(len32(pages.len())?);
-    out.u32(0);
+    out.bytes(
+        [
+            DIAGNOSTICS_MAGIC,
+            DIAGNOSTICS_VERSION,
+            len32(pages.len())?,
+            0,
+        ]
+        .map(u32::to_le_bytes)
+        .as_flattened(),
+    );
     for page in pages {
-        out.u32(page.page_index);
-        out.u32(page.glyphs);
-        out.u32(page.unmapped);
-        out.u32(page.replacement);
-        out.u32(page.invisible);
-        out.u32(page.visible_chars);
-        out.u32(page.image_count);
-        out.u32(match page.text_layer {
+        let layer = match page.text_layer {
             TextLayer::None => 0,
             TextLayer::Weak => 1,
             TextLayer::Usable => 2,
-        });
-        out.f64(page.text_area);
-        out.f64(page.raster_coverage);
+        };
+        out.bytes(
+            [
+                page.page_index,
+                page.glyphs,
+                page.unmapped,
+                page.replacement,
+                page.invisible,
+                page.visible_chars,
+                page.image_count,
+                layer,
+            ]
+            .map(u32::to_le_bytes)
+            .as_flattened(),
+        );
+        out.bytes(
+            [page.text_area, page.raster_coverage]
+                .map(f64::to_le_bytes)
+                .as_flattened(),
+        );
     }
     out.done()
 }
