@@ -4,7 +4,6 @@ use crate::network::{Network, inputs};
 use crate::raster::Bits;
 
 const GRID: u32 = 16;
-const HEADER: usize = 24;
 pub(crate) const PROTOTYPE_BYTES: usize = 48;
 pub(crate) const TRANSITION_BYTES: usize = 12;
 pub(crate) const MAGIC: &[u8; 4] = b"OCR1";
@@ -146,24 +145,19 @@ fn decode_prototype(record: &[u8; PROTOTYPE_BYTES]) -> Option<(char, Features)> 
     ))
 }
 
-fn tables(data: &[u8]) -> (&[[u8; PROTOTYPE_BYTES]], &[[u8; TRANSITION_BYTES]]) {
-    if !data.starts_with(MAGIC) {
-        return (&[], &[]);
-    }
-    let count = data
-        .get(20..HEADER)
-        .and_then(<[u8]>::first_chunk::<4>)
-        .map_or(0, |bytes| u32::from_le_bytes(*bytes));
-    let offset = usize::try_from(count)
-        .unwrap_or(0)
-        .saturating_mul(PROTOTYPE_BYTES);
-    let Some((prototypes, transitions)) = data
-        .get(HEADER..)
-        .and_then(|tail| tail.split_at_checked(offset))
-    else {
-        return (&[], &[]);
+fn prototype_tables(data: &[u8]) -> Option<(&[[u8; PROTOTYPE_BYTES]], &[[u8; TRANSITION_BYTES]])> {
+    let body = data.strip_prefix(MAGIC)?;
+    let (count, records) = body.get(16..)?.split_first_chunk::<4>()?;
+    let count = usize::try_from(u32::from_le_bytes(*count)).ok()?;
+    let (prototypes, transitions) =
+        records.split_at_checked(count.checked_mul(PROTOTYPE_BYTES)?)?;
+    let (prototypes, []) = prototype_bytes.as_chunks() else {
+        return None;
     };
-    (prototypes.as_chunks().0, transitions.as_chunks().0)
+    let (transitions, []) = transition_bytes.as_chunks() else {
+        return None;
+    };
+    (!prototypes.is_empty()).then_some((prototypes, transitions))
 }
 
 fn classify_prototypes(sample: &Features, records: &[[u8; PROTOTYPE_BYTES]]) -> [Choice; 4] {
@@ -235,24 +229,45 @@ impl<'model> Model<'model> {
         }
     }
 
-    pub(crate) fn decode(data: &'model [u8]) -> Self {
-        if let Some((network, transitions)) = Network::decode(data) {
-            return Self {
-                glyphs: Glyphs::Network(network),
-                transitions: transitions.as_chunks().0,
+    pub(crate) fn decode(data: &'model [u8]) -> Option<Self> {
+        if let Some((network, records)) = Network::decode(data) {
+            let (transitions, []) = records.as_chunks() else {
+                return None;
             };
+            return Some(Self {
+                glyphs: Glyphs::Network(network),
+                transitions,
+            });
         }
-        let (prototypes, transitions) = tables(data);
-        Self {
+        let (prototypes, transitions) = prototype_tables(data)?;
+        Some(Self {
             glyphs: Glyphs::Prototypes(prototypes),
             transitions,
-        }
+        })
     }
+
     pub(crate) fn transition(self, previous: char, next: char) -> f32 {
         transition(self.transitions, previous, next)
     }
 }
 
-pub(crate) fn model() -> Model<'static> {
+pub(crate) fn model() -> Option<Model<'static>> {
     Model::decode(MODEL)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MODEL, Model, model};
+
+    #[test]
+    fn embedded_model_is_valid_and_within_budget() {
+        assert!(model().is_some());
+        assert!(MODEL.len() <= 1_500_000);
+    }
+
+    #[test]
+    fn truncated_models_are_rejected() {
+        assert!(Model::decode(b"OCR1").is_none());
+        assert!(Model::decode(b"OCR2").is_none());
+    }
 }

@@ -98,6 +98,7 @@ impl<'model> Network<'model> {
     }
     fn rank(self, hidden: &[i32; HIDDEN]) -> [Choice; 4] {
         let mut choices = [UNCLASSIFIED; 4];
+        let mut rejection = f32::INFINITY;
         let offset = hidden.iter().sum::<i32>().wrapping_mul(128);
         for record in self.outputs {
             let Some((weights, label_and_bias)) = record.split_first_chunk::<HIDDEN>() else {
@@ -117,18 +118,26 @@ impl<'model> Network<'model> {
                 });
             let logit =
                 signed(sum.wrapping_sub(offset)) * self.output_scale + f32::from_le_bytes(*bias);
-            retain_choice(
-                &mut choices,
-                Choice {
-                    distance: -logit,
-                    label,
-                },
-            );
+            if label == '\0' {
+                rejection = -logit;
+            } else {
+                retain_choice(
+                    &mut choices,
+                    Choice {
+                        distance: -logit,
+                        label,
+                    },
+                );
+            }
         }
         let [best, second, _, _] = choices;
-        let ambiguity = (1.0 + (best.distance - second.distance).exp()).ln();
+        let minimum = best.distance.min(rejection);
+        let normalizer = ((minimum - best.distance).exp()
+            + (minimum - second.distance).exp()
+            + (minimum - rejection).exp())
+        .ln();
         for choice in &mut choices {
-            choice.distance = 12.0 * (choice.distance - best.distance + ambiguity);
+            choice.distance = 12.0 * (choice.distance - minimum + normalizer);
         }
         choices
     }

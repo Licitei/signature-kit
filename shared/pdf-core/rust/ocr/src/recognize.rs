@@ -44,7 +44,9 @@ struct Path {
     reason = "the line recognizer is the agreed OCR engine seam"
 )]
 pub fn recognize_line(page: &Bits, line: &Line) -> Vec<Word> {
-    recognize_line_with_model(page, line, model())
+    model().map_or_else(Vec::new, |weights| {
+        recognize_line_with_model(page, line, weights)
+    })
 }
 
 pub(crate) fn recognize_line_with_model(page: &Bits, line: &Line, model: Model<'_>) -> Vec<Word> {

@@ -10,9 +10,10 @@ use std::process;
 use std::time::Instant;
 
 use crate::model::{
-    Features, MAGIC, Metrics, Model, PROTOTYPE_BYTES, TRANSITION_BYTES, distance, features, model,
+    Features, MAGIC, Metrics, Model, PROTOTYPE_BYTES, TRANSITION_BYTES, coordinate, distance,
+    features, model,
 };
-use crate::network::{Shape, inputs};
+use crate::network::{INPUTS, Shape, inputs};
 use crate::neural_training;
 use crate::raster::Bits;
 use crate::recognize::{ink_box, recognize_line_with_model};
@@ -257,6 +258,7 @@ fn network_samples(
     shape: Shape,
     glyphs: &mut neural_training::Samples,
     evidence: &mut Evidence,
+    add_rejections: bool,
 ) {
     for sample in samples {
         let metrics = Metrics {
@@ -276,8 +278,58 @@ fn network_samples(
                     .push(inputs(&sample.page, bounds, metrics, shape));
             }
         }
+        if add_rejections {
+            rejection_samples(sample, metrics, shape, glyphs.entry('\0').or_default());
+        }
         for word in &sample.words {
             evidence.add_word(word.text);
+        }
+    }
+}
+
+fn rejection_samples(
+    sample: &Sample<'_>,
+    metrics: Metrics,
+    shape: Shape,
+    output: &mut Vec<[u8; INPUTS]>,
+) {
+    let mut words = sample.words.iter().peekable();
+    for (index, pair) in sample.glyphs.windows(2).enumerate() {
+        let [first, second] = pair else { continue };
+        let [left, upper, right, lower] = first.bbox;
+        let [next_left, next_top, next_right, next_bottom] = second.bbox;
+        while words.peek().is_some_and(|word| {
+            let [_, _, end, _] = word.bbox;
+            end <= left
+        }) {
+            let _word = words.next();
+        }
+        let same_word = words.peek().is_some_and(|word| {
+            let [start, _, end, _] = word.bbox;
+            start <= left && next_right <= end
+        });
+        if !same_word
+            || right > next_right
+            || next_left < left
+            || coordinate(next_left.saturating_sub(right)) > metrics.x_height * 0.24
+        {
+            continue;
+        }
+        let outcome = index.wrapping_add(usize::try_from(left).unwrap_or_default()) & 31;
+        let region = match outcome {
+            0 => [
+                left,
+                upper.min(next_top),
+                next_right,
+                lower.max(next_bottom),
+            ],
+            1 if right.saturating_sub(left) >= 4 => {
+                [left, upper, u32::midpoint(left, right), lower]
+            }
+            _ => continue,
+        };
+        if let Some(bounds) = ink_box(&sample.page, region) {
+            output.push(inputs(&sample.page, bounds, metrics, shape));
         }
     }
 }
@@ -303,14 +355,24 @@ fn train_network(
             ));
         }
     };
+    let (add_rejections, inputs) = match archives {
+        [first, rest @ ..] if first == "--reject" => (true, rest),
+        _ => (false, archives),
+    };
     let started = Instant::now();
     let mut evidence = Evidence::default();
     let mut glyphs = neural_training::Samples::new();
     let mut hash = FNV_OFFSET;
-    for archive in archives {
+    for archive in inputs {
         let bytes = fs::read(archive)?;
         hash = digest(&bytes, hash);
-        network_samples(&load(&bytes)?, shape, &mut glyphs, &mut evidence);
+        network_samples(
+            &load(&bytes)?,
+            shape,
+            &mut glyphs,
+            &mut evidence,
+            add_rejections,
+        );
         writeln!(
             io::stdout().lock(),
             "{}: {} glyphs",
@@ -588,6 +650,11 @@ fn evaluate(input: &Path, model: Model<'_>) -> io::Result<()> {
         out,
         "with_labeled_glyph_boxes={matched_glyphs}/{total_glyphs}"
     )?;
+    let (timed, per_glyph_us) = classifier_timing(&samples, model);
+    writeln!(
+        out,
+        "model_timed_glyphs={timed} model_us_per_glyph={per_glyph_us:.3}"
+    )?;
     for ((expected, predicted), count) in ranked.into_iter().take(20) {
         writeln!(
             out,
@@ -597,6 +664,30 @@ fn evaluate(input: &Path, model: Model<'_>) -> io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn classifier_timing(samples: &[Sample<'_>], model: Model<'_>) -> (usize, f64) {
+    let mut glyphs = Vec::new();
+    for sample in samples {
+        let metrics = Metrics {
+            baseline: sample.line.baseline,
+            x_height: sample.line.x_height,
+        };
+        for glyph in &sample.glyphs {
+            if let Some(bounds) = ink_box(&sample.page, glyph.bbox) {
+                glyphs.push((&sample.page, bounds, metrics));
+            }
+        }
+    }
+    let started = Instant::now();
+    for _ in 0..5 {
+        for &(page, bounds, metrics) in &glyphs {
+            let _choices = hint::black_box(model.classify(page, bounds, metrics));
+        }
+    }
+    let per_glyph_us = started.elapsed().as_secs_f64() * 200_000.0
+        / f64::from(u32::try_from(glyphs.len().max(1)).unwrap_or(u32::MAX));
+    (glyphs.len(), per_glyph_us)
 }
 
 fn oracle_glyphs(samples: &[Sample<'_>], model: Model<'_>) -> (usize, usize) {
@@ -773,6 +864,15 @@ fn cell(distances: &[Vec<usize>], row: usize, col: usize) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+fn valid_model(candidate: Option<Model<'_>>) -> io::Result<Model<'_>> {
+    candidate.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "malformed OCR recognition table",
+        )
+    })
+}
+
 /// # Errors
 /// Returns an I/O error for invalid arguments, malformed archives or failed file operations.
 #[inline]
@@ -788,20 +888,23 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
             train(Path::new(archive), Path::new(output), seed, Some(corpus))
         }
         [command, archive, output] if command == "inspect" => {
-            inspect(Path::new(archive), Path::new(output), model())
+            inspect(Path::new(archive), Path::new(output), valid_model(model())?)
         }
         [command, archive, output, weights] if command == "inspect" => inspect(
             Path::new(archive),
             Path::new(output),
-            Model::decode(&fs::read(weights)?),
+            valid_model(Model::decode(&fs::read(weights)?))?,
         ),
-        [command, archive] if command == "evaluate" => evaluate(Path::new(archive), model()),
-        [command, archive, weights] if command == "evaluate" => {
-            evaluate(Path::new(archive), Model::decode(&fs::read(weights)?))
+        [command, archive] if command == "evaluate" => {
+            evaluate(Path::new(archive), valid_model(model())?)
         }
+        [command, archive, weights] if command == "evaluate" => evaluate(
+            Path::new(archive),
+            valid_model(Model::decode(&fs::read(weights)?))?,
+        ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-network <model.bin> <seed> <glyph|line> <corpus.txt> <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }
