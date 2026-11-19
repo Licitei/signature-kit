@@ -98,8 +98,9 @@ describe("PdfCore.pageDiagnostics", () => {
 
   it("distinguishes sparse stamps on graphical pages from readable text with invisible duplicates", async () => {
     const core = await loadPdfCoreNode();
-    const stamp = `q 100 0 0 65 0 0 cm /Scan Do Q ${native}`;
-    const outlined = `0 10 m 5 10 5 15 10 15 c f `.repeat(1024) + native;
+    const smallText = native.replace("10 Tf", "5 Tf");
+    const stamp = `q 100 0 0 65 0 0 cm /Scan Do Q ${smallText}`;
+    const outlined = `0 10 m 5 10 5 15 10 15 c f `.repeat(1024) + smallText;
     const rows = Array.from(
       { length: 7 },
       (_, row) => `BT /F1 7 Tf 8 ${10 + row * 12} Td (abcdefghijklmnopqrstuv) Tj ET`,
