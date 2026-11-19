@@ -6,7 +6,7 @@
   "buildCommand": "cd ../.. && bun run site:build",
   "functions": {
     "server.mjs": {
-      "includeFiles": "dist-foldkit/**"
+      "includeFiles": "apps/docs/dist-foldkit/**"
     }
   }
 }
