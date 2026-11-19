@@ -109,7 +109,8 @@ impl Bits {
         }
     }
 
-    pub(crate) fn set_run(&mut self, yy: u32, start: u32, end: u32, ink: bool) {
+    #[inline]
+    pub fn set_run(&mut self, yy: u32, start: u32, end: u32, ink: bool) {
         if end <= start || end > self.width {
             return;
         }
@@ -140,7 +141,8 @@ impl Bits {
     }
 }
 
-pub(crate) fn ink_runs<Visit>(row: &[u64], width: u32, mut visit: Visit)
+#[inline]
+pub fn ink_runs<Visit>(row: &[u64], width: u32, mut visit: Visit)
 where
     Visit: FnMut(u32, u32),
 {
