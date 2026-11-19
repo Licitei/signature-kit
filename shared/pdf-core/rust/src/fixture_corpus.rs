@@ -3,7 +3,7 @@ mod tests {
     use crate::document::{self, Document, Page};
     use crate::failure::FailureCode;
     use crate::font::Font;
-    use crate::inspection::{InspectOptions, Inspection, Limits};
+    use crate::inspection::{InspectOptions, Inspection, Limits, TextItems};
     use crate::object::{Object, Resolver as _};
 
     const LINK_PRIMARY: &str = "https://signature-kit.dev/corpus/link-primary";
@@ -38,7 +38,7 @@ mod tests {
         document::inspect(
             bytes,
             &InspectOptions {
-                runs: false,
+                text_items: TextItems::Joined,
                 text: true,
                 links: true,
                 page_indexes: None,
@@ -217,7 +217,7 @@ mod tests {
         let all = document::inspect(
             bytes,
             &InspectOptions {
-                runs: false,
+                text_items: TextItems::Joined,
                 text: true,
                 links: false,
                 page_indexes: None,
@@ -229,7 +229,7 @@ mod tests {
         let filtered = document::inspect(
             bytes,
             &InspectOptions {
-                runs: false,
+                text_items: TextItems::Joined,
                 text: true,
                 links: false,
                 page_indexes: Some(vec![0]),
@@ -242,7 +242,7 @@ mod tests {
         let missing = document::inspect(
             bytes,
             &InspectOptions {
-                runs: false,
+                text_items: TextItems::Joined,
                 text: true,
                 links: false,
                 page_indexes: Some(vec![5]),
