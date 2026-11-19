@@ -66,6 +66,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.text",
   "pdfCore.tables",
   "pdfCore.pageDiagnostics",
+  "pdfCore.pageImages",
   "pdfCore.render",
   "pdfCore.paint",
   "pdfCore.signatures",
@@ -87,6 +88,7 @@ export const PdfCoreOperationValue = {
   text: "pdfCore.text",
   tables: "pdfCore.tables",
   pageDiagnostics: "pdfCore.pageDiagnostics",
+  pageImages: "pdfCore.pageImages",
   render: "pdfCore.render",
   paint: "pdfCore.paint",
   signatures: "pdfCore.signatures",
@@ -111,6 +113,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreTables",
   "PdfCorePageDiagnosticsOptions",
   "PdfCorePageDiagnostics",
+  "PdfCorePageImagesOptions",
+  "PdfCorePageImages",
   "PdfCoreRenderOptions",
   "PdfCoreDisplayLists",
   "PdfCorePaintOptions",
@@ -136,6 +140,8 @@ export const PdfCoreSchemaNameValue = {
   tables: "PdfCoreTables",
   pageDiagnosticsOptions: "PdfCorePageDiagnosticsOptions",
   pageDiagnostics: "PdfCorePageDiagnostics",
+  pageImagesOptions: "PdfCorePageImagesOptions",
+  pageImages: "PdfCorePageImages",
   renderOptions: "PdfCoreRenderOptions",
   displayLists: "PdfCoreDisplayLists",
   paintOptions: "PdfCorePaintOptions",
@@ -217,6 +223,50 @@ export const PdfCorePageDiagnosticsSchema = Schema.Array(
   }),
 );
 export type PdfCorePageDiagnostics = (typeof PdfCorePageDiagnosticsSchema)["Type"];
+
+export const PdfCorePageImagesOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+  format: Schema.optional(Schema.Literals(["encoded", "gray"])),
+});
+export type PdfCorePageImagesOptions = (typeof PdfCorePageImagesOptionsSchema)["Type"];
+
+export const PdfCorePageImagesSchema = Schema.Array(
+  Schema.Union([
+    Schema.Struct({
+      pageIndex: pageIndexSchema,
+      kind: Schema.Literal("none"),
+      reason: Schema.Literals([
+        "no-dominant-image",
+        "unsupported-filter",
+        "decode-failed",
+        "masked-jpeg",
+      ]),
+    }),
+    Schema.Struct({
+      pageIndex: pageIndexSchema,
+      kind: Schema.Literal("image"),
+      mediaType: Schema.Literals(["image/jpeg", "image/png", "application/octet-stream"]),
+      bytes: Schema.Uint8Array,
+      width: pageIndexSchema,
+      height: pageIndexSchema,
+      dpiX: Schema.Finite.check(Schema.isGreaterThan(0)),
+      dpiY: Schema.Finite.check(Schema.isGreaterThan(0)),
+      placement: Schema.Tuple([
+        Schema.Finite,
+        Schema.Finite,
+        Schema.Finite,
+        Schema.Finite,
+        Schema.Finite,
+        Schema.Finite,
+      ]),
+      rotate: Schema.Literals([0, 90, 180, 270]),
+      coverage: fractionSchema,
+      jpegDecode: Schema.optional(Schema.Array(Schema.Finite)),
+      jpegCmyk: Schema.optional(Schema.Boolean),
+    }),
+  ]),
+);
+export type PdfCorePageImages = (typeof PdfCorePageImagesSchema)["Type"];
 
 export const PDF_CORE_DEFAULT_RENDER_SCALE = 150 / 72;
 const renderScaleSchema = Schema.Finite.check(
@@ -401,6 +451,7 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_page_diagnostics: Schema.declare(isTextFunction, {
     identifier: "pdf_core_page_diagnostics",
   }),
+  pdf_core_page_images: Schema.declare(isTextFunction, { identifier: "pdf_core_page_images" }),
   pdf_core_render: Schema.declare(isRenderFunction, { identifier: "pdf_core_render" }),
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {

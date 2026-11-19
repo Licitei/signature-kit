@@ -505,6 +505,14 @@ fn apply_alpha(alpha: &Alpha, row: &[u8], y: usize, layout: &Layout, out: &mut [
     }
 }
 
+fn expand_filter(name: Vec<u8>) -> Vec<u8> {
+    match name.as_slice() {
+        b"DCT" => b"DCTDecode".to_vec(),
+        b"CCF" => b"CCITTFaxDecode".to_vec(),
+        _ => name,
+    }
+}
+
 fn factors(width: usize, height: usize, device: (f64, f64)) -> (usize, usize) {
     let pick = |source: usize, target: f64| {
         let wanted = target.max(1.0);
@@ -529,7 +537,7 @@ fn factors(width: usize, height: usize, device: (f64, f64)) -> (usize, usize) {
     (factor_x, factor_y)
 }
 
-fn dimensions(resolver: &dyn Resolver, dict: &Dict) -> Option<(usize, usize)> {
+pub(crate) fn dimensions(resolver: &dyn Resolver, dict: &Dict) -> Option<(usize, usize)> {
     let width = usize::try_from(integer(resolver, dict, b"Width")?).ok()?;
     let height = usize::try_from(integer(resolver, dict, b"Height")?).ok()?;
     (width > 0 && height > 0 && width.checked_mul(height)? <= MAX_PIXELS).then_some((width, height))
@@ -793,6 +801,44 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
         mask,
         matte,
     })
+}
+
+pub(crate) fn normalized_inline(dict: Dict) -> Dict {
+    let mut out = Dict::default();
+    for (key, value) in dict.entries {
+        let full: &[u8] = match key.as_slice() {
+            b"BPC" => b"BitsPerComponent",
+            b"CS" => b"ColorSpace",
+            b"D" => b"Decode",
+            b"DP" => b"DecodeParms",
+            b"F" => b"Filter",
+            b"H" => b"Height",
+            b"IM" => b"ImageMask",
+            b"I" => b"Interpolate",
+            b"W" => b"Width",
+            other => other,
+        };
+        let fixed = if let Object::Name(name) = value {
+            Object::Name(expand_filter(name))
+        } else if let Object::Array(items) = value {
+            Object::Array(
+                items
+                    .into_iter()
+                    .map(|item| {
+                        if let Object::Name(name) = item {
+                            Object::Name(expand_filter(name))
+                        } else {
+                            item
+                        }
+                    })
+                    .collect(),
+            )
+        } else {
+            value
+        };
+        out.insert(full, fixed);
+    }
+    out
 }
 
 #[cfg(test)]

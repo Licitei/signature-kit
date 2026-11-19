@@ -20,10 +20,12 @@ use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::lazy::{Lazy, Plan, Tuning};
 use crate::num::widen;
+use crate::page_image::{Absent, Encoding, extract_image};
 use crate::png;
 use crate::render::{self, RenderedPage};
 use crate::revision::{Analysis, Report, analyze, revision_complete};
 use crate::table::Table;
+use crate::text::Session;
 use crate::write::{Packing, create, merge};
 
 const MAGIC: u32 = 0x4346_4450;
@@ -37,10 +39,13 @@ const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
 const FLAG_RUNS: u32 = 32;
+const FLAG_GRAY_IMAGE: u32 = 64;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
 const TEXT_HEADER_LEN: usize = 16;
+const PAGE_IMAGES_MAGIC: u32 = 0x4d49_4450;
+const PAGE_IMAGES_VERSION: u32 = 1;
 const DIAGNOSTICS_MAGIC: u32 = 0x4744_4450;
 const DIAGNOSTICS_VERSION: u32 = 1;
 const DIAGNOSTICS_HEADER_LEN: usize = 16;
@@ -402,6 +407,79 @@ fn encode_text(pages: &[String]) -> Outcome<Writer> {
     out.done()
 }
 
+#[inline(never)]
+fn encode_images(
+    document: &document::Document<'_>,
+    pages: &[(usize, &document::Page)],
+    limits: &Limits,
+    gray: bool,
+) -> Outcome<Writer> {
+    let mut session = Session::default();
+    let mut out = Writer::with_capacity(16);
+    out.bytes(
+        [
+            PAGE_IMAGES_MAGIC,
+            PAGE_IMAGES_VERSION,
+            len32(pages.len())?,
+            0,
+        ]
+        .map(u32::to_le_bytes)
+        .as_flattened(),
+    );
+    for &(index, page) in pages {
+        let page_index = len32(index)?;
+        match extract_image(document, page, limits, &mut session, gray)? {
+            Err(reason) => {
+                let tag = match reason {
+                    Absent::NoDominantImage => 0,
+                    Absent::UnsupportedFilter => 1,
+                    Absent::DecodeFailed => 2,
+                    Absent::MaskedJpeg => 3,
+                };
+                out.bytes([page_index, tag].map(u32::to_le_bytes).as_flattened());
+            }
+            Ok(found) => {
+                let (tag, cmyk, decode) = match &found.encoding {
+                    Encoding::Png => (4, false, &[][..]),
+                    Encoding::Jpeg { cmyk, decode } => (5, *cmyk, decode.as_slice()),
+                    Encoding::Gray => (6, false, &[][..]),
+                };
+                out.bytes(
+                    [
+                        page_index,
+                        tag,
+                        found.width,
+                        found.height,
+                        u32::try_from(found.rotate).unwrap_or_default(),
+                        u32::from(cmyk),
+                        len32(found.bytes.len())?,
+                        len32(decode.len())?,
+                    ]
+                    .map(u32::to_le_bytes)
+                    .as_flattened(),
+                );
+                out.bytes(
+                    [found.dpi_x, found.dpi_y, found.coverage]
+                        .map(f64::to_le_bytes)
+                        .as_flattened(),
+                );
+                out.bytes(found.placement.map(f64::to_le_bytes).as_flattened());
+                for value in decode {
+                    out.f64(*value);
+                }
+                if out.payload_len().saturating_add(found.bytes.len())
+                    > limits.max_decoded_stream_bytes
+                {
+                    return Err(Failure::limit("page image result exceeds byte limit"));
+                }
+                out.bytes(&found.bytes);
+                out.align();
+            }
+        }
+    }
+    out.done()
+}
+
 fn encode_diagnostics(pages: &[PageDiagnostics]) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(
         DIAGNOSTICS_HEADER_LEN.saturating_add(pages.len().saturating_mul(DIAGNOSTICS_RECORD_LEN)),
@@ -692,6 +770,30 @@ pub(crate) unsafe extern "C" fn pdf_core_page_diagnostics(
             &pick_pages(&pages, selected),
             &limits,
         )?)
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_page_images(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|inner_request| {
+        let limits = layout::text_limits();
+        let document = document::Document::open(inner_request.pdf, &limits)?;
+        let pages = document.pages()?;
+        let selected = select_pages(pages.len(), inner_request.pages)?;
+        encode_images(
+            &document,
+            &pick_pages(&pages, selected),
+            &limits,
+            inner_request.has(FLAG_GRAY_IMAGE),
+        )
     }))
 }
 
@@ -1256,6 +1358,7 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
             1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
             2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
             3 => encode_diagnostics(&opened_diagnostics(document, pages, &limits)?),
+            4 => encode_images(document, pages, &limits, flags & FLAG_GRAY_IMAGE != 0),
             _ => Err(Failure::invalid("invalid lazy profile")),
         })?;
         payload.map_or_else(

@@ -1,3 +1,4 @@
+use crate::deflate::zlib_compress;
 use crate::failure::{Failure, Outcome};
 use crate::filters::paeth_filter;
 use crate::inflate::inflate;
@@ -191,6 +192,17 @@ impl Header {
     }
 }
 
+fn crc32(kind: [u8; 4], data: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in kind.iter().chain(data) {
+        crc ^= u32::from(byte);
+        for _bit in 0..8_u32 {
+            crc = (crc >> 1_u32) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
 pub(crate) fn decode(png: &[u8]) -> Outcome<Image> {
     if png.len() > MAX_INPUT || png.get(..8) != Some(SIGNATURE.as_slice()) {
         return Err(Failure::request("not a PNG image"));
@@ -295,6 +307,64 @@ pub(crate) fn decode(png: &[u8]) -> Outcome<Image> {
         samples,
         width: header.width,
     })
+}
+
+#[inline(never)]
+pub(crate) fn encode_rgba(width: u32, height: u32, pixels: &[u8]) -> Outcome<Vec<u8>> {
+    let gray = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|&[red, green, blue, alpha]| red == green && red == blue && alpha == u8::MAX);
+    let binary = gray
+        && pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|&[sample, ..]| matches!(sample, 0 | 255));
+    let row_bytes = widen(width).saturating_mul(4);
+    if row_bytes == 0 || row_bytes.saturating_mul(widen(height)) != pixels.len() {
+        return Err(Failure::request("invalid PNG source raster"));
+    }
+    let (depth, color) = if binary {
+        (1, 0)
+    } else if gray {
+        (8, 0)
+    } else {
+        (8, 6)
+    };
+    let mut raw = Vec::new();
+    for row in pixels.chunks_exact(row_bytes) {
+        raw.push(0);
+        let samples = row.as_chunks::<4>().0;
+        if binary {
+            for group in samples.chunks(8) {
+                let mut byte = 0_u8;
+                let mut bit = 0x80_u8;
+                for &[sample, ..] in group {
+                    if sample != 0 {
+                        byte |= bit;
+                    }
+                    bit >>= 1_u32;
+                }
+                raw.push(byte);
+            }
+        } else if gray {
+            raw.extend(samples.iter().map(|&[sample, ..]| sample));
+        } else {
+            raw.extend_from_slice(row);
+        }
+    }
+    let mut out = SIGNATURE.to_vec();
+    let mut header = Vec::with_capacity(13);
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[depth, color, 0, 0, 0]);
+    let compressed = zlib_compress(&raw);
+    write_chunk(&mut out, *b"IHDR", &header)?;
+    write_chunk(&mut out, *b"IDAT", &compressed)?;
+    write_chunk(&mut out, *b"IEND", &[])?;
+    Ok(out)
 }
 
 fn header(png: &[u8]) -> Outcome<Header> {
@@ -465,11 +535,42 @@ fn scale(value: u16, depth: u8) -> u8 {
     }
 }
 
+fn write_chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) -> Outcome<()> {
+    let size = u32::try_from(data.len())
+        .map_err(|_conversion| Failure::limit("PNG chunk exceeds size limit"))?;
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(&kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&crc32(kind, data).to_be_bytes());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deflate::zlib_compress;
     use crate::failure::FailureCode;
+
+    #[test]
+    fn encoded_rasters_round_trip_through_the_decoder() {
+        for (rgba, components, alpha, samples) in [
+            ([255, 255, 255, 255, 0, 0, 0, 255], 1, false, &[255, 0][..]),
+            ([4, 4, 4, 255, 91, 91, 91, 255], 1, false, &[4, 91][..]),
+            (
+                [1, 2, 3, 4, 50, 70, 90, 255],
+                3,
+                true,
+                &[1, 2, 3, 4, 50, 70, 90, 255][..],
+            ),
+        ] {
+            let png = encode_rgba(2, 1, &rgba).unwrap();
+            let image = decode(&png).unwrap();
+            assert_eq!(image.width, 2);
+            assert_eq!(image.height, 1);
+            assert_eq!(image.components, components);
+            assert_eq!(image.alpha, alpha);
+            assert_eq!(image.samples, samples);
+        }
+    }
 
     fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
         out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());

@@ -27,11 +27,22 @@ Apps that do not use Effect skip `effect` and use the Promise client (see [Witho
 
 `pageDiagnostics(pdf, { pageIndexes })` returns one record per selected page. The options are optional. A lazy document also exposes `pageDiagnostics({ pageIndexes })` and uses the same range planner as `text`.
 
-The engine counts shown glyphs, unmapped glyphs, U+FFFD replacement characters, invisible glyphs, visible non-whitespace Unicode characters, and painted images in the content interpreter. `textArea` and `rasterCoverage` are fractions of the crop box. Overlap is counted once. The interpreter uses glyph metric boxes and the bounds of clip paths, and treats white device-color text as invisible against the assumed paper background. It does not sample the composited page.
+The engine counts shown glyphs, unmapped glyphs, U+FFFD replacement characters, invisible glyphs, visible non-whitespace Unicode characters, and painted images in the content interpreter. `textArea` and `rasterCoverage` are fractions of the crop box. Axis-aligned image overlap is counted once. Overlap involving rotated or sheared placements is estimated from bands of the clipped image shapes. The interpreter uses glyph metric boxes and the bounds of clip paths, and treats white device-color text as invisible against the assumed paper background. Visibility is estimated from content-stream operations.
 
 - `none` means there were zero glyphs. An image-only scan and a blank page can be distinguished by their raster coverage.
 - `weak` means there were glyphs, but none yielded visible usable characters, at least half were invisible, at least 20% were unmapped, or the page had at least 75% raster coverage with fewer than 16 visible characters.
 - `usable` is the remaining case.
+
+## Dominant page images
+
+`pageImages(pdf, { pageIndexes, format })` and the corresponding lazy document method return one result per selected page. Each page needs a single painted image covering at least 85% of its crop box. Image strips that meet the threshold only when combined return `{ kind: "none", reason: "no-dominant-image" }`.
+
+- The default `"encoded"` format preserves JPEG bytes. It uses PNG for decoded CCITT, Flate, raw, and indexed images. Black-and-white rasters use one-bit PNG. Decoded rasters use the renderer's existing pixel limit.
+- With `format: "gray"`, decoded images return `application/octet-stream` with one 8-bit luminance byte per pixel, in top-to-bottom row order. Transparent pixels are composited onto white. JPEG still returns `image/jpeg`.
+- `placement` maps the PDF image unit square into unrotated page user space. Source rows run from the top edge of the unit square down. `rotate` gives the clockwise page rotation separately. DPI uses the placement axis lengths, the returned pixel dimensions, and the page's `/UserUnit`.
+- JPEG results preserve Adobe markers in the byte stream and expose the PDF color space's four-component status as `jpegCmyk`. `jpegDecode` carries the PDF `/Decode` array, including inversions, for callers that interpret PDF sample mappings. Images with JPEG masks return `"masked-jpeg"`. JBIG2 and JPX return `"unsupported-filter"`.
+
+In a browser, use `renderPages` followed by `renderDisplayListImage` from `@signature-kit/pdf-core/canvas` for a page that returned `kind: "none"`. The canvas uses the render engine's existing format support.
 
 ## Bundling
 
@@ -236,6 +247,8 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                          | Returns a result block, or `0` when out of memory.                                                               |
 | `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                             | Returns a text result block, or `0` when out of memory.                                                          |
 | `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                           | Returns a tables result block, or `0` when out of memory.                                                        |
+| `pdf_core_page_diagnostics(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                 | Returns the diagnostics payload for the selected pages.                                                          |
+| `pdf_core_page_images(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                      | Returns the page-image payload for the selected pages.                                                           |
 | `pdf_core_render(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, scale: f64) -> result_ptr`               | Returns a render result block, or `0` when out of memory. `scale` is device pixels per point, `0 < scale <= 64`. |
 | `pdf_core_signatures(pdf_ptr, pdf_len, mode) -> result_ptr`                                              | Signature analysis; `mode` `0` scan, `1` dictionaries, `2` verification.                                         |
 | `pdf_core_revision_complete(pdf_ptr, pdf_len, end) -> u32`                                               | `1` when the first `end` bytes are a complete revision, else `0`.                                                |
@@ -247,19 +260,19 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
 | `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = return 8-bit grayscale rasters (`pdf_core_page_images`).
 
 ### Lazy handle and plan
 
-| Export                                                                           | Contract                                                                                                                                                                                                                                                                                    |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pdf_core_lazy_open(size, probe_bytes, gap_bytes, max_round_bytes) -> handle`    | Registers a document of `size` bytes and returns a nonzero handle, or `0` if the file size or handle space exceeds a limit.                                                                                                                                                                 |
-| `pdf_core_lazy_feed(handle, offset, ptr, len) -> u32`                            | Copies `len` bytes from the caller's buffer at file offset `offset`. Returns `1` when accepted or `0` on an invalid handle or range.                                                                                                                                                        |
-| `pdf_core_lazy_plan(handle, flags, pages_ptr, pages_len, profile) -> result_ptr` | Uses flag bit 2 for explicit page selection. The success payload starts with a `u32` plan state.                                                                                                                                                                                            |
-| `pdf_core_lazy_run(handle, profile, flags, scale: f64) -> result_ptr`            | Runs the last ready plan, with the same profile and the standard text or render flags. Returns the existing text, tables, or render payload. An empty successful payload requests full load. A single `u32` of value `1` asks the caller to plan more ranges before retrying the operation. |
-| `pdf_core_lazy_close(handle)`                                                    | Releases the handle and all its cached bytes. Closing an unknown handle is harmless.                                                                                                                                                                                                        |
+| Export                                                                           | Contract                                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pdf_core_lazy_open(size, probe_bytes, gap_bytes, max_round_bytes) -> handle`    | Registers a document of `size` bytes and returns a nonzero handle, or `0` if the file size or handle space exceeds a limit.                                                                                                                                      |
+| `pdf_core_lazy_feed(handle, offset, ptr, len) -> u32`                            | Copies `len` bytes from the caller's buffer at file offset `offset`. Returns `1` when accepted or `0` on an invalid handle or range.                                                                                                                             |
+| `pdf_core_lazy_plan(handle, flags, pages_ptr, pages_len, profile) -> result_ptr` | Uses flag bit 2 for explicit page selection. The success payload starts with a `u32` plan state.                                                                                                                                                                 |
+| `pdf_core_lazy_run(handle, profile, flags, scale: f64) -> result_ptr`            | Runs the last ready plan, with the same profile and that operation’s flags. Returns the payload for that profile. An empty successful payload requests full load. A single `u32` of value `1` asks the caller to plan more ranges before retrying the operation. |
+| `pdf_core_lazy_close(handle)`                                                    | Releases the handle and all its cached bytes. Closing an unknown handle is harmless.                                                                                                                                                                             |
 
-The profiles are `0` for text, `1` for tables, and `2` for rendering. Plan states are `0` ready, `1` need ranges, and `2` fallback. In state `1`, the remaining payload is a sequence of little-endian `u32 offset, u32 length` pairs in file order. Feed each pair and call plan again with the same arguments. A plan or run result pointer of `0` indicates allocation failure.
+The profiles are `0` for text, `1` for tables, `2` for rendering, `3` for diagnostics, and `4` for page images. Plan states are `0` ready, `1` need ranges, and `2` fallback. In state `1`, the remaining payload is a sequence of little-endian `u32 offset, u32 length` pairs in file order. Feed each pair and call plan again with the same arguments. A plan or run result pointer of `0` indicates allocation failure.
 
 ### Result block
 
@@ -290,6 +303,14 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 ### Tables payload (version 1)
 
 `pdf_core_tables` uses the same result block and status codes; only `flags` bit 2 applies. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`1`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 48-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`) and `bbox` (4 × `f64`) — followed by its cells in row-major order, 56 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob). The UTF-8 text blob follows the last record and is padded to 8.
+
+### Page diagnostics payload (version 1)
+
+The 16-byte header contains four little-endian `u32` values. These are magic (`0x47444450`, "PDDG"), version (`1`), page count, and padding. Each 48-byte record contains eight `u32` values in the order page index, glyphs, unmapped, replacement, invisible, visible characters, image count, text-layer tag (`0` none, `1` weak, `2` usable). Two little-endian `f64` values follow for text area and raster coverage.
+
+### Page images payload (version 1)
+
+The header contains magic (`0x4D494450`, "PDIM"), version (`1`), page count, and padding as little-endian `u32` values. Each record starts with the page index and a tag, both `u32`. Tags `0`–`3` end the record and report no dominant image, unsupported filter, decode failure, and masked JPEG, respectively. Tags `4`, `5`, and `6` identify PNG, JPEG, and raw grayscale. These carry six more `u32` values for width, height, rotation, CMYK flag, byte length, and JPEG `/Decode` value count. Nine `f64` values follow for horizontal DPI, vertical DPI, coverage, and the six placement coefficients. Then come the JPEG `/Decode` values as `f64`, followed by the image bytes and padding to 8 bytes.
 
 ### Signatures payload (version 2)
 

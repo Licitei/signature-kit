@@ -8,7 +8,9 @@ use crate::document::{Document, Page, pick_pages, select_pages};
 use crate::failure::{Failure, Outcome};
 use crate::filters;
 use crate::font::{Font, Glyph};
-use crate::image::{Decoded, ImageContext, ImageInput, Pixels, decode_image, image_filter};
+use crate::image::{
+    Decoded, ImageContext, ImageInput, Pixels, decode_image, image_filter, normalized_inline,
+};
 use crate::inspection::Limits;
 use crate::num::{bounded, f64_to_i64, f64_to_usize, unit_to_u8};
 use crate::object::{Dict, ObjRef, Object, Resolver as _, Stream};
@@ -2013,52 +2015,6 @@ fn fallback_flags(dict: &Dict) -> u8 {
         flags &= !FALLBACK_SERIF;
     }
     flags
-}
-
-fn normalized_inline(dict: Dict) -> Dict {
-    let mut out = Dict::default();
-    for (key, value) in dict.entries {
-        let full: &[u8] = match key.as_slice() {
-            b"BPC" => b"BitsPerComponent",
-            b"CS" => b"ColorSpace",
-            b"D" => b"Decode",
-            b"DP" => b"DecodeParms",
-            b"F" => b"Filter",
-            b"H" => b"Height",
-            b"IM" => b"ImageMask",
-            b"I" => b"Interpolate",
-            b"W" => b"Width",
-            other => other,
-        };
-        let fixed = if let Object::Name(name) = value {
-            Object::Name(expand_filter(name))
-        } else if let Object::Array(items) = value {
-            Object::Array(
-                items
-                    .into_iter()
-                    .map(|item| {
-                        if let Object::Name(name) = item {
-                            Object::Name(expand_filter(name))
-                        } else {
-                            item
-                        }
-                    })
-                    .collect(),
-            )
-        } else {
-            value
-        };
-        out.insert(full, fixed);
-    }
-    out
-}
-
-fn expand_filter(name: Vec<u8>) -> Vec<u8> {
-    match name.as_slice() {
-        b"DCT" => b"DCTDecode".to_vec(),
-        b"CCF" => b"CCITTFaxDecode".to_vec(),
-        _ => name,
-    }
 }
 
 const fn blend_mode(name: &[u8]) -> u8 {

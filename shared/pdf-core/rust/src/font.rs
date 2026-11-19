@@ -175,6 +175,16 @@ impl Font {
         Ok(Self { inner })
     }
 
+    pub(crate) fn maps_to_notdef(&self, code: u32) -> bool {
+        match &self.inner {
+            FontKind::Simple(simple) => {
+                simple.encoding.difference(code) == Some(b".notdef")
+                    && simple.to_unicode.usable(code).is_none()
+            }
+            FontKind::Composite(_) => false,
+        }
+    }
+
     pub(crate) fn program(&self) -> Option<&FontProgram> {
         match &self.inner {
             FontKind::Simple(simple) => simple.program.as_ref(),

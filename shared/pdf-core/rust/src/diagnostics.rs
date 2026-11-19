@@ -1,8 +1,12 @@
 use crate::document::{Document, Page};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
+use crate::object::Object;
+use crate::page_image::{Candidate, Footprint, ImageSource, Placement};
 use crate::text::{Capture, Session, scan_page};
+use alloc::rc::Rc;
 
+const DOMINANT_COVERAGE: f64 = 0.85;
 const MAX_BOXES: usize = 100_000;
 
 type Rect = [f64; 4];
@@ -32,12 +36,19 @@ pub(crate) struct PageDiagnostics {
 pub(crate) struct PageScan {
     crop: Rect,
     diagnostics: PageDiagnostics,
+    dominant: Option<Candidate>,
     glyph_boxes: Vec<Rect>,
     image_boxes: Vec<Rect>,
+    images_only: bool,
+    keep_runs: bool,
 }
 
 impl PageScan {
-    fn finish(self, page_index: usize) -> Outcome<PageDiagnostics> {
+    pub(crate) fn dominant(self) -> Option<Candidate> {
+        self.dominant
+    }
+
+    pub(crate) fn finish(self, page_index: usize) -> Outcome<PageDiagnostics> {
         let mut diagnostics = self.diagnostics;
         diagnostics.page_index = u32::try_from(page_index)
             .map_err(|_conversion| Failure::limit("page index exceeds 32-bit limit"))?;
@@ -59,36 +70,40 @@ impl PageScan {
         Ok(diagnostics)
     }
 
-    pub(crate) fn glyph(&mut self, text: &str, bounds: Option<Rect>) -> Outcome<()> {
+    pub(crate) fn for_images(crop: Rect) -> Self {
+        Self {
+            images_only: true,
+            ..Self::new(crop, false)
+        }
+    }
+
+    pub(crate) fn glyph(
+        &mut self,
+        native: &str,
+        extracted: &str,
+        notdef: bool,
+        bounds: Option<Rect>,
+    ) -> Outcome<()> {
         let clipped = bounds.and_then(|rect| intersection(rect, self.crop));
         let diagnostics = &mut self.diagnostics;
         diagnostics.glyphs = diagnostics.glyphs.saturating_add(1);
         diagnostics.invisible = diagnostics
             .invisible
             .saturating_add(u32::from(clipped.is_none()));
-        let mut unmapped = text.is_empty();
-        let mut visible = false;
-        for ch in text.chars() {
-            let code = u32::from(ch);
-            let private =
-                matches!(code, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x0010_0000..=0x0010_fffd);
-            let replacement = ch == char::REPLACEMENT_CHARACTER;
-            unmapped |= private || replacement || ch.is_control() && !ch.is_whitespace();
+        diagnostics.unmapped = diagnostics.unmapped.saturating_add(u32::from(
+            notdef || native.is_empty() || native.chars().any(unmapped_character),
+        ));
+        for ch in extracted.chars() {
             diagnostics.replacement = diagnostics
                 .replacement
-                .saturating_add(u32::from(replacement));
-            if clipped.is_some()
-                && !ch.is_whitespace()
-                && !ch.is_control()
-                && !private
-                && !replacement
-            {
+                .saturating_add(u32::from(ch == char::REPLACEMENT_CHARACTER));
+            if clipped.is_some() && !notdef && !ch.is_whitespace() && !unmapped_character(ch) {
                 diagnostics.visible_chars = diagnostics.visible_chars.saturating_add(1);
-                visible = true;
             }
         }
-        diagnostics.unmapped = diagnostics.unmapped.saturating_add(u32::from(unmapped));
-        if let Some(rect) = clipped.filter(|_| visible) {
+        if let Some(rect) =
+            clipped.filter(|_| native.is_empty() || native.chars().any(|ch| !ch.is_whitespace()))
+        {
             if self.glyph_boxes.len() == MAX_BOXES {
                 return Err(Failure::limit("page glyph coverage exceeds box limit"));
             }
@@ -97,15 +112,49 @@ impl PageScan {
         Ok(())
     }
 
-    pub(crate) fn image(&mut self, bounds: Rect) -> Outcome<()> {
-        self.diagnostics.image_count = self.diagnostics.image_count.saturating_add(1);
-        if let Some(rect) = intersection(bounds, self.crop) {
-            if self.image_boxes.len() == MAX_BOXES {
-                return Err(Failure::limit("page raster coverage exceeds box limit"));
-            }
-            self.image_boxes.push(rect);
+    #[inline(never)]
+    pub(crate) fn image(
+        &mut self,
+        placement: Placement,
+        clip: Option<Rect>,
+    ) -> Outcome<Option<f64>> {
+        let effective_clip = clip.map_or(Some(self.crop), |rect| intersection(rect, self.crop));
+        let Some(footprint) = effective_clip.and_then(|rect| Footprint::clipped(placement, rect))
+        else {
+            return Ok(None);
+        };
+        let area = footprint.area();
+        if !area.is_finite() || area <= 0.0_f64 {
+            return Ok(None);
         }
-        Ok(())
+        if self.images_only {
+            let [x0, y0, x1, y1] = self.crop;
+            let page_area = (x1 - x0) * (y1 - y0);
+            if !page_area.is_finite() || page_area <= 0.0_f64 {
+                return Ok(None);
+            }
+            let coverage = (area / page_area).min(1.0_f64);
+            let dominant = coverage >= DOMINANT_COVERAGE
+                && self
+                    .dominant
+                    .as_ref()
+                    .is_none_or(|best| coverage > best.coverage);
+            return Ok(dominant.then_some(coverage));
+        }
+        self.diagnostics.image_count = self.diagnostics.image_count.saturating_add(1);
+        footprint.boxes(&mut self.image_boxes);
+        if self.image_boxes.len() > MAX_BOXES {
+            return Err(Failure::limit("page raster coverage exceeds box limit"));
+        }
+        Ok(None)
+    }
+
+    pub(crate) const fn images_only(&self) -> bool {
+        self.images_only
+    }
+
+    pub(crate) const fn keep_runs(&self) -> bool {
+        self.keep_runs
     }
 
     pub(crate) fn missing_font(&mut self, bytes: &[u8], visible: bool) {
@@ -117,13 +166,31 @@ impl PageScan {
         }
     }
 
-    pub(crate) fn new(crop: Rect) -> Self {
+    pub(crate) fn new(crop: Rect, keep_runs: bool) -> Self {
         Self {
             crop,
             glyph_boxes: Vec::new(),
             image_boxes: Vec::new(),
             diagnostics: PageDiagnostics::default(),
+            dominant: None,
+            images_only: false,
+            keep_runs,
         }
+    }
+
+    pub(crate) fn select_image(
+        &mut self,
+        coverage: f64,
+        placement: Placement,
+        resources: &Rc<Object>,
+        source: ImageSource,
+    ) {
+        self.dominant = Some(Candidate {
+            coverage,
+            placement,
+            resources: Rc::clone(resources),
+            source,
+        });
     }
 }
 
@@ -285,7 +352,7 @@ pub(crate) fn opened_diagnostics(
     let mut session = Session::default();
     let mut diagnostics = Vec::with_capacity(selected.len());
     for &(index, page) in selected {
-        let mut scan = PageScan::new(page.info.crop_box);
+        let mut scan = PageScan::new(page.info.crop_box, false);
         drop(scan_page(
             document,
             page,
@@ -299,9 +366,50 @@ pub(crate) fn opened_diagnostics(
     Ok(diagnostics)
 }
 
+fn unmapped_character(ch: char) -> bool {
+    let code = u32::from(ch);
+    ch == char::REPLACEMENT_CHARACTER
+        || ch.is_control() && !ch.is_whitespace()
+        || matches!(code, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x0010_0000..=0x0010_fffd)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::union_area;
+    use super::*;
+    use crate::text::extract_content;
+
+    #[test]
+    fn shares_the_content_pass_with_text_runs() {
+        let limits = Limits::default();
+        let document = Document::open(
+            include_bytes!("../../__tests__/fixtures/links.pdf"),
+            &limits,
+        )
+        .unwrap();
+        let pages = document.pages().unwrap();
+        let page = pages.first().unwrap();
+        let capture = Capture {
+            structure: true,
+            ..Capture::default()
+        };
+        let expected =
+            extract_content(&document, page, &limits, capture, &mut Session::default()).unwrap();
+        let mut scan = PageScan::new(page.info.crop_box, true);
+        let combined = scan_page(
+            &document,
+            page,
+            &limits,
+            capture,
+            &mut Session::default(),
+            Some(&mut scan),
+        )
+        .unwrap();
+        let diagnostics = scan.finish(0).unwrap();
+        assert_eq!(expected.runs, combined.runs);
+        assert_eq!(expected.text, combined.text);
+        assert!(matches!(diagnostics.text_layer, TextLayer::Usable));
+        assert!(diagnostics.visible_chars > 0);
+    }
 
     #[test]
     fn coverage_counts_overlaps_once() {

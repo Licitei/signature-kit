@@ -289,13 +289,16 @@ describe("pdf-core page rendering", () => {
     expect(image.width).toBeGreaterThan(8_000);
   }, 60_000);
 
-  it("encodes a page image as PNG at the requested scale", async () => {
+  it("rasterizes a page with no dominant image as PNG at the requested scale", async () => {
     const url = fixtures["./fixtures/links.pdf"];
     if (url === undefined) return expect.fail("links fixture missing");
     const pdf = await fetchBytes(url);
     const image = await Effect.runPromise(
       Effect.gen(function* () {
         const core = yield* PdfCore;
+        expect(yield* core.pageImages(pdf, { pageIndexes: [0] })).toEqual([
+          { pageIndex: 0, kind: "none", reason: "no-dominant-image" },
+        ]);
         const [list] = yield* core.renderPages(pdf, { pageIndexes: [0] });
         if (list === undefined) return yield* Effect.die("missing display list");
         return yield* renderDisplayListImage(list, { scale: 0.5 });

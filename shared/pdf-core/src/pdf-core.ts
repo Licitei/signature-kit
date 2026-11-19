@@ -20,6 +20,8 @@ import {
   PdfCoreOperationValue,
   PdfCorePageDiagnosticsOptionsSchema,
   PdfCorePageDiagnosticsSchema,
+  PdfCorePageImagesOptionsSchema,
+  PdfCorePageImagesSchema,
   PDF_CORE_MAX_LAZY_BYTES,
   PdfCoreLazyOptionsSchema,
   PdfCoreRangeSizeSchema,
@@ -55,6 +57,8 @@ import type {
   PdfCoreOperation,
   PdfCorePageDiagnostics,
   PdfCorePageDiagnosticsOptions,
+  PdfCorePageImages,
+  PdfCorePageImagesOptions,
   PdfCorePngSize,
   PdfCoreRenderOptions,
   PdfCoreSchemaName,
@@ -78,6 +82,9 @@ export type PdfCoreLazyDocument = {
   readonly pageDiagnostics: (
     options?: PdfCorePageDiagnosticsOptions,
   ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
+  readonly pageImages: (
+    options?: PdfCorePageImagesOptions,
+  ) => Effect.Effect<PdfCorePageImages, PdfCoreError>;
   readonly renderPages: (
     options?: PdfCoreRenderOptions,
   ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
@@ -121,6 +128,10 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options?: PdfCorePageDiagnosticsOptions,
   ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
+  readonly pageImages: (
+    pdf: Uint8Array,
+    options?: PdfCorePageImagesOptions,
+  ) => Effect.Effect<PdfCorePageImages, PdfCoreError>;
   readonly tables: (
     pdf: Uint8Array,
     options?: PdfCoreTablesOptions,
@@ -162,6 +173,7 @@ export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
 const FLAG_TEXT = 1;
 const FLAG_LINKS = 2;
 const FLAG_PAGE_INDEXES = 4;
+const FLAG_GRAY_IMAGE = 64;
 const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
 const FLAG_RUNS = 32;
@@ -172,6 +184,10 @@ const VERSION = 3;
 const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
+const PAGE_IMAGES_MAGIC = 0x4d49_4450;
+const PAGE_IMAGES_VERSION = 1;
+const PAGE_IMAGES_HEADER_BYTES = 16;
+const PAGE_IMAGE_RECORD_BYTES = 104;
 const DIAGNOSTICS_MAGIC = 0x4744_4450;
 const DIAGNOSTICS_VERSION = 1;
 const DIAGNOSTICS_HEADER_BYTES = 16;
@@ -423,6 +439,7 @@ const lazyProfiles = {
   [PdfCoreOperationValue.tables]: 1,
   [PdfCoreOperationValue.render]: 2,
   [PdfCoreOperationValue.pageDiagnostics]: 3,
+  [PdfCoreOperationValue.pageImages]: 4,
 };
 
 export const makePdfCore = (
@@ -1057,6 +1074,103 @@ export const makePdfCore = (
         options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES,
         options.pageIndexes ?? [],
         decodeDiagnosticsBlock,
+      );
+    });
+
+    const decodePageImages = Effect.fn(function* (block: ResultBlock) {
+      const operation = PdfCoreOperationValue.pageImages;
+      const view = new DataView(block.memory, block.pointer, block.length);
+      if (view.getUint32(4, true) !== STATUS_OK) {
+        return yield* failStatus(operation, block);
+      }
+      let at = RESULT_HEADER_BYTES + PAGE_IMAGES_HEADER_BYTES;
+      if (
+        block.length < at ||
+        view.getUint32(RESULT_HEADER_BYTES, true) !== PAGE_IMAGES_MAGIC ||
+        view.getUint32(RESULT_HEADER_BYTES + 4, true) !== PAGE_IMAGES_VERSION
+      ) {
+        return yield* unsupportedFormat(operation);
+      }
+      const count = view.getUint32(RESULT_HEADER_BYTES + 8, true);
+      const results = [];
+      const absent = ["no-dominant-image", "unsupported-filter", "decode-failed", "masked-jpeg"];
+      const mediaTypes = ["image/png", "image/jpeg", "application/octet-stream"];
+      for (let index = 0; index < count; index++) {
+        if (at + 8 > block.length) return yield* unsupportedFormat(operation);
+        const pageIndex = view.getUint32(at, true);
+        const tag = view.getUint32(at + 4, true);
+        if (tag < absent.length) {
+          results.push({ pageIndex, kind: "none", reason: absent[tag] });
+          at += 8;
+          continue;
+        }
+        const mediaType = mediaTypes[tag - absent.length];
+        if (mediaType === undefined || at + PAGE_IMAGE_RECORD_BYTES > block.length) {
+          return yield* unsupportedFormat(operation);
+        }
+        const byteLength = view.getUint32(at + 24, true);
+        const decodeCount = view.getUint32(at + 28, true);
+        const decodeAt = at + PAGE_IMAGE_RECORD_BYTES;
+        const bytesAt = decodeAt + decodeCount * 8;
+        const end = bytesAt + byteLength;
+        const next = align8(end);
+        if (decodeCount > 8 || end > block.length || next > block.length) {
+          return yield* unsupportedFormat(operation);
+        }
+        results.push({
+          pageIndex,
+          kind: "image",
+          mediaType,
+          bytes: new Uint8Array(block.memory, block.pointer + bytesAt, byteLength).slice(),
+          width: view.getUint32(at + 8, true),
+          height: view.getUint32(at + 12, true),
+          rotate: view.getUint32(at + 16, true),
+          dpiX: view.getFloat64(at + 32, true),
+          dpiY: view.getFloat64(at + 40, true),
+          coverage: view.getFloat64(at + 48, true),
+          placement: Array.from({ length: 6 }, (_, index) =>
+            view.getFloat64(at + 56 + index * 8, true),
+          ),
+          ...(mediaType === "image/jpeg"
+            ? {
+                jpegCmyk: view.getUint32(at + 20, true) === 1,
+                jpegDecode: Array.from({ length: decodeCount }, (_, index) =>
+                  view.getFloat64(decodeAt + index * 8, true),
+                ),
+              }
+            : {}),
+        });
+        at = next;
+      }
+      if (at !== block.length) return yield* unsupportedFormat(operation);
+      return yield* Schema.decodeUnknownEffect(PdfCorePageImagesSchema)(results).pipe(
+        Effect.mapError(
+          malformedResult(
+            operation,
+            PdfCoreSchemaNameValue.pageImages,
+            "The PDF core returned invalid page images.",
+          ),
+        ),
+      );
+    });
+
+    const runPageImages = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCorePageImagesOptions = {},
+    ) {
+      const operation = PdfCoreOperationValue.pageImages;
+      const options = yield* Schema.decodeUnknownEffect(PdfCorePageImagesOptionsSchema)(
+        rawOptions,
+      ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.pageImagesOptions)));
+      const flags =
+        (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
+        (options.format === "gray" ? FLAG_GRAY_IMAGE : 0);
+      return yield* read(
+        operation,
+        core.pdf_core_page_images,
+        flags,
+        options.pageIndexes ?? [],
+        decodePageImages,
       );
     });
 
@@ -1783,6 +1897,7 @@ export const makePdfCore = (
                 operation === PdfCoreOperationValue.text ||
                 operation === PdfCoreOperationValue.tables ||
                 operation === PdfCoreOperationValue.pageDiagnostics ||
+                operation === PdfCoreOperationValue.pageImages ||
                 operation === PdfCoreOperationValue.render
                   ? lazyProfiles[operation]
                   : undefined;
@@ -1856,6 +1971,7 @@ export const makePdfCore = (
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
         pageDiagnostics: (options?: PdfCorePageDiagnosticsOptions) =>
           runPageDiagnostics(read, options),
+        pageImages: (options?: PdfCorePageImagesOptions) => runPageImages(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
         stats: Ref.get(state).pipe(
           Effect.map(({ bytesRead, rounds, strategy }) => ({ bytesRead, rounds, strategy })),
@@ -1870,6 +1986,7 @@ export const makePdfCore = (
       text: (pdf, options) => runText(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),
       pageDiagnostics: (pdf, options) => runPageDiagnostics(full(pdf), options),
+      pageImages: (pdf, options) => runPageImages(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,
       revisionComplete,

@@ -12,6 +12,7 @@ use crate::font::{Font, Glyph, embedded_style};
 use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
+use crate::page_image::ImageSource;
 use crate::syntax::{ContentLexer, ContentToken, Operand};
 
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -429,6 +430,24 @@ impl Scope {
         }
     }
 
+    fn form(&self, document: &Document<'_>, id: u32, form: &Dict) -> Self {
+        let own = form.get(b"Resources");
+        let (resources, origin) = own
+            .and_then(|object| document.follow(object).ok())
+            .filter(|object| object.as_dict().is_some())
+            .map_or_else(
+                || (Rc::clone(&self.resources), self.origin),
+                |resources| {
+                    let origin = match own {
+                        Some(Object::Ref(own_ref)) => Some(*own_ref),
+                        _ => None,
+                    };
+                    (resources, origin)
+                },
+            );
+        Self::new(id, resources, origin)
+    }
+
     fn has_forms(&mut self, document: &Document<'_>) -> bool {
         if let Some(known) = self.forms {
             return known;
@@ -678,7 +697,9 @@ impl Interpreter<'_, '_> {
                 }
             }
         }
-        if let Some(Object::Array(items)) = gs.get(b"Font") {
+        if !self.scan.as_ref().is_some_and(|scan| scan.images_only())
+            && let Some(Object::Array(items)) = gs.get(b"Font")
+        {
             let name = items
                 .len()
                 .checked_sub(2)
@@ -791,11 +812,14 @@ impl Interpreter<'_, '_> {
             if let Some(scan) = self.scan.as_deref_mut() {
                 if subtype == Some(b"Image")
                     && !state.scan.transparent[0]
-                    && let Some(rect) = state
-                        .scan
-                        .clipped_bounds(transformed_bounds(&state.ctm, 0.0, 0.0, 1.0, 1.0))
+                    && let Some(coverage) = scan.image(state.ctm, state.scan.clip)?
                 {
-                    scan.image(rect)?;
+                    scan.select_image(
+                        coverage,
+                        state.ctm,
+                        &scope.resources,
+                        ImageSource::XObject(Rc::clone(&resolved)),
+                    );
                 }
                 return Ok(());
             }
@@ -824,21 +848,7 @@ impl Interpreter<'_, '_> {
             },
         };
         let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
-        let own = stream.dict.get(b"Resources");
-        let (resources, origin) = match own
-            .and_then(|object| self.document.follow(object).ok())
-            .filter(|object| object.as_dict().is_some())
-        {
-            Some(resources) => (
-                resources,
-                match own {
-                    Some(Object::Ref(own_ref)) => Some(*own_ref),
-                    _ => None,
-                },
-            ),
-            None => (Rc::clone(&scope.resources), scope.origin),
-        };
-        let mut inner_scope = Scope::new(self.next_scope(), resources, origin);
+        let mut inner_scope = scope.form(self.document, self.next_scope(), &stream.dict);
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
@@ -1036,7 +1046,7 @@ impl Interpreter<'_, '_> {
         marked: &mut Vec<bool>,
         max_stack: usize,
     ) {
-        if !self.capture.structure {
+        if !self.capture.structure && self.scan.as_ref().is_none_or(|scan| scan.images_only()) {
             return;
         }
         match code {
@@ -1235,10 +1245,22 @@ impl Interpreter<'_, '_> {
                 } else {
                     None
                 };
-                scan.glyph(glyph_text, bounds)?;
-                pen_x += step_x;
-                pen_y += step_y;
-                continue;
+                let native = if spanned {
+                    decoded.get(glyph.text.clone()).unwrap_or_default()
+                } else {
+                    glyph_text
+                };
+                scan.glyph(
+                    native,
+                    glyph_text,
+                    entry.font.maps_to_notdef(glyph.code),
+                    bounds,
+                )?;
+                if !scan.keep_runs() {
+                    pen_x += step_x;
+                    pen_y += step_y;
+                    continue;
+                }
             }
             let clipped = usable
                 && self.clip.is_some_and(|clip| {
@@ -1386,13 +1408,16 @@ impl Interpreter<'_, '_> {
             if let Some(scan) = self.scan.as_deref_mut() {
                 scan_path.operator(code, &operands, state);
                 if code == OP_INLINE_IMAGE
-                    && lexer.take_inline_image().is_some()
                     && !state.scan.transparent[0]
-                    && let Some(rect) = state
-                        .scan
-                        .clipped_bounds(transformed_bounds(&state.ctm, 0.0, 0.0, 1.0, 1.0))
+                    && let Some((dict, bytes)) = lexer.take_inline_image()
+                    && let Some(coverage) = scan.image(state.ctm, state.scan.clip)?
                 {
-                    scan.image(rect)?;
+                    scan.select_image(
+                        coverage,
+                        state.ctm,
+                        &scope.resources,
+                        ImageSource::Inline(Box::new((dict, bytes.to_vec()))),
+                    );
                 }
             }
             match code {
@@ -1503,6 +1528,9 @@ impl Interpreter<'_, '_> {
         scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
         let ShowContext { operands, depth } = shown;
+        if code != OP_DO && self.scan.as_ref().is_some_and(|scan| scan.images_only()) {
+            return Ok(());
+        }
         match code {
             OP_TJ => {
                 if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
@@ -1574,6 +1602,11 @@ impl Interpreter<'_, '_> {
         state: &mut GState,
         matrices: &mut TextMatrices,
     ) -> bool {
+        if !matches!(code, OP_CM | OP_GS)
+            && self.scan.as_ref().is_some_and(|scan| scan.images_only())
+        {
+            return false;
+        }
         match code {
             OP_CM => {
                 if let Some(matrix) = tail_numbers::<6, _>(operands) {
@@ -1854,6 +1887,7 @@ pub(crate) fn extract_content(
     scan_page(document, page, limits, capture, session, None)
 }
 
+#[inline(never)]
 pub(crate) fn scan_page(
     document: &Document<'_>,
     page: &Page,

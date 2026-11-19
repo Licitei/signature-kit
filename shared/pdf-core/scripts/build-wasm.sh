@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$ROOT/rust/Cargo.toml"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/rust/target}"
+if [[ "$TARGET_DIR" != /* ]]; then
+  TARGET_DIR="$PWD/$TARGET_DIR"
+fi
 BUILT="$TARGET_DIR/wasm32-unknown-unknown/release/signature_kit_pdf_core.wasm"
 OUT_DIR="$ROOT/dist"
 OUT="$OUT_DIR/pdf-core.wasm"
@@ -17,7 +20,7 @@ else
   exit 1
 fi
 
-(cd "$ROOT/rust" && cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST")
+(cd "$ROOT/rust" && CARGO_TARGET_DIR="$TARGET_DIR" cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST")
 mkdir -p "$OUT_DIR"
 "$WASM_OPT" -O3 \
   --enable-bulk-memory \
