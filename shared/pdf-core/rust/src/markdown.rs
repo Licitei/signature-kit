@@ -1448,27 +1448,31 @@ pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics) {
 }
 
 fn escape_into(text: &str, out: &mut String) {
-    let chars: Vec<char> = text.chars().collect();
-    for (index, &ch) in chars.iter().enumerate() {
-        let before = index.checked_sub(1).and_then(|at| chars.get(at)).copied();
-        let after = chars.get(index.saturating_add(1)).copied();
+    let mut chars = text.char_indices().peekable();
+    let mut before = None;
+    let mut start = 0;
+    while let Some((at, ch)) = chars.next() {
+        let mut after = || chars.peek().map(|&(_, next)| next);
         let escape = match ch {
             '\\' | '*' | '`' => true,
             '_' => {
                 !(before.is_some_and(char::is_alphanumeric)
-                    && after.is_some_and(char::is_alphanumeric))
+                    && after().is_some_and(char::is_alphanumeric))
             }
-            '<' => after
+            '<' => after()
                 .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?')),
-            ']' => after == Some('('),
-            '[' => after == Some('['),
+            ']' => after() == Some('('),
+            '[' => after() == Some('['),
             _ => false,
         };
         if escape {
+            out.push_str(text.get(start..at).unwrap_or_default());
             out.push('\\');
+            start = at;
         }
-        out.push(ch);
+        before = Some(ch);
     }
+    out.push_str(text.get(start..).unwrap_or_default());
 }
 
 fn collapse(text: &str) -> String {
@@ -1970,6 +1974,9 @@ mod tests {
         let mut out = String::new();
         escape_into("a*b_c d_ [[x]] <b> f](g)", &mut out);
         assert_eq!(out, "a\\*b_c d\\_ \\[[x]] \\<b> f\\](g)");
+        let mut unicode = String::new();
+        escape_into("\u{e9}_\u{e7} *\u{e1}", &mut unicode);
+        assert_eq!(unicode, "\u{e9}_\u{e7} \\*\u{e1}");
         assert_eq!(escaped_start("2026. Ano".to_owned()), "2026\\. Ano");
         assert_eq!(escaped_start("# x".to_owned()), "\\# x");
     }

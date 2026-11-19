@@ -1729,7 +1729,7 @@ fn markdown_pages(
         .iter()
         .map(|layout| page_blocks(&layout.md, metrics))
         .collect();
-    if options.drop_running {
+    if options.drop_running && pages.len() > 1 {
         let dropped = running_keys(
             &pages
                 .iter()
@@ -1745,8 +1745,10 @@ fn markdown_pages(
         for (position, blocks) in pages.iter_mut().enumerate() {
             blocks.retain(|block| !is_dropped(&dropped, block.band(), block.plain(), position));
         }
-        let heights: Vec<f64> = layouts.iter().map(|layout| layout.height).collect();
-        drop_furniture(&mut pages, &heights);
+        if pages.len() >= FURNITURE_MIN_PAGES {
+            let heights: Vec<f64> = layouts.iter().map(|layout| layout.height).collect();
+            drop_furniture(&mut pages, &heights);
+        }
     }
     join_pages(&mut pages, metrics);
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
