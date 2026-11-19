@@ -75,3 +75,45 @@ page of 20 alphabetically sorted native documents.
 ```sh
 bun shared/pdf-core/bench/ocr/compare-raster.ts /home/yorizel/Documents/bench-parsers/pdfs 20
 ```
+
+See the [v1 scan profile and measurements](SCAN-PROFILE.md) for the calibrated preset.
+
+## Training line shards
+
+Create a cache of clean training pages and labels once. The shard generator
+reads each page raster with its word boxes, groups the boxes by line, and
+writes augmented line crops. It uses deterministic per-record seeds, up to
+eight parallel writers, and at most one page raster per worker at a time.
+The fast path uses nearest-neighbor scale and shear, a short horizontal
+blur, exposure and noise, and optional thresholding. It targets line
+recognizer training. Use the calibrated page generator to model full scans.
+
+```sh
+mkdir -p .cache/t
+export TMPDIR="$PWD/.cache/t"
+r=/home/yorizel/.local/bin/resource-run
+b=shared/pdf-core/bench/ocr
+c=shared/pdf-core/.cache
+corpus=/home/yorizel/Documents/bench-parsers/pdfs
+
+"$r" --cpu 2 --mem 4G bun "$b/generate-dataset.ts" "$corpus" \
+  --labels poppler --mode pages --preset clean --split train --dpi 150 \
+  --max-docs 10 --max-pages 1 --output "$c/ocr-data-v2-clean"
+"$r" --cpu 8 --mem 8G taskset -c 0-7 bun "$b/training-lines.ts" generate \
+  "$c/ocr-data-v2-clean/train" "$c/ocr-data-v2-shards-pinned" 24000 8 137
+```
+
+The output directory must be new. Use logical CPU IDs corresponding to eight
+distinct physical cores on the host. The generator reports wall time and
+throughput, including worker startup, reading the cache, augmentation, and
+writing the files. It excludes PDF rendering. For the same cache, count, and
+seed, reading the numbered shards in order yields the same record sequence
+regardless of worker count. The generator cycles through the cached lines
+in filename and line order, so a larger count over a small cache augments
+the same text several times.
+
+Each numbered `.ocrl` file starts with eight bytes, `4f 43 52 4c 01 00 00 00`.
+Read records until EOF. Every record starts with a little-endian `u16` width,
+`u16` height, and `u32` UTF-8 byte length. Immediately following are exactly
+`width * height` top-down row-major gray8 pixels and the UTF-8 text bytes
+in NFC, with no terminator. A truncated record is invalid.
