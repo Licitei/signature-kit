@@ -43,7 +43,6 @@ struct Component {
 struct TextLine {
     baseline: u32,
     bbox: Box,
-    bottoms: Vec<u32>,
     letters: Vec<Box>,
 }
 
@@ -51,49 +50,47 @@ impl TextLine {
     fn add(&mut self, bbox: Box, typical: u32) {
         let [_, top, _, bottom] = bbox;
         if bottom.saturating_sub(top) >= typical.div_ceil(2) {
-            self.bottoms.push(bottom);
             self.baseline = self.baseline.saturating_mul(3).saturating_add(bottom) >> 2_u32;
         }
         self.bbox = union(self.bbox, bbox);
         self.letters.push(bbox);
     }
 
-    fn finish(mut self, block: u32, typical: u32) -> Line {
+    fn finish(mut self, block: u32, typical: u32, allow_single_glyph: bool) -> Option<Line> {
         self.letters
             .sort_unstable_by_key(|&[left, top, _, _]| (left, top));
-        if self.letters.len() >= 5 {
-            let minimum_gap = typical.saturating_mul(5);
-            let clusters = self
-                .letters
-                .chunk_by(|&[_, _, right, _], &[left, _, _, _]| {
-                    left.saturating_sub(right) < minimum_gap
-                });
-            if clusters.clone().any(|cluster| cluster.len() >= 5) {
-                self.letters = clusters
-                    .filter(|cluster| cluster.len() >= 3)
-                    .flatten()
-                    .copied()
-                    .collect();
-                if let Some(bounds) = self.letters.iter().copied().reduce(union) {
-                    self.bbox = bounds;
+        let minimum_gap = typical.saturating_mul(4);
+        let mut rightmost = 0;
+        self.letters = self
+            .letters
+            .chunk_by(|&[_, _, right, _], &[left, _, _, _]| {
+                rightmost = rightmost.max(right);
+                let adjacent = left.saturating_sub(rightmost) < minimum_gap;
+                if !adjacent {
+                    rightmost = 0;
                 }
-                self.bottoms = self
-                    .letters
-                    .iter()
-                    .filter_map(|&[_, top, _, bottom]| {
-                        (bottom.saturating_sub(top) >= typical.div_ceil(2)).then_some(bottom)
-                    })
-                    .collect();
-            }
-        }
-        let (baseline, x_height) = metrics(self.bbox, &mut self.bottoms, &self.letters, typical);
-        Line {
+                adjacent
+            })
+            .filter(|cluster| allow_single_glyph || has_text_support(cluster, typical))
+            .flatten()
+            .copied()
+            .collect();
+        let bbox = self.letters.iter().copied().reduce(union)?;
+        let mut bottoms: Vec<_> = self
+            .letters
+            .iter()
+            .filter_map(|&[_, top, _, bottom]| {
+                (bottom.saturating_sub(top) >= typical.div_ceil(2)).then_some(bottom)
+            })
+            .collect();
+        let (baseline, x_height) = metrics(bbox, &mut bottoms, &self.letters, typical);
+        Some(Line {
             baseline: coordinate(baseline),
-            bbox: self.bbox,
+            bbox,
             block,
             words: words(&self.letters, typical),
             x_height: coordinate(x_height),
-        }
+        })
     }
 
     const fn matches(&self, bounds: Box, typical: u32) -> bool {
@@ -108,6 +105,27 @@ impl TextLine {
             bottom.abs_diff(self.baseline) <= tolerance
         }
     }
+}
+
+fn has_text_support(cluster: &[Box], typical: u32) -> bool {
+    let mut glyphs = 0_u32;
+    for &[left, top, right, bottom] in cluster {
+        let height = bottom.saturating_sub(top);
+        let width = right.saturating_sub(left);
+        if height < typical.div_ceil(2) || height > typical.saturating_mul(3) {
+            continue;
+        }
+        if width >= height.saturating_mul(2) && width <= height.saturating_mul(8) {
+            return true;
+        }
+        if width >= height.div_ceil(6) && width < height.saturating_mul(2) {
+            glyphs = glyphs.saturating_add(1);
+            if glyphs >= 2 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn coordinate(value: u32) -> f32 {
@@ -266,7 +284,7 @@ fn words(letters: &[Box], typical: u32) -> Vec<WordBox> {
     words
 }
 
-fn line_groups(boxes: &mut [Box], typical: u32, block: u32) -> Vec<Line> {
+fn line_groups(boxes: &mut [Box], typical: u32, block: u32, allow_single_glyph: bool) -> Vec<Line> {
     boxes.sort_unstable_by_key(|&[left, top, _, bottom]| (top, bottom, left));
     let mut groups = Vec::<TextLine>::new();
     let (main, small): (Vec<_>, Vec<_>) = boxes
@@ -287,7 +305,6 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32) -> Vec<Line> {
             groups.push(TextLine {
                 baseline: bottom,
                 bbox,
-                bottoms: vec![bottom],
                 letters: vec![bbox],
             });
         }
@@ -323,7 +340,6 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32) -> Vec<Line> {
             let [_, top, _, bottom] = entry.bbox;
             if top < prev_bottom && prev_top < bottom {
                 previous.bbox = union(previous.bbox, entry.bbox);
-                previous.bottoms.extend(entry.bottoms);
                 previous.letters.extend(entry.letters);
                 continue;
             }
@@ -337,7 +353,7 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32) -> Vec<Line> {
             bottom.saturating_sub(top) >= typical.div_ceil(2)
                 && (entry.letters.len() >= 2 || right.saturating_sub(left) >= typical.div_ceil(3))
         })
-        .map(|entry| entry.finish(block, typical))
+        .filter_map(|entry| entry.finish(block, typical, allow_single_glyph))
         .collect()
 }
 
@@ -416,7 +432,7 @@ fn partition(
             return;
         }
     }
-    lines.extend(line_groups(boxes, typical, *next_block));
+    lines.extend(line_groups(boxes, typical, *next_block, false));
     *next_block = next_block.saturating_add(1);
 }
 
@@ -449,7 +465,7 @@ fn table_lines(boxes: &mut Vec<Box>, grids: &[TableGrid], typical: u32) -> Vec<(
         let mut lines = Vec::new();
         for group in cells.chunk_by(|(cell, _), (next_cell, _)| cell == next_cell) {
             let mut cell_boxes: Vec<_> = group.iter().map(|&(_, bbox)| bbox).collect();
-            lines.extend(line_groups(&mut cell_boxes, typical, 0));
+            lines.extend(line_groups(&mut cell_boxes, typical, 0, true));
         }
         if let Some(&top) = grid.rows.first() {
             tables.push((top, lines));
@@ -466,7 +482,8 @@ pub fn segment(page: &Bits, dpi: f32) -> PageLayout {
 
 pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) -> PageLayout {
     let labels = components(page);
-    let heights: Vec<_> = labels
+    let minimum_scale = dpi * 0.045;
+    let mut heights: Vec<_> = labels
         .iter()
         .filter_map(|component| {
             let [left, top, right, bottom] = component.bbox;
@@ -478,7 +495,15 @@ pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) ->
                 .then_some(height)
         })
         .collect();
-    let mut observed = heights;
+    if heights
+        .iter()
+        .filter(|&&height| coordinate(height) >= minimum_scale)
+        .take(3)
+        .count()
+        == 3
+    {
+        heights.retain(|&height| coordinate(height) >= minimum_scale);
+    }
     let nominal = if dpi < 175.0 {
         10
     } else if dpi > 450.0 {
@@ -486,7 +511,7 @@ pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) ->
     } else {
         18
     };
-    let typical = median(&mut observed, nominal);
+    let typical = median(&mut heights, nominal);
     let mut boxes: Vec<_> = labels
         .into_iter()
         .filter_map(|component| {
@@ -496,8 +521,13 @@ pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) ->
             let solid_mark = width > typical
                 && height > typical.saturating_add(typical.div_ceil(2))
                 && component.area.saturating_mul(2) > width.saturating_mul(height);
+            let solid_rule = width >= typical.saturating_mul(3)
+                && width >= height.saturating_mul(4)
+                && component.area.saturating_mul(4)
+                    >= width.saturating_mul(height).saturating_mul(3);
             (component.area >= 2
                 && !solid_mark
+                && !solid_rule
                 && height <= typical.saturating_mul(4)
                 && width <= typical.saturating_mul(16))
             .then_some(component.bbox)
@@ -531,6 +561,63 @@ mod tests {
     use crate::clean::TableGrid;
 
     use super::{WordBox, segment, segment_with_tables};
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the raster fixture is fallible and assertions check the resulting layout"
+    )]
+    fn dot_leaders_do_not_set_the_page_glyph_scale() -> Result<(), RasterError> {
+        let mut page = Bits::new(600, 240)?;
+        for top in [35_u32, 100, 165] {
+            for yy in top..top.saturating_add(26) {
+                for left in (35..160_u32).step_by(18) {
+                    page.set_run(yy, left, left.saturating_add(12), true);
+                }
+            }
+            for yy in top.saturating_add(22)..top.saturating_add(26) {
+                for left in (160..545_u32).step_by(8) {
+                    page.set_run(yy, left, left.saturating_add(4), true);
+                }
+            }
+        }
+        let result = segment(&page, 300.0);
+        let heights: Vec<_> = result.lines.into_iter().map(|line| line.x_height).collect();
+        assert_eq!(heights, [26.0, 26.0, 26.0]);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the raster fixture is fallible and assertions check the resulting layout"
+    )]
+    fn discards_disconnected_marks_without_widening_text_lines() -> Result<(), RasterError> {
+        let mut page = Bits::new(640, 300)?;
+        for top in [50_u32, 100, 150] {
+            for yy in top..top.saturating_add(18) {
+                page.set_run(yy, 24, 31, true);
+                for left in (120..220_u32).step_by(12) {
+                    page.set_run(yy, left, left.saturating_add(7), true);
+                }
+                page.set_run(yy, 580, 599, true);
+            }
+        }
+        for yy in 240..260 {
+            page.set_run(yy, 590, 610, true);
+        }
+        let result = segment(&page, 300.0);
+        let boxes: Vec<_> = result.lines.into_iter().map(|line| line.bbox).collect();
+        assert_eq!(
+            boxes,
+            [
+                [120, 50, 223, 68],
+                [120, 100, 223, 118],
+                [120, 150, 223, 168]
+            ]
+        );
+        Ok(())
+    }
 
     #[test]
     #[expect(
