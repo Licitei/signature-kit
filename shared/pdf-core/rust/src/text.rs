@@ -1379,21 +1379,6 @@ impl Interpreter<'_, '_> {
         }
     }
 
-    fn run(
-        &mut self,
-        data: &[u8],
-        scope: &mut Scope,
-        state: &mut GState,
-        matrices: &mut TextMatrices,
-        depth: usize,
-    ) -> Outcome<()> {
-        if self.scan.is_some() {
-            self.interpret::<true>(data, scope, state, matrices, depth)
-        } else {
-            self.interpret::<false>(data, scope, state, matrices, depth)
-        }
-    }
-
     #[inline(never)]
     fn interpret<const SCAN: bool>(
         &mut self,
@@ -1491,6 +1476,21 @@ impl Interpreter<'_, '_> {
             self.actual = None;
         }
         Ok(())
+    }
+
+    fn run(
+        &mut self,
+        data: &[u8],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+        depth: usize,
+    ) -> Outcome<()> {
+        if self.scan.is_some() {
+            self.interpret::<true>(data, scope, state, matrices, depth)
+        } else {
+            self.interpret::<false>(data, scope, state, matrices, depth)
+        }
     }
 
     fn set_font(

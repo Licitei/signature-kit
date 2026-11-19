@@ -47,6 +47,10 @@ pub(crate) struct PageScan {
 }
 
 impl PageScan {
+    pub(crate) const fn curved_fill(&mut self, curves: u32) {
+        self.fill_curves = self.fill_curves.saturating_add(curves);
+    }
+
     pub(crate) fn dominant(self) -> Option<Candidate> {
         self.dominant
     }
@@ -75,10 +79,6 @@ impl PageScan {
             TextLayer::Usable
         };
         Ok(diagnostics)
-    }
-
-    pub(crate) const fn curved_fill(&mut self, curves: u32) {
-        self.fill_curves = self.fill_curves.saturating_add(curves);
     }
 
     pub(crate) fn for_images(crop: Rect) -> Self {
