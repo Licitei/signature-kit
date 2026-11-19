@@ -1,4 +1,4 @@
-use core::array;
+use core::{array, mem};
 
 use crate::raster::{Gray, RasterError, pixel_count};
 
@@ -7,6 +7,9 @@ const ZIGZAG: [usize; 64] = [
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
     52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
+
+const LOOK_BITS: u32 = 11;
+const LOOK_SIZE: usize = 1_usize << 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -20,7 +23,7 @@ type Decode<Value> = Result<Value, DecodeError>;
 
 struct Entropy<'data> {
     available: u32,
-    buffer: u32,
+    buffer: u64,
     input: &'data [u8],
 }
 
@@ -46,31 +49,82 @@ impl Entropy<'_> {
         })
     }
 
+    #[inline]
     fn fill(&mut self, count: u32) {
-        while self.available < count {
-            let Some((&value, rest)) = self.input.split_first() else {
-                break;
-            };
-            self.input = if value == 0xff {
-                let Some((&0, after_escape)) = rest.split_first() else {
-                    break;
-                };
-                after_escape
-            } else {
-                rest
-            };
-            self.buffer = self.buffer.wrapping_shl(8) | u32::from(value);
-            self.available = self.available.saturating_add(8);
-        }
+        while self.available < count && self.pull() {}
     }
 
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "a masked peek of at most 32 bits fits in u32"
+    )]
     const fn peek(&self, count: u32) -> u32 {
-        self.buffer
-            .wrapping_shr(self.available.saturating_sub(count))
-            & 1_u32.wrapping_shl(count).wrapping_sub(1)
+        let shift = self.available.saturating_sub(count);
+        let mask = 1_u64.wrapping_shl(count).wrapping_sub(1);
+        (self.buffer.wrapping_shr(shift) & mask) as u32
     }
 
+    #[inline]
+    fn pull(&mut self) -> bool {
+        if self.available <= 32 && self.pull_word() {
+            return true;
+        }
+        self.pull_byte()
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the bit buffer keeps at most 56 filled bits before a byte is appended"
+    )]
+    fn pull_byte(&mut self) -> bool {
+        if self.available > 56 {
+            return false;
+        }
+        let Some((&value, rest)) = self.input.split_first() else {
+            return false;
+        };
+        self.input = if value == 0xff {
+            let Some((&0, after_escape)) = rest.split_first() else {
+                return false;
+            };
+            after_escape
+        } else {
+            rest
+        };
+        self.buffer = self.buffer.wrapping_shl(8) | u64::from(value);
+        self.available += 8;
+        true
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "four marker-free bytes fit in the 64-bit buffer when at most 32 bits are full"
+    )]
+    fn pull_word(&mut self) -> bool {
+        let Some(chunk) = self.input.get(..4) else {
+            return false;
+        };
+        if chunk.contains(&0xff) {
+            return false;
+        }
+        let Ok(bytes) = <[u8; 4]>::try_from(chunk) else {
+            return false;
+        };
+        let Some(rest) = self.input.get(4..) else {
+            return false;
+        };
+        self.input = rest;
+        self.buffer = self.buffer.wrapping_shl(32) | u64::from(u32::from_be_bytes(bytes));
+        self.available += 32;
+        true
+    }
+
+    #[inline]
     fn read(&mut self, count: u32) -> Decode<u32> {
+        if count > 32 {
+            return Err(DecodeError::Format);
+        }
         self.fill(count);
         if count > self.available {
             return Err(DecodeError::Format);
@@ -90,25 +144,32 @@ struct CodeLength {
 
 struct Huffman {
     lengths: [CodeLength; 16],
-    short_codes: [u16; 256],
+    look: Vec<u16>,
     symbols: Vec<u8>,
 }
 
 impl Huffman {
+    #[inline]
+    fn decode(&self, entropy: &mut Entropy<'_>) -> Decode<u8> {
+        entropy.fill(LOOK_BITS);
+        if entropy.available >= LOOK_BITS {
+            let index =
+                usize::try_from(entropy.peek(LOOK_BITS)).map_err(|_cause| DecodeError::Format)?;
+            let entry = self.look.get(index).copied().ok_or(DecodeError::Format)?;
+            let bits = u32::from(entry >> 8_u32);
+            if bits != 0 {
+                entropy.available = entropy.available.saturating_sub(bits);
+                return Ok(entry.to_le_bytes().first().copied().unwrap_or_default());
+            }
+        }
+        self.decode_long(entropy)
+    }
+
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "canonical lengths and offsets are bounded by the codebook"
     )]
-    fn decode(&self, entropy: &mut Entropy<'_>) -> Decode<u8> {
-        entropy.fill(8);
-        if entropy.available >= 8 {
-            let index = usize::try_from(entropy.peek(8)).map_err(|_cause| DecodeError::Format)?;
-            let &entry = self.short_codes.get(index).ok_or(DecodeError::Format)?;
-            if entry != 0 {
-                entropy.available -= u32::from(entry >> 8_u32);
-                return Ok(entry.to_le_bytes().first().copied().unwrap_or_default());
-            }
-        }
+    fn decode_long(&self, entropy: &mut Entropy<'_>) -> Decode<u8> {
         let mut code = 0_u32;
         for entry in self.lengths {
             code = (code << 1_u32) | entropy.read(1)?;
@@ -141,7 +202,7 @@ impl Huffman {
             offset: 0,
             start: 0,
         }; 16];
-        let mut short_codes = [0_u16; 256];
+        let mut look = vec![0_u16; LOOK_SIZE];
         let mut start = 0_u32;
         let mut offset = 0_usize;
         for (length, (&count, entry)) in (1_u32..=16).zip(counts.iter().zip(&mut lengths)) {
@@ -150,19 +211,18 @@ impl Huffman {
                 return Err(DecodeError::Format);
             }
             *entry = CodeLength { end, offset, start };
-            if length <= 8 {
-                let shift = 8 - length;
+            if length <= LOOK_BITS {
+                let shift = LOOK_BITS - length;
                 let first =
                     usize::try_from(start << shift).map_err(|_cause| DecodeError::Format)?;
                 let last = usize::try_from(end << shift).map_err(|_cause| DecodeError::Format)?;
                 let size = u16::try_from(length).map_err(|_cause| DecodeError::Format)?;
-                let entries = short_codes
-                    .get_mut(first..last)
-                    .ok_or(DecodeError::Format)?;
+                let entries = look.get_mut(first..last).ok_or(DecodeError::Format)?;
+                let width = 1_usize << shift;
                 let codes = symbols
                     .get(offset..offset + usize::from(count))
                     .ok_or(DecodeError::Format)?;
-                for (range, &symbol) in entries.chunks_exact_mut(1 << shift).zip(codes) {
+                for (range, &symbol) in entries.chunks_exact_mut(width).zip(codes) {
                     range.fill((size << 8_u32) | u16::from(symbol));
                 }
             }
@@ -171,7 +231,7 @@ impl Huffman {
         }
         Ok(Self {
             lengths,
-            short_codes,
+            look,
             symbols,
         })
     }
@@ -188,17 +248,21 @@ struct Component {
     precision: [Option<u8>; 64],
     quant: Option<Quant>,
     quant_id: usize,
+    retain: bool,
     vertical: usize,
 }
 
 struct Frame {
     columns: usize,
     components: Vec<Component>,
+    fused: bool,
     height: u32,
     max_h: usize,
     max_v: usize,
+    pixels: Vec<u8>,
     progressive: bool,
     rows: usize,
+    scans: u8,
     width: u32,
 }
 
@@ -239,6 +303,7 @@ impl Frame {
                 precision: [None; 64],
                 quant: None,
                 quant_id,
+                retain: false,
                 vertical,
             });
         }
@@ -267,20 +332,48 @@ impl Frame {
             .div_ceil(max_v * 8);
         for component in &mut components {
             component.columns = columns * component.horizontal;
-            component
-                .blocks
-                .resize(component.columns * rows * component.vertical, [0; 64]);
         }
         Ok(Self {
             columns,
             components,
+            fused: false,
             height,
             max_h,
             max_v,
+            pixels: Vec::new(),
             progressive,
             rows,
+            scans: 0,
             width,
         })
+    }
+
+    fn prepare(&mut self, adobe: Option<u8>, denominator: u8) -> Decode<()> {
+        let discard = discard_chroma(self, adobe);
+        let luma = self.components.len() == 1 || discard;
+        if self.scans == 0 {
+            self.fused = luma && !self.progressive && denominator == 1;
+            if self.fused {
+                let count = pixel_count(self.width, self.height).map_err(DecodeError::Raster)?;
+                self.pixels.resize(count, 0);
+            }
+        } else {
+            self.fused = false;
+            self.pixels.clear();
+        }
+        let fused = self.fused;
+        for (index, component) in self.components.iter_mut().enumerate() {
+            component.retain = !fused && (index == 0 || !discard);
+            if component.retain && component.blocks.is_empty() {
+                let count = component
+                    .columns
+                    .saturating_mul(self.rows)
+                    .saturating_mul(component.vertical);
+                component.blocks.resize(count, [0; 64]);
+            }
+        }
+        self.scans = self.scans.saturating_add(1);
+        Ok(())
     }
 }
 
@@ -449,7 +542,18 @@ struct ScanReader<'data, 'tables> {
 }
 
 impl ScanReader<'_, '_> {
+    const fn baseline(&self) -> bool {
+        !self.band.progressive
+            && self.band.end == 63
+            && self.band.high == 0
+            && self.band.low == 0
+            && self.band.start == 0
+    }
+
     fn block(&mut self, table: &mut ScanComponent, block: &mut Block) -> Decode<()> {
+        if self.baseline() {
+            return self.block_baseline(table, block);
+        }
         if self.band.start == 0 {
             let dc = block.first_mut().ok_or(DecodeError::Format)?;
             if self.band.high == 0 {
@@ -495,6 +599,54 @@ impl ScanReader<'_, '_> {
         } else {
             self.refine_ac(huffman, coefficients)
         }
+    }
+
+    fn block_baseline(&mut self, table: &mut ScanComponent, block: &mut Block) -> Decode<()> {
+        let huffman = self
+            .tables
+            .dc
+            .get(table.dc)
+            .and_then(Option::as_ref)
+            .ok_or(DecodeError::Format)?;
+        let size = huffman.decode(&mut self.entropy)?;
+        let delta = self.entropy.amplitude(size, 11)?;
+        table.predictor = table
+            .predictor
+            .checked_add(delta)
+            .ok_or(DecodeError::Format)?;
+        let dc = block.first_mut().ok_or(DecodeError::Format)?;
+        *dc = i16::try_from(table.predictor).map_err(|_cause| DecodeError::Format)?;
+        let ac = self
+            .tables
+            .ac
+            .get(table.ac)
+            .and_then(Option::as_ref)
+            .ok_or(DecodeError::Format)?;
+        let mut index = 1_usize;
+        while index < 64 {
+            let symbol = ac.decode(&mut self.entropy)?;
+            let run = usize::from(symbol >> 4_u32);
+            let magnitude = symbol & 15;
+            if magnitude == 0 {
+                if run == 15 {
+                    index = index.checked_add(16).ok_or(DecodeError::Format)?;
+                    if index > 64 {
+                        return Err(DecodeError::Format);
+                    }
+                    continue;
+                }
+                if run != 0 {
+                    return Err(DecodeError::Format);
+                }
+                return Ok(());
+            }
+            index = index.checked_add(run).ok_or(DecodeError::Format)?;
+            let value = self.entropy.amplitude(magnitude, 10)?;
+            let slot = block.get_mut(index).ok_or(DecodeError::Format)?;
+            *slot = i16::try_from(value).map_err(|_cause| DecodeError::Format)?;
+            index = index.checked_add(1).ok_or(DecodeError::Format)?;
+        }
+        Ok(())
     }
 
     fn correct(&mut self, coefficient: &mut i16, step: i16) -> Decode<()> {
@@ -596,6 +748,21 @@ impl ScanReader<'_, '_> {
     }
 }
 
+struct Mcu {
+    column: usize,
+    fused: bool,
+    image_height: usize,
+    image_width: usize,
+    interleaved: bool,
+    row: usize,
+}
+
+struct ScanGrid {
+    columns: usize,
+    interleaved: bool,
+    rows: usize,
+}
+
 fn take<'data>(input: &mut &'data [u8], count: usize) -> Decode<&'data [u8]> {
     let (head, tail) = input.split_at_checked(count).ok_or(DecodeError::Format)?;
     *input = tail;
@@ -631,8 +798,122 @@ const fn input_dimensions(horizontal: usize, vertical: usize) -> bool {
 
 #[expect(
     clippy::arithmetic_side_effects,
+    reason = "validated component sampling bounds the non-interleaved grid"
+)]
+fn scan_grid(frame: &Frame, scan: &Scan) -> Decode<ScanGrid> {
+    let interleaved = scan.components.len() > 1;
+    if interleaved {
+        return Ok(ScanGrid {
+            columns: frame.columns,
+            interleaved,
+            rows: frame.rows,
+        });
+    }
+    let index = scan.components.first().ok_or(DecodeError::Format)?.index;
+    let component = frame.components.get(index).ok_or(DecodeError::Format)?;
+    let width = usize::try_from(frame.width).map_err(|_cause| DecodeError::Format)?;
+    let height = usize::try_from(frame.height).map_err(|_cause| DecodeError::Format)?;
+    Ok(ScanGrid {
+        columns: (width * component.horizontal).div_ceil(8 * frame.max_h),
+        interleaved,
+        rows: (height * component.vertical).div_ceil(8 * frame.max_v),
+    })
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "restart markers cycle through RST0 through RST7"
+)]
+fn reset_restart(reader: &mut ScanReader<'_, '_>, scan: &mut Scan, restart: u8) -> Decode<u8> {
+    if reader.eob != 0 || marker(&mut reader.entropy.input)? != 0xd0 + restart {
+        return Err(DecodeError::Format);
+    }
+    reader.entropy.available = 0;
+    for component in &mut scan.components {
+        component.predictor = 0_i32;
+    }
+    Ok((restart + 1) & 7)
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
     reason = "validated MCU dimensions bound block indexes and counts"
 )]
+fn read_mcu(
+    reader: &mut ScanReader<'_, '_>,
+    frame: &mut Frame,
+    scan: &mut Scan,
+    place: &Mcu,
+) -> Decode<()> {
+    let Frame {
+        components, pixels, ..
+    } = frame;
+    for entry in &mut scan.components {
+        let index = entry.index;
+        let component = components.get_mut(index).ok_or(DecodeError::Format)?;
+        let horizontal = if place.interleaved {
+            component.horizontal
+        } else {
+            1
+        };
+        let vertical = if place.interleaved {
+            component.vertical
+        } else {
+            1
+        };
+        if !component.retain {
+            if place.fused && index == 0 {
+                let quant = component.quant.as_ref().ok_or(DecodeError::Format)?;
+                for delta_y in 0..vertical {
+                    for delta_x in 0..horizontal {
+                        let mut scratch = [0_i16; 64];
+                        reader.block(entry, &mut scratch)?;
+                        let decoded = inverse(&scratch, quant);
+                        paint_block(
+                            pixels,
+                            place.image_width,
+                            place.image_height,
+                            place.column * horizontal + delta_x,
+                            place.row * vertical + delta_y,
+                            &decoded,
+                        )?;
+                    }
+                }
+            } else {
+                for _step in 0..horizontal * vertical {
+                    let mut scratch = [0_i16; 64];
+                    reader.block(entry, &mut scratch)?;
+                }
+            }
+            continue;
+        }
+        let quant = *component.quant.as_ref().ok_or(DecodeError::Format)?;
+        let columns = component.columns;
+        for delta_y in 0..vertical {
+            let start = (place.row * vertical + delta_y) * columns + place.column * horizontal;
+            let blocks = component
+                .blocks
+                .get_mut(start..start + horizontal)
+                .ok_or(DecodeError::Format)?;
+            for (delta_x, block) in blocks.iter_mut().enumerate() {
+                reader.block(entry, block)?;
+                if place.fused && index == 0 {
+                    let decoded = inverse(block, &quant);
+                    paint_block(
+                        pixels,
+                        place.image_width,
+                        place.image_height,
+                        place.column * horizontal + delta_x,
+                        place.row * vertical + delta_y,
+                        &decoded,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn read_scan<'data>(
     input: &'data [u8],
     frame: &mut Frame,
@@ -640,19 +921,10 @@ fn read_scan<'data>(
     mut scan: Scan,
     interval: usize,
 ) -> Decode<&'data [u8]> {
-    let interleaved = scan.components.len() > 1;
-    let (columns, rows) = if interleaved {
-        (frame.columns, frame.rows)
-    } else {
-        let index = scan.components.first().ok_or(DecodeError::Format)?.index;
-        let component = frame.components.get(index).ok_or(DecodeError::Format)?;
-        let width = usize::try_from(frame.width).map_err(|_cause| DecodeError::Format)?;
-        let height = usize::try_from(frame.height).map_err(|_cause| DecodeError::Format)?;
-        (
-            (width * component.horizontal).div_ceil(8 * frame.max_h),
-            (height * component.vertical).div_ceil(8 * frame.max_v),
-        )
-    };
+    let grid = scan_grid(frame, &scan)?;
+    let image_width = usize::try_from(frame.width).map_err(|_cause| DecodeError::Format)?;
+    let image_height = usize::try_from(frame.height).map_err(|_cause| DecodeError::Format)?;
+    let fused = frame.fused;
     let mut reader = ScanReader {
         entropy: Entropy {
             available: 0,
@@ -665,40 +937,21 @@ fn read_scan<'data>(
     };
     let mut countdown = interval;
     let mut restart = 0_u8;
-    for row in 0..rows {
-        for column in 0..columns {
+    for row in 0..grid.rows {
+        for column in 0..grid.columns {
             if interval != 0 && countdown == 0 {
-                if reader.eob != 0 || marker(&mut reader.entropy.input)? != 0xd0 + restart {
-                    return Err(DecodeError::Format);
-                }
-                reader.entropy.available = 0;
+                restart = reset_restart(&mut reader, &mut scan, restart)?;
                 countdown = interval;
-                restart = (restart + 1) & 7;
-                for component in &mut scan.components {
-                    component.predictor = 0_i32;
-                }
             }
-            for entry in &mut scan.components {
-                let component = frame
-                    .components
-                    .get_mut(entry.index)
-                    .ok_or(DecodeError::Format)?;
-                let (width, height) = if interleaved {
-                    (component.horizontal, component.vertical)
-                } else {
-                    (1, 1)
-                };
-                for delta_y in 0..height {
-                    let start = (row * height + delta_y) * component.columns + column * width;
-                    let blocks = component
-                        .blocks
-                        .get_mut(start..start + width)
-                        .ok_or(DecodeError::Format)?;
-                    for block in blocks {
-                        reader.block(entry, block)?;
-                    }
-                }
-            }
+            let place = Mcu {
+                column,
+                fused,
+                image_height,
+                image_width,
+                interleaved: grid.interleaved,
+                row,
+            };
+            read_mcu(&mut reader, frame, &mut scan, &place)?;
             countdown = countdown.saturating_sub(1);
         }
     }
@@ -712,7 +965,14 @@ fn read_scan<'data>(
     clippy::arithmetic_side_effects,
     reason = "two 8-point transforms of dequantized i16 coefficients fit i64"
 )]
-const fn transform(
+#[cfg_attr(
+    all(target_arch = "wasm32", target_feature = "simd128", not(test)),
+    expect(
+        dead_code,
+        reason = "wasm simd128 calls transform_simd; scalar stays for native builds and the parity test"
+    )
+)]
+const fn transform_scalar(
     [dc, first, second, third, fourth, fifth, sixth, seventh]: [i64; 8],
 ) -> [i64; 8] {
     if first | second | third | fourth | fifth | sixth | seventh == 0 {
@@ -730,6 +990,76 @@ const fn transform(
     let odd_inner_left = first * 1703 - third * 400 - fifth * 2009 - seventh * 1138;
     let odd_inner_right = first * 1138 - third * 2009 + fifth * 400 + seventh * 1703;
     let odd_outer_right = first * 400 - third * 1138 + fifth * 1703 - seventh * 2009;
+    [
+        even_outer_left + odd_outer_left,
+        even_inner_left + odd_inner_left,
+        even_inner_right + odd_inner_right,
+        even_outer_right + odd_outer_right,
+        even_outer_right - odd_outer_right,
+        even_inner_right - odd_inner_right,
+        even_inner_left - odd_inner_left,
+        even_outer_left - odd_outer_left,
+    ]
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+#[inline]
+const fn transform_row(values: [i64; 8]) -> [i64; 8] {
+    transform_scalar(values)
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline]
+fn transform_row(values: [i64; 8]) -> [i64; 8] {
+    transform_simd(values)
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline]
+fn pair_product(left_0: i64, right_0: i64, left_1: i64, right_1: i64) -> (i64, i64) {
+    use core::arch::wasm32::{i64x2, i64x2_extract_lane, i64x2_mul};
+    let product = i64x2_mul(i64x2(left_0, left_1), i64x2(right_0, right_1));
+    (
+        i64x2_extract_lane::<0>(product),
+        i64x2_extract_lane::<1>(product),
+    )
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "two 8-point transforms of dequantized i16 coefficients fit i64"
+)]
+fn transform_simd([dc, first, second, third, fourth, fifth, sixth, seventh]: [i64; 8]) -> [i64; 8] {
+    if first | second | third | fourth | fifth | sixth | seventh == 0 {
+        return [dc * 1448; 8];
+    }
+    let (dc_scaled, fourth_scaled) = pair_product(dc, 1448, fourth, 1448);
+    let base_sum = dc_scaled + fourth_scaled;
+    let base_difference = dc_scaled - fourth_scaled;
+    let (even_second, even_sixth) = pair_product(second, 1892, sixth, 784);
+    let even_start = even_second + even_sixth;
+    let (inner_second, inner_sixth) = pair_product(second, 784, sixth, 1892);
+    let even_inner = inner_second - inner_sixth;
+    let even_outer_left = base_sum + even_start;
+    let even_inner_left = base_difference + even_inner;
+    let even_inner_right = base_difference - even_inner;
+    let even_outer_right = base_sum - even_start;
+    let (outer_first, outer_third) = pair_product(first, 2009, third, 1703);
+    let (outer_fifth, outer_seventh) = pair_product(fifth, 1138, seventh, 400);
+    let odd_outer_left = outer_first + outer_third + outer_fifth + outer_seventh;
+    let (inner_left_first, inner_left_third) = pair_product(first, 1703, third, 400);
+    let (inner_left_fifth, inner_left_seventh) = pair_product(fifth, 2009, seventh, 1138);
+    let odd_inner_left =
+        inner_left_first - inner_left_third - inner_left_fifth - inner_left_seventh;
+    let (inner_right_first, inner_right_third) = pair_product(first, 1138, third, 2009);
+    let (inner_right_fifth, inner_right_seventh) = pair_product(fifth, 400, seventh, 1703);
+    let odd_inner_right =
+        inner_right_first - inner_right_third + inner_right_fifth + inner_right_seventh;
+    let (outer_right_first, outer_right_third) = pair_product(first, 400, third, 1138);
+    let (outer_right_fifth, outer_right_seventh) = pair_product(fifth, 1703, seventh, 2009);
+    let odd_outer_right =
+        outer_right_first - outer_right_third + outer_right_fifth - outer_right_seventh;
     [
         even_outer_left + odd_outer_left,
         even_inner_left + odd_inner_left,
@@ -785,10 +1115,11 @@ fn inverse(block: &Block, quant: &Quant) -> [[u8; 8]; 8] {
             *slot = i64::from(coefficient) * i64::from(scale);
         }
     }
-    let columns = transpose(&frequencies.map(transform));
+    let columns = transpose(&frequencies.map(transform_row));
     transpose(
-        &columns
-            .map(|column| transform(column).map(|value| sample((value + (1 << 23_u32)) >> 24_u32))),
+        &columns.map(|column| {
+            transform_row(column).map(|value| sample((value + (1 << 23_u32)) >> 24_u32))
+        }),
     )
 }
 
@@ -830,7 +1161,7 @@ fn render_plane(component: &Component, width: usize, height: usize) -> Decode<Ve
     clippy::integer_division_remainder_used,
     reason = "integer component coordinates are bounded by JPEG sampling grids"
 )]
-fn render(frame: &Frame, adobe: Option<u8>) -> Decode<Gray> {
+fn render_full(frame: &Frame, adobe: Option<u8>) -> Decode<Gray> {
     let width = usize::try_from(frame.width).map_err(|_cause| DecodeError::Format)?;
     let height = usize::try_from(frame.height).map_err(|_cause| DecodeError::Format)?;
     let rgb = match frame.components.as_slice() {
@@ -888,10 +1219,246 @@ fn render(frame: &Frame, adobe: Option<u8>) -> Decode<Gray> {
     Gray::new(frame.width, frame.height, pixels).map_err(DecodeError::Raster)
 }
 
+fn discard_chroma(frame: &Frame, adobe: Option<u8>) -> bool {
+    if frame.progressive || adobe == Some(0) {
+        return false;
+    }
+    match frame.components.as_slice() {
+        [first, second, third] => {
+            [first.id, second.id, third.id] != *b"RGB"
+                && first.horizontal == frame.max_h
+                && first.vertical == frame.max_v
+        }
+        _ => false,
+    }
+}
+
+fn paint_block(
+    pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    block_x: usize,
+    block_y: usize,
+    samples: &[[u8; 8]; 8],
+) -> Decode<()> {
+    let origin_x = block_x.saturating_mul(8);
+    let origin_y = block_y.saturating_mul(8);
+    if origin_x >= image_width || origin_y >= image_height {
+        return Ok(());
+    }
+    let rows = image_height.saturating_sub(origin_y).min(8);
+    let columns = image_width.saturating_sub(origin_x).min(8);
+    for (delta_y, decoded) in samples.iter().take(rows).enumerate() {
+        let start = origin_y
+            .saturating_add(delta_y)
+            .saturating_mul(image_width)
+            .saturating_add(origin_x);
+        let destination = pixels
+            .get_mut(start..start.saturating_add(columns))
+            .ok_or(DecodeError::Format)?;
+        destination.copy_from_slice(decoded.get(..columns).ok_or(DecodeError::Format)?);
+    }
+    Ok(())
+}
+
+fn render(frame: &mut Frame, adobe: Option<u8>, denominator: u8) -> Decode<Gray> {
+    if denominator == 1 && frame.fused {
+        let pixels = mem::take(&mut frame.pixels);
+        return Gray::new(frame.width, frame.height, pixels).map_err(DecodeError::Raster);
+    }
+    if denominator == 1 {
+        return render_full(frame, adobe);
+    }
+    render_scaled(frame, adobe, denominator)
+}
+
+fn uses_rgb(frame: &Frame, adobe: Option<u8>) -> bool {
+    match frame.components.as_slice() {
+        [red, green, blue] => {
+            adobe == Some(0) || (adobe.is_none() && [red.id, green.id, blue.id] == *b"RGB")
+        }
+        _ => false,
+    }
+}
+
+fn render_scaled(frame: &Frame, adobe: Option<u8>, denominator: u8) -> Decode<Gray> {
+    let fast = frame.components.first().is_some_and(|component| {
+        component.horizontal == frame.max_h && component.vertical == frame.max_v
+    });
+    if fast && !uses_rgb(frame, adobe) {
+        return render_luma_scaled(frame, denominator);
+    }
+    downsample(&render_full(frame, adobe)?, denominator)
+}
+
+fn render_luma_scaled(frame: &Frame, denominator: u8) -> Decode<Gray> {
+    let component = frame.components.first().ok_or(DecodeError::Format)?;
+    let quant = component.quant.as_ref().ok_or(DecodeError::Format)?;
+    let width = usize::try_from(frame.width).map_err(|_cause| DecodeError::Format)?;
+    let height = usize::try_from(frame.height).map_err(|_cause| DecodeError::Format)?;
+    let step = usize::from(denominator);
+    let out_width = width.div_ceil(step);
+    let out_height = height.div_ceil(step);
+    let mut pixels = vec![0_u8; out_width.saturating_mul(out_height)];
+    if denominator == 8 {
+        paint_dc_plane(&mut pixels, component, quant, out_width, out_height)?;
+    } else {
+        paint_subsampled(
+            &mut pixels,
+            component,
+            quant,
+            width,
+            height,
+            step,
+            out_width,
+        )?;
+    }
+    Gray::new(
+        u32::try_from(out_width).map_err(|_cause| DecodeError::Format)?,
+        u32::try_from(out_height).map_err(|_cause| DecodeError::Format)?,
+        pixels,
+    )
+    .map_err(DecodeError::Raster)
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "dequantized DC coefficients use the same rounding as the full inverse transform"
+)]
+fn paint_dc_plane(
+    pixels: &mut [u8],
+    component: &Component,
+    quant: &Quant,
+    out_width: usize,
+    out_height: usize,
+) -> Decode<()> {
+    if component.columns == 0 {
+        return Err(DecodeError::Format);
+    }
+    for (block_row, row) in component
+        .blocks
+        .chunks_exact(component.columns)
+        .take(out_height)
+        .enumerate()
+    {
+        for (block_column, block) in row.iter().take(out_width).enumerate() {
+            let coefficient = i64::from(block.first().copied().unwrap_or(0));
+            let scale = i64::from(quant.first().copied().unwrap_or(0));
+            let pixel = sample((coefficient * scale + 4) >> 3_u32);
+            let index = block_row
+                .saturating_mul(out_width)
+                .saturating_add(block_column);
+            if let Some(slot) = pixels.get_mut(index) {
+                *slot = pixel;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::integer_division,
+    clippy::integer_division_remainder_used,
+    reason = "scaled output coordinates divide a position by 2 or 4"
+)]
+fn paint_subsampled(
+    pixels: &mut [u8],
+    component: &Component,
+    quant: &Quant,
+    width: usize,
+    height: usize,
+    step: usize,
+    out_width: usize,
+) -> Decode<()> {
+    if component.columns == 0 || step == 0 {
+        return Err(DecodeError::Format);
+    }
+    for (block_row, row) in component
+        .blocks
+        .chunks_exact(component.columns)
+        .take(height.div_ceil(8))
+        .enumerate()
+    {
+        for (block_column, block) in row.iter().take(width.div_ceil(8)).enumerate() {
+            let decoded = inverse(block, quant);
+            let origin_y = block_row.saturating_mul(8);
+            let origin_x = block_column.saturating_mul(8);
+            for delta_y in (0..8).step_by(step) {
+                let y = origin_y.saturating_add(delta_y);
+                if y >= height {
+                    break;
+                }
+                let Some(samples) = decoded.get(delta_y) else {
+                    continue;
+                };
+                for delta_x in (0..8).step_by(step) {
+                    let x = origin_x.saturating_add(delta_x);
+                    if x >= width {
+                        break;
+                    }
+                    let Some(&pixel) = samples.get(delta_x) else {
+                        continue;
+                    };
+                    let index = (y / step) * out_width + (x / step);
+                    if let Some(slot) = pixels.get_mut(index) {
+                        *slot = pixel;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn downsample(gray: &Gray, denominator: u8) -> Decode<Gray> {
+    let step = usize::from(denominator);
+    if step == 0 {
+        return Err(DecodeError::Format);
+    }
+    let width = usize::try_from(gray.width).map_err(|_cause| DecodeError::Format)?;
+    let height = usize::try_from(gray.height).map_err(|_cause| DecodeError::Format)?;
+    let out_width = width.div_ceil(step);
+    let out_height = height.div_ceil(step);
+    let mut pixels = Vec::with_capacity(out_width.saturating_mul(out_height));
+    for y in (0..height).step_by(step) {
+        let row = y.saturating_mul(width);
+        for x in (0..width).step_by(step) {
+            pixels.push(gray.pixels.get(row.saturating_add(x)).copied().unwrap_or(0));
+        }
+    }
+    Gray::new(
+        u32::try_from(out_width).map_err(|_cause| DecodeError::Format)?,
+        u32::try_from(out_height).map_err(|_cause| DecodeError::Format)?,
+        pixels,
+    )
+    .map_err(DecodeError::Raster)
+}
+
 /// # Errors
 /// Returns an error for malformed JPEG data or unsupported frame modes.
 #[inline]
-pub fn decode(mut input: &[u8]) -> Decode<Gray> {
+pub fn decode(input: &[u8]) -> Decode<Gray> {
+    decode_scaled(input, 1)
+}
+
+/// Decodes a baseline or progressive JPEG to grayscale at `1/denominator` resolution.
+///
+/// `denominator` must be 1, 2, 4, or 8. A factor of 1 matches [`decode`]. A factor of 8 emits
+/// one DC sample per block.
+///
+/// # Errors
+/// Returns [`DecodeError::Unsupported`] for any other denominator, and [`DecodeError::Format`]
+/// for malformed JPEG data.
+#[inline]
+pub fn decode_scaled(input: &[u8], denominator: u8) -> Decode<Gray> {
+    if !matches!(denominator, 1 | 2 | 4 | 8) {
+        return Err(DecodeError::Unsupported);
+    }
+    decode_frame(input, denominator)
+}
+
+fn decode_frame(mut input: &[u8], denominator: u8) -> Decode<Gray> {
     if marker(&mut input)? != 0xd8 {
         return Err(DecodeError::Format);
     }
@@ -902,7 +1469,11 @@ pub fn decode(mut input: &[u8]) -> Decode<Gray> {
     loop {
         let kind = marker(&mut input)?;
         if kind == 0xd9 {
-            return render(&image.ok_or(DecodeError::Format)?, adobe);
+            return render(
+                image.as_mut().ok_or(DecodeError::Format)?,
+                adobe,
+                denominator,
+            );
         }
         let length = short(&mut input)?
             .checked_sub(2)
@@ -915,6 +1486,7 @@ pub fn decode(mut input: &[u8]) -> Decode<Gray> {
             0xdd if payload.len() == 2 => interval = usize::from(short(&mut payload)?),
             0xda => {
                 let frame = image.as_mut().ok_or(DecodeError::Format)?;
+                frame.prepare(adobe, denominator)?;
                 let scan = Scan::parse(payload, frame, &tables.quant)?;
                 input = read_scan(input, frame, &tables, scan, interval)?;
             }
@@ -927,9 +1499,12 @@ pub fn decode(mut input: &[u8]) -> Decode<Gray> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
     use crate::raster::read_pgm;
 
-    use super::{DecodeError, decode};
+    use super::{DecodeError, decode, decode_scaled};
 
     #[test]
     #[expect(
@@ -959,8 +1534,8 @@ mod tests {
             let expected = read_pgm(reference).map_err(DecodeError::Raster)?;
             let actual = decode(jpeg)?;
             assert_eq!(
-                (actual.width, actual.height),
-                (expected.width, expected.height)
+                (actual.width, actual.height, actual.pixels.len()),
+                (expected.width, expected.height, expected.pixels.len())
             );
             let squared: f64 = actual
                 .pixels
@@ -980,5 +1555,99 @@ mod tests {
             assert_eq!(decode(truncated), Err(DecodeError::Format));
         }
         Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "scaled-decode checks compare pixels and dimensions"
+    )]
+    fn scaled_decode_matches_full_scale_and_rejects_other_factors() -> Result<(), DecodeError> {
+        let jpeg = include_bytes!("../tests/fixtures/ycbcr.jpg");
+        let full = decode(jpeg)?;
+        assert_eq!(decode_scaled(jpeg, 1)?.pixels, full.pixels);
+        let width = usize::try_from(full.width).unwrap_or(0);
+        let height = usize::try_from(full.height).unwrap_or(0);
+        let eighth = decode_scaled(jpeg, 8)?;
+        assert_eq!(
+            (eighth.width, eighth.height, eighth.pixels.len()),
+            (
+                u32::try_from(width.div_ceil(8)).unwrap_or(0),
+                u32::try_from(height.div_ceil(8)).unwrap_or(0),
+                width.div_ceil(8).saturating_mul(height.div_ceil(8)),
+            )
+        );
+        let quarter = decode_scaled(jpeg, 4)?;
+        assert_eq!(
+            quarter.pixels.len(),
+            width.div_ceil(4).saturating_mul(height.div_ceil(4))
+        );
+        assert_eq!(decode_scaled(jpeg, 3), Err(DecodeError::Unsupported));
+        Ok(())
+    }
+
+    fn fingerprint(pixels: &[u8]) -> u64 {
+        pixels
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |state, &pixel| {
+                state.wrapping_mul(0x0000_0100_0000_01b3) ^ u64::from(pixel)
+            })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "fingerprints lock full-scale pixels to the vision decoder"
+    )]
+    fn full_scale_matches_the_vision_decoder() -> Result<(), DecodeError> {
+        let cases: &[(&str, &[u8], u64)] = &[
+            (
+                "restart",
+                include_bytes!("../tests/fixtures/restart.jpg"),
+                0x130d_f62e_04fe_4581,
+            ),
+            (
+                "progressive",
+                include_bytes!("../tests/fixtures/progressive.jpg"),
+                0x1fe1_5c27_f3a1_df8d,
+            ),
+            (
+                "ycbcr",
+                include_bytes!("../tests/fixtures/ycbcr.jpg"),
+                0x1fe1_5c27_f3a1_df8d,
+            ),
+            (
+                "adobe-rgb",
+                include_bytes!("../tests/fixtures/adobe-rgb.jpg"),
+                0xd3ae_5331_9b7c_3456,
+            ),
+        ];
+        for &(name, jpeg, expected) in cases {
+            let image = decode(jpeg)?;
+            assert_eq!(fingerprint(&image.pixels), expected, "{name}");
+        }
+        let scan = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../.cache/jpeg-bench/0029p_contratacao-de-empresa-para-pavimentacao-com-bloco_23718034000111-2026-112.jpg"
+        ));
+        if let Ok(bytes) = fs::read(scan) {
+            let image = decode(&bytes)?;
+            assert_eq!(fingerprint(&image.pixels), 0x324a_c139_71b8_06a1, "0029p");
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[test]
+    fn simd_idct_matches_scalar() {
+        let rows = [
+            [0_i64, 0, 0, 0, 0, 0, 0, 0],
+            [10, 0, 0, 0, 0, 0, 0, 0],
+            [4, -3, 2, -1, 5, 0, 1, -2],
+            [100, 50, -50, 25, -25, 12, -12, 6],
+        ];
+        for row in rows {
+            assert_eq!(super::transform_scalar(row), super::transform_simd(row));
+        }
     }
 }

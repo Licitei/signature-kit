@@ -69,13 +69,29 @@ struct State {
     stroke: Color,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct OutlineKey {
+    id: u32,
+    linear: [u64; 4],
+}
+
+#[derive(Debug, Default)]
+struct CoverageScratch {
+    active: Vec<ActiveEdge>,
+    edges: Vec<Edge>,
+    hits: Vec<(f64, i32)>,
+    row: Vec<f64>,
+}
+
 #[derive(Debug)]
 struct Painter<'data> {
     base: Matrix,
     blobs: Vec<&'data [u8]>,
     glyphs: BTreeMap<u32, Vec<Segment>>,
+    outlines: BTreeMap<OutlineKey, Path>,
     path: Path,
     raster: GrayRaster,
+    scratch: CoverageScratch,
     stack: Vec<State>,
     state: State,
     text_clip: Path,
@@ -95,6 +111,13 @@ struct RenderPage<'data> {
 #[derive(Clone, Copy, Debug)]
 struct Edge {
     end: Point,
+    start: Point,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveEdge {
+    end: Point,
+    max_y: f64,
     start: Point,
 }
 
@@ -216,6 +239,21 @@ impl<'data> RenderPage<'data> {
 }
 
 impl Path {
+    fn append_edges(&self, edges: &mut Vec<Edge>) {
+        for Contour { points, .. } in &self.0 {
+            edges.extend(
+                points
+                    .iter()
+                    .copied()
+                    .zip(points.iter().copied().skip(1))
+                    .map(|(start, end)| Edge { end, start }),
+            );
+            if let (Some(&start), Some(&end)) = (points.last(), points.first()) {
+                edges.push(Edge { end, start });
+            }
+        }
+    }
+
     fn device(segments: &[Segment], matrix: Matrix) -> Self {
         let mut contours = Vec::new();
         let mut current = None::<Contour>;
@@ -271,23 +309,6 @@ impl Path {
         }
         contours.extend(current);
         Self(contours)
-    }
-
-    fn edges(&self) -> Vec<Edge> {
-        let mut edges = Vec::new();
-        for Contour { points, .. } in &self.0 {
-            edges.extend(
-                points
-                    .iter()
-                    .copied()
-                    .zip(points.iter().copied().skip(1))
-                    .map(|(start, end)| Edge { end, start }),
-            );
-            if let (Some(&start), Some(&end)) = (points.last(), points.first()) {
-                edges.push(Edge { end, start });
-            }
-        }
-        edges
     }
 
     fn rectangle(&self) -> Option<[f64; 4]> {
@@ -363,6 +384,23 @@ impl Path {
             }
         }
         Self(output)
+    }
+
+    fn translated(&self, dx: f64, dy: f64) -> Self {
+        Self(
+            self.0
+                .iter()
+                .map(|contour| Contour {
+                    closed: contour.closed,
+                    points: contour
+                        .points
+                        .iter()
+                        .copied()
+                        .map(|[x, y]| [x + dx, y + dy])
+                        .collect(),
+                })
+                .collect(),
+        )
     }
 }
 
@@ -563,13 +601,17 @@ impl Painter<'_> {
             }
             3 => self.state.matrix = multiply(reader.matrix()?, self.base),
             4 => self.path = Path::device(&reader.path()?, self.state.matrix),
-            5 => paint(
-                &mut self.raster,
-                &self.path,
-                self.state.clip.as_deref(),
-                self.state.fill,
-                reader.byte()? == 1,
-            ),
+            5 => {
+                let even_odd = reader.byte()? == 1;
+                paint(
+                    &mut self.raster,
+                    &self.path,
+                    self.state.clip.as_deref(),
+                    self.state.fill,
+                    even_odd,
+                    &mut self.scratch,
+                );
+            }
             6 => {
                 let outline = self.path.stroke(self.radius(), self.state.cap);
                 paint(
@@ -578,15 +620,19 @@ impl Painter<'_> {
                     self.state.clip.as_deref(),
                     self.state.stroke,
                     false,
+                    &mut self.scratch,
                 );
             }
             7 => {
+                let even_odd = reader.byte()? == 1;
+                let budget = self.available_clip_budget();
                 self.state.clip = Some(clip_path(
                     &self.raster,
                     &self.path,
                     self.state.clip.as_deref(),
-                    reader.byte()? == 1,
-                    self.available_clip_budget(),
+                    even_odd,
+                    budget,
+                    &mut self.scratch,
                 )?);
             }
             8 => self.state.fill = reader.color()?,
@@ -601,20 +647,45 @@ impl Painter<'_> {
     fn glyph(&mut self, reader: &mut Reader<'_>) -> Option<()> {
         let modes = reader.byte()?;
         let id = reader.word()?;
-        let matrix = multiply(reader.matrix()?, self.state.matrix);
-        if let Some(commands) = self.glyphs.get(&id) {
-            let path = Path::device(commands, matrix);
-            let clip = self.state.clip.as_deref();
-            if modes & 1 != 0 {
-                paint(&mut self.raster, &path, clip, self.state.fill, false);
-            }
-            if modes & 2 != 0 {
-                let outline = path.stroke(self.radius(), self.state.cap);
-                paint(&mut self.raster, &outline, clip, self.state.stroke, false);
-            }
-            if modes & 4 != 0 {
-                self.text_clip.0.extend(path.0);
-            }
+        let [a, b, c, d, e, f] = multiply(reader.matrix()?, self.state.matrix);
+        let key = OutlineKey {
+            id,
+            linear: [a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits()],
+        };
+        if !self.outlines.contains_key(&key) {
+            self.store_outline(key, [a, b, c, d, 0.0_f64, 0.0_f64]);
+        }
+        let Some(path) = self
+            .outlines
+            .get(&key)
+            .map(|cached| cached.translated(e, f))
+        else {
+            return Some(());
+        };
+        let clip = self.state.clip.as_deref();
+        if modes & 1 != 0 {
+            paint(
+                &mut self.raster,
+                &path,
+                clip,
+                self.state.fill,
+                false,
+                &mut self.scratch,
+            );
+        }
+        if modes & 2 != 0 {
+            let outline = path.stroke(self.radius(), self.state.cap);
+            paint(
+                &mut self.raster,
+                &outline,
+                clip,
+                self.state.stroke,
+                false,
+                &mut self.scratch,
+            );
+        }
+        if modes & 4 != 0 {
+            self.text_clip.0.extend(path.0);
         }
         Some(())
     }
@@ -710,12 +781,14 @@ impl Painter<'_> {
                 17 => self.glyph(&mut reader)?,
                 18 => {
                     if !self.text_clip.0.is_empty() {
+                        let budget = self.available_clip_budget();
                         self.state.clip = Some(clip_path(
                             &self.raster,
                             &self.text_clip,
                             self.state.clip.as_deref(),
                             false,
-                            self.available_clip_budget(),
+                            budget,
+                            &mut self.scratch,
                         )?);
                         self.text_clip.0.clear();
                     }
@@ -731,6 +804,14 @@ impl Painter<'_> {
             }
         }
         Some(())
+    }
+
+    fn store_outline(&mut self, key: OutlineKey, linear: Matrix) {
+        let Some(commands) = self.glyphs.get(&key.id).cloned() else {
+            return;
+        };
+        let flat = Path::device(&commands, linear);
+        drop(self.outlines.insert(key, flat));
     }
 }
 
@@ -850,57 +931,137 @@ fn flatten(points: &mut Vec<Point>, curve: [Point; 4], depth: u8) {
     flatten(points, [center, inner_right, right, end], next);
 }
 
-fn crossings(edges: &[Edge], height: f64, hits: &mut Vec<(f64, i32)>) {
-    hits.clear();
-    for &Edge {
-        start: [ax, ay],
-        end: [bx, by],
-    } in edges
-    {
-        if (ay <= height && height < by) || (by <= height && height < ay) {
-            let x = ax + (height - ay) * (bx - ax) / (by - ay);
-            hits.push((x, if ay < by { 1_i32 } else { -1_i32 }));
+const fn edge_min_y(edge: &Edge) -> f64 {
+    let [_, ay] = edge.start;
+    let [_, by] = edge.end;
+    ay.min(by)
+}
+
+fn sort_edges(edges: &mut [Edge]) {
+    edges.sort_unstable_by(|left, right| edge_min_y(left).total_cmp(&edge_min_y(right)));
+}
+
+fn activate(edges: &[Edge], cursor: &mut usize, height: f64, active: &mut Vec<ActiveEdge>) {
+    let mut index = 0_usize;
+    while index < active.len() {
+        let expired = active.get(index).is_some_and(|edge| edge.max_y <= height);
+        if expired {
+            let _expired = active.swap_remove(index);
+        } else {
+            index = index.saturating_add(1);
         }
+    }
+    while let Some(edge) = edges.get(*cursor) {
+        if edge_min_y(edge) > height {
+            break;
+        }
+        *cursor = cursor.saturating_add(1);
+        let [_, ay] = edge.start;
+        let [_, by] = edge.end;
+        let max_y = ay.max(by);
+        if max_y > height {
+            active.push(ActiveEdge {
+                end: edge.end,
+                max_y,
+                start: edge.start,
+            });
+        }
+    }
+}
+
+fn collect_hits(active: &[ActiveEdge], height: f64, hits: &mut Vec<(f64, i32)>) {
+    hits.clear();
+    for edge in active {
+        let [ax, ay] = edge.start;
+        let [bx, by] = edge.end;
+        let x = ax + (height - ay) * (bx - ax) / (by - ay);
+        hits.push((x, if ay < by { 1_i32 } else { -1_i32 }));
     }
     hits.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
 }
 
-fn scan<Write>(edges: &[Edge], bounds: Rect, even_odd: bool, mut write: Write)
+const fn span_inside(winding: i32, even_odd: bool) -> bool {
+    if even_odd {
+        winding & 1_i32 != 0_i32
+    } else {
+        winding != 0_i32
+    }
+}
+
+fn cover_partial(row: &mut [f64], origin: usize, left: usize, right: usize, start: f64, end: f64) {
+    for x in left..right {
+        if let Some(coverage) = row.get_mut(x.saturating_sub(origin)) {
+            let px = scalar(x);
+            *coverage += ((px + 1.0_f64).min(end) - px.max(start)).max(0.0_f64) * 0.25_f64;
+        }
+    }
+}
+
+fn cover_span(
+    row: &mut [f64],
+    origin: usize,
+    start: f64,
+    end: f64,
+    left_bound: usize,
+    right_bound: usize,
+) {
+    let left = pixel(start.floor()).max(left_bound);
+    let right = pixel(end.ceil()).min(right_bound);
+    if left >= right {
+        return;
+    }
+    let full_left = pixel(start.ceil()).max(left);
+    let full_right = pixel(end.floor()).min(right);
+    if full_left >= full_right {
+        cover_partial(row, origin, left, right, start, end);
+        return;
+    }
+    cover_partial(row, origin, left, full_left, start, end);
+    for x in full_left..full_right {
+        if let Some(coverage) = row.get_mut(x.saturating_sub(origin)) {
+            *coverage += 0.25_f64;
+        }
+    }
+    cover_partial(row, origin, full_right, right, start, end);
+}
+
+fn accumulate_hits(row: &mut [f64], hits: &[(f64, i32)], bounds: Rect, even_odd: bool) {
+    let mut winding = 0_i32;
+    let mut start = 0.0_f64;
+    for &(end, direction) in hits {
+        if span_inside(winding, even_odd) {
+            cover_span(row, bounds.left, start, end, bounds.left, bounds.right);
+        }
+        start = end;
+        winding = winding.saturating_add(direction);
+    }
+}
+
+fn scan<Write>(scratch: &mut CoverageScratch, bounds: Rect, even_odd: bool, mut write: Write)
 where
     Write: FnMut(usize, usize, f64),
 {
-    if bounds.width() == 0 {
+    let width = bounds.width();
+    if width == 0 {
         return;
     }
-    let mut hits = Vec::new();
-    let mut row = vec![0.0_f64; bounds.width()];
+    sort_edges(&mut scratch.edges);
+    scratch.active.clear();
+    let mut cursor = 0_usize;
+    if scratch.row.len() < width {
+        scratch.row.resize(width, 0.0_f64);
+    }
     for y in bounds.top..bounds.bottom {
-        row.fill(0.0_f64);
-        for offset in [0.125_f64, 0.375_f64, 0.625_f64, 0.875_f64] {
-            crossings(edges, scalar(y) + offset, &mut hits);
-            let mut winding = 0_i32;
-            let mut start = 0.0_f64;
-            for &(end, direction) in &hits {
-                if if even_odd {
-                    winding & 1_i32 != 0_i32
-                } else {
-                    winding != 0_i32
-                } {
-                    let left = pixel(start.floor()).max(bounds.left);
-                    let right = pixel(end.ceil()).min(bounds.right);
-                    for x in left..right {
-                        if let Some(coverage) = row.get_mut(x.saturating_sub(bounds.left)) {
-                            let px = scalar(x);
-                            *coverage +=
-                                ((px + 1.0_f64).min(end) - px.max(start)).max(0.0_f64) * 0.25_f64;
-                        }
-                    }
-                }
-                start = end;
-                winding = winding.saturating_add(direction);
-            }
+        for sample in scratch.row.iter_mut().take(width) {
+            *sample = 0.0_f64;
         }
-        for (index, &coverage) in row.iter().enumerate() {
+        for offset in [0.125_f64, 0.375_f64, 0.625_f64, 0.875_f64] {
+            let height = scalar(y) + offset;
+            activate(&scratch.edges, &mut cursor, height, &mut scratch.active);
+            collect_hits(&scratch.active, height, &mut scratch.hits);
+            accumulate_hits(&mut scratch.row, &scratch.hits, bounds, even_odd);
+        }
+        for (index, &coverage) in scratch.row.iter().take(width).enumerate() {
             if coverage > 0.0_f64 {
                 write(bounds.left.saturating_add(index), y, coverage);
             }
@@ -909,16 +1070,31 @@ where
 }
 
 fn blend(slot: &mut u8, [tone, opacity]: Color, coverage: f64) {
+    if opacity == 255 && coverage.to_bits() == 1.0_f64.to_bits() {
+        *slot = tone;
+        return;
+    }
     let alpha = f64::from(opacity) * coverage / 255.0_f64;
     *slot = channel(f64::from(*slot) + (f64::from(tone) - f64::from(*slot)) * alpha);
 }
 
-fn paint(raster: &mut GrayRaster, path: &Path, clip: Option<&Clip>, color: Color, even_odd: bool) {
-    let edges = path.edges();
-    let bounds = Rect::points(edges.iter().flat_map(|edge| [edge.start, edge.end]), raster);
+fn paint(
+    raster: &mut GrayRaster,
+    path: &Path,
+    clip: Option<&Clip>,
+    color: Color,
+    even_odd: bool,
+    scratch: &mut CoverageScratch,
+) {
+    scratch.edges.clear();
+    path.append_edges(&mut scratch.edges);
+    let bounds = Rect::points(
+        scratch.edges.iter().flat_map(|edge| [edge.start, edge.end]),
+        raster,
+    );
     let area = clip.map_or(bounds, |mask| bounds.intersect(mask.bounds));
     let width = raster.width;
-    scan(&edges, area, even_odd, |x, y, coverage| {
+    scan(scratch, area, even_odd, |x, y, coverage| {
         if let Some(slot) = raster
             .pixels
             .get_mut(y.saturating_mul(width).saturating_add(x))
@@ -935,9 +1111,14 @@ fn clip_path(
     clip: Option<&Clip>,
     even_odd: bool,
     budget: usize,
+    scratch: &mut CoverageScratch,
 ) -> Option<Rc<Clip>> {
-    let edges = path.edges();
-    let bounds = Rect::points(edges.iter().flat_map(|edge| [edge.start, edge.end]), raster);
+    scratch.edges.clear();
+    path.append_edges(&mut scratch.edges);
+    let bounds = Rect::points(
+        scratch.edges.iter().flat_map(|edge| [edge.start, edge.end]),
+        raster,
+    );
     let area = clip.map_or(bounds, |mask| bounds.intersect(mask.bounds));
     if let Some([x0, y0, x1, y1]) = path.rectangle() {
         let rectangle = match clip.map(|mask| &mask.coverage) {
@@ -961,7 +1142,7 @@ fn clip_path(
         return None;
     }
     let mut pixels = vec![0; len];
-    scan(&edges, area, even_odd, |x, y, coverage| {
+    scan(scratch, area, even_odd, |x, y, coverage| {
         let at = y
             .saturating_sub(area.top)
             .saturating_mul(area.width())
@@ -1003,12 +1184,14 @@ pub(crate) fn rasterize(payload: &[u8], scale_x1000: u32) -> Option<GrayRaster> 
         base,
         blobs,
         glyphs: BTreeMap::new(),
+        outlines: BTreeMap::new(),
         path: Path::default(),
         raster: GrayRaster {
             height,
             pixels: vec![255; width.checked_mul(height)?],
             width,
         },
+        scratch: CoverageScratch::default(),
         stack: Vec::new(),
         state: State {
             cap: 0,
@@ -1121,5 +1304,33 @@ mod tests {
         let bytes = payload(0, &ops, &[&[0, 0, 0, 255, 127, 127, 127, 255]]);
         let raster = rasterize(&bytes, 1000).unwrap();
         assert_eq!(raster.pixels, [0, 0, 0, 0, 127, 127, 127, 127]);
+    }
+
+    #[test]
+    fn translated_outline_matches_device_flatten() {
+        let commands = [
+            Segment::Move([0.1_f64, 0.2_f64]),
+            Segment::Cubic([0.4_f64, 1.5_f64], [1.2_f64, -0.3_f64], [1.8_f64, 0.6_f64]),
+            Segment::Line([2.0_f64, 0.1_f64]),
+            Segment::Close,
+        ];
+        let matrix = [12.5_f64, -0.35_f64, 0.2_f64, 9.75_f64, 40.125_f64, -6.5_f64];
+        let [a, b, c, d, e, f] = matrix;
+        let direct = Path::device(&commands, matrix);
+        let shifted = Path::device(&commands, [a, b, c, d, 0.0_f64, 0.0_f64]).translated(e, f);
+        assert_eq!(direct.0.len(), shifted.0.len());
+        for (left, right) in direct.0.iter().zip(&shifted.0) {
+            assert_eq!(left.closed, right.closed);
+            assert_eq!(left.points.len(), right.points.len());
+            for ([lx, ly], [rx, ry]) in left
+                .points
+                .iter()
+                .copied()
+                .zip(right.points.iter().copied())
+            {
+                assert!((lx - rx).abs() <= 1e-6_f64, "{lx} vs {rx}");
+                assert!((ly - ry).abs() <= 1e-6_f64, "{ly} vs {ry}");
+            }
+        }
     }
 }
