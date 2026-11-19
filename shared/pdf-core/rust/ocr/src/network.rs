@@ -34,7 +34,8 @@ impl<'model> Network<'model> {
                 continue;
             }
             for (sum, &weight) in accumulators.iter_mut().zip(weights) {
-                *sum = sum.wrapping_add(i32::from(weight).wrapping_mul(i32::from(sample)));
+                *sum =
+                    sum.wrapping_add(i32::from(u16::from(weight).wrapping_mul(u16::from(sample))));
             }
         }
         let offset = input
@@ -49,10 +50,11 @@ impl<'model> Network<'model> {
                 .hidden_bias
                 .get(index)
                 .map_or(0.0, |part| f32::from_le_bytes(*part));
-            i32::from(quantize(
+            i16::try_from(quantize(
                 signed(sum.wrapping_sub(offset)) * self.hidden_scale + bias,
                 UNIT,
             ))
+            .unwrap_or_default()
         });
         self.rank(&hidden)
     }
@@ -96,10 +98,15 @@ impl<'model> Network<'model> {
             transitions,
         ))
     }
-    fn rank(self, hidden: &[i32; HIDDEN]) -> [Choice; 4] {
+    fn rank(self, hidden: &[i16; HIDDEN]) -> [Choice; 4] {
         let mut choices = [UNCLASSIFIED; 4];
         let mut rejection = f32::INFINITY;
-        let offset = hidden.iter().sum::<i32>().wrapping_mul(128);
+        let offset = hidden
+            .iter()
+            .copied()
+            .map(i32::from)
+            .sum::<i32>()
+            .wrapping_mul(128);
         for record in self.outputs {
             let Some((weights, label_and_bias)) = record.split_first_chunk::<HIDDEN>() else {
                 break;
@@ -114,7 +121,7 @@ impl<'model> Network<'model> {
                 .iter()
                 .zip(weights)
                 .fold(0_i32, |acc, (&value, &weight)| {
-                    acc.wrapping_add(value.wrapping_mul(i32::from(weight)))
+                    acc.wrapping_add(i32::from(value).wrapping_mul(i32::from(weight)))
                 });
             let logit =
                 signed(sum.wrapping_sub(offset)) * self.output_scale + f32::from_le_bytes(*bias);
@@ -162,7 +169,7 @@ fn pixel(row: &[u64], column: u32) -> bool {
         .is_some_and(|word| word & (1_u64 << (column & 63)) != 0)
 }
 
-fn nearest(value: f32) -> u32 {
+pub(crate) fn nearest(value: f32) -> u32 {
     let rounded = value.round();
     if rounded < 1.0 {
         return 0;
@@ -206,14 +213,14 @@ pub(crate) fn inputs(
     let x_samples = axis(coordinate(left) - 0.5, coordinate(right) - 0.5);
     let y_samples = axis(start - 0.5, end - 0.5);
     for (target, (upper, lower)) in input.as_chunks_mut::<GRID>().0.iter_mut().zip(y_samples) {
-        let row = |value| {
+        let bounded_row = |value| {
             if (top..bottom).contains(&value) {
                 page.row(value)
             } else {
                 &[]
             }
         };
-        let rows = [row(upper), row(lower)];
+        let rows = [bounded_row(upper), bounded_row(lower)];
         for (cell, &(first, second)) in target.iter_mut().zip(&x_samples) {
             let mut count = 0_u8;
             for row in rows {

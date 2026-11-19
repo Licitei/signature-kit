@@ -15,6 +15,11 @@ pub(crate) const UNCLASSIFIED: Choice = Choice {
 
 static MODEL: &[u8] = include_bytes!("../data/recognition.bin");
 
+type PrototypeTables<'data> = (
+    &'data [[u8; PROTOTYPE_BYTES]],
+    &'data [[u8; TRANSITION_BYTES]],
+);
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Features {
     pub(crate) geometry: [f32; 3],
@@ -43,6 +48,44 @@ enum Glyphs<'model> {
 pub(crate) struct Model<'model> {
     glyphs: Glyphs<'model>,
     transitions: &'model [[u8; TRANSITION_BYTES]],
+}
+
+impl<'model> Model<'model> {
+    pub(crate) fn classify(self, page: &Bits, bbox: [u32; 4], metrics: Metrics) -> [Choice; 4] {
+        match self.glyphs {
+            Glyphs::Network(network) => {
+                network.classify(&inputs(page, bbox, metrics, network.shape))
+            }
+            Glyphs::Prototypes(records) => {
+                classify_prototypes(&features(page, bbox, metrics), records)
+            }
+        }
+    }
+
+    pub(crate) fn decode(data: &'model [u8]) -> Option<Self> {
+        if let Some((network, records)) = Network::decode(data) {
+            let (transitions, []) = records.as_chunks() else {
+                return None;
+            };
+            return Some(Self {
+                glyphs: Glyphs::Network(network),
+                transitions,
+            });
+        }
+        let (prototypes, transitions) = prototype_tables(data)?;
+        Some(Self {
+            glyphs: Glyphs::Prototypes(prototypes),
+            transitions,
+        })
+    }
+
+    pub(crate) const fn learned(self) -> bool {
+        matches!(self.glyphs, Glyphs::Network(_))
+    }
+
+    pub(crate) fn transition(self, previous: char, next: char) -> f32 {
+        transition(self.transitions, previous, next)
+    }
 }
 
 fn sample_axis(low: u32, high: u32) -> [u32; 16] {
@@ -145,10 +188,10 @@ fn decode_prototype(record: &[u8; PROTOTYPE_BYTES]) -> Option<(char, Features)> 
     ))
 }
 
-fn prototype_tables(data: &[u8]) -> Option<(&[[u8; PROTOTYPE_BYTES]], &[[u8; TRANSITION_BYTES]])> {
+fn prototype_tables(data: &[u8]) -> Option<PrototypeTables<'_>> {
     let body = data.strip_prefix(MAGIC)?;
-    let (count, records) = body.get(16..)?.split_first_chunk::<4>()?;
-    let count = usize::try_from(u32::from_le_bytes(*count)).ok()?;
+    let (count_bytes, records) = body.get(16..)?.split_first_chunk::<4>()?;
+    let count = usize::try_from(u32::from_le_bytes(*count_bytes)).ok()?;
     let (prototype_bytes, transition_bytes) =
         records.split_at_checked(count.checked_mul(PROTOTYPE_BYTES)?)?;
     let (prototypes, []) = prototype_bytes.as_chunks() else {
@@ -215,40 +258,6 @@ fn transition(transitions: &[[u8; TRANSITION_BYTES]], previous: char, next: char
             let [_, _, _, _, _, _, _, _, s0, s1, s2, s3] = *record;
             f32::from_le_bytes([s0, s1, s2, s3])
         })
-}
-
-impl<'model> Model<'model> {
-    pub(crate) fn classify(self, page: &Bits, bbox: [u32; 4], metrics: Metrics) -> [Choice; 4] {
-        match self.glyphs {
-            Glyphs::Network(network) => {
-                network.classify(&inputs(page, bbox, metrics, network.shape))
-            }
-            Glyphs::Prototypes(records) => {
-                classify_prototypes(&features(page, bbox, metrics), records)
-            }
-        }
-    }
-
-    pub(crate) fn decode(data: &'model [u8]) -> Option<Self> {
-        if let Some((network, records)) = Network::decode(data) {
-            let (transitions, []) = records.as_chunks() else {
-                return None;
-            };
-            return Some(Self {
-                glyphs: Glyphs::Network(network),
-                transitions,
-            });
-        }
-        let (prototypes, transitions) = prototype_tables(data)?;
-        Some(Self {
-            glyphs: Glyphs::Prototypes(prototypes),
-            transitions,
-        })
-    }
-
-    pub(crate) fn transition(self, previous: char, next: char) -> f32 {
-        transition(self.transitions, previous, next)
-    }
 }
 
 pub(crate) fn model() -> Option<Model<'static>> {

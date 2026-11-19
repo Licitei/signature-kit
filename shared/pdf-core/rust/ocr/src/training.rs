@@ -18,6 +18,8 @@ use crate::neural_training;
 use crate::raster::Bits;
 use crate::recognize::{ink_box, recognize_line_with_model};
 use crate::segment::{Line, WordBox};
+use crate::sequence::{Geometry, Scratch, Sequence};
+use crate::sequence_training::{self, Example, Training};
 
 const ARCHIVE_MAGIC: &[u8; 4] = b"OCRT";
 const PROTOTYPES_PER_LABEL: usize = 12;
@@ -567,6 +569,7 @@ fn evaluate(input: &Path, model: Model<'_>) -> io::Result<()> {
     let mut counts: BTreeMap<(char, char), usize> = BTreeMap::new();
     let mut characters = 0_usize;
     let mut line_edits = 0_usize;
+    let mut line_characters = 0_usize;
     let mut exact_words = 0_usize;
     let mut total_words = 0_usize;
     for sample in &samples {
@@ -582,6 +585,7 @@ fn evaluate(input: &Path, model: Model<'_>) -> io::Result<()> {
             .flat_map(|word| word.text.chars())
             .filter(|label| !label.is_whitespace())
             .collect();
+        line_characters = line_characters.saturating_add(reference_line.chars().count());
         line_edits = line_edits.saturating_add(
             edit_distances(
                 &reference_line.chars().collect::<Vec<_>>(),
@@ -639,11 +643,11 @@ fn evaluate(input: &Path, model: Model<'_>) -> io::Result<()> {
     let line_accuracy = 1.0
         - u32_ratio(
             u32::try_from(line_edits).unwrap_or(u32::MAX),
-            u32::try_from(characters.max(1)).unwrap_or(u32::MAX),
+            u32::try_from(line_characters.max(1)).unwrap_or(u32::MAX),
         );
     writeln!(
         out,
-        "line_edits={line_edits} line_accuracy={line_accuracy:.4}"
+        "line_characters={line_characters} line_edits={line_edits} line_accuracy={line_accuracy:.4}"
     )?;
     let (matched_glyphs, total_glyphs) = oracle_glyphs(&samples, model);
     writeln!(
@@ -680,12 +684,12 @@ fn classifier_timing(samples: &[Sample<'_>], model: Model<'_>) -> (usize, f64) {
         }
     }
     let started = Instant::now();
-    for _ in 0..5 {
+    for _ in 0..5_u32 {
         for &(page, bounds, metrics) in &glyphs {
             let _choices = hint::black_box(model.classify(page, bounds, metrics));
         }
     }
-    let per_glyph_us = started.elapsed().as_secs_f64() * 200_000.0
+    let per_glyph_us = started.elapsed().as_secs_f64() * 200_000.0_f64
         / f64::from(u32::try_from(glyphs.len().max(1)).unwrap_or(u32::MAX));
     (glyphs.len(), per_glyph_us)
 }
@@ -864,6 +868,208 @@ fn cell(distances: &[Vec<usize>], row: usize, col: usize) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+const fn sequence_geometry(line: &Line) -> Geometry {
+    Geometry {
+        bbox: line.bbox,
+        metrics: Metrics {
+            baseline: line.baseline,
+            x_height: line.x_height,
+        },
+    }
+}
+
+fn labeled_centers(sample: &Sample<'_>) -> Option<Vec<u32>> {
+    let mut alignment = Vec::new();
+    let mut previous_right = None;
+    for word in &sample.words {
+        let [left, top, right, bottom] = word.bbox;
+        if let Some(prior) = previous_right {
+            alignment.push(u32::midpoint(prior, left));
+        }
+        let mut letters = word.text.chars();
+        for glyph in &sample.glyphs {
+            let [x0, y0, x1, y1] = glyph.bbox;
+            if x0 < left || y0 < top || x1 > right || y1 > bottom {
+                continue;
+            }
+            let mut shapes = glyph.text.chars();
+            if letters.next() != shapes.next() || shapes.next().is_some() {
+                return None;
+            }
+            alignment.push(u32::midpoint(x0, x1));
+        }
+        if letters.next().is_some() {
+            return None;
+        }
+        previous_right = Some(right);
+    }
+    Some(alignment)
+}
+
+fn train_sequence(output: &Path, training: Training, archives: &[OsString]) -> io::Result<()> {
+    let mut examples = Vec::new();
+    let mut hash = FNV_OFFSET;
+    for archive in archives {
+        let bytes = fs::read(archive)?;
+        hash = digest(&bytes, hash);
+        for sample in load(&bytes)? {
+            let alignment = labeled_centers(&sample).unwrap_or_default();
+            let mut text = Vec::new();
+            for word in sample.words {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.extend(word.text.chars());
+            }
+            examples.push(Example {
+                alignment,
+                geometry: sequence_geometry(&sample.line),
+                page: sample.page,
+                text,
+            });
+        }
+        writeln!(
+            io::stdout().lock(),
+            "lines={} archive={}",
+            examples.len(),
+            Path::new(archive).display()
+        )?;
+    }
+    write_model(
+        output,
+        &sequence_training::train(&examples, training, hash)?,
+    )
+}
+
+fn sequence_arguments(
+    output: &OsString,
+    seed: &OsString,
+    workers: &OsString,
+    epochs: &OsString,
+    inputs: &[OsString],
+) -> io::Result<()> {
+    let number = |value: &OsString| value.to_str()?.parse::<usize>().ok();
+    let parameters = number(seed).zip(number(workers)).zip(number(epochs));
+    let Some(((seed_id, worker_count), epoch_count)) =
+        parameters.filter(|((_, count), rounds)| (1..=128).contains(count) && *rounds > 0)
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a seed, worker count and epoch count",
+        ));
+    };
+    let flags = inputs
+        .iter()
+        .take_while(|arg| arg.to_str().is_some_and(|value| value.starts_with("--")))
+        .count();
+    let Some((options, archives)) = inputs.split_at_checked(flags) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing CTC archives",
+        ));
+    };
+    let mut training = Training {
+        epochs: epoch_count,
+        lines_per_epoch: usize::MAX,
+        seed: u64::try_from(seed_id).unwrap_or_default(),
+        warm_epochs: 0,
+        workers: worker_count,
+    };
+    for option in options {
+        let parsed = option
+            .to_str()
+            .and_then(|value| value.split_once('='))
+            .and_then(|(key, value)| value.parse::<usize>().ok().map(|count| (key, count)));
+        match parsed {
+            Some(("--warm", rounds)) if rounds < training.epochs => training.warm_epochs = rounds,
+            Some(("--lines", limit)) if limit > 0 => training.lines_per_epoch = limit,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid CTC training option",
+                ));
+            }
+        }
+    }
+    train_sequence(Path::new(output), training, archives)
+}
+
+fn evaluate_sequence(input: &Path, weights: &Path) -> io::Result<()> {
+    let data = fs::read(input)?;
+    let samples = load(&data)?;
+    let table = fs::read(weights)?;
+    let sequence = Sequence::decode(&table)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed CTC model"))?;
+    let mut scratch = Scratch::default();
+    let mut counts = BTreeMap::new();
+    let mut characters = 0_usize;
+    let mut word_counts = (0_usize, 0_usize);
+    for sample in &samples {
+        let reference = sample
+            .words
+            .iter()
+            .map(|word| word.text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut predicted = String::new();
+        sequence.predict(
+            &sample.page,
+            sequence_geometry(&sample.line),
+            &mut scratch,
+            |_, label, _| predicted.push(label),
+        );
+        let expected_words = reference.split_whitespace().count();
+        let matching = reference
+            .split_whitespace()
+            .zip(predicted.split_whitespace())
+            .filter(|(left, right)| left == right)
+            .count();
+        word_counts.0 = word_counts.0.saturating_add(matching);
+        word_counts.1 = word_counts.1.saturating_add(expected_words);
+        let expected: String = reference
+            .chars()
+            .filter(|label| !label.is_whitespace())
+            .collect();
+        let actual: String = predicted
+            .chars()
+            .filter(|label| !label.is_whitespace())
+            .collect();
+        characters = characters.saturating_add(expected.chars().count());
+        confusions(&expected, &actual, &mut counts);
+    }
+    let repetitions = 10_u32;
+    let started = Instant::now();
+    for _ in 0..repetitions {
+        for sample in &samples {
+            sequence.predict(
+                &sample.page,
+                sequence_geometry(&sample.line),
+                &mut scratch,
+                |x, label, margin| {
+                    let _observation = hint::black_box((x, label, margin));
+                },
+            );
+        }
+    }
+    let sample_count = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+    let line_ms = started.elapsed().as_secs_f64() * 1000.0_f64
+        / (f64::from(sample_count) * f64::from(repetitions));
+    let edits = counts.values().copied().sum::<usize>();
+    let accuracy = 1.0_f32
+        - u32_ratio(
+            u32::try_from(edits).unwrap_or(u32::MAX),
+            u32::try_from(characters.max(1)).unwrap_or(u32::MAX),
+        );
+    writeln!(
+        io::stdout().lock(),
+        "lines={sample_count} characters={characters} edits={edits} line_accuracy={accuracy:.4} words={}/{} ms_per_50_lines={:.2} bytes={}",
+        word_counts.0,
+        word_counts.1,
+        line_ms * 50.0_f64,
+        table.len()
+    )
+}
+
 fn valid_model(candidate: Option<Model<'_>>) -> io::Result<Model<'_>> {
     candidate.ok_or_else(|| {
         io::Error::new(
@@ -878,6 +1084,12 @@ fn valid_model(candidate: Option<Model<'_>>) -> io::Result<Model<'_>> {
 #[inline]
 pub fn run(arguments: &[OsString]) -> io::Result<()> {
     match arguments {
+        [command, output, seed, workers, epochs, archives @ ..] if command == "train-sequence" => {
+            sequence_arguments(output, seed, workers, epochs, archives)
+        }
+        [command, archive, weights] if command == "evaluate-sequence" => {
+            evaluate_sequence(Path::new(archive), Path::new(weights))
+        }
         [command, output, seed, shape, corpus, archives @ ..] if command == "train-network" => {
             train_network(Path::new(output), seed, shape, Path::new(corpus), archives)
         }
@@ -904,7 +1116,7 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] <samples.ocrt>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }

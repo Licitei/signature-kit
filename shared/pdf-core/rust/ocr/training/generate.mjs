@@ -121,15 +121,15 @@ async function fontSheet(font, openType) {
         `1 0 0 1 ${20 + (index % 12) * 100} ${1000 - Math.floor(index / 12) * 88} Tm <${code.toString(16)}> Tj`,
     )
     .join("\n");
-  const key = openType ? "FontFile3" : "FontFile2";
-  const subtype = openType ? "Type1" : "TrueType";
+  const key = openType === true ? "FontFile3" : "FontFile2";
+  const subtype = openType === true ? "Type1" : "TrueType";
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1230 1090] /Resources << /Font << /F 4 0 R >> >> /Contents 7 0 R >>",
     `<< /Type /Font /Subtype /${subtype} /BaseFont /Synthetic /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 255 /Widths [${"600 ".repeat(224)}] /FontDescriptor 5 0 R >>`,
     `<< /Type /FontDescriptor /FontName /Synthetic /Flags 32 /FontBBox [-250 -500 1300 1300] /ItalicAngle 0 /Ascent 900 /Descent -270 /CapHeight 700 /StemV 80 /${key} 6 0 R >>`,
-    stream(openType ? "/Subtype /OpenType" : `/Length1 ${font.length}`, font),
+    stream(openType === true ? "/Subtype /OpenType" : `/Length1 ${font.length}`, font),
     stream("", bytes(`BT /F 60 Tf\n${content}\nET`)),
   ];
   const parts = [bytes("%PDF-1.7\n")];
@@ -280,7 +280,7 @@ function glyphs(ops) {
       const cell = Math.round((1000 - f) / 88) * 12 + Math.round((e - 20) / 100);
       const label = labels[cell];
       const edges = outlines.get(index);
-      if (mode !== 1 || label === undefined || !edges?.length || glyphs.has(label)) {
+      if (mode !== 1 || label === undefined || (edges?.length ?? 0) === 0 || glyphs.has(label)) {
         fail(`Invalid glyph draw in cell ${cell}`);
       }
       glyphs.set(
@@ -345,14 +345,14 @@ function scanGlyph(edges, size, phase, baseline, shear) {
 
 function compose(glyphMap, text, size, degradation, variant) {
   const baseline = size + 3 + variant * 0.13;
-  const shear = degradation ? 0.03 : 0;
+  const shear = degradation === true ? 0.03 : 0;
   const xExtent = glyphMap.get("x").flatMap(([, y0, , y1]) => [y0, y1]);
   const xHeight = (Math.max(...xExtent) - Math.min(...xExtent)) * size;
   const words = [];
   const glyphs = [];
   const bitmaps = [];
   let cursor = 4;
-  const targetThreshold = degradation ? (variant % 2 ? 11 : 4) : 7;
+  const targetThreshold = degradation === true ? (variant % 2 !== 0 ? 11 : 4) : 7;
   for (const textWord of text.split(/\s+/u)) {
     const start = cursor;
     for (const char of textWord) {
@@ -369,13 +369,17 @@ function compose(glyphMap, text, size, degradation, variant) {
         const x = idx % width;
         const y = Math.floor(idx / width);
         const hit = coverage[idx] >= threshold;
-        const drop = degradation && (idx * 13 + glyphs.length * 3 + variant) % 127 === 0;
+        const drop = degradation === true && (idx * 13 + glyphs.length * 3 + variant) % 127 === 0;
         const speckle =
-          degradation && x !== 0 && y !== 0 && coverage[idx] > 0 && (idx * 7 + variant) % 71 === 0;
+          degradation === true &&
+          x !== 0 &&
+          y !== 0 &&
+          coverage[idx] > 0 &&
+          (idx * 7 + variant) % 71 === 0;
         if ((hit && !drop) || speckle) image[idx] = 1;
       }
       const columnInk = Array.from({ length: width }, (_, x) => {
-        for (let y = 0; y < height; y += 1) if (image[y * width + x]) return true;
+        for (let y = 0; y < height; y += 1) if (image[y * width + x] !== 0) return true;
         return false;
       });
       const first = columnInk.indexOf(true);
@@ -385,11 +389,12 @@ function compose(glyphMap, text, size, degradation, variant) {
       const box = [cursor, 0, cursor + glyphWidth, height];
       glyphs.push({ text: char, box });
       bitmaps.push({ image, width, height, first, last, left: cursor });
-      const gap = degradation
-        ? glyphs.length % 7 === 0
-          ? 0
-          : Math.round(size * (0.028 + (glyphs.length % 4) * 0.019))
-        : Math.max(1, Math.round(size * 0.065));
+      const gap =
+        degradation === true
+          ? glyphs.length % 7 === 0
+            ? 0
+            : Math.round(size * (0.028 + (glyphs.length % 4) * 0.019))
+          : Math.max(1, Math.round(size * 0.065));
       cursor += glyphWidth + gap;
     }
     words.push({ text: textWord, box: [start, 0, glyphs.at(-1).box[2], glyphs.at(-1).box[3]] });
@@ -465,7 +470,7 @@ async function bootstrap(wasmPath, output, trainFontDir, valFontDir, testFontDir
         render(wasm, await fontSheet(await readFile(join(directory, file)), file.endsWith(".otf"))),
       );
       const missing = labels.filter((label) => !font.has(label));
-      if (missing.length) fail(`${basename(file)} missing ${missing.join("")}`);
+      if (missing.length !== 0) fail(`${basename(file)} missing ${missing.join("")}`);
       if (split === "train") {
         for (const [variant, size] of [15, 19, 24, 29, 38, 47, 55, 62].entries()) {
           for (let index = 0; index < labels.length; index += 24) {
@@ -490,9 +495,9 @@ async function bootstrap(wasmPath, output, trainFontDir, valFontDir, testFontDir
         }
       }
     }
-    if (!clean.length) fail(`No fonts in ${directory}`);
+    if (clean.length === 0) fail(`No fonts in ${directory}`);
     await writeFile(join(output, `${split}.ocrt`), await archive(clean).bytes());
-    if (degraded.length)
+    if (degraded.length !== 0)
       await writeFile(join(output, `${split}-degraded.ocrt`), await archive(degraded).bytes());
     console.log(
       `${split} ${files.length} faces, ${clean.length} lines, ${degraded.length} degraded lines`,
@@ -564,13 +569,13 @@ function importLine(raster, words, glyphs) {
   const xHeightGlyphs = contained.filter(({ text }) => /^[aceimnorsuvwxz]$/u.test(text));
   const letterInk = xHeightGlyphs.flatMap(({ box }) => {
     const bbox = inkBounds(raster, box);
-    return bbox ? [bbox] : [];
+    return bbox === undefined ? [] : [bbox];
   });
   const heights = letterInk.map((box) => box[3] - box[1]);
   const baselineSamples = letterInk.map((box) => box[3] - top);
   const wordInk = words.flatMap(({ box }) => {
     const bbox = inkBounds(raster, box);
-    return bbox ? [bbox] : [];
+    return bbox === undefined ? [] : [bbox];
   });
   const width = right - left;
   const height = bottom - top;
@@ -622,10 +627,12 @@ async function decodeJpeg(path) {
 async function importDataset(directory, output, jpeg) {
   const samples = [];
   for (const name of (await readdir(directory)).sort()) {
-    if (!name.endsWith(".json")) continue;
+    if (name.endsWith(".json") !== true) continue;
     const label = JSON.parse(await readFile(join(directory, name), "utf8"));
     const base = join(directory, name.replace(/\.json$/u, ""));
-    const raster = readPgm(jpeg ? await decodeJpeg(`${base}.jpg`) : await readFile(`${base}.pgm`));
+    const raster = readPgm(
+      jpeg === true ? await decodeJpeg(`${base}.jpg`) : await readFile(`${base}.pgm`),
+    );
     const validBox = ({ box, text }) =>
       Array.isArray(box) &&
       box.length === 4 &&
@@ -642,8 +649,8 @@ async function importDataset(directory, output, jpeg) {
     if (
       label.width !== raster.width ||
       label.height !== raster.height ||
-      !label.words.every(validBox) ||
-      !glyphs.every(validBox)
+      label.words.every(validBox) !== true ||
+      glyphs.every(validBox) !== true
     ) {
       fail(`Invalid labels in ${name}`);
     }
@@ -655,20 +662,38 @@ async function importDataset(directory, output, jpeg) {
     }
     for (const words of lines.values()) samples.push(importLine(raster, words, glyphs));
   }
-  if (!samples.length) fail(`No labeled lines in ${directory}`);
+  if (samples.length === 0) fail(`No labeled lines in ${directory}`);
   await writeFile(output, await archive(samples).bytes());
   console.log(
     `imported ${samples.length} lines, ${samples.reduce((count, line) => count + line.glyphs.length, 0)} glyphs`,
   );
 }
 
+async function importScans(fixtureDir, manifest, output) {
+  const cases = JSON.parse(await readFile(manifest, "utf8"));
+  const samples = [];
+  for (const { fixture, boxes, text } of cases) {
+    const raster = readPgm(await decodeJpeg(join(fixtureDir, fixture)));
+    for (const [index, box] of boxes.entries()) {
+      const bounds = inkBounds(raster, box);
+      if (bounds === undefined || typeof text[index] !== "string")
+        fail(`Invalid reference in ${fixture}`);
+      samples.push(importLine(raster, [{ box: bounds, text: text[index] }], []));
+    }
+  }
+  await writeFile(output, await archive(samples).bytes());
+  console.log(`imported ${samples.length} manually transcribed scan lines`);
+}
+
 async function* documents(root, directory = "") {
   const entries = await readdir(join(root, directory), { withFileTypes: true });
   entries.sort((left, right) => (left.name < right.name ? -1 : Number(left.name !== right.name)));
   for (const entry of entries) {
-    const relative = directory ? `${directory}/${entry.name}` : entry.name;
-    if (entry.isDirectory() && entry.name !== "digitalizados") yield* documents(root, relative);
-    if (entry.isFile() && entry.name.toLowerCase().endsWith(".pdf")) yield relative;
+    const relative = directory !== "" ? `${directory}/${entry.name}` : entry.name;
+    if (entry.isDirectory() === true && entry.name !== "digitalizados")
+      yield* documents(root, relative);
+    if (entry.isFile() === true && entry.name.toLowerCase().endsWith(".pdf") === true)
+      yield relative;
   }
 }
 
@@ -681,9 +706,9 @@ async function extractCorpus(wasmPath, root, destination) {
     const hash = createHash("sha256").update(document).digest();
     if (hash.readUInt32BE() % 100 >= 80) continue;
     const text = firstPageText(wasm, await readFile(join(root, document)));
-    if (text.trim()) pages.push(text);
+    if (text.trim() !== "") pages.push(text);
   }
-  if (!pages.length) fail("No text found in the document training split");
+  if (pages.length === 0) fail("No text found in the document training split");
   await writeFile(destination, pages.join("\n"));
   console.log(`extracted ${pages.length} pdf-core pages from training documents`);
 }
@@ -696,6 +721,8 @@ if (command === "bootstrap" && args.length === 5) {
   (args.length === 2 || (args.length === 3 && args[2] === "--jpeg"))
 ) {
   await importDataset(args[0], args[1], args[2] === "--jpeg");
+} else if (command === "scans" && args.length === 3) {
+  await importScans(...args);
 } else if (command === "corpus" && args.length === 3) {
   await extractCorpus(...args);
 } else {
@@ -703,6 +730,7 @@ if (command === "bootstrap" && args.length === 5) {
     "Usage: bun generate.mjs bootstrap <pdf-core.wasm> <out-dir> <train-font-dir> <val-font-dir> <test-font-dir>",
   );
   console.error("       bun generate.mjs import <dataset-split-dir> <output.ocrt> [--jpeg]");
+  console.error("       bun generate.mjs scans <fixture-dir> <manifest.json> <output.ocrt>");
   console.error("       bun generate.mjs corpus <pdf-core.wasm> <native-pdf-root> <corpus.txt>");
   process.exitCode = 2;
 }

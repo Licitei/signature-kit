@@ -1,0 +1,28 @@
+[
+  {
+    "fixture": "scan-dates.jpg",
+    "boxes": [
+      [0, 0, 394, 19],
+      [0, 19, 394, 34],
+      [0, 34, 394, 49],
+      [0, 49, 394, 64],
+      [0, 64, 394, 80]
+    ],
+    "text": [
+      "Data da sessão pública: 16/11/2026.",
+      "Horário da sessão pública: 09:30 Horas (Horário de Brasília).",
+      "Critério de julgamento: Menor Preço por Lote",
+      "Modo de disputa: Aberto e fechado",
+      "Link: compras.m2atecnologia.com.br"
+    ]
+  },
+  {
+    "fixture": "scan-title.jpg",
+    "boxes": [
+      [0, 0, 452, 36],
+      [0, 36, 452, 68],
+      [0, 68, 452, 96]
+    ],
+    "text": ["EDITAL DE LICITAÇÃO", "CONCORRÊNCIA ELETRÔNICA", "Nº 2610.28-01-SEINFRA-CE"]
+  }
+]

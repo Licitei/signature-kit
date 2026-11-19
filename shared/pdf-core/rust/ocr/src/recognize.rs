@@ -1,10 +1,18 @@
-use core::iter;
-
 use crate::model::{Choice, Metrics, Model, coordinate, model};
 use crate::raster::Bits;
 use crate::segment::Line;
 
 const BEAM_WIDTH: usize = 4;
+const EMPTY_PATH: Path = Path {
+    cost: f32::INFINITY,
+    digest: 0,
+    distance: 0.0,
+    last: '\0',
+    length: 0,
+    parent: None,
+};
+
+type Beam = [Path; BEAM_WIDTH];
 
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -27,14 +35,30 @@ struct Cut {
     gap: Option<usize>,
     offset: usize,
     penalty: f32,
+    reading: Option<RunReading>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
+struct RunReading {
+    choices: [Choice; 4],
+    confident: bool,
+    right: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Parent {
+    cut: usize,
+    rank: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct Path {
     cost: f32,
+    digest: u64,
     distance: f32,
     last: char,
-    text: String,
+    length: u32,
+    parent: Option<Parent>,
 }
 
 #[inline]
@@ -113,11 +137,19 @@ fn project(page: &Bits, [left, top, right, bottom]: [u32; 4]) -> Option<Vec<Colu
     Some(columns)
 }
 
-fn cuts(columns: &[Column], x_height: f32) -> Vec<Cut> {
+fn cuts(
+    page: &Bits,
+    columns: &[Column],
+    left: u32,
+    metrics: Metrics,
+    model: Model<'_>,
+) -> Vec<Cut> {
+    let x_height = metrics.x_height;
     let mut cuts = vec![Cut {
         gap: None,
         offset: 0,
         penalty: 0.0,
+        reading: None,
     }];
     let mut run = 0_usize;
     let mut gap = 0_usize;
@@ -140,10 +172,20 @@ fn cuts(columns: &[Column], x_height: f32) -> Vec<Cut> {
                     gap: Some(gap),
                     offset: run,
                     penalty: 0.0,
+                    reading: None,
                 });
             }
             if let Some(region) = columns.get(run..run.saturating_add(length)) {
-                soft_cuts(region, run, x_height, &mut cuts);
+                let reading = u32::try_from(run)
+                    .ok()
+                    .and_then(|offset| left.checked_add(offset))
+                    .and_then(|x0| inspect_run(page, region, x0, metrics, model));
+                if let Some(start) = cuts.last_mut() {
+                    start.reading = reading;
+                }
+                if reading.is_none_or(|guess| !guess.confident) {
+                    soft_cuts(region, run, x_height, model.learned(), &mut cuts);
+                }
             }
             length
         };
@@ -153,11 +195,33 @@ fn cuts(columns: &[Column], x_height: f32) -> Vec<Cut> {
         gap: None,
         offset: columns.len(),
         penalty: 0.0,
+        reading: None,
     });
     cuts
 }
 
-fn soft_cuts(region: &[Column], start: usize, x_height: f32, cuts: &mut Vec<Cut>) {
+fn inspect_run(
+    page: &Bits,
+    region: &[Column],
+    left: u32,
+    metrics: Metrics,
+    model: Model<'_>,
+) -> Option<RunReading> {
+    if !model.learned() || coordinate(u32::try_from(region.len()).ok()?) > metrics.x_height * 1.15 {
+        return None;
+    }
+    let [x0, top, right, bottom] = tight_box(region, left)?;
+    let choices = model.classify(page, [x0, top, right, bottom], metrics);
+    let [best, next, _, _] = choices;
+    let confident = best.distance < 1.0 && next.distance - best.distance > 32.0;
+    Some(RunReading {
+        choices,
+        confident,
+        right,
+    })
+}
+
+fn soft_cuts(region: &[Column], start: usize, x_height: f32, learned: bool, cuts: &mut Vec<Cut>) {
     if coordinate(u32::try_from(region.len()).unwrap_or(u32::MAX)) < x_height * 0.7 {
         return;
     }
@@ -174,12 +238,17 @@ fn soft_cuts(region: &[Column], start: usize, x_height: f32, cuts: &mut Vec<Cut>
         }
         if center.ink <= before.ink
             && center.ink < after.ink
-            && (coordinate(center.ink) <= x_height * 0.37 || spacing >= x_height * 1.1)
+            && (learned || coordinate(center.ink) <= x_height * 0.37 || spacing >= x_height * 1.1)
         {
             cuts.push(Cut {
                 gap: None,
                 offset: start.saturating_add(offset),
-                penalty: 5.0 + coordinate(center.ink) * 0.9,
+                penalty: if learned {
+                    1.5 + 4.0 * coordinate(center.ink) / x_height.max(1.0)
+                } else {
+                    5.0 + coordinate(center.ink) * 0.9
+                },
+                reading: None,
             });
             last_cut = offset;
         }
@@ -213,20 +282,19 @@ fn recognize_word(page: &Bits, bbox: [u32; 4], metrics: Metrics, model: Model<'_
     let ink_end = columns.iter().rposition(|column| column.ink != 0)?;
     let left_edge = left.checked_add(u32::try_from(ink_start).ok()?)?;
     let active = columns.get(ink_start..=ink_end)?;
-    let cuts = cuts(active, metrics.x_height);
-    let mut beams: Vec<Vec<Path>> = iter::repeat_with(Vec::new).take(cuts.len()).collect();
-    beams.first_mut()?.push(Path {
+    let cuts = cuts(page, active, left_edge, metrics, model);
+    let mut beams = vec![[EMPTY_PATH; BEAM_WIDTH]; cuts.len()];
+    *beams.first_mut()?.first_mut()? = Path {
         cost: 0.0,
-        distance: 0.0,
-        last: '\0',
-        text: String::new(),
-    });
+        ..EMPTY_PATH
+    };
     for (end, &cut) in cuts.iter().enumerate().skip(1) {
-        let mut paths = Vec::new();
+        let mut paths = [EMPTY_PATH; BEAM_WIDTH];
         for (start, &origin) in cuts.iter().enumerate().take(end).rev().take(8) {
-            let Some(beam) = beams.get(start).filter(|beam| !beam.is_empty()) else {
+            let beam = beams.get(start)?;
+            if beam.first().is_none_or(|path| !path.cost.is_finite()) {
                 continue;
-            };
+            }
             let ink = active.get(origin.offset..cut.offset)?;
             let x0 = left_edge.checked_add(u32::try_from(origin.offset).ok()?)?;
             let Some(bounds) = tight_box(ink, x0) else {
@@ -245,17 +313,21 @@ fn recognize_word(page: &Bits, bbox: [u32; 4], metrics: Metrics, model: Model<'_
                 } else {
                     break;
                 };
-            extend_paths(
-                model.classify(page, bounds, metrics),
-                beam,
-                penalty,
-                model,
-                &mut paths,
+            let cached = origin
+                .reading
+                .filter(|reading| reading.right == glyph_right);
+            let choices = cached.map_or_else(
+                || model.classify(page, bounds, metrics),
+                |reading| reading.choices,
             );
+            extend_paths(choices, start, &beams, penalty, model, &mut paths);
+            if cached.is_some_and(|reading| reading.confident) {
+                break;
+            }
         }
         *beams.get_mut(end)? = paths;
     }
-    finish_word(beams.pop()?, bbox)
+    finish_word(&beams, bbox)
 }
 
 fn merge_penalty(
@@ -285,47 +357,119 @@ fn merge_penalty(
 
 fn extend_paths(
     choices: [Choice; 4],
-    beam: &[Path],
+    start: usize,
+    beams: &[Beam],
     penalty: f32,
     model: Model<'_>,
-    paths: &mut Vec<Path>,
+    paths: &mut Beam,
 ) {
+    let Some(prefixes) = beams.get(start) else {
+        return;
+    };
+    let character_cost = if model.learned() { 6.0 } else { 21.0 };
     for candidate in choices.iter().filter(|choice| choice.distance.is_finite()) {
-        for prefix in beam {
-            let cost = prefix.cost + candidate.distance + 21.0 + penalty
+        for (rank, prefix) in prefixes
+            .iter()
+            .enumerate()
+            .take_while(|(_, path)| path.cost.is_finite())
+        {
+            let cost = prefix.cost + candidate.distance + character_cost + penalty
                 - model.transition(prefix.last, candidate.label);
-            if paths.len() == BEAM_WIDTH && paths.last().is_some_and(|last| last.cost <= cost) {
+            if paths.last().is_some_and(|last| last.cost <= cost) {
                 continue;
             }
-            let mut text = prefix.text.clone();
-            text.push(candidate.label);
-            if let Some(index) = paths.iter().position(|item: &Path| item.text == text) {
-                if paths.get(index).is_some_and(|item| item.cost <= cost) {
-                    continue;
-                }
-                drop(paths.remove(index));
-            }
-            let index = paths.partition_point(|item| item.cost <= cost);
-            paths.insert(
-                index,
+            insert_path(
+                paths,
+                beams,
                 Path {
                     cost,
+                    digest: prefix.digest.wrapping_mul(0x0100_0000_01b3)
+                        ^ u64::from(u32::from(candidate.label)),
                     distance: prefix.distance + candidate.distance,
                     last: candidate.label,
-                    text,
+                    length: prefix.length.saturating_add(1),
+                    parent: Some(Parent { cut: start, rank }),
                 },
             );
-            paths.truncate(BEAM_WIDTH);
         }
     }
 }
 
-fn finish_word(paths: Vec<Path>, bbox: [u32; 4]) -> Option<Word> {
-    let mut ranked = paths.into_iter();
+fn insert_path(paths: &mut Beam, beams: &[Beam], candidate: Path) {
+    if let Some(existing) = paths
+        .iter()
+        .position(|path| same_reading(beams, *path, candidate))
+        && let Some(tail) = paths.get_mut(existing..)
+    {
+        if tail.first().is_some_and(|path| path.cost <= candidate.cost) {
+            return;
+        }
+        tail.rotate_left(1);
+        if let Some(last) = tail.last_mut() {
+            *last = EMPTY_PATH;
+        }
+    }
+    if let Some(index) = paths.iter().position(|path| path.cost > candidate.cost)
+        && let Some(tail) = paths.get_mut(index..)
+    {
+        tail.rotate_right(1);
+        if let Some(first) = tail.first_mut() {
+            *first = candidate;
+        }
+    }
+}
+
+fn predecessor(beams: &[Beam], parent: Option<Parent>) -> Option<Path> {
+    let Parent { cut, rank } = parent?;
+    beams.get(cut)?.get(rank).copied()
+}
+
+fn same_reading(beams: &[Beam], mut left: Path, mut right: Path) -> bool {
+    if left.digest != right.digest || left.length != right.length {
+        return false;
+    }
+    loop {
+        if left.last != right.last {
+            return false;
+        }
+        match (
+            predecessor(beams, left.parent),
+            predecessor(beams, right.parent),
+        ) {
+            (Some(before_left), Some(before_right)) => {
+                left = before_left;
+                right = before_right;
+            }
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
+}
+
+fn reading(beams: &[Beam], mut path: Path) -> String {
+    let mut letters = Vec::with_capacity(usize::try_from(path.length).unwrap_or_default());
+    while let Some(before) = predecessor(beams, path.parent) {
+        letters.push(path.last);
+        path = before;
+    }
+    letters.into_iter().rev().collect()
+}
+
+fn finish_word(beams: &[Beam], bbox: [u32; 4]) -> Option<Word> {
+    let mut ranked = beams
+        .last()?
+        .iter()
+        .copied()
+        .take_while(|path| path.cost.is_finite());
     let best = ranked.next()?;
-    let length = coordinate(u32::try_from(best.text.chars().count()).ok()?).max(1.0);
+    let length = coordinate(best.length).max(1.0);
     let alternatives: Vec<_> = ranked
-        .map(|path| (path.text, (-(path.cost - best.cost) / 14.0).exp()))
+        .map(|path| {
+            (
+                reading(beams, path),
+                (-(path.cost - best.cost) / 14.0).exp(),
+            )
+        })
         .collect();
     let fit = (1.0 - best.distance / (length * 125.0)).clamp(0.0, 1.0);
     let ambiguity = alternatives.first().map_or(0.0, |(_, score)| *score);
@@ -333,7 +477,7 @@ fn finish_word(paths: Vec<Path>, bbox: [u32; 4]) -> Option<Word> {
         alternatives,
         bbox,
         confidence: fit * (1.0 - ambiguity * 0.5),
-        text: best.text,
+        text: reading(beams, best),
     })
 }
 
