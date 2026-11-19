@@ -42,6 +42,30 @@ the P5 master otherwise.
   and after runs use the same source pages, but those fonts and page layouts
   differ from the real sample.
 
+## Results
+
+| Measure            | Real dev                   | Synthetic before            | Synthetic after             |
+| ------------------ | -------------------------- | --------------------------- | --------------------------- |
+| dpi                | 150 [85, 301] (n=30)       | 200 [150, 300] (n=40)       | 150 [85, 301] (n=40)        |
+| ccitt              | 10/30                      | 0/40                        | 0/40                        |
+| bilevel            | 10/30                      | 10/40                       | 16/40                       |
+| jpegQuality        | 70 [40, 79] (n=15)         | 43 [33, 84.3] (n=20)        | 70 [40, 79] (n=18)          |
+| skewDegrees        | 0 [-0.336, 0.671] (n=30)   | 0 [-1.92, 1.91] (n=40)      | 0 [-0.336, 0.671] (n=40)    |
+| strokePx           | 2.5 [1, 5] (n=30)          | 3 [1, 5] (n=40)             | 3 [2, 6] (n=40)             |
+| backgroundRms      | 0 [0, 1.17] (n=30)         | 0 [0, 3.68] (n=40)          | 0 [0, 0.415] (n=40)         |
+| highFrequencyShare | 0.246 [0.147, 0.62] (n=20) | 0.728 [0.605, 0.811] (n=25) | 0.21 [0.0943, 0.692] (n=24) |
+| edgeWidthPx        | 1.28 [1, 2.1] (n=30)       | 1.2 [0.98, 2.06] (n=40)     | 1.16 [1, 1.82] (n=40)       |
+| contrast           | 238 [187, 255] (n=30)      | 219 [124, 255] (n=40)       | 214 [135, 255] (n=40)       |
+| paper              | 255 [255, 255] (n=30)      | 255 [254, 255] (n=40)       | 255 [255, 255] (n=40)       |
+| specklePpm         | 86.7 [7.97, 397] (n=30)    | 903 [0, 5.06e+03] (n=40)    | 95.8 [12.4, 272] (n=40)     |
+| faintBackgroundPct | 0.387 [0, 5.68] (n=30)     | 7.11 [0, 29.1] (n=40)       | 0.0932 [0, 4.06] (n=40)     |
+| illuminationRange  | 0.256 [0, 7.46] (n=30)     | 0 [0, 10.1] (n=40)          | 0.156 [0, 5.17] (n=40)      |
+
+DPI, JPEG quality, speckle, noise spectrum, and the skew range moved closer
+to the dev sample. Contrast remained too low, stroke widths remained too
+large toward the high end, and the edge widths were too narrow. Those
+differences limit what this profile can establish about recognition on scans.
+
 ## Reproduce
 
 From the workspace root, with Bun, Python, NumPy, Pillow, and Poppler:
