@@ -310,7 +310,7 @@ mod tests {
         bits.set_run(0, 126, 129, true);
         let mut spans = Vec::new();
         ink_runs(bits.row(0), bits.width, |start, end| {
-            spans.push((start, end))
+            spans.push((start, end));
         });
         assert_eq!(spans, [(62, 67), (126, 129)]);
     }
