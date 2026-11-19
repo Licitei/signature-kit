@@ -1,0 +1,41 @@
+{
+  "id": "scan-07-002",
+  "dpi": 200,
+  "width": 1648,
+  "height": 2281,
+  "source": "0034p_aquisicao-de-kits-de-laboratorio-de-ciencias-e-mat_12261228000114-2026-60/edital.pdf#page=2",
+  "degradation": {
+    "real": true,
+    "encoding": "ccitt"
+  },
+  "imageSha256": "840671aa5716d8e3916f619cd5fc01e7bfd5326789597dd8be817d6bade39acc",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 455,
+  "text": "SÃO JOSÉ DA TAPERA\nConstruindo um futuro melhor\nSumário\n1. DO OBJETO 3\n2. DO REGISTRO DE PREÇOS 3\n3. DA PARTICIPAÇÃO NA LICITAÇÃO 3\n4. DA APRESENTAÇÃO DA PROPOSTA E DOS DOCUMENTOS DE HABILITAÇÃO 6\n5. DO PREENCHIMENTO DA PROPOSTA 8\n6. DA ABERTURA DA SESSÃO, CLASSIFICAÇÃO DAS PROPOSTAS E FORMULAÇÃO DE\nLANCES 9\n7. DA FASE DE JULGAMENTO 11\n8. DA FASE DE HABILITAÇÃO 12\n9. DA ATA DE REGISTRO DE PREÇOS 14\n10. DOS RECURSOS 15\n11. DAS INFRAÇÕES ADMINISTRATIVAS E SANÇÕES 16\n12. DA IMPUGNAÇÃO AO EDITAL E DO PEDIDO DE ESCLARECIMENTO 18\n13. DAS DISPOSIÇÕES GERAIS 18\nPREFEITURA MUNICIPAL DE SÃO JOSÉ DA TAPERA\nRua do Comércio, 209 - Centro CEP 57445-000\nCNPJ 12.261.228/0001-14 / São José da Tapera - AL\n@prefeituradesjtapera\n@prefeiturasaojosedatapera\n(82) 3622-1208\nwww.saojosedatapera.al.gov.br",
+  "lines": [
+    "SÃO JOSÉ DA TAPERA",
+    "Construindo um futuro melhor",
+    "Sumário",
+    "1. DO OBJETO 3",
+    "2. DO REGISTRO DE PREÇOS 3",
+    "3. DA PARTICIPAÇÃO NA LICITAÇÃO 3",
+    "4. DA APRESENTAÇÃO DA PROPOSTA E DOS DOCUMENTOS DE HABILITAÇÃO 6",
+    "5. DO PREENCHIMENTO DA PROPOSTA 8",
+    "6. DA ABERTURA DA SESSÃO, CLASSIFICAÇÃO DAS PROPOSTAS E FORMULAÇÃO DE",
+    "LANCES 9",
+    "7. DA FASE DE JULGAMENTO 11",
+    "8. DA FASE DE HABILITAÇÃO 12",
+    "9. DA ATA DE REGISTRO DE PREÇOS 14",
+    "10. DOS RECURSOS 15",
+    "11. DAS INFRAÇÕES ADMINISTRATIVAS E SANÇÕES 16",
+    "12. DA IMPUGNAÇÃO AO EDITAL E DO PEDIDO DE ESCLARECIMENTO 18",
+    "13. DAS DISPOSIÇÕES GERAIS 18",
+    "PREFEITURA MUNICIPAL DE SÃO JOSÉ DA TAPERA",
+    "Rua do Comércio, 209 - Centro CEP 57445-000",
+    "CNPJ 12.261.228/0001-14 / São José da Tapera - AL",
+    "@prefeituradesjtapera",
+    "@prefeiturasaojosedatapera",
+    "(82) 3622-1208",
+    "www.saojosedatapera.al.gov.br"
+  ]
+}

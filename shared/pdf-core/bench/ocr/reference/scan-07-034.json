@@ -1,0 +1,27 @@
+{
+  "id": "scan-07-034",
+  "dpi": 200,
+  "width": 1652,
+  "height": 2285,
+  "source": "0034p_aquisicao-de-kits-de-laboratorio-de-ciencias-e-mat_12261228000114-2026-60/edital.pdf#page=34",
+  "degradation": {
+    "real": true,
+    "encoding": "ccitt"
+  },
+  "imageSha256": "6798b0d5dd661fd8d4a6a7edd6802e697d5f81af07987676c6826bc446ed5e59",
+  "reviewed": "model-assisted",
+  "seedCharacterEdits": 194,
+  "text": "SÃO JOSÉ DA TAPERA\nConstruindo um futuro melhor\nTESTEMUNHA CPF Nº\nPREFEITURA MUNICIPAL DE SÃO JOSÉ DA TAPERA\nRua do Comércio, 209 - Centro CEP 57445-000\nCNPJ 12.261.228/0001-14 / São José da Tapera - AL\n@prefeituradesjtapera\n@prefeiturasaojosedatapera\n(82) 3622-1208\nwww.saojosedatapera.al.gov.br",
+  "lines": [
+    "SÃO JOSÉ DA TAPERA",
+    "Construindo um futuro melhor",
+    "TESTEMUNHA CPF Nº",
+    "PREFEITURA MUNICIPAL DE SÃO JOSÉ DA TAPERA",
+    "Rua do Comércio, 209 - Centro CEP 57445-000",
+    "CNPJ 12.261.228/0001-14 / São José da Tapera - AL",
+    "@prefeituradesjtapera",
+    "@prefeiturasaojosedatapera",
+    "(82) 3622-1208",
+    "www.saojosedatapera.al.gov.br"
+  ]
+}
