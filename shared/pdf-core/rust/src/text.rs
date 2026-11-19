@@ -276,7 +276,8 @@ impl ScanPath {
         &mut self,
         code: u32,
         operands: &[Operand<'_>],
-        state: &mut GState,
+        ctm: &Matrix,
+        state: &mut ScanState,
         scan: &mut PageScan,
     ) {
         match code {
@@ -286,14 +287,14 @@ impl ScanPath {
                 }
                 for pair in operands.as_chunks::<2>().0 {
                     if let [Some(x), Some(y)] = pair.each_ref().map(Operand::as_number) {
-                        let (a, b) = apply(&state.ctm, x, y);
+                        let (a, b) = apply(ctm, x, y);
                         self.include([a, b, a, b]);
                     }
                 }
             }
             OP_RECT => {
                 if let Some([x, y, width, height]) = tail_numbers::<4, _>(operands) {
-                    self.include(transformed_bounds(&state.ctm, x, y, x + width, y + height));
+                    self.include(transformed_bounds(ctm, x, y, x + width, y + height));
                 }
             }
             OP_CLIP | OP_CLIP_EO => self.clip = true,
@@ -308,17 +309,17 @@ impl ScanPath {
             | OP_CLOSE_FILL_STROKE
             | OP_CLOSE_FILL_STROKE_EO => {
                 if self.clip {
-                    state.scan.restrict(self.bounds.unwrap_or([0.0_f64; 4]));
+                    state.restrict(self.bounds.unwrap_or([0.0_f64; 4]));
                 }
                 if !matches!(code, OP_NO_PAINT | OP_STROKE | OP_CLOSE_STROKE)
-                    && !state.scan.transparent[0]
+                    && !state.transparent[0]
                 {
                     scan.curved_fill(self.curves);
                 }
                 *self = Self::default();
             }
             _ => {
-                let [fill, stroke] = &mut state.scan.white;
+                let [fill, stroke] = &mut state.white;
                 let (color, count) = match &code.to_be_bytes() {
                     b"\0\0\0g" => (fill, 1),
                     b"\0\0\0G" => (stroke, 1),
@@ -355,7 +356,6 @@ struct GState {
     line_width: f64,
     rise: f64,
     scale: f64,
-    scan: ScanState,
     size: f64,
     stroked_fill: bool,
     word_space: f64,
@@ -374,12 +374,6 @@ impl GState {
             rise: 0.0,
             line_width: 1.0,
             stroked_fill: false,
-            scan: ScanState {
-                clip: None,
-                render_mode: 0,
-                white: [false; 2],
-                transparent: [false; 2],
-            },
         }
     }
 }
@@ -567,6 +561,7 @@ struct Interpreter<'doc, 'data> {
     ruling_cap: usize,
     rulings: Vec<Ruling>,
     scan: Option<&'doc mut PageScan>,
+    scan_state: ScanState,
     scopes: u32,
     skipped: HashSet<ObjRef>,
     text: String,
@@ -706,7 +701,7 @@ impl Interpreter<'_, '_> {
         if self.scan.is_some() {
             for (alpha_key, slot) in [b"ca", b"CA"]
                 .into_iter()
-                .zip(state.scan.transparent.iter_mut())
+                .zip(self.scan_state.transparent.iter_mut())
             {
                 if let Some(value) = gs.get(alpha_key).and_then(Object::as_number) {
                     *slot = value <= 0.0_f64;
@@ -827,8 +822,8 @@ impl Interpreter<'_, '_> {
         if subtype != Some(b"Form") {
             if let Some(scan) = self.scan.as_deref_mut() {
                 if subtype == Some(b"Image")
-                    && !state.scan.transparent[0]
-                    && let Some(coverage) = scan.image(state.ctm, state.scan.clip)?
+                    && !self.scan_state.transparent[0]
+                    && let Some(coverage) = scan.image(state.ctm, self.scan_state.clip)?
                 {
                     scan.select_image(
                         coverage,
@@ -868,6 +863,7 @@ impl Interpreter<'_, '_> {
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
+        let outer_scan = self.scan.is_some().then_some(self.scan_state);
         if (self.capture.structure || self.scan.is_some())
             && let Some(bounds) = stream
                 .dict
@@ -880,7 +876,9 @@ impl Interpreter<'_, '_> {
         {
             let [x0, y0, x1, y1] =
                 transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
-            inner_state.scan.restrict([x0, y0, x1, y1]);
+            if outer_scan.is_some() {
+                self.scan_state.restrict([x0, y0, x1, y1]);
+            }
             self.clip = Some(outer_clip.map_or([x0, y0, x1, y1], |outer| {
                 [
                     outer[0].max(x0),
@@ -905,6 +903,9 @@ impl Interpreter<'_, '_> {
             let _: Option<ObjRef> = self.active.pop();
         }
         self.clip = outer_clip;
+        if let Some(previous) = outer_scan {
+            self.scan_state = previous;
+        }
         result
     }
 
@@ -1018,6 +1019,7 @@ impl Interpreter<'_, '_> {
         let mut operands: Vec<Operand<'_>> = Vec::new();
         let mut path = PathBuilder::default();
         let mut scan_path = ScanPath::default();
+        let mut scan_stack = Vec::new();
         let mut marked: Vec<bool> = Vec::new();
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
@@ -1037,11 +1039,11 @@ impl Interpreter<'_, '_> {
             };
             let code = op(name);
             if SCAN && let Some(scan) = self.scan.as_deref_mut() {
-                scan_path.operator(code, &operands, state, scan);
+                scan_path.operator(code, &operands, &state.ctm, &mut self.scan_state, scan);
                 if code == OP_INLINE_IMAGE
-                    && !state.scan.transparent[0]
+                    && !self.scan_state.transparent[0]
                     && let Some((dict, bytes)) = lexer.take_inline_image()
-                    && let Some(coverage) = scan.image(state.ctm, state.scan.clip)?
+                    && let Some(coverage) = scan.image(state.ctm, self.scan_state.clip)?
                 {
                     scan.select_image(
                         coverage,
@@ -1057,6 +1059,9 @@ impl Interpreter<'_, '_> {
                         overflow = overflow.saturating_add(1);
                     } else {
                         stack.push(state.clone());
+                        if SCAN {
+                            scan_stack.push(self.scan_state);
+                        }
                     }
                 }
                 OP_RESTORE => {
@@ -1064,6 +1069,9 @@ impl Interpreter<'_, '_> {
                         overflow = overflow.saturating_sub(1);
                     } else if let Some(previous) = stack.pop() {
                         *state = previous;
+                        if SCAN && let Some(previous_scan) = scan_stack.pop() {
+                            self.scan_state = previous_scan;
+                        }
                     }
                 }
                 OP_BMC | OP_BDC | OP_EMC => {
@@ -1354,9 +1362,8 @@ impl Interpreter<'_, '_> {
                 step_y = 0.0_f64;
             }
             if SCAN && let Some(scan) = self.scan.as_deref_mut() {
-                let bounds = if usable && state.scan.paints_text() {
-                    state
-                        .scan
+                let bounds = if usable && self.scan_state.paints_text() {
+                    self.scan_state
                         .clipped_bounds(transformed_bounds(&mapping, x0, y0, x1, y1))
                 } else {
                     None
@@ -1510,7 +1517,7 @@ impl Interpreter<'_, '_> {
     fn show(&mut self, state: &GState, matrices: &mut TextMatrices, bytes: &[u8]) -> Outcome<()> {
         let Some(entry) = state.font.clone() else {
             if let Some(scan) = self.scan.as_deref_mut() {
-                scan.missing_font(bytes, state.scan.paints_text());
+                scan.missing_font(bytes, self.scan_state.paints_text());
             }
             return Ok(());
         };
@@ -1684,7 +1691,7 @@ impl Interpreter<'_, '_> {
                 if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.stroked_fill = (value - 2.0).abs() < 0.5_f64;
                     if self.scan.is_some() {
-                        state.scan.render_mode = u8::try_from(f64_to_i64(value))
+                        self.scan_state.render_mode = u8::try_from(f64_to_i64(value))
                             .ok()
                             .filter(|mode| *mode <= 7)
                             .unwrap_or(0);
@@ -1841,6 +1848,21 @@ fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
 
 fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
     let [a, b, c, d, e, f] = *matrix;
+    if matches!((b, c), (0.0_f64, 0.0_f64)) || matches!((a, d), (0.0_f64, 0.0_f64)) {
+        let (left, bottom) = apply(matrix, x0, y0);
+        let (right, top) = apply(matrix, x1, y1);
+        if [left, bottom, right, top]
+            .into_iter()
+            .all(|value| value.is_finite() && !matches!(value, 0.0_f64))
+        {
+            return [
+                left.min(right),
+                bottom.min(top),
+                left.max(right),
+                bottom.max(top),
+            ];
+        }
+    }
     let mut bounds = [
         f64::INFINITY,
         f64::INFINITY,
@@ -1952,6 +1974,7 @@ pub(crate) fn scan_page(
         skipped: mem::take(&mut session.skipped),
         active: Vec::new(),
         scan,
+        scan_state: ScanState::default(),
         scopes: session.scopes,
         budget: limits.max_decoded_stream_bytes,
         max_depth: limits.max_nesting.min(MAX_FORM_DEPTH),

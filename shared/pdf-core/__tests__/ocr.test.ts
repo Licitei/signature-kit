@@ -67,8 +67,9 @@ const grayscale = (): Uint8Array<ArrayBuffer> => {
 const fixture = Effect.fn(function* (
   pages: ReadonlyArray<"cover" | "scan" | "overlay" | "native" | "blank">,
   padding = 0,
-  rotated = false,
+  orientation: "upright" | "rotated" = "upright",
 ) {
+  const rotated = orientation === "rotated";
   const core = yield* PdfCore;
   const pdf = yield* core.create({
     pages: [{ width, height }, ...pages.slice(1).map(() => ({ width, height }))],
@@ -209,8 +210,8 @@ describe("caller-supplied PDF OCR", () => {
   it.effect("maps rotated image words into the same Markdown as rotated native text", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const pdf = yield* fixture(["scan"], 0, true);
-      const twin = yield* fixture(["native"], 0, true);
+      const pdf = yield* fixture(["scan"], 0, "rotated");
+      const twin = yield* fixture(["native"], 0, "rotated");
       const expected = yield* core.text(twin, { format: "markdown" });
       expect(expected[0]).toContain("| ITEM | QTY | COST |");
       expect(
