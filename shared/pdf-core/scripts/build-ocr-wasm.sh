@@ -17,9 +17,10 @@ else
   exit 1
 fi
 
-cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST" -p signature-kit-pdf-core-ocr --lib
+RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST" -p signature-kit-pdf-core-ocr --lib
 mkdir -p "$OUT_DIR"
 "$WASM_OPT" -O3 \
+  --enable-simd \
   --enable-bulk-memory \
   --enable-sign-ext \
   --enable-nontrapping-float-to-int \

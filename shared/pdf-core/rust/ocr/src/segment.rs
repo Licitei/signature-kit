@@ -1,5 +1,6 @@
 use core::mem;
 
+use crate::clean::TableGrid;
 use crate::raster::{Bits, ink_runs};
 
 type Box = [u32; 4];
@@ -60,6 +61,31 @@ impl TextLine {
     fn finish(mut self, block: u32, typical: u32) -> Line {
         self.letters
             .sort_unstable_by_key(|&[left, top, _, _]| (left, top));
+        if self.letters.len() >= 5 {
+            let minimum_gap = typical.saturating_mul(5);
+            let clusters = self
+                .letters
+                .chunk_by(|&[_, _, right, _], &[left, _, _, _]| {
+                    left.saturating_sub(right) < minimum_gap
+                });
+            if clusters.clone().any(|cluster| cluster.len() >= 5) {
+                self.letters = clusters
+                    .filter(|cluster| cluster.len() >= 3)
+                    .flatten()
+                    .copied()
+                    .collect();
+                if let Some(bounds) = self.letters.iter().copied().reduce(union) {
+                    self.bbox = bounds;
+                }
+                self.bottoms = self
+                    .letters
+                    .iter()
+                    .filter_map(|&[_, top, _, bottom]| {
+                        (bottom.saturating_sub(top) >= typical.div_ceil(2)).then_some(bottom)
+                    })
+                    .collect();
+            }
+        }
         let (baseline, x_height) = metrics(self.bbox, &mut self.bottoms, &self.letters, typical);
         Line {
             baseline: coordinate(baseline),
@@ -288,7 +314,23 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32) -> Vec<Line> {
             line.add(bbox, typical);
         }
     }
-    groups
+    let mut coalesced = Vec::<TextLine>::new();
+    for entry in groups {
+        if let Some(previous) = coalesced.last_mut()
+            && previous.baseline.abs_diff(entry.baseline) <= typical.div_ceil(3).saturating_add(1)
+        {
+            let [_, prev_top, _, prev_bottom] = previous.bbox;
+            let [_, top, _, bottom] = entry.bbox;
+            if top < prev_bottom && prev_top < bottom {
+                previous.bbox = union(previous.bbox, entry.bbox);
+                previous.bottoms.extend(entry.bottoms);
+                previous.letters.extend(entry.letters);
+                continue;
+            }
+        }
+        coalesced.push(entry);
+    }
+    coalesced
         .into_iter()
         .filter(|entry| {
             let [left, top, right, bottom] = entry.bbox;
@@ -299,7 +341,27 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32) -> Vec<Line> {
         .collect()
 }
 
-fn whitespace_cut(boxes: &mut [Box], horizontal: bool, min_gap: u32) -> Option<usize> {
+fn column_overlap(first: &[Box], second: &[Box]) -> u32 {
+    let extent = |boxes: &[Box]| {
+        boxes
+            .iter()
+            .fold((u32::MAX, 0_u32), |(min, max), &[_, top, _, bottom]| {
+                (min.min(top), max.max(bottom))
+            })
+    };
+    let (first_top, first_bottom) = extent(first);
+    let (second_top, second_bottom) = extent(second);
+    first_bottom
+        .min(second_bottom)
+        .saturating_sub(first_top.max(second_top))
+}
+
+fn whitespace_cut(
+    boxes: &mut [Box],
+    horizontal: bool,
+    min_gap: u32,
+    typical: u32,
+) -> Option<usize> {
     let interval = |[left, top, right, bottom]: Box| {
         if horizontal {
             (top, bottom)
@@ -314,7 +376,16 @@ fn whitespace_cut(boxes: &mut [Box], horizontal: bool, min_gap: u32) -> Option<u
     for (index, &bbox) in boxes.iter().enumerate() {
         let (left, right) = interval(bbox);
         let gap = left.saturating_sub(max_right);
-        if index >= 2 && boxes.len().saturating_sub(index) >= 2 && gap > best_gap {
+        if index >= 2
+            && boxes.len().saturating_sub(index) >= 2
+            && gap > best_gap
+            && (horizontal
+                || boxes
+                    .split_at_checked(index)
+                    .is_some_and(|(first, second)| {
+                        column_overlap(first, second) >= typical.saturating_mul(2)
+                    }))
+        {
             best_gap = gap;
             cut = Some(index);
         }
@@ -334,8 +405,8 @@ fn partition(
         return;
     }
     if depth < 16 {
-        let cut = whitespace_cut(boxes, false, typical.saturating_mul(3))
-            .or_else(|| whitespace_cut(boxes, true, typical.saturating_mul(2)));
+        let cut = whitespace_cut(boxes, false, typical.saturating_mul(3), typical)
+            .or_else(|| whitespace_cut(boxes, true, typical.saturating_mul(2), typical));
         if let Some(index) = cut
             && let Some((first, second)) = boxes.split_at_mut_checked(index)
         {
@@ -349,9 +420,51 @@ fn partition(
     *next_block = next_block.saturating_add(1);
 }
 
+fn table_cell(bbox: Box, grid: &TableGrid) -> Option<(usize, usize)> {
+    let [left, top, right, bottom] = bbox;
+    let center_x = u32::midpoint(left, right);
+    let center_y = u32::midpoint(top, bottom);
+    let row = grid.rows.partition_point(|&boundary| boundary <= center_y);
+    let column = grid
+        .columns
+        .partition_point(|&boundary| boundary <= center_x);
+    (row > 0 && row < grid.rows.len() && column > 0 && column < grid.columns.len())
+        .then_some((row, column))
+}
+
+fn table_lines(boxes: &mut Vec<Box>, grids: &[TableGrid], typical: u32) -> Vec<(u32, Vec<Line>)> {
+    let mut tables = Vec::new();
+    for grid in grids {
+        let mut cells = Vec::new();
+        boxes.retain(|&bbox| {
+            table_cell(bbox, grid).is_none_or(|cell| {
+                cells.push((cell, bbox));
+                false
+            })
+        });
+        if cells.is_empty() {
+            continue;
+        }
+        cells.sort_unstable_by_key(|&(cell, _)| cell);
+        let mut lines = Vec::new();
+        for group in cells.chunk_by(|(cell, _), (next_cell, _)| cell == next_cell) {
+            let mut cell_boxes: Vec<_> = group.iter().map(|&(_, bbox)| bbox).collect();
+            lines.extend(line_groups(&mut cell_boxes, typical, 0));
+        }
+        if let Some(&top) = grid.rows.first() {
+            tables.push((top, lines));
+        }
+    }
+    tables
+}
+
 #[inline]
 #[must_use]
 pub fn segment(page: &Bits, dpi: f32) -> PageLayout {
+    segment_with_tables(page, dpi, &[])
+}
+
+pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) -> PageLayout {
     let labels = components(page);
     let heights: Vec<_> = labels
         .iter()
@@ -380,15 +493,34 @@ pub fn segment(page: &Bits, dpi: f32) -> PageLayout {
             let [left, top, right, bottom] = component.bbox;
             let width = right.saturating_sub(left);
             let height = bottom.saturating_sub(top);
+            let solid_mark = width > typical
+                && height > typical.saturating_add(typical.div_ceil(2))
+                && component.area.saturating_mul(2) > width.saturating_mul(height);
             (component.area >= 2
+                && !solid_mark
                 && height <= typical.saturating_mul(4)
                 && width <= typical.saturating_mul(16))
             .then_some(component.bbox)
         })
         .collect();
+    let tables = table_lines(&mut boxes, grids, typical);
     let mut lines = Vec::new();
-    let mut next_block = 0;
+    let mut next_block = 0_u32;
     partition(&mut boxes, typical, 0, &mut next_block, &mut lines);
+    for (top, mut table) in tables {
+        let insertion = lines
+            .iter()
+            .position(|line| {
+                let [_, line_top, _, _] = line.bbox;
+                line_top >= top
+            })
+            .unwrap_or(lines.len());
+        for line in &mut table {
+            line.block = next_block;
+        }
+        next_block = next_block.saturating_add(1);
+        drop(lines.splice(insertion..insertion, table));
+    }
     PageLayout { lines }
 }
 
@@ -396,7 +528,9 @@ pub fn segment(page: &Bits, dpi: f32) -> PageLayout {
 mod tests {
     use crate::raster::{Bits, RasterError};
 
-    use super::{WordBox, segment};
+    use crate::clean::TableGrid;
+
+    use super::{WordBox, segment, segment_with_tables};
 
     #[test]
     #[expect(
@@ -442,6 +576,41 @@ mod tests {
                 WordBox {
                     bbox: [75, 10, 93, 25]
                 }
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions report mismatches and raster setup is fallible"
+    )]
+    fn table_cells_keep_rows_in_reading_order() -> Result<(), RasterError> {
+        let mut page = Bits::new(480, 180)?;
+        for top in [30_u32, 100] {
+            for start in [30_u32, 280] {
+                for offset in [0_u32, 12, 24] {
+                    for row in top..top.saturating_add(15) {
+                        let left = start.saturating_add(offset);
+                        page.set_run(row, left, left.saturating_add(8), true);
+                    }
+                }
+            }
+        }
+        let grid = TableGrid {
+            columns: vec![10, 240, 470],
+            rows: vec![10, 80, 160],
+        };
+        let layout = segment_with_tables(&page, 300.0, &[grid]);
+        let boxes: Vec<_> = layout.lines.iter().map(|line| line.bbox).collect();
+        assert_eq!(
+            boxes,
+            [
+                [30, 30, 62, 45],
+                [280, 30, 312, 45],
+                [30, 100, 62, 115],
+                [280, 100, 312, 115]
             ]
         );
         Ok(())

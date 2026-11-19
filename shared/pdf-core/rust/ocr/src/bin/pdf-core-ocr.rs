@@ -114,8 +114,10 @@ fn write_recognition(output: &mut dyn Write, result: &PageResult) -> io::Result<
 fn write_layout(output: &mut dyn Write, result: &PreparedPage) -> io::Result<()> {
     write!(
         output,
-        "{{\"width\":{},\"height\":{},\"lines\":[",
-        result.page.width, result.page.height
+        "{{\"width\":{},\"height\":{},\"skewDegrees\":{},\"lines\":[",
+        result.page.width,
+        result.page.height,
+        result.skew_degrees()
     )?;
     for (index, line) in result.layout.lines.iter().enumerate() {
         if index != 0 {
@@ -123,6 +125,8 @@ fn write_layout(output: &mut dyn Write, result: &PreparedPage) -> io::Result<()>
         }
         output.write_all(b"{\"box\":")?;
         write_numbers(output, &line.bbox)?;
+        output.write_all(b",\"sourceBox\":")?;
+        write_numbers(output, &result.source_box(line.bbox))?;
         write!(
             output,
             ",\"baseline\":{},\"xHeight\":{},\"block\":{},\"words\":[",

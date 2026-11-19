@@ -1,3 +1,9 @@
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+use core::arch::wasm32::{
+    i8x16_popcnt, u16x8_extadd_pairwise_u8x16, u32x4_extadd_pairwise_u16x8, u32x4_extract_lane,
+    v128, v128_any_true, v128_load,
+};
+
 use core::{num::TryFromIntError, str};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +33,13 @@ pub enum RasterError {
     Dimensions,
     Format,
     Length,
+}
+
+struct Runs<Visit> {
+    offset: u32,
+    pending: Option<u32>,
+    visit: Visit,
+    width: u32,
 }
 
 impl Gray {
@@ -140,44 +153,111 @@ impl Bits {
     }
 }
 
-pub(crate) fn ink_runs<Visit>(row: &[u64], width: u32, mut visit: Visit)
+impl<Visit> Runs<Visit>
 where
     Visit: FnMut(u32, u32),
 {
-    let mut offset = 0_u32;
-    let mut pending = None;
-    for &packed in row {
+    fn word(&mut self, packed: u64) {
         let mut word = packed;
-        if let Some(start) = pending {
+        if let Some(start) = self.pending {
             let ones = word.trailing_ones();
             if ones == 64 {
-                offset = offset.saturating_add(64);
-                continue;
+                self.offset = self.offset.saturating_add(64);
+                return;
             }
-            visit(start, offset.saturating_add(ones).min(width));
-            pending = None;
+            (self.visit)(start, self.offset.saturating_add(ones).min(self.width));
+            self.pending = None;
             word &= u64::MAX.wrapping_shl(ones);
         }
         while word != 0 {
             let start = word.trailing_zeros();
             let length = word.wrapping_shr(start).trailing_ones();
             let end = start.saturating_add(length);
-            let left = offset.saturating_add(start);
+            let left = self.offset.saturating_add(start);
             if end == 64 {
-                pending = Some(left);
+                self.pending = Some(left);
                 break;
             }
-            if left < width {
-                visit(left, offset.saturating_add(end).min(width));
+            if left < self.width {
+                (self.visit)(left, self.offset.saturating_add(end).min(self.width));
             }
             word &= u64::MAX.wrapping_shl(end);
         }
-        offset = offset.saturating_add(64);
+        self.offset = self.offset.saturating_add(64);
     }
-    if let Some(start) = pending
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[expect(
+    unsafe_code,
+    clippy::cast_ptr_alignment,
+    reason = "v128_load accepts unaligned word pairs"
+)]
+fn load_pair(words: &[u64; 2]) -> v128 {
+    // SAFETY: The fixed-size word pair provides 16 readable bytes and the load accepts unaligned addresses.
+    unsafe { v128_load(words.as_ptr().cast::<v128>()) }
+}
+
+pub(crate) fn ink_counts(row: &[u64], bins: &mut Vec<u32>) {
+    bins.clear();
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let tail_words = {
+        let (pairs, tail) = row.as_chunks::<2>();
+        for pair in pairs {
+            let counts = i8x16_popcnt(load_pair(pair));
+            let sums = u32x4_extadd_pairwise_u16x8(u16x8_extadd_pairwise_u8x16(counts));
+            bins.extend([
+                u32x4_extract_lane::<0>(sums),
+                u32x4_extract_lane::<1>(sums),
+                u32x4_extract_lane::<2>(sums),
+                u32x4_extract_lane::<3>(sums),
+            ]);
+        }
+        tail
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    let tail_words = row;
+    for &word in tail_words {
+        bins.extend([
+            (word & u64::from(u32::MAX)).count_ones(),
+            (word >> 32_u32).count_ones(),
+        ]);
+    }
+}
+
+pub(crate) fn ink_runs<Visit>(row: &[u64], width: u32, visit: Visit)
+where
+    Visit: FnMut(u32, u32),
+{
+    let mut runs = Runs {
+        offset: 0,
+        pending: None,
+        visit,
+        width,
+    };
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let tail_words = {
+        let (pairs, tail) = row.as_chunks::<2>();
+        for pair in pairs {
+            if runs.pending.is_none() && !v128_any_true(load_pair(pair)) {
+                runs.offset = runs.offset.saturating_add(128);
+            } else {
+                for &word in pair {
+                    runs.word(word);
+                }
+            }
+        }
+        tail
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    let tail_words = row;
+    for &word in tail_words {
+        runs.word(word);
+    }
+    if let Some(start) = runs.pending
         && start < width
     {
-        visit(start, width);
+        (runs.visit)(start, width);
     }
 }
 

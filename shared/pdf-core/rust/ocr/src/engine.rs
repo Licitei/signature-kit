@@ -4,7 +4,7 @@ use crate::deskew::{Transform, straighten};
 use crate::postprocess::correct;
 use crate::raster::{Bits, Gray, RasterError};
 use crate::recognize::recognize_line;
-use crate::segment::{PageLayout, segment};
+use crate::segment::{PageLayout, segment, segment_with_tables};
 
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -95,6 +95,20 @@ impl PreparedPage {
             words,
         }
     }
+
+    #[inline]
+    #[must_use]
+    pub fn skew_degrees(&self) -> f64 {
+        (f64::from(self.transform.slope) / 4096.0)
+            .atan()
+            .to_degrees()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn source_box(&self, bbox: [u32; 4]) -> [u32; 4] {
+        self.transform.source(bbox)
+    }
 }
 
 /// # Errors
@@ -115,8 +129,12 @@ where
     stage_complete(Stage::Deskew);
     let rules = clean(&mut cleaned, dpi);
     stage_complete(Stage::Clean);
-    let layout = segment(&cleaned, dpi);
     let tables = grids(&rules);
+    let layout = if tables.is_empty() {
+        segment(&cleaned, dpi)
+    } else {
+        segment_with_tables(&cleaned, dpi, &tables)
+    };
     stage_complete(Stage::Segment);
     Ok(PreparedPage {
         layout,
@@ -136,7 +154,7 @@ pub fn recognize_page(gray: &Gray, dpi: f32, options: &Options) -> Result<PageRe
 
 #[cfg(test)]
 mod tests {
-    use crate::jpeg;
+    use crate::{jpeg, raster};
 
     use super::{Options, prepare_page};
 
@@ -186,6 +204,30 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions check scan layout produced from a fallible fixture"
+    )]
+    fn reads_scanned_table_in_row_order() -> Result<(), String> {
+        let gray = raster::read_pgm(include_bytes!("../tests/fixtures/scan-table.pgm"))
+            .map_err(|cause| format!("{cause:?}"))?;
+        let prepared = prepare_page(&gray, 75.0, &Options::default(), |_| ())
+            .map_err(|cause| format!("{cause:?}"))?;
+        assert_eq!(prepared.tables.len(), 1);
+        let left_column: Vec<_> = prepared
+            .layout
+            .lines
+            .iter()
+            .map(|line| {
+                let [left, _, right, _] = line.bbox;
+                u32::midpoint(left, right) < 284
+            })
+            .collect();
+        assert_eq!(left_column, [true, false, true, false, false, true, false]);
         Ok(())
     }
 }
