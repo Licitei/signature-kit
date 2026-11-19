@@ -1,6 +1,4 @@
 import argparse
-import copy
-import itertools
 import json
 import math
 from pathlib import Path
@@ -13,7 +11,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 
 from data import Archive, batches, collate, dataset, manifest
-from model import Recognizer, transcript
+from model import LABELS, Recognizer, transcript
 
 
 def edits(reference, prediction):
@@ -42,7 +40,7 @@ def evaluate(model, lines, batch_size, mode):
     pairs = []
     for batch in DataLoader(lines, batch_sampler=batches(lines, batch_size, 0, 0),
                             collate_fn=collate):
-        inputs, lengths, _, _, references = batch
+        inputs, lengths, _, _, references, _ = batch
         outputs = model(inputs, lengths, mode).argmax(dim=1)
         pairs.extend((reference, transcript(output[:length]))
                      for output, length, reference in zip(outputs, lengths, references, strict=True))
@@ -68,6 +66,32 @@ def atomic(path, write):
     pending.replace(path)
 
 
+def warm_start(model, ema, warm, args):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.003, weight_decay=0.01, fused=True)
+    weights = torch.full((len(LABELS),), 1.0)
+    weights[0] = 0.25
+    classify = nn.CrossEntropyLoss(weight=weights)
+    for epoch in range(args.warm_epochs):
+        total = 0.0
+        updates = 0
+        for batch in DataLoader(warm, batch_sampler=batches(warm, args.batch_size, args.seed + epoch, 0),
+                                collate_fn=collate):
+            if batch is None:
+                continue
+            inputs, lengths, _, _, _, alignments = batch
+            optimizer.zero_grad(set_to_none=True)
+            loss = classify(model(inputs, lengths), alignments)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            optimizer.step()
+            ema.update_parameters(model)
+            total += loss.item()
+            updates += 1
+        if not updates:
+            raise ValueError("no aligned bootstrap lines")
+        log(args.output, event="warm", epoch=epoch + 1, frame_loss=total / updates)
+
+
 def train(args):
     torch.set_num_threads(12)
     torch.set_num_interop_threads(1)
@@ -89,7 +113,7 @@ def train(args):
     digest = manifest([("clean", clean), ("shard", paths)])
     log(args.output, event="indexing", shards=len(paths), manifest=digest)
     lines = Archive(paths, training=True)
-    warm = Archive(clean, training=True) if clean else None
+    warm = Archive(clean, training=True, align=True) if clean else None
     real = dataset(args.real_dev)
     synthetic = dataset(args.synthetic_val)
     if len(real) != 186 or not len(synthetic) or not len(lines) or (warm is not None and not len(warm)):
@@ -126,27 +150,24 @@ def train(args):
     log(args.output, event="ready", records=len(lines), rejected=lines.rejected,
         clean=len(warm) if warm is not None else 0, start_epoch=first_epoch,
         dev=len(real), synthetic_val=len(synthetic), seed=args.seed, commit=commit)
+    if first_epoch == 0 and warm is not None:
+        warm_start(model, ema, warm, args)
     available_steps = math.ceil(len(lines) / args.batch_size)
     steps = min(args.steps or available_steps, available_steps)
     for epoch in range(first_epoch, args.epochs):
         start = time.perf_counter()
         mode = "qat" if epoch >= args.epochs - args.qat else "float"
         curriculum = min(1, (epoch + 1) / 3)
-        line_batches = batches(lines, args.batch_size, args.seed + epoch, curriculum, steps)
+        line_batches = batches(lines, args.batch_size, args.seed, curriculum, args.steps, epoch)
         loader = DataLoader(lines, batch_sampler=line_batches, collate_fn=collate,
                             num_workers=args.workers)
-        if epoch == 0 and warm is not None:
-            clean_loader = DataLoader(
-                warm, batch_sampler=batches(warm, args.batch_size, args.seed, 0), collate_fn=collate
-            )
-            loader = itertools.chain(clean_loader, loader)
         loss_total = 0.0
         visited = 0
         updates = 0
         for step, batch in enumerate(loader):
             if batch is None:
                 continue
-            inputs, lengths, targets, target_lengths, texts = batch
+            inputs, lengths, targets, target_lengths, texts, _ = batch
             progress = min(1.0, (epoch + step / steps) / args.epochs)
             rate = 0.003 * min(1.0, 0.2 + 20 * progress) * (0.1 + 0.9 *
                                                           (1 + math.cos(math.pi * progress)) / 2)
@@ -184,7 +205,7 @@ def train(args):
         atomic(args.output / "latest.bin", lambda file: file.write_bytes(table))
         if selected:
             atomic(args.output / "best.bin", lambda file: file.write_bytes(table))
-            atomic(args.output / "best.pt", lambda file: torch.save(copy.deepcopy(exported.state_dict()), file))
+            atomic(args.output / "best.pt", lambda file: torch.save(exported.state_dict(), file))
         state = dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
                      ema=ema.state_dict(), epoch=epoch + 1, best=best, stale=stale,
                      commit=commit, provenance=provenance)
@@ -207,6 +228,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--qat", type=int, default=2)
+    parser.add_argument("--warm-epochs", type=int, default=12)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--patience", type=int, default=3)

@@ -10,7 +10,7 @@ import unicodedata
 import numpy as np
 import torch
 
-from model import CLASS, HEIGHT, STRIDE, normalize
+from model import CLASS, HEIGHT, PADDING, STRIDE, normalize
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,8 @@ class Line:
     width: int
     height: int
     text: str
+    glyphs: tuple = ()
+    binary: bool = False
 
 
 def read_exact(file, length):
@@ -28,7 +30,7 @@ def read_exact(file, length):
     return data
 
 
-def records(path):
+def records(path, align=False):
     with path.open("rb") as file:
         magic = read_exact(file, 4)
         if magic == b"OCRL":
@@ -48,12 +50,15 @@ def records(path):
                 offset = file.tell()
                 file.seek(width * height, 1)
                 labels = []
+                positions = []
                 for index in range(words + glyphs):
-                    _, _, _, _, length = struct.unpack("<IIIII", read_exact(file, 20))
+                    left, _, right, _, length = struct.unpack("<IIIII", read_exact(file, 20))
                     label = read_exact(file, length)
                     if index < words:
                         labels.append(label.decode("utf-8"))
-                yield Line(offset, width, height, " ".join(labels))
+                    elif align:
+                        positions.append(((left + right) // 2, label.decode("utf-8")))
+                yield Line(offset, width, height, " ".join(labels), tuple(positions), binary=True)
             if file.read(1):
                 raise ValueError(f"trailing OCRT record in {path}")
         else:
@@ -75,19 +80,24 @@ def manifest(files):
 
 
 class Archive:
-    def __init__(self, paths, training=False):
+    def __init__(self, paths, training=False, align=False):
         self.paths = paths
         self.training = training
+        self.align = align
         self.samples = []
         self.files = OrderedDict()
         self.rejected = 0
         for source, path in enumerate(paths):
-            for line in records(path):
+            for line in records(path, align):
                 text = record_text(line.text)
                 if training and (not text or any(char not in CLASS for char in text)):
                     self.rejected += 1
                     continue
-                self.samples.append((source, Line(line.offset, line.width, line.height, text)))
+                if align and "".join(label for _, label in line.glyphs) != text.replace(" ", ""):
+                    self.rejected += 1
+                    continue
+                self.samples.append((source, Line(line.offset, line.width, line.height, text,
+                                                  line.glyphs, line.binary)))
 
     def __len__(self):
         return len(self.samples)
@@ -104,16 +114,48 @@ class Archive:
             self.files[source] = file
         self.files.move_to_end(source)
         file.seek(line.offset)
-        image = np.frombuffer(read_exact(file, line.width * line.height), dtype=np.uint8).reshape(
-            line.height, line.width
-        )
+        image = raster(file, line)
         if strength:
             image = augment(image, np.random.default_rng(seed), strength)
-        frames = normalize(image)
+        if self.align:
+            frames, geometry = normalize(image, geometry=True)
+            alignment = aligned_targets(line, frames, geometry)
+        else:
+            frames = normalize(image)
+            alignment = None
         target = [CLASS[char] for char in line.text] if self.training else []
         if self.training and len(target) + sum(a == b for a, b in zip(target, target[1:])) > len(frames):
             return None
-        return frames, target, line.text
+        return frames, target, line.text, alignment
+
+
+def raster(file, line):
+    image = np.frombuffer(read_exact(file, line.width * line.height), dtype=np.uint8).reshape(
+        line.height, line.width
+    )
+    return np.where(image != 0, 0, 255).astype(np.uint8) if line.binary else image
+
+
+def aligned_targets(line, frames, geometry):
+    labels = np.zeros(len(frames), dtype=np.int64)
+    if geometry is None:
+        return labels
+    left, width, scaled = geometry
+    glyphs = iter(line.glyphs)
+    previous = left
+    following = next(glyphs)
+    for char in line.text:
+        if char == " ":
+            x = (previous + following[0]) // 2
+        else:
+            x = following[0]
+            previous = x
+            following = next(glyphs, following)
+        column = PADDING + (x - left) * scaled // width
+        index = max(0, min(len(labels) - 1, column // STRIDE))
+        if char != " " or labels[index] == 0:
+            labels[index] = CLASS[char]
+    return labels
 
 
 class Crops:
@@ -127,7 +169,7 @@ class Crops:
         index, _, _ = request
         path = self.paths[index]
         label = json.loads(path.read_text())
-        return normalize(pgm(path.with_suffix(".pgm"))), [], record_text(label["text"])
+        return normalize(pgm(path.with_suffix(".pgm"))), [], record_text(label["text"]), None
 
 
 def pgm(path):
@@ -166,12 +208,16 @@ def augment(gray, rng, strength):
     return values.clip(0, 255).astype(np.uint8)
 
 
-def batches(dataset, batch_size, seed, strength, limit=0):
-    rng = random.Random(seed)
+def batches(dataset, batch_size, seed, strength, limit=0, epoch=0):
     order = list(range(len(dataset)))
-    rng.shuffle(order)
     if limit:
-        order = order[:limit * batch_size]
+        count = limit * batch_size
+        offset = (epoch * count) % len(order)
+        random.Random(seed).shuffle(order)
+        order = (order[offset:] + order[:offset])[:count]
+    else:
+        random.Random(seed + epoch).shuffle(order)
+    rng = random.Random(seed + epoch)
     for start in range(0, len(order), batch_size * 16):
         block = order[start:start + batch_size * 16]
         if isinstance(dataset, Archive):
@@ -187,16 +233,20 @@ def collate(samples):
     usable = [sample for sample in samples if sample is not None]
     if not usable:
         return None
-    lengths = [len(frames) for frames, _, _ in usable]
+    lengths = [len(frames) for frames, _, _, _ in usable]
     features = np.zeros((len(usable), HEIGHT * STRIDE, max(lengths)), dtype=np.float32)
-    for destination, (frames, _, _) in zip(features, usable, strict=True):
-        destination[:, :len(frames)] = frames.T
+    alignments = np.full((len(usable), max(lengths)), -100, dtype=np.int64)
+    for index, (frames, _, _, alignment) in enumerate(usable):
+        features[index, :, :len(frames)] = frames.T
+        if alignment is not None:
+            alignments[index, :len(frames)] = alignment
     return (
         torch.from_numpy(features),
         torch.tensor(lengths, dtype=torch.int32),
-        torch.tensor([char for _, target, _ in usable for char in target], dtype=torch.int32),
-        torch.tensor([len(target) for _, target, _ in usable], dtype=torch.int32),
-        [text for _, _, text in usable],
+        torch.tensor([char for _, target, _, _ in usable for char in target], dtype=torch.int32),
+        torch.tensor([len(target) for _, target, _, _ in usable], dtype=torch.int32),
+        [text for _, _, text, _ in usable],
+        torch.from_numpy(alignments),
     )
 
 

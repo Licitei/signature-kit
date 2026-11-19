@@ -23,12 +23,13 @@ LABELS = ("\0",) + tuple(
 CLASS = {char: index for index, char in enumerate(LABELS)}
 
 
-def normalize(gray):
+def normalize(gray, *, geometry=False):
     ink = gray < 128
     rows = np.flatnonzero(ink.any(axis=1))
     cols = np.flatnonzero(ink.any(axis=0))
     if not rows.size:
-        return np.zeros((1, HEIGHT * STRIDE), dtype=np.int8)
+        blank = np.zeros((1, HEIGHT * STRIDE), dtype=np.int8)
+        return (blank, None) if geometry else blank
 
     source = gray[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
     height, width = source.shape
@@ -41,7 +42,8 @@ def normalize(gray):
     columns[PADDING:PADDING + scaled, PADDING:PADDING + INK_HEIGHT] = (
         (255 - source[y[:, None], x[None, :]].T) >> 1
     )
-    return columns.reshape(frames, HEIGHT * STRIDE)
+    normalized = columns.reshape(frames, HEIGHT * STRIDE)
+    return (normalized, (int(cols[0]), width, scaled)) if geometry else normalized
 
 
 def shuffle_channels(values):
@@ -93,7 +95,7 @@ class Recognizer(nn.Module):
             if mode != "int8":
                 floating = layer(values)
                 if activate:
-                    floating = floating.relu()
+                    floating = floating.clamp(0, 127 / ACTIVATION_UNIT)
             if mode == "float":
                 values = floating
             else:
