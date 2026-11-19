@@ -6,14 +6,19 @@ use std::{env, fs, io};
 use signature_kit_pdf_core_ocr::engine::{Options, PageResult, PreparedPage, prepare_page};
 use signature_kit_pdf_core_ocr::{jpeg, raster};
 
-const USAGE: &str =
-    "Usage: pdf-core-ocr <image.pgm|jpg> [--dpi N] [--json out] [--layout-only] [--timings]";
+const USAGE: &str = if cfg!(feature = "ctc-probe") {
+    "Usage: pdf-core-ocr <image.pgm|jpg> [--dpi N] [--json out] [--layout-only] [--timings] [--ctc-model path]"
+} else {
+    "Usage: pdf-core-ocr <image.pgm|jpg> [--dpi N] [--json out] [--layout-only] [--timings]"
+};
 
 struct Arguments {
     dpi: f32,
     input: PathBuf,
     layout_only: bool,
     output: Option<PathBuf>,
+    #[cfg(feature = "ctc-probe")]
+    sequence: Option<PathBuf>,
     timings: bool,
 }
 
@@ -27,6 +32,8 @@ fn arguments() -> Result<Arguments, String> {
             .ok_or_else(|| String::from(USAGE))?,
         layout_only: false,
         output: None,
+        #[cfg(feature = "ctc-probe")]
+        sequence: None,
         timings: false,
     };
     while let Some(flag) = values.next() {
@@ -44,6 +51,15 @@ fn arguments() -> Result<Arguments, String> {
                         .next()
                         .map(PathBuf::from)
                         .ok_or_else(|| String::from("--json requires a path"))?,
+                );
+            }
+            #[cfg(feature = "ctc-probe")]
+            Some("--ctc-model") => {
+                parsed.sequence = Some(
+                    values
+                        .next()
+                        .map(PathBuf::from)
+                        .ok_or_else(|| String::from("--ctc-model requires a path"))?,
                 );
             }
             Some("--layout-only") => parsed.layout_only = true,
@@ -184,6 +200,16 @@ fn run() -> Result<(), String> {
         write_layout(&mut output, &prepared)
     } else {
         let start = Instant::now();
+        #[cfg(feature = "ctc-probe")]
+        let result = if let Some(path) = args.sequence {
+            let table = fs::read(&path).map_err(|cause| format!("{}: {cause}", path.display()))?;
+            prepared
+                .recognize_sequence(&table)
+                .ok_or_else(|| String::from("Invalid CTC table for this build"))?
+        } else {
+            prepared.recognize()
+        };
+        #[cfg(not(feature = "ctc-probe"))]
         let result = prepared.recognize();
         timing.push((String::from("Recognize"), start.elapsed()));
         write_recognition(&mut output, &result)

@@ -8,11 +8,13 @@ mod ctc;
 mod deskew;
 pub mod engine;
 pub mod jpeg;
+#[cfg(any(feature = "ocr-lexicon", test))]
 mod lexicon;
 mod model;
 mod network;
 #[cfg(not(target_arch = "wasm32"))]
 mod neural_training;
+#[cfg(any(feature = "ocr-lexicon", test))]
 mod postprocess;
 pub mod raster;
 mod raster_display;

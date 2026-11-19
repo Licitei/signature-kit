@@ -144,7 +144,11 @@ export function benchmarkEngine(
           const args =
             engine === "ours-wasm"
               ? [process.execPath, "run", wasm ?? "", input, "--json"]
-              : [native, input, "--json"];
+              : [native, input, "--dpi", String(page.dpi)];
+          const model = process.env.OCR_BENCH_CTC_MODEL;
+          if (engine === "ours-native" && model !== undefined && model.length > 0) {
+            args.push("--ctc-model", model);
+          }
           const trials: Trial[] = [];
           for (let trial = 0; trial < options.repeats; trial += 1) {
             const started = performance.now();

@@ -532,7 +532,7 @@ fn train(
     )
 }
 
-fn write_model(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_model(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "model output must name a file")
     })?;
@@ -906,39 +906,54 @@ fn labeled_centers(sample: &Sample<'_>) -> Option<Vec<u32>> {
     Some(alignment)
 }
 
-fn train_sequence(output: &Path, training: Training, archives: &[OsString]) -> io::Result<()> {
+fn load_sequence_archive(
+    archive: &Path,
+    hash: &mut u64,
+    output: &mut Vec<Example>,
+) -> io::Result<()> {
+    let bytes = fs::read(archive)?;
+    *hash = digest(&bytes, *hash);
+    for sample in load(&bytes)? {
+        let alignment = labeled_centers(&sample).unwrap_or_default();
+        let mut text = Vec::new();
+        for word in sample.words {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.extend(word.text.chars());
+        }
+        output.push(Example {
+            alignment,
+            geometry: sequence_geometry(&sample.line),
+            page: sample.page,
+            text,
+        });
+    }
+    writeln!(
+        io::stdout().lock(),
+        "lines={} archive={}",
+        output.len(),
+        archive.display()
+    )
+}
+
+fn train_sequence(
+    output: &Path,
+    training: Training,
+    archives: &[OsString],
+    validation: Option<&Path>,
+) -> io::Result<()> {
     let mut examples = Vec::new();
     let mut hash = FNV_OFFSET;
     for archive in archives {
-        let bytes = fs::read(archive)?;
-        hash = digest(&bytes, hash);
-        for sample in load(&bytes)? {
-            let alignment = labeled_centers(&sample).unwrap_or_default();
-            let mut text = Vec::new();
-            for word in sample.words {
-                if !text.is_empty() {
-                    text.push(' ');
-                }
-                text.extend(word.text.chars());
-            }
-            examples.push(Example {
-                alignment,
-                geometry: sequence_geometry(&sample.line),
-                page: sample.page,
-                text,
-            });
-        }
-        writeln!(
-            io::stdout().lock(),
-            "lines={} archive={}",
-            examples.len(),
-            Path::new(archive).display()
-        )?;
+        load_sequence_archive(Path::new(archive), &mut hash, &mut examples)?;
     }
-    write_model(
-        output,
-        &sequence_training::train(&examples, training, hash)?,
-    )
+    let mut held_out = Vec::new();
+    hash = digest(b"validation", hash);
+    if let Some(path) = validation {
+        load_sequence_archive(path, &mut hash, &mut held_out)?;
+    }
+    sequence_training::train(&examples, &held_out, training, hash, output)
 }
 
 fn sequence_arguments(
@@ -951,7 +966,7 @@ fn sequence_arguments(
     let number = |value: &OsString| value.to_str()?.parse::<usize>().ok();
     let parameters = number(seed).zip(number(workers)).zip(number(epochs));
     let Some(((seed_id, worker_count), epoch_count)) =
-        parameters.filter(|((_, count), rounds)| (1..=128).contains(count) && *rounds > 0)
+        parameters.filter(|((_, count), rounds)| (1..=12).contains(count) && *rounds > 0)
     else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -971,11 +986,25 @@ fn sequence_arguments(
     let mut training = Training {
         epochs: epoch_count,
         lines_per_epoch: usize::MAX,
+        patience: 5,
+        resume: false,
         seed: u64::try_from(seed_id).unwrap_or_default(),
         warm_epochs: 0,
         workers: worker_count,
     };
+    let mut validation = None;
     for option in options {
+        if option == "--resume" {
+            training.resume = true;
+            continue;
+        }
+        if let Some(path) = option
+            .to_str()
+            .and_then(|value| value.strip_prefix("--validation="))
+        {
+            validation = Some(Path::new(path));
+            continue;
+        }
         let parsed = option
             .to_str()
             .and_then(|value| value.split_once('='))
@@ -983,6 +1012,7 @@ fn sequence_arguments(
         match parsed {
             Some(("--warm", rounds)) if rounds < training.epochs => training.warm_epochs = rounds,
             Some(("--lines", limit)) if limit > 0 => training.lines_per_epoch = limit,
+            Some(("--patience", rounds)) if rounds > 0 => training.patience = rounds,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -991,7 +1021,7 @@ fn sequence_arguments(
             }
         }
     }
-    train_sequence(Path::new(output), training, archives)
+    train_sequence(Path::new(output), training, archives, validation)
 }
 
 fn evaluate_sequence(input: &Path, weights: &Path) -> io::Result<()> {
@@ -1116,7 +1146,7 @@ pub fn run(arguments: &[OsString]) -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] <samples.ocrt>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
+            "usage: pdf-core-ocr-train train-sequence <model.bin> <seed> <workers> <epochs> [--warm=N] [--lines=N] [--validation=ARCHIVE] [--patience=N] [--resume] <samples.ocrt>... | evaluate-sequence <samples.ocrt> <model.bin> | train-network <model.bin> <seed> <glyph|line> <corpus.txt> [--reject] <samples.ocrt>... | evaluate <samples.ocrt> [model.bin] | inspect <samples.ocrt> <crops-dir> [model.bin]",
         )),
     }
 }

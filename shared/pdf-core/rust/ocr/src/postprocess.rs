@@ -19,16 +19,13 @@ const MULTI_COST: u16 = 48;
 const MULTI_OCCURRENCES: usize = 2;
 const SUB_COST: u16 = 40;
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-#[expect(
-    unreachable_pub,
-    reason = "de-hyphenation hint consumed by the OCR engine once segmentation lands"
-)]
-pub struct DehyphenHint {
-    pub joined: String,
-    pub line_index: usize,
-    pub word_index: usize,
+struct DehyphenHint {
+    joined: String,
+    line_index: usize,
+    word_index: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -61,11 +58,7 @@ struct Scratch {
 }
 
 #[inline]
-#[expect(
-    unreachable_pub,
-    reason = "word correction consumed by the OCR engine once segmentation lands"
-)]
-pub fn correct(words: &mut [Word]) {
+pub(crate) fn correct(words: &mut [Word]) {
     let lexicon = Lexicon::get();
     let mut scratch = Scratch::default();
     let mut previous = None;
@@ -74,13 +67,8 @@ pub fn correct(words: &mut [Word]) {
     }
 }
 
-#[inline]
-#[must_use]
-#[expect(
-    unreachable_pub,
-    reason = "line-aware correction consumed by the OCR engine once segmentation lands"
-)]
-pub fn correct_lines(lines: &mut [Vec<Word>]) -> Vec<DehyphenHint> {
+#[cfg(test)]
+fn correct_lines(lines: &mut [Vec<Word>]) -> Vec<DehyphenHint> {
     let hints = dehyphen_hints(lines);
     let lexicon = Lexicon::get();
     let mut scratch = Scratch::default();
@@ -93,6 +81,7 @@ pub fn correct_lines(lines: &mut [Vec<Word>]) -> Vec<DehyphenHint> {
     hints
 }
 
+#[cfg(test)]
 fn alphabetic_core(text: &str) -> Option<&str> {
     let (start, end) = peel_range(text);
     let core = text.get(start..end)?;
@@ -274,6 +263,7 @@ fn consider(hits: &mut Vec<Hit>, word_id: u32, cost: u16, confidence: f32) {
     });
 }
 
+#[cfg(test)]
 fn dehyphen_hints(lines: &[Vec<Word>]) -> Vec<DehyphenHint> {
     let lexicon = Lexicon::get();
     let mut folded = String::new();
@@ -348,6 +338,7 @@ fn has_odd_symbol(text: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn hyphen_core(text: &str) -> Option<&str> {
     let trimmed = text.trim_end_matches(['.', ',', ';', ':', '!', '?']);
     let stem = trimmed
@@ -356,6 +347,7 @@ fn hyphen_core(text: &str) -> Option<&str> {
     (stem.chars().all(char::is_alphabetic) && stem.chars().nth(1).is_some()).then_some(stem)
 }
 
+#[cfg(test)]
 fn hyphen_tail(line: &[Word]) -> Option<(usize, &str)> {
     let word_index = line.len().checked_sub(1)?;
     let word = line.get(word_index)?;

@@ -23,6 +23,8 @@ workspace = true
 [features]
 ctc-probe = []
 ctc-wide = []
+ctc-v3 = []
+ocr-lexicon = []
 synth = []
 
 [[bin]]

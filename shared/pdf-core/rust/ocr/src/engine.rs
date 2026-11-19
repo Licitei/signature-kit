@@ -1,10 +1,13 @@
 use crate::binarize::binarize;
 use crate::clean::{Rule, TableGrid, clean, grids};
 use crate::deskew::{Transform, straighten};
+#[cfg(feature = "ocr-lexicon")]
 use crate::postprocess::correct;
 use crate::raster::{Bits, Gray, RasterError};
-use crate::recognize::recognize_line;
-use crate::segment::{PageLayout, segment, segment_with_tables};
+use crate::recognize::{Word as RecognizedWord, recognize_line};
+use crate::segment::{Line, PageLayout, segment, segment_with_tables};
+#[cfg(feature = "ctc-probe")]
+use crate::sequence::{Scratch, Sequence};
 
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -66,11 +69,34 @@ impl PreparedPage {
     #[inline]
     #[must_use]
     pub fn recognize(&self) -> PageResult {
+        self.recognize_with(recognize_line)
+    }
+
+    #[cfg(feature = "ctc-probe")]
+    #[inline]
+    #[must_use]
+    pub fn recognize_sequence(&self, table: &[u8]) -> Option<PageResult> {
+        let sequence = Sequence::decode(table)?;
+        let mut scratch = Scratch::for_page(self.page.width);
+        Some(self.recognize_with(|page, line| sequence.words(page, line, &mut scratch)))
+    }
+
+    fn recognize_with<Recognize>(&self, mut recognize: Recognize) -> PageResult
+    where
+        Recognize: FnMut(&Bits, &Line) -> Vec<RecognizedWord>,
+    {
         let mut words = Vec::new();
         let mut text = String::new();
         for (index, line) in self.layout.lines.iter().enumerate() {
-            let mut recognized = recognize_line(&self.page, line);
-            correct(&mut recognized);
+            let raw = recognize(&self.page, line);
+            #[cfg(not(feature = "ocr-lexicon"))]
+            let recognized = raw;
+            #[cfg(feature = "ocr-lexicon")]
+            let recognized = {
+                let mut corrected = raw;
+                correct(&mut corrected);
+                corrected
+            };
             if !text.is_empty() && !recognized.is_empty() {
                 text.push('\n');
             }
