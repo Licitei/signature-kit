@@ -408,7 +408,7 @@ mod tests {
             Some(&mut scan),
         )
         .unwrap();
-        let diagnostics = scan.finish(0).unwrap();
+        let diagnostics = scan.finish(0, page.info.rotate).unwrap();
         assert_eq!(expected.runs, combined.runs);
         assert_eq!(expected.text, combined.text);
         assert!(matches!(diagnostics.text_layer, TextLayer::Usable));

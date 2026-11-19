@@ -234,12 +234,12 @@ struct ScanState {
 }
 
 impl ScanState {
-    fn clipped_bounds(self, bounds: [f64; 4]) -> Option<[f64; 4]> {
+    fn clipped_bounds(&self, bounds: [f64; 4]) -> Option<[f64; 4]> {
         self.clip
             .map_or(Some(bounds), |clip| intersection(clip, bounds))
     }
 
-    const fn paints_text(self) -> bool {
+    const fn paints_text(&self) -> bool {
         let [fill_white, stroke_white] = self.white;
         let [fill_clear, stroke_clear] = self.transparent;
         let fill = !fill_clear && !fill_white;
@@ -270,6 +270,7 @@ impl ScanPath {
         }));
     }
 
+    #[inline(never)]
     fn operator(&mut self, code: u32, operands: &[Operand<'_>], state: &mut GState) {
         match code {
             OP_MOVE | OP_LINE | OP_CURVE | OP_CURVE_V | OP_CURVE_Y => {
