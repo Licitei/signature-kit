@@ -1,3 +1,11 @@
+## Unreleased
+
+### Read selected pages from a byte-range source
+
+`PdfCore.openLazy(source)` opens a scoped range reader for text, Markdown, tables, and rendering. It caches fetched ranges across calls, preserves original page indexes, and reports full-load fallback in its stats. The Promise client supports `close()` and `await using`. Source adapters cover bytes, Blob, Node file handles, and Effect `FileSystem`.
+
+In a local first-page Markdown run over 294 PDFs, the lazy path read 9.06% of the corpus bytes and matched every full-load result, with four fallbacks. Lazy and full-load p50/p90 latency were 58.91/86.46 ms and 34.67/65.48 ms. Peak Wasm memory was 33.94 MiB and 41.44 MiB, respectively. Peak process RSS was 172.01 MiB and 163.83 MiB. The release Wasm measured 1,163,114 bytes, 32,618 bytes above the existing size test limit.
+
 ## @signature-kit/pdf-core@0.2.0
 
 ### Repair missing PDF catalog types during edits
