@@ -23,38 +23,23 @@ impl From<FailureCode> for u32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Failure {
     pub(crate) code: FailureCode,
-    pub(crate) reason: String,
+    pub(crate) reason: &'static str,
 }
 
 impl Failure {
-    pub(crate) fn invalid<R>(reason: R) -> Self
-    where
-        R: Into<String>,
-    {
+    pub(crate) const fn invalid(reason: &'static str) -> Self {
         Self::new(FailureCode::InvalidPdf, reason)
     }
 
-    pub(crate) fn limit<R>(reason: R) -> Self
-    where
-        R: Into<String>,
-    {
+    pub(crate) const fn limit(reason: &'static str) -> Self {
         Self::new(FailureCode::LimitExceeded, reason)
     }
 
-    pub(crate) fn new<R>(code: FailureCode, reason: R) -> Self
-    where
-        R: Into<String>,
-    {
-        Self {
-            code,
-            reason: reason.into(),
-        }
+    pub(crate) const fn new(code: FailureCode, reason: &'static str) -> Self {
+        Self { code, reason }
     }
 
-    pub(crate) fn request<R>(reason: R) -> Self
-    where
-        R: Into<String>,
-    {
+    pub(crate) const fn request(reason: &'static str) -> Self {
         Self::new(FailureCode::InvalidRequest, reason)
     }
 }

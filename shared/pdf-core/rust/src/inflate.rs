@@ -587,7 +587,7 @@ fn inflate_with(data: &[u8], max_output: usize, truncate: bool) -> Outcome<Vec<u
 
 #[cfg(test)]
 mod tests {
-    use super::inflate;
+    use super::{FailureCode, inflate};
     use core::array;
 
     const ZLIB_MB: &[u8] = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
@@ -718,7 +718,10 @@ mod tests {
             ] {
                 let expected = full.get(..len.min(full.len())).expect("slice");
                 if len == 0 {
-                    drop(inflate_prefix(data, len).expect_err("empty prefix"));
+                    assert_eq!(
+                        inflate_prefix(data, len).expect_err("empty prefix").code,
+                        FailureCode::LimitExceeded
+                    );
                 } else {
                     assert_eq!(inflate_prefix(data, len).expect("prefix"), expected);
                 }
@@ -733,7 +736,10 @@ mod tests {
             0x78_u8, 0x01, 0x01, 0x05, 0x00, 0xfa, 0xff, b'h', b'e', b'l', b'l', b'o',
         ];
         assert_eq!(inflate_prefix(&stored, 3).expect("prefix"), b"hel");
-        drop(inflate(&stored, 3).expect_err("limit"));
+        assert_eq!(
+            inflate(&stored, 3).expect_err("limit").code,
+            FailureCode::LimitExceeded
+        );
     }
 
     #[test]

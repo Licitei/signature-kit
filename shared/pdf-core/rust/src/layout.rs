@@ -1119,6 +1119,7 @@ fn md_line(
     }
 }
 
+#[inline(never)]
 fn positioned_lines(frags: &[Frag<'_>]) -> (Vec<Segment>, Vec<(usize, usize)>) {
     let text_lines = cluster_lines(frags);
     let mut segments: Vec<Segment> = Vec::with_capacity(text_lines.len());
@@ -1403,6 +1404,7 @@ fn turn_rect(quarter: usize, rect: [f64; 4]) -> [f64; 4] {
     [ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)]
 }
 
+#[inline(never)]
 fn fragment_pools(content: &PageContent, page: usize) -> ([Vec<Frag<'_>>; 4], Vec<usize>) {
     let mut pools: [Vec<Frag<'_>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     let mut weights = [0_usize; 4];

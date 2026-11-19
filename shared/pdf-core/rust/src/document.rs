@@ -457,6 +457,7 @@ impl<'data> Document<'data> {
         Parser::new(&object_stream.data, start, self.limits.max_nesting, true).parse_object()
     }
 
+    #[inline(never)]
     pub(crate) fn metadata(&self) -> Outcome<Metadata> {
         const INFO_KEYS: [&[u8]; 8] = [
             b"Title",
@@ -1557,6 +1558,7 @@ fn uri_from_action(value: &Object) -> Option<String> {
     value.as_name().map(decode_pdf_name)
 }
 
+#[inline(never)]
 pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xfe, 0xff]) {
         let units = rest.chunks(2).map(|pair| match pair {
@@ -1725,6 +1727,7 @@ fn page_index_u32(index: usize) -> Outcome<u32> {
         .ok_or_else(|| Failure::limit("page index out of range"))
 }
 
+#[inline(never)]
 pub(crate) fn inspect_opened(
     document: &Document<'_>,
     pages: &[(usize, &Page)],

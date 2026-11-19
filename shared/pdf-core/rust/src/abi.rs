@@ -126,6 +126,7 @@ impl Writer {
         self.bytes(&value.to_le_bytes());
     }
 
+    #[inline(never)]
     fn grow(&mut self, needed: usize) -> bool {
         let target = needed.max(self.capacity.saturating_mul(2));
         let (Some(current), Some(_)) = (block_layout(self.capacity), block_layout(target)) else {
@@ -279,6 +280,7 @@ fn padded(value: usize) -> Outcome<usize> {
         .ok_or_else(|| Failure::limit("result size overflow"))
 }
 
+#[inline(never)]
 fn encode_info(info: &Metadata) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(52);
     out.u32(INFO_MAGIC);
@@ -297,6 +299,7 @@ fn encode_info(info: &Metadata) -> Outcome<Writer> {
     out.done()
 }
 
+#[inline(never)]
 fn encode(inspection: &Inspection) -> Outcome<Writer> {
     let page_count = len32(inspection.pages.len())?;
     let link_count = len32(inspection.links.len())?;
@@ -380,6 +383,7 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
     out.done()
 }
 
+#[inline(never)]
 fn encode_headings(pages: &[HeadingPage]) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(16);
     out.u32(HEADINGS_MAGIC);
@@ -553,6 +557,7 @@ fn encode_render(pages: &[RenderedPage]) -> Outcome<Writer> {
     out.done()
 }
 
+#[inline(never)]
 fn finish(outcome: Outcome<Writer>) -> *mut u8 {
     match outcome {
         Ok(writer) => writer.publish(STATUS_OK),

@@ -24,7 +24,7 @@ pub(crate) enum Reject {
 }
 
 impl Reject {
-    pub(crate) fn into_failure(self) -> Failure {
+    pub(crate) const fn into_failure(self) -> Failure {
         match self {
             Self::Garbage => Failure::invalid("malformed object"),
             Self::TooDeep => Failure::limit("object nesting exceeds limit"),
@@ -1345,9 +1345,14 @@ mod tests {
 
     #[test]
     fn rejects_missing_header() {
-        drop(parse_indirect_object(b"hello", 0, 64, &no_length).unwrap_err());
-        drop(parse_indirect_object(b"1 0 objx", 0, 64, &no_length).unwrap_err());
-        drop(parse_indirect_object(b"10obj", 0, 64, &no_length).unwrap_err());
+        for data in [b"hello".as_slice(), b"1 0 objx", b"10obj"] {
+            assert_eq!(
+                parse_indirect_object(data, 0, 64, &no_length)
+                    .unwrap_err()
+                    .code,
+                FailureCode::InvalidPdf
+            );
+        }
     }
 
     fn stream_bytes<'data>(data: &'data [u8], parsed: &IndirectObject) -> &'data [u8] {

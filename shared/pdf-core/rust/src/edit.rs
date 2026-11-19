@@ -802,7 +802,7 @@ fn dict_entry_mut<'object>(dict: &'object mut Dict, key: &[u8]) -> Option<&'obje
         .map(|(_, value)| value)
 }
 
-fn dict_of(object: &mut Object) -> Outcome<&mut Dict> {
+const fn dict_of(object: &mut Object) -> Outcome<&mut Dict> {
     match object {
         Object::Dict(dict) => Ok(dict),
         Object::Stream(stream) => Ok(&mut stream.dict),
