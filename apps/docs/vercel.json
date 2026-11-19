@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "bunVersion": "1.4.x",
+  "installCommand": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target wasm32-unknown-unknown && cd ../.. && bun install --frozen-lockfile",
+  "buildCommand": "export PATH=\"$HOME/.cargo/bin:$PATH\" && cd ../.. && bun run site:build",
+  "functions": {
+    "server.mjs": {
+      "includeFiles": "dist-foldkit/**"
+    }
+  }
+}
