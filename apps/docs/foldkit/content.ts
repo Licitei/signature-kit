@@ -11,6 +11,8 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { parseDocument } from "yaml";
 import type { Html, HtmlBuilder } from "foldkit/html";
+import { prose } from "./styles/prose";
+import { sx } from "./styles/sx";
 import { mermaidView } from "./mermaid";
 
 const sources = import.meta.glob<string>("../content/{docs,blog,changelog}/**/*.mdx", {
@@ -197,7 +199,7 @@ export const renderContent = <Message>(
           part.flow
             ? render(part.nodes)
             : part.nodes.length > 0
-              ? [h.p([], render(part.nodes))]
+              ? [h.p([...sx(h, prose.p)], render(part.nodes))]
               : [],
         );
       }
@@ -219,7 +221,7 @@ export const renderContent = <Message>(
       case "text":
         return node.value ?? "";
       case "paragraph":
-        return h.p([], children);
+        return h.p([...sx(h, prose.p)], children);
       case "heading": {
         const headingChildren = [...(node.children ?? [])];
         const last = headingChildren.at(-1);
@@ -240,17 +242,17 @@ export const renderContent = <Message>(
         const heading = render(headingChildren);
         switch (node.depth) {
           case 1:
-            return h.h1([h.Id(id)], heading);
+            return h.h1([h.Id(id), ...sx(h, prose.h1)], heading);
           case 2:
-            return h.h2([h.Id(id)], heading);
+            return h.h2([h.Id(id), ...sx(h, prose.h2)], heading);
           case 3:
-            return h.h3([h.Id(id)], heading);
+            return h.h3([h.Id(id), ...sx(h, prose.h3)], heading);
           case 4:
-            return h.h4([h.Id(id)], heading);
+            return h.h4([h.Id(id), ...sx(h, prose.h3)], heading);
           case 5:
-            return h.h5([h.Id(id)], heading);
+            return h.h5([h.Id(id), ...sx(h, prose.h3)], heading);
           case 6:
-            return h.h6([h.Id(id)], heading);
+            return h.h6([h.Id(id), ...sx(h, prose.h3)], heading);
         }
       }
       case "strong":
@@ -260,7 +262,7 @@ export const renderContent = <Message>(
       case "delete":
         return h.del([], children);
       case "inlineCode":
-        return h.code([], [node.value ?? ""]);
+        return h.code([...sx(h, prose.inlineCode)], [node.value ?? ""]);
       case "code":
         return node.lang === "mermaid"
           ? mermaidView(h, node.value ?? "", node.meta)
@@ -269,8 +271,13 @@ export const renderContent = <Message>(
               [
                 node.meta != null && node.meta.length > 0 ? h.p([], [node.meta]) : null,
                 h.pre(
-                  [],
-                  [h.code([h.Class(`language-${node.lang ?? "text"}`)], [node.value ?? ""])],
+                  [...sx(h, prose.pre)],
+                  [
+                    h.code(
+                      [...sx(h, `language-${node.lang ?? "text"}`, prose.blockCode)],
+                      [node.value ?? ""],
+                    ),
+                  ],
                 ),
               ],
             );
@@ -278,6 +285,7 @@ export const renderContent = <Message>(
         return h.a(
           [
             h.Href(safeUrl(node.url)),
+            ...sx(h, prose.link),
             ...(node.title != null && node.title.length > 0 ? [h.Title(node.title)] : []),
           ],
           children,
@@ -299,7 +307,7 @@ export const renderContent = <Message>(
       case "table": {
         const [header, ...rows] = node.children ?? [];
         return h.table(
-          [],
+          [...sx(h, prose.table)],
           [
             h.thead(
               [],
@@ -307,7 +315,7 @@ export const renderContent = <Message>(
                 h.tr(
                   [],
                   (header?.children ?? []).map((cell) =>
-                    h.th([h.Scope("col")], render(cell.children ?? [])),
+                    h.th([h.Scope("col"), ...sx(h, prose.cell)], render(cell.children ?? [])),
                   ),
                 ),
               ],
@@ -317,7 +325,9 @@ export const renderContent = <Message>(
               rows.map((row) =>
                 h.tr(
                   [],
-                  (row.children ?? []).map((cell) => h.td([], render(cell.children ?? []))),
+                  (row.children ?? []).map((cell) =>
+                    h.td([...sx(h, prose.cell)], render(cell.children ?? [])),
+                  ),
                 ),
               ),
             ),
@@ -349,7 +359,7 @@ export const renderContent = <Message>(
         switch (node.name) {
           case "Cards":
             return h.div(
-              [h.Class("cards")],
+              [...sx(h, "cards", prose.cards)],
               render(
                 (node.children ?? [])
                   .flatMap((child) =>
@@ -379,14 +389,14 @@ export const renderContent = <Message>(
                 ];
             const href = attr("href");
             return href !== undefined && href.length > 0
-              ? h.a([h.Class("card"), h.Href(safeUrl(href))], body)
+              ? h.a([...sx(h, "card", prose.card), h.Href(safeUrl(href))], body)
               : inline
-                ? h.span([h.Class("card")], body)
-                : h.div([h.Class("card")], body);
+                ? h.span([...sx(h, "card", prose.card)], body)
+                : h.div([...sx(h, "card", prose.card)], body);
           }
           case "ErrorCatalog":
             return h.div(
-              [h.Class("error-catalog")],
+              [...sx(h, "error-catalog", prose.catalog)],
               [
                 h.div([], [h.span([], ["Code"]), h.span([], ["Default message"])]),
                 ...signatureKitErrorCatalog.map((entry) =>
@@ -402,7 +412,7 @@ export const renderContent = <Message>(
             );
           case "Callout":
             return h.aside(
-              [h.Class(`callout ${attr("type") ?? "info"}`)],
+              [...sx(h, `callout ${attr("type") ?? "info"}`, prose.callout)],
               [
                 (attr("title")?.length ?? 0) > 0 ? h.strong([], [attr("title") ?? ""]) : null,
                 ...children,
@@ -410,7 +420,7 @@ export const renderContent = <Message>(
             );
           case "Steps":
             return h.ol(
-              [h.Class("steps")],
+              [...sx(h, "steps", prose.steps)],
               render(
                 (node.children ?? [])
                   .flatMap((child) =>
@@ -421,7 +431,7 @@ export const renderContent = <Message>(
             );
           case "Step":
             return h.li(
-              [],
+              [...sx(h, prose.step)],
               [
                 (attr("title")?.length ?? 0) > 0 ? h.h3([], [attr("title") ?? ""]) : null,
                 ...children,

@@ -17,6 +17,7 @@ import {
 } from "../lib/posthog/server";
 import { feedbackResponse } from "./feedback-server";
 import { signFreeDescription, signFreeFaqs, signFreeSteps } from "./home";
+import { siteOrigin } from "./site-origin";
 
 export const createServerComposition = (
   source: {
@@ -139,17 +140,13 @@ export const createServerComposition = (
           : "/sign-free"
         : path;
     const alternate = (candidate: string) =>
-      `https://signaturekit.dev${alternatePath(candidate) === "" ? homeRoute({ locale: candidate === "pt-BR" ? "pt-BR" : "en-US" }) : pageRoute({ locale: candidate === "pt-BR" ? "pt-BR" : "en-US", path: alternatePath(candidate).slice(1) })}`;
+      `${siteOrigin}${alternatePath(candidate) === "" ? homeRoute({ locale: candidate === "pt-BR" ? "pt-BR" : "en-US" }) : pageRoute({ locale: candidate === "pt-BR" ? "pt-BR" : "en-US", path: alternatePath(candidate).slice(1) })}`;
     const elements = [
       meta("og:site_name", "SignatureKit", true),
       meta("og:type", article !== undefined ? "article" : "website", true),
       meta("og:locale", locale === "pt-BR" ? "pt_BR" : "en_US", true),
       meta("og:title", application.title, true),
-      meta(
-        "og:image",
-        `https://signaturekit.dev${url.pathname}${path === "" ? "/index" : ""}.webp`,
-        true,
-      ),
+      meta("og:image", `${siteOrigin}${url.pathname}${path === "" ? "/index" : ""}.webp`, true),
       meta("twitter:card", "summary"),
       meta("twitter:title", application.title),
       ...(description !== ""
@@ -191,7 +188,7 @@ export const createServerComposition = (
         return serializer.serializeToString(element);
       })
       .join("");
-    const signFreeUrl = "https://signaturekit.dev/pt-BR/assine-documentos-gratis";
+    const signFreeUrl = `${siteOrigin}/pt-BR/assine-documentos-gratis`;
     const structuredData =
       application.canonical === signFreeUrl
         ? {
@@ -255,7 +252,7 @@ export const createServerComposition = (
         imagePath === "index"
           ? homeRoute({ locale: parsedImage.locale })
           : pageRoute({ locale: parsedImage.locale, path: imagePath });
-      const page = await renderPage(new Request(`https://signaturekit.dev${pagePath}`), buildId);
+      const page = await renderPage(new Request(`${siteOrigin}${pagePath}`), buildId);
       if (page._tag !== "Rendered")
         return Server.Responded(new Response("Not found", { status: 404 }));
       if (request.method !== "GET" && request.method !== "HEAD")

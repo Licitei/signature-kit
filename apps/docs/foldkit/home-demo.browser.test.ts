@@ -68,7 +68,7 @@ it("navigates with the keyboard and releases each instance's PDF URLs independen
             .toContain("2 / 4"),
         );
         expect(
-          first.container.querySelector('[data-demo-index="1"]')?.getAttribute("aria-pressed"),
+          first.container.querySelector('[data-demo-index="1"]')?.getAttribute("aria-selected"),
         ).toBe("true");
         expect(second.container.querySelector("[data-demo-label]")?.textContent).toContain("1 / 4");
         first.handle.dispose();

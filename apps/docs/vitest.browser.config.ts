@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import stylex from "@stylexjs/unplugin";
 import { mergeConfig } from "vitest/config";
 import { playwright } from "@vitest/browser-playwright";
 
@@ -12,7 +13,16 @@ import { homeBrowserServer } from "./foldkit/home-browser-server";
 const docsRoot = path.dirname(fileURLToPath(import.meta.url));
 
 export default mergeConfig(baseBrowserConfig, {
-  plugins: [feedbackBrowserServer(docsRoot), homeBrowserServer()],
+  plugins: [
+    stylex.vite({
+      useCSSLayers: true,
+      runtimeInjection: false,
+      dev: false,
+      unstable_moduleResolution: { type: "commonJS", rootDir: docsRoot },
+    }),
+    feedbackBrowserServer(docsRoot),
+    homeBrowserServer(),
+  ],
   test: {
     browser: {
       commands: { feedbackBfcache },

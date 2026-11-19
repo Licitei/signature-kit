@@ -1,7 +1,17 @@
 import { homeRoute, pageRoute, Locale } from "./routes";
-import { Button, Input, Nav, Popover, Textarea } from "@foldkit/ui";
+import {
+  Animation,
+  Button,
+  Input,
+  Nav,
+  Popover,
+  Switch,
+  Tabs,
+  Textarea,
+  Tooltip,
+} from "@foldkit/ui";
 import { Option, Schema } from "effect";
-import { Update } from "foldkit";
+import { Command, Update } from "foldkit";
 import * as Mount from "foldkit/mount";
 import type { Document, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
@@ -27,7 +37,10 @@ import { SearchQuery, SearchResults, searchDocs } from "./search";
 import { SubmitFeedback, SubmitTextFeedback } from "./feedback";
 import {
   CopyHome,
+  CopyToast,
   ExpireHomeCopy,
+  HomeInstallTabs,
+  HomeProviderTabs,
   SelectHomeProvider,
   SaveTheme,
   Theme,
@@ -36,12 +49,18 @@ import {
   HomeCopyLocation,
   HomeCopyRequest,
   HomeProvider,
+  InstallManager,
   firstSignature,
   homeProviders,
   homeView,
-  installCommand,
+  installSnippets,
   signFreeLanding,
 } from "./home";
+import { siteOrigin } from "./site-origin";
+import { darkTheme } from "./styles/tokens.stylex";
+import { prose } from "./styles/prose";
+import { shell } from "./styles/shell";
+import { sx } from "./styles/sx";
 
 export const Flags = Schema.Struct({
   locale: Locale,
@@ -61,6 +80,13 @@ export const Model = Schema.Struct({
   homeProvider: HomeProvider,
   homeCopied: Schema.Union([HomeCopyTarget, Schema.Literals(["none", "failed"])]),
   homeCopyRequest: HomeCopyRequest,
+  providerTabs: Tabs.Model,
+  installTabs: Tabs.Model,
+  installManager: InstallManager,
+  openFaq: Schema.Option(Schema.Literals([0, 1, 2])),
+  copyToast: CopyToast.Model,
+  heroMotion: Animation.Model,
+  themeTip: Tooltip.Model,
 });
 export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
@@ -85,6 +111,12 @@ export const Message = defineMessageUnion({
   TextFeedbackSubmitted: {},
   FeedbackSubmitted: { opinion: Schema.Literals(["good", "bad"]) },
   FeedbackFinished: { ok: Schema.Boolean },
+  GotProviderTabsMessage: { message: Tabs.Message },
+  GotInstallTabsMessage: { message: Tabs.Message },
+  FaqToggled: { index: Schema.Literals([0, 1, 2]), open: Schema.Boolean },
+  GotCopyToastMessage: { message: CopyToast.Message },
+  GotHeroMotionMessage: { message: Animation.Message },
+  GotThemeTipMessage: { message: Tooltip.Message },
 });
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
@@ -101,6 +133,13 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
     homeProvider: "Clicksign",
     homeCopied: "none",
     homeCopyRequest: 0,
+    providerTabs: Tabs.init({ id: "home-providers" }),
+    installTabs: Tabs.init({ id: "home-install" }),
+    installManager: "bun",
+    openFaq: Option.none(),
+    copyToast: CopyToast.init({ id: "home-toast", defaultDuration: "1800 millis" }),
+    heroMotion: Animation.init({ id: "home-hero", isShowing: true }),
+    themeTip: Tooltip.init({ id: "theme-tip", showDelay: "300 millis" }),
   },
 });
 const foldLanguagePopover = Update.foldChild({
@@ -119,12 +158,96 @@ const foldHomeDemo = Update.foldChild({
   write: (model, homeDemo) => ({ ...model, homeDemo }),
   toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
 });
+const foldProviderTabs = Update.foldChild({
+  update: HomeProviderTabs.update,
+  read: (model: Model) => Option.some(model.providerTabs),
+  write: (model, providerTabs) => ({ ...model, providerTabs }),
+  toParentMessage: (message) => Message.GotProviderTabsMessage({ message }),
+  foldOutMessage: Tabs.OutMessage.match<Update.Step<Model, Message>>({
+    Selected:
+      ({ value }) =>
+      (model) => {
+        const provider = Schema.decodeUnknownOption(HomeProvider)(value);
+        return Option.match(provider, {
+          onNone: () => ({ model }),
+          onSome: (next) =>
+            next === model.homeProvider
+              ? { model }
+              : {
+                  model: {
+                    ...model,
+                    homeProvider: next,
+                    homeCopied: "none",
+                    homeCopyRequest: model.homeCopyRequest + 1,
+                  },
+                  commands: [SelectHomeProvider({ provider: next })],
+                },
+        });
+      },
+  }),
+});
+const foldInstallTabs = Update.foldChild({
+  update: HomeInstallTabs.update,
+  read: (model: Model) => Option.some(model.installTabs),
+  write: (model, installTabs) => ({ ...model, installTabs }),
+  toParentMessage: (message) => Message.GotInstallTabsMessage({ message }),
+  foldOutMessage: Tabs.OutMessage.match<Update.Step<Model, Message>>({
+    Selected:
+      ({ value }) =>
+      (model) => {
+        const manager = Schema.decodeUnknownOption(InstallManager)(value);
+        return Option.match(manager, {
+          onNone: () => ({ model }),
+          onSome: (installManager) =>
+            installManager === model.installManager
+              ? { model }
+              : { model: { ...model, installManager, homeCopied: "none" } },
+        });
+      },
+  }),
+});
+const foldCopyToast = Update.foldChild({
+  update: CopyToast.update,
+  read: (model: Model) => Option.some(model.copyToast),
+  write: (model, copyToast) => ({ ...model, copyToast }),
+  toParentMessage: (message) => Message.GotCopyToastMessage({ message }),
+  foldOutMessage: () => (model) => ({ model }),
+});
+const foldHeroMotion = Update.foldChild({
+  update: Animation.update,
+  read: (model: Model) => Option.some(model.heroMotion),
+  write: (model, heroMotion) => ({ ...model, heroMotion }),
+  toParentMessage: (message) => Message.GotHeroMotionMessage({ message }),
+  foldOutMessage: () => (model) => ({ model }),
+});
+const foldThemeTip = Update.foldChild({
+  update: Tooltip.update,
+  read: (model: Model) => Option.some(model.themeTip),
+  write: (model, themeTip) => ({ ...model, themeTip }),
+  toParentMessage: (message) => Message.GotThemeTipMessage({ message }),
+  foldOutMessage: () => (model) => ({ model }),
+});
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     GotSigningFormMessage: ({ message }) => ({
       model: { ...model, signingForm: signingFormUpdate(model.signingForm, message).model },
     }),
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
+    GotProviderTabsMessage: ({ message }) => foldProviderTabs(model, message),
+    GotInstallTabsMessage: ({ message }) => foldInstallTabs(model, message),
+    GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
+    GotHeroMotionMessage: ({ message }) => foldHeroMotion(model, message),
+    GotThemeTipMessage: ({ message }) => foldThemeTip(model, message),
+    FaqToggled: ({ index, open }) => ({
+      model: {
+        ...model,
+        openFaq: open
+          ? Option.some(index)
+          : Option.contains(index)(model.openFaq)
+            ? Option.none()
+            : model.openFaq,
+      },
+    }),
     HomeProviderRequested: ({ provider }) => ({
       model: {
         ...model,
@@ -138,10 +261,10 @@ export const update = (model: Model, message: Message) =>
     HomeCopyRequested: ({ target, location }) => {
       const provider = homeProviders.find((entry) => entry.name === model.homeProvider);
       const snippets: Record<typeof HomeCopyTarget.Type, string> = {
-        install: installCommand,
-        npm: "npm install @signature-kit/signatures @signature-kit/a1",
-        pnpm: "pnpm add @signature-kit/signatures @signature-kit/a1",
-        yarn: "yarn add @signature-kit/signatures @signature-kit/a1",
+        install: installSnippets.bun,
+        npm: installSnippets.npm,
+        pnpm: installSnippets.pnpm,
+        yarn: installSnippets.yarn,
         first: firstSignature,
         provider: provider?.code ?? "",
       };
@@ -160,13 +283,29 @@ export const update = (model: Model, message: Message) =>
         ],
       };
     },
-    HomeCopyFinished: ({ target, ok, request, provider }) =>
-      request !== model.homeCopyRequest || provider !== model.homeProvider
-        ? { model }
-        : {
-            model: { ...model, homeCopied: ok ? target : "failed" },
-            commands: [ExpireHomeCopy({ request, provider })],
-          },
+    HomeCopyFinished: ({ target, ok, request, provider }) => {
+      if (request !== model.homeCopyRequest || provider !== model.homeProvider) return { model };
+      const notice = model.locale === "pt-BR" ? pt : en;
+      const text = ok
+        ? notice.showcase_copied
+        : model.locale === "pt-BR"
+          ? "Não foi possível copiar."
+          : "Could not copy.";
+      const shown = CopyToast.show(model.copyToast, {
+        payload: { text },
+        variant: "Info",
+        duration: "1800 millis",
+      });
+      return {
+        model: { ...model, homeCopied: ok ? target : "failed", copyToast: shown.model },
+        commands: [
+          ExpireHomeCopy({ request, provider }),
+          ...Command.mapMessages(shown.commands, (message) =>
+            Message.GotCopyToastMessage({ message }),
+          ),
+        ],
+      };
+    },
     HomeCopyExpired: ({ request, provider }) => ({
       model:
         request === model.homeCopyRequest && provider === model.homeProvider
@@ -261,7 +400,7 @@ export const createView = (source: {
       source.resolve("pt-BR", section, articleSlug ?? "") === undefined
         ? "en-US"
         : model.locale;
-    const canonical = `https://signaturekit.dev${model.path === "" ? homeRoute({ locale: sourceLocale }) : pageRoute({ locale: sourceLocale, path: model.path.slice(1) })}`;
+    const canonical = `${siteOrigin}${model.path === "" ? homeRoute({ locale: sourceLocale }) : pageRoute({ locale: sourceLocale, path: model.path.slice(1) })}`;
     const searchSuffix =
       model.path === "/search" && model.query !== ""
         ? `?${new URLSearchParams({ q: model.query })}`
@@ -298,17 +437,45 @@ export const createView = (source: {
       ogUrl: canonical,
       body: h.div(
         [
-          h.Class("site"),
+          ...sx(h, "site", shell.site, model.theme === "dark" && darkTheme),
           h.Attribute("data-theme", model.theme),
           h.OnMount(Mount.mapMessage(ThemeMount(), ({ theme }) => Message.ThemeLoaded({ theme }))),
         ],
         [
           h.header(
-            [h.Class("header")],
+            [...sx(h, "header", shell.header)],
             [
               h.a(
-                [h.Class("brand"), h.Href(homeRoute({ locale: model.locale }))],
+                [...sx(h, "brand", shell.brand), h.Href(homeRoute({ locale: model.locale }))],
                 ["SignatureKit"],
+              ),
+              h.form(
+                [
+                  ...sx(h, shell.searchForm),
+                  h.Attribute("method", "get"),
+                  h.Attribute("action", pageRoute({ locale: model.locale, path: "search" })),
+                  h.Attribute("role", "search"),
+                ],
+                [
+                  Input.view(
+                    {
+                      id: "header-search",
+                      name: "q",
+                      type: "search",
+                      toView: ({ input }) =>
+                        h.input([
+                          ...input,
+                          ...sx(h, shell.searchInput),
+                          h.Attribute("aria-label", model.locale === "pt-BR" ? "Buscar" : "Search"),
+                          h.Attribute(
+                            "placeholder",
+                            model.locale === "pt-BR" ? "Buscar" : "Search",
+                          ),
+                        ]),
+                    },
+                    h,
+                  ),
+                ],
               ),
               Nav.view({
                 items: [
@@ -329,38 +496,70 @@ export const createView = (source: {
                     : pageRoute({ locale: model.locale, path: model.path.slice(1) })),
                 toView: ({ nav, items }) =>
                   h.nav(
-                    [...nav, h.Class("navigation")],
+                    [...nav, ...sx(h, "navigation", shell.navigation)],
                     [
                       ...items.map((item) =>
-                        h.a(item.link, [
+                        h.a(
+                          [...item.link, ...sx(h, shell.navLink)],
                           [
-                            copy.nav_providers,
-                            model.locale === "pt-BR" ? "Recursos" : "Capabilities",
-                            copy.hero_cta_docs,
-                            model.locale === "pt-BR" ? "Buscar" : "Search",
-                            "Blog",
-                            "Changelog",
-                            "GitHub",
-                          ][item.index] ?? "",
-                        ]),
+                            [
+                              copy.nav_providers,
+                              model.locale === "pt-BR" ? "Recursos" : "Capabilities",
+                              copy.hero_cta_docs,
+                              model.locale === "pt-BR" ? "Buscar" : "Search",
+                              "Blog",
+                              "Changelog",
+                              "GitHub",
+                            ][item.index] ?? "",
+                          ],
+                        ),
                       ),
-                      Button.view(
-                        {
-                          onClick: Message.ThemeToggled(),
-                          toView: (attributes) =>
-                            h.button(
+                      h.submodel({
+                        slotId: "theme-tip",
+                        model: model.themeTip,
+                        view: Tooltip.view,
+                        viewInputs: {
+                          anchor: { placement: "bottom", gap: 8, padding: 8, portal: false },
+                          toView: ({ trigger, panel, isVisible }) =>
+                            h.span(
+                              [],
                               [
-                                ...attributes.button,
-                                h.Attribute(
-                                  "aria-label",
-                                  model.locale === "pt-BR" ? "Alternar tema" : "Toggle theme",
+                                Switch.view(
+                                  {
+                                    id: "theme-switch",
+                                    isChecked: model.theme === "dark",
+                                    onToggle: () => Message.ThemeToggled(),
+                                    toView: ({ button }) =>
+                                      h.button(
+                                        [
+                                          ...button,
+                                          ...trigger,
+                                          ...sx(h, shell.iconButton),
+                                          h.Attribute(
+                                            "aria-label",
+                                            model.locale === "pt-BR"
+                                              ? "Alternar tema"
+                                              : "Toggle theme",
+                                          ),
+                                        ],
+                                        [model.theme === "light" ? "☾" : "☀"],
+                                      ),
+                                  },
+                                  h,
                                 ),
+                                ...(isVisible
+                                  ? [
+                                      h.div(
+                                        [...panel, ...sx(h, shell.tooltip)],
+                                        [model.locale === "pt-BR" ? "Tema" : "Theme"],
+                                      ),
+                                    ]
+                                  : []),
                               ],
-                              [model.theme === "light" ? "☾" : "☀"],
                             ),
                         },
-                        h,
-                      ),
+                        toParentMessage: (message) => Message.GotThemeTipMessage({ message }),
+                      }),
                       h.submodel({
                         slotId: "language",
                         model: model.languagePopover,
@@ -372,12 +571,15 @@ export const createView = (source: {
                             h.div(
                               [],
                               [
-                                h.button([...button, h.Class("language")], [model.locale]),
+                                h.button(
+                                  [...button, ...sx(h, "language", shell.language)],
+                                  [model.locale],
+                                ),
                                 ...(isVisible
                                   ? [
                                       h.div(backdrop),
                                       h.div(
-                                        [...panel, h.Class("languages")],
+                                        [...panel, ...sx(h, "languages", shell.languages)],
                                         [
                                           h.a(
                                             [
@@ -427,7 +629,7 @@ export const createView = (source: {
             model.path === "/search"
               ? [
                   h.section(
-                    [h.Class("docs-content")],
+                    [...sx(h, "docs-content", prose.content)],
                     [
                       h.h1(
                         [],
@@ -521,7 +723,7 @@ export const createView = (source: {
               : tagRoute
                 ? [
                     h.article(
-                      [h.Class("docs-content")],
+                      [...sx(h, "docs-content", prose.content)],
                       [
                         h.h1(
                           [],
@@ -580,17 +782,21 @@ export const createView = (source: {
                                 slotId: "signing-form",
                                 model: model.signingForm,
                                 view: signingFormView,
-                                viewInputs: { locale: model.locale },
+                                viewInputs: { locale: model.locale, embedded: false },
                                 toParentMessage: (message) =>
                                   Message.GotSigningFormMessage({ message }),
                               }),
+                              {
+                                open: model.openFaq,
+                                toggle: (index, open) => Message.FaqToggled({ index, open }),
+                              },
                             )
                           : [
                               h.submodel({
                                 slotId: "signing-form",
                                 model: model.signingForm,
                                 view: signingFormView,
-                                viewInputs: { locale: model.locale },
+                                viewInputs: { locale: model.locale, embedded: false },
                                 toParentMessage: (message) =>
                                   Message.GotSigningFormMessage({ message }),
                               }),
@@ -600,7 +806,7 @@ export const createView = (source: {
                   : section !== undefined
                     ? [
                         h.article(
-                          [h.Class("docs-content")],
+                          [...sx(h, "docs-content", prose.content)],
                           article !== undefined
                             ? [
                                 h.h1([], [article.title]),
@@ -658,27 +864,47 @@ export const createView = (source: {
                     : docs && content !== undefined
                       ? [
                           h.div(
-                            [h.Class("docs-layout")],
+                            [...sx(h, "docs-layout", prose.layout)],
                             [
-                              h.nav(
-                                [h.Class("docs-navigation")],
+                              h.div(
+                                [...sx(h, "docs-navigation", prose.navigation)],
                                 docsNavigation(model.locale).map((group) =>
-                                  h.section(
-                                    [],
-                                    [
-                                      h.h2([], [group.title]),
-                                      h.ul(
-                                        [],
-                                        group.links.map((link) =>
-                                          h.li([], [h.a([h.Href(link.href)], [link.title])]),
-                                        ),
+                                  Nav.view({
+                                    items: group.links.map((link) => link.href),
+                                    ariaLabel: group.title,
+                                    toHref: (href) => href,
+                                    isItemCurrent: (href) =>
+                                      href ===
+                                      pageRoute({
+                                        locale: model.locale,
+                                        path: model.path.slice(1),
+                                      }),
+                                    toView: ({ nav, items }) =>
+                                      h.nav(
+                                        [...nav],
+                                        [
+                                          h.h2([...sx(h, prose.navTitle)], [group.title]),
+                                          h.ul(
+                                            [...sx(h, prose.navList)],
+                                            items.map((item) =>
+                                              h.li(
+                                                [],
+                                                [
+                                                  h.a(
+                                                    [...item.link, ...sx(h, prose.navLink)],
+                                                    [group.links[item.index]?.title ?? ""],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
+                                  }),
                                 ),
                               ),
                               h.article(
-                                [h.Class("docs-content")],
+                                [...sx(h, "docs-content", prose.content)],
                                 [
                                   h.div(
                                     [h.Attribute("data-feedback-content", "")],
@@ -785,12 +1011,17 @@ export const createView = (source: {
                               locale: model.locale,
                               provider: model.homeProvider,
                               copied: model.homeCopied,
+                              installManager: model.installManager,
+                              providerTabs: model.providerTabs,
+                              installTabs: model.installTabs,
+                              heroMotion: model.heroMotion,
+                              copyToast: model.copyToast,
                             },
                             h.submodel({
                               slotId: "signing-form",
                               model: model.signingForm,
                               view: signingFormView,
-                              viewInputs: { locale: model.locale },
+                              viewInputs: { locale: model.locale, embedded: true },
                               toParentMessage: (message) =>
                                 Message.GotSigningFormMessage({ message }),
                             }),
@@ -805,74 +1036,90 @@ export const createView = (source: {
                               select: (provider) => Message.HomeProviderRequested({ provider }),
                               copy: (target, location) =>
                                 Message.HomeCopyRequested({ target, location }),
+                              gotProviderTabs: (message) =>
+                                Message.GotProviderTabsMessage({ message }),
+                              gotInstallTabs: (message) =>
+                                Message.GotInstallTabsMessage({ message }),
+                              gotHeroMotion: (message) => Message.GotHeroMotionMessage({ message }),
+                              gotCopyToast: (message) => Message.GotCopyToastMessage({ message }),
                             },
                           ),
                         ],
           ),
           h.footer(
-            [h.Class("footer")],
+            [...sx(h, "footer", shell.footer)],
             [
               h.div([], [h.strong([], ["SignatureKit"]), h.p([], [copy.footer_brand_blurb])]),
-              h.nav(
-                [h.Attribute("aria-label", copy.footer_col_docs)],
-                [
-                  h.a(
-                    [
-                      h.Href(
-                        pageRoute({ locale: model.locale, path: "docs/get-started/quickstart" }),
-                      ),
-                    ],
-                    [copy.footer_link_quickstart],
-                  ),
-                  h.a(
-                    [h.Href(pageRoute({ locale: model.locale, path: "docs/signing/signers" }))],
-                    [copy.footer_link_signing_boundary],
-                  ),
-                  h.a(
-                    [h.Href(pageRoute({ locale: model.locale, path: "docs/signing/pdf" }))],
-                    [copy.footer_link_pdf],
-                  ),
-                  h.a(
-                    [h.Href(pageRoute({ locale: model.locale, path: "docs/signing/xml" }))],
-                    [copy.footer_link_xml],
-                  ),
-                  h.a(
-                    [h.Href(pageRoute({ locale: model.locale, path: "docs/signing/errors" }))],
-                    [copy.footer_link_errors],
-                  ),
+              Nav.view({
+                items: [
+                  pageRoute({ locale: model.locale, path: "docs/get-started/quickstart" }),
+                  pageRoute({ locale: model.locale, path: "docs/signing/signers" }),
+                  pageRoute({ locale: model.locale, path: "docs/signing/pdf" }),
+                  pageRoute({ locale: model.locale, path: "docs/signing/xml" }),
+                  pageRoute({ locale: model.locale, path: "docs/signing/errors" }),
                 ],
-              ),
-              h.nav(
-                [h.Attribute("aria-label", copy.footer_col_project)],
-                [
-                  h.a(
-                    [
-                      h.Href(
-                        pageRoute({ locale: model.locale, path: "docs/providers/request-shape" }),
+                ariaLabel: copy.footer_col_docs,
+                toHref: (item) => item,
+                isItemCurrent: (item) =>
+                  item ===
+                  (model.path === ""
+                    ? homeRoute({ locale: model.locale })
+                    : pageRoute({ locale: model.locale, path: model.path.slice(1) })),
+                toView: ({ nav, items }) =>
+                  h.nav(
+                    [...nav, ...sx(h, shell.footerNav)],
+                    items.map((item) =>
+                      h.a(
+                        [...item.link, ...sx(h, shell.footerLink)],
+                        [
+                          [
+                            copy.footer_link_quickstart,
+                            copy.footer_link_signing_boundary,
+                            copy.footer_link_pdf,
+                            copy.footer_link_xml,
+                            copy.footer_link_errors,
+                          ][item.index] ?? "",
+                        ],
                       ),
-                    ],
-                    [copy.footer_col_providers],
+                    ),
                   ),
-                  h.a(
-                    [h.Href(pageRoute({ locale: model.locale, path: "blog" }))],
-                    [copy.footer_link_blog],
-                  ),
-                  h.a(
-                    [h.Href(pageRoute({ locale: model.locale, path: "changelog" }))],
-                    ["Changelog"],
-                  ),
-                  h.a(
-                    [h.Href("https://github.com/Licitei/signature-kit")],
-                    [copy.footer_link_github],
-                  ),
-                  h.a(
-                    [h.Href("https://github.com/Licitei/signature-kit/issues")],
-                    [copy.footer_link_issues],
-                  ),
+              }),
+              Nav.view({
+                items: [
+                  pageRoute({ locale: model.locale, path: "docs/providers/request-shape" }),
+                  pageRoute({ locale: model.locale, path: "blog" }),
+                  pageRoute({ locale: model.locale, path: "changelog" }),
+                  "https://github.com/Licitei/signature-kit",
+                  "https://github.com/Licitei/signature-kit/issues",
                 ],
-              ),
+                ariaLabel: copy.footer_col_project,
+                toHref: (item) => item,
+                isItemCurrent: (item) =>
+                  item ===
+                  (model.path === ""
+                    ? homeRoute({ locale: model.locale })
+                    : pageRoute({ locale: model.locale, path: model.path.slice(1) })),
+                toView: ({ nav, items }) =>
+                  h.nav(
+                    [...nav, ...sx(h, shell.footerNav)],
+                    items.map((item) =>
+                      h.a(
+                        [...item.link, ...sx(h, shell.footerLink)],
+                        [
+                          [
+                            copy.footer_col_providers,
+                            copy.footer_link_blog,
+                            "Changelog",
+                            copy.footer_link_github,
+                            copy.footer_link_issues,
+                          ][item.index] ?? "",
+                        ],
+                      ),
+                    ),
+                  ),
+              }),
               h.p(
-                [],
+                [...sx(h, shell.footerMeta)],
                 [
                   copy.footer_attribution_prefix,
                   " ",

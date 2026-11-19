@@ -1,5 +1,4 @@
-import "./site.css";
-import "./home.css";
+import "./styles/fonts";
 import { Effect, Result, Schema } from "effect";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
@@ -74,7 +73,7 @@ it("selects real provider snippets and copies the selected snippet in Chromium",
         expect(
           [...host.querySelectorAll(".home-providers button")]
             .find((button) => button.textContent === "DocuSeal")
-            ?.getAttribute("aria-pressed"),
+            ?.getAttribute("aria-selected"),
         ).toBe("true");
         const button = host.querySelector<HTMLButtonElement>(".home-code .home-copy");
         if (button === null) return expect.fail("Missing copy button");
@@ -128,12 +127,12 @@ it("signs a PDF from the home and exposes a verifiable download", async () => {
           { width: 600, height: 400, runs: [{ text: "SignatureKit home signing", x: 30, y: 100 }] },
         ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
-          expect.poll(() => host.querySelector("#auto-sign form")).not.toBeNull(),
+          expect.poll(() => host.querySelector("#signer form")).not.toBeNull(),
         );
-        const form = host.querySelector<HTMLFormElement>("#auto-sign form");
-        const certificate = host.querySelector<HTMLInputElement>("#auto-sign [name=pfx]");
-        const documentInput = host.querySelector<HTMLInputElement>("#auto-sign [name=pdf]");
-        const password = host.querySelector<HTMLInputElement>("#auto-sign [name=password]");
+        const form = host.querySelector<HTMLFormElement>("#signer form");
+        const certificate = host.querySelector<HTMLInputElement>("#signer [name=pfx]");
+        const documentInput = host.querySelector<HTMLInputElement>("#signer [name=pdf]");
+        const password = host.querySelector<HTMLInputElement>("#signer [name=password]");
         if (form === null || certificate === null || documentInput === null || password === null)
           return expect.fail("Missing signer controls");
         const certificates = new DataTransfer();

@@ -1,9 +1,7 @@
 import { Runtime } from "foldkit";
 import { initDocsPostHog } from "../lib/posthog/client";
 import { Flags, Model, init, update, view } from "./main";
-import "./site.css";
-import "./content.css";
-import "./home.css";
+import "./styles/fonts";
 
 initDocsPostHog();
 

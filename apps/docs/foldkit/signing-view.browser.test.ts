@@ -1,4 +1,4 @@
-import "./site.css";
+import "./styles/fonts";
 import { readA1FixtureFromBrowser } from "../../../tooling/testing/fixtures.browser";
 import { pdfErrorMessages, PdfErrorCodeValue } from "@signature-kit/pdf/config";
 import { verifyPdfSignatures } from "@signature-kit/pdf/verify";
@@ -63,9 +63,9 @@ it("signs a selected PDF after a wrong password and revokes its download on unmo
           },
         ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
-          expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
+          expect.poll(() => app.host.querySelector("form:has([name=pfx])")).not.toBeNull(),
         );
-        const form = app.host.querySelector("form");
+        const form = app.host.querySelector<HTMLFormElement>("form:has([name=pfx])");
         const certificate = app.host.querySelector<HTMLInputElement>("[name=pfx]");
         const documentInput = app.host.querySelector<HTMLInputElement>("[name=pdf]");
         const password = app.host.querySelector<HTMLInputElement>("[name=password]");
@@ -235,9 +235,9 @@ it("cancels and retries a real signing flow and disposes during another active f
           ]),
         };
         yield* Effect.promise(() =>
-          expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
+          expect.poll(() => app.host.querySelector("form:has([name=pfx])")).not.toBeNull(),
         );
-        const form = app.host.querySelector("form");
+        const form = app.host.querySelector<HTMLFormElement>("form:has([name=pfx])");
         const certificate = app.host.querySelector<HTMLInputElement>("[name=pfx]");
         const documentInput = app.host.querySelector<HTMLInputElement>("[name=pdf]");
         const password = app.host.querySelector<HTMLInputElement>("[name=password]");
@@ -363,11 +363,16 @@ it("cancels and retries a real signing flow and disposes during another active f
         );
         yield* Effect.promise(() => expect.poll(() => auto.disabled).toBe(false));
         const rubric = app.host.querySelector<HTMLButtonElement>("[data-rubric]");
-        const source = app.host.querySelector<HTMLSelectElement>("[name=rubricSource]");
+        const source = app.host.querySelector<HTMLButtonElement>('[data-rubric-source="text"]');
         const text = app.host.querySelector<HTMLInputElement>("[name=rubricText]");
         if (rubric === null || source === null || text === null)
           return expect.fail("Rubric controls missing");
-        source.value = "text";
+        source.click();
+        yield* Effect.promise(() =>
+          expect
+            .poll(() => app.host.querySelector<HTMLInputElement>("[name=rubricSource]")?.value)
+            .toBe("text"),
+        );
         text.value = "Rubrica de teste";
         rubric.click();
         yield* Effect.promise(() =>
@@ -441,7 +446,7 @@ it("cancels and retries a real signing flow and disposes during another active f
         expect(app.host.querySelector("form")).toBeNull();
         const fresh = yield* application;
         yield* Effect.promise(() =>
-          expect.poll(() => fresh.host.querySelector("form")).not.toBeNull(),
+          expect.poll(() => fresh.host.querySelector("form:has([name=pfx])")).not.toBeNull(),
         );
         expect(fresh.host.querySelector("[data-status]")?.textContent).toBe("");
         expect(fresh.host.querySelector("[data-downloads]")?.children).toHaveLength(0);
@@ -481,7 +486,7 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
       import { Runtime } from "/@id/foldkit";
       import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
       const container = document.querySelector("[data-foldkit-app]");
-      window.beforeHydrationForm = document.querySelector("form");
+      window.beforeHydrationForm = document.querySelector("form:has([name=pfx])");
       Runtime.hydrate(Runtime.makeApplication({ Flags, Model, init, update, view, container }), { buildId: "signing-browser-test" });
     </script></body></html>`;
         yield* Effect.promise(() => loaded);
@@ -491,14 +496,14 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
             () => Effect.die("The iframe document is unavailable."),
           ),
         );
-        const serverForm = doc.querySelector("form");
+        const serverForm = doc.querySelector<HTMLFormElement>("form:has([name=pfx])");
         if (serverForm === null) return expect.fail("Server form missing");
         serverForm.addEventListener("submit", (event) => event.preventDefault());
         yield* Effect.promise(() =>
           expect
             .poll(
               () => {
-                const form = doc.querySelector("form");
+                const form = doc.querySelector<HTMLFormElement>("form:has([name=pfx])");
                 if (form === null) return "";
                 form.requestSubmit();
                 return doc.querySelector("[data-status]")?.textContent;
@@ -508,7 +513,7 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
             .toBe("Selecione o certificado, a senha e de 1 a 100 PDFs."),
         );
         expect(doc.body.inert).toBe(false);
-        expect(doc.querySelector("form")).toBe(
+        expect(doc.querySelector("form:has([name=pfx])")).toBe(
           frame.contentWindow === null
             ? null
             : Reflect.get(frame.contentWindow, "beforeHydrationForm"),
@@ -606,9 +611,9 @@ it("requires a placement for every loaded document and automatically places both
           Effect.provide(pdfCoreBrowserLayer),
         );
         yield* Effect.promise(() =>
-          expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
+          expect.poll(() => app.host.querySelector("form:has([name=pfx])")).not.toBeNull(),
         );
-        const form = app.host.querySelector<HTMLFormElement>("form");
+        const form = app.host.querySelector<HTMLFormElement>("form:has([name=pfx])");
         const certificate = app.host.querySelector<HTMLInputElement>("[name=pfx]");
         const password = app.host.querySelector<HTMLInputElement>("[name=password]");
         const input = app.host.querySelector<HTMLInputElement>("[name=pdf]");
@@ -694,9 +699,9 @@ it("maps a click on a cropped and rotated page to the signed PDF widget", async 
           },
         ]).pipe(Effect.provide(pdfCoreBrowserLayer));
         yield* Effect.promise(() =>
-          expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
+          expect.poll(() => app.host.querySelector("form:has([name=pfx])")).not.toBeNull(),
         );
-        const form = app.host.querySelector<HTMLFormElement>("form");
+        const form = app.host.querySelector<HTMLFormElement>("form:has([name=pfx])");
         const certificate = app.host.querySelector<HTMLInputElement>("[name=pfx]");
         const password = app.host.querySelector<HTMLInputElement>("[name=password]");
         const input = app.host.querySelector<HTMLInputElement>("[name=pdf]");
@@ -897,9 +902,9 @@ it("blocks signing after a PDF preview fails", async () => {
         const app = yield* application;
         const pfx = yield* readA1FixtureFromBrowser("ecpf");
         yield* Effect.promise(() =>
-          expect.poll(() => app.host.querySelector("form")).not.toBeNull(),
+          expect.poll(() => app.host.querySelector("form:has([name=pfx])")).not.toBeNull(),
         );
-        const form = app.host.querySelector<HTMLFormElement>("form");
+        const form = app.host.querySelector<HTMLFormElement>("form:has([name=pfx])");
         const certificate = app.host.querySelector<HTMLInputElement>("[name=pfx]");
         const password = app.host.querySelector<HTMLInputElement>("[name=password]");
         const input = app.host.querySelector<HTMLInputElement>("[name=pdf]");

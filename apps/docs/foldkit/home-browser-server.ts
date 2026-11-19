@@ -3,9 +3,12 @@ import type { Plugin } from "vite";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { Effect } from "effect";
+import stylex from "@stylexjs/unplugin";
 import { defineBrowserCommand } from "@vitest/browser-playwright";
 import * as Server from "foldkit/experimental/server";
 import type { renderDocument, renderPage } from "./entry.server";
+
+const docsRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
   const browser = context.browser();
@@ -22,7 +25,7 @@ const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
         const tab = yield* Effect.promise(() => isolated.newPage());
         yield* Effect.promise(() => tab.goto(`${origin}/en-US`));
         yield* Effect.promise(() =>
-          tab.getByRole("button", { name: "Assinafy", exact: true }).click(),
+          tab.getByRole("tab", { name: "Assinafy", exact: true }).click(),
         );
         yield* Effect.promise(() =>
           tab.waitForFunction(() => {
@@ -103,9 +106,17 @@ export const homeBrowserServer = (): Plugin => ({
     });
     const runtime = createServer({
       configFile: false,
-      root: fileURLToPath(new URL("..", import.meta.url)),
+      root: docsRoot,
       appType: "custom",
       logLevel: "error",
+      plugins: [
+        stylex.vite({
+          useCSSLayers: true,
+          runtimeInjection: false,
+          dev: false,
+          unstable_moduleResolution: { type: "commonJS", rootDir: docsRoot },
+        }),
+      ],
       server: { middlewareMode: true, hmr: false },
     });
     server.httpServer?.once("close", () => {

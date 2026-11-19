@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { gunzipSync } from "node:zlib";
 import { Effect } from "effect";
+import stylex from "@stylexjs/unplugin";
 import { createServer as createViteServer } from "vite";
 import type { Plugin, ViteDevServer } from "vite";
 import type { feedbackResponse } from "./feedback-server.ts";
@@ -158,6 +159,14 @@ export const feedbackBrowserServer = (docsRoot: string): Plugin => ({
               root: docsRoot,
               appType: "custom",
               logLevel: "error",
+              plugins: [
+                stylex.vite({
+                  useCSSLayers: true,
+                  runtimeInjection: false,
+                  dev: false,
+                  unstable_moduleResolution: { type: "commonJS", rootDir: docsRoot },
+                }),
+              ],
               resolve: { alias: { "@": docsRoot } },
               server: { middlewareMode: true, hmr: false },
             }),

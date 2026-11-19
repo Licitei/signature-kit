@@ -55,6 +55,16 @@ it("updates appearance toggles without storing certificate material in the model
       message: SigningFormMessage.RubricToggled({ checked: true }),
     }),
   ).model;
-  expect(changed.signingForm).toEqual({ identity: true, date: true, rubric: true });
-  expect(Object.keys(changed.signingForm).sort()).toEqual(["date", "identity", "rubric"]);
+  expect(changed.signingForm).toEqual({ ...initial.signingForm, rubric: true });
+  expect(Object.keys(changed.signingForm).sort()).toEqual([
+    "date",
+    "identity",
+    "logo",
+    "pdf",
+    "pfx",
+    "rubric",
+    "rubricGroup",
+    "rubricSource",
+  ]);
+  expect(JSON.stringify(changed.signingForm)).not.toContain("password");
 });

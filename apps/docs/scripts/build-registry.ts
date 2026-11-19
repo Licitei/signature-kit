@@ -2,6 +2,7 @@ import docsPackage from "../package.json" with { type: "json" };
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { siteOrigin } from "../foldkit/site-origin";
 
 type RegistryFile = {
   readonly path: string;
@@ -34,7 +35,7 @@ const outputRoot = fileURLToPath(new URL("../public/r/", import.meta.url));
 export const registry = {
   $schema: "https://ui.shadcn.com/schema/registry.json",
   name: "signature-kit",
-  homepage: "https://signaturekit.dev",
+  homepage: siteOrigin,
   items: [
     {
       name: "signature-certificate-form",

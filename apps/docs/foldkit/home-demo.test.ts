@@ -9,9 +9,19 @@ it("updates document selection and generation requests independently", () => {
   expect(next.active).toBe(0);
   const selected = homeDemoUpdate(next, HomeDemoMessage.DocumentSelected({ index: 2 })).model;
   const marked = homeDemoUpdate(selected, HomeDemoMessage.MarkRequested());
-  expect(marked.model).toEqual({ active: 2, request: 1, marked: true });
+  expect(marked.model).toEqual({
+    active: 2,
+    request: 1,
+    marked: true,
+    documents: initial.documents,
+  });
   expect("commands" in marked && marked.commands).toHaveLength(1);
   const reset = homeDemoUpdate(marked.model, HomeDemoMessage.ResetRequested());
-  expect(reset.model).toEqual({ active: 2, request: 2, marked: false });
+  expect(reset.model).toEqual({
+    active: 2,
+    request: 2,
+    marked: false,
+    documents: initial.documents,
+  });
   expect("commands" in reset && reset.commands).toHaveLength(1);
 });

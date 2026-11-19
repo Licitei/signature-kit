@@ -77,8 +77,8 @@ describe("Foldkit content", () => {
     expect(html).toContain('id=\\"a-nested-link-1\\"');
     expect(html).toContain('id=\\"error-catalog\\"');
     expect(html).not.toContain("[#error-catalog]");
-    expect(html).toContain('<thead><tr><th scope=\\"col\\">One</th>');
-    expect(html).toContain("<tbody><tr><td>A</td><td>B</td></tr></tbody>");
+    expect(html).toMatch(/<thead><tr><th scope=\\"col\\"[^>]*>One<\/th>/);
+    expect(html).toMatch(/<tbody><tr><td[^>]*>A<\/td><td[^>]*>B<\/td><\/tr><\/tbody>/);
     expect(html).not.toContain('href=\\"javascript:');
     expect(html).toContain("hello");
     expect(html).toContain("a --&gt; b");
@@ -102,18 +102,19 @@ describe("Foldkit content", () => {
       ),
     );
     const html = result.html;
-    expect(html).toContain(
-      '<p>Before </p><ol class="steps"><li><h3>One</h3>Body</li></ol><p> after</p>',
+    expect(html).toMatch(
+      /<p[^>]*>Before <\/p><ol class="steps[^"]*"><li[^>]*><h3>One<\/h3>Body<\/li><\/ol><p[^>]*> after<\/p>/,
     );
-    expect(html).toContain(
-      '<p><em>Em before </em></p><aside class="callout info"><strong>Notice</strong>Inside <strong>bold</strong></aside><p><em> em after</em></p>',
+    expect(html).toMatch(
+      /<p[^>]*><em>Em before <\/em><\/p><aside class="callout info[^"]*"><strong>Notice<\/strong>Inside <strong>bold<\/strong><\/aside><p[^>]*><em> em after<\/em><\/p>/,
     );
-    expect(html).toContain('List before </p><div class="cards">');
-    expect(html).toContain("Card body</span></div><p> list after");
-    expect(html).toContain('<p>Catalog before </p><div class="error-catalog">');
-    expect(html).toContain("<p> catalog after</p>");
-    expect(html).toContain(
-      'Outer before </p><ol class="steps"><li><h3>Nested</h3>Nested body</li></ol><p> outer after',
+    expect(html).toContain('List before </p><div class="cards');
+    expect(html).toContain("Card body</span></div><p");
+    expect(html).toContain(" list after");
+    expect(html).toMatch(/<p[^>]*>Catalog before <\/p><div class="error-catalog/);
+    expect(html).toMatch(/<p[^>]*> catalog after<\/p>/);
+    expect(html).toMatch(
+      /Outer before <\/p><ol class="steps[^"]*"><li[^>]*><h3>Nested<\/h3>Nested body<\/li><\/ol><p[^>]*> outer after/,
     );
   });
 
@@ -131,11 +132,11 @@ describe("Foldkit content", () => {
         { flags: { locale: "en-US", path: "/docs" }, buildId: "test" },
       ),
     );
-    expect(result.html).toContain(
-      '<p><a href="/ok">Link before </a></p><aside class="callout info">Notice</aside><p><a href="/ok"> link after</a></p>',
+    expect(result.html).toMatch(
+      /<p[^>]*><a[^>]*href="\/ok"[^>]*>Link before <\/a><\/p><aside class="callout info[^"]*">Notice<\/aside><p[^>]*><a[^>]*href="\/ok"[^>]*> link after<\/a><\/p>/,
     );
-    expect(result.html).toContain(
-      '<p>Before </p><div class="card"><strong>Outer</strong><p>card before <em>em </em></p><ol class="steps"><li><h3>One</h3>Body</li></ol><p><em> tail</em></p></div><p> after</p>',
+    expect(result.html).toMatch(
+      /<p[^>]*>Before <\/p><div class="card[^"]*"><strong>Outer<\/strong><p[^>]*>card before <em>em <\/em><\/p><ol class="steps[^"]*"><li[^>]*><h3>One<\/h3>Body<\/li><\/ol><p[^>]*><em> tail<\/em><\/p><\/div><p[^>]*> after<\/p>/,
     );
     await expect(
       render(
@@ -175,7 +176,7 @@ describe("Foldkit content", () => {
         { flags: { locale: "en-US", path: "/docs" }, buildId: "test" },
       ),
     );
-    expect(result.html).toContain('<a href="">link</a>');
+    expect(result.html).toContain('href="">link</a>');
     expect(result.html).toContain('<img src="" alt="image">');
     expect(result.html).not.toContain("example.com/a");
   });
@@ -207,7 +208,7 @@ describe("Foldkit content", () => {
     const recipe = await page("/docs/recipes/react-components");
     expect(recipe).toContain("Install UI with the shadcn registry");
     expect(recipe).toContain("Registry items");
-    expect(recipe).toContain("<table>");
+    expect(recipe).toContain("<table");
     expect(recipe).toContain("signature-certificate-form");
     expect(recipe).toContain("language-tsx");
     expect(recipe).toContain('href=\\"/en-US/docs/recipes/react-pdf-preview\\"');
