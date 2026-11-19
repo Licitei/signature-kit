@@ -35,6 +35,8 @@ const OP_SAVE: u32 = op(b"q");
 const OP_RESTORE: u32 = op(b"Q");
 
 const OP_CM: u32 = op(b"cm");
+const OP_CLIP: u32 = op(b"W");
+const OP_CLIP_EO: u32 = op(b"W*");
 const OP_BT: u32 = op(b"BT");
 const OP_TC: u32 = op(b"Tc");
 const OP_TW: u32 = op(b"Tw");
@@ -223,30 +225,47 @@ enum FontKey {
 #[derive(Clone)]
 struct GState {
     char_space: f64,
+    clip: Option<[f64; 4]>,
     ctm: Matrix,
+    fill_white: bool,
     font: Option<Rc<FontEntry>>,
     leading: f64,
     line_width: f64,
+    render_mode: u8,
     rise: f64,
     scale: f64,
     size: f64,
+    stroke_white: bool,
     stroked_fill: bool,
     word_space: f64,
 }
 
 impl GState {
+    const fn has_ink(&self) -> bool {
+        match self.render_mode & 3_u8 {
+            0 => !self.fill_white,
+            1 => !self.stroke_white,
+            2 => !self.fill_white || !self.stroke_white,
+            _ => false,
+        }
+    }
+
     const fn initial() -> Self {
         Self {
             ctm: IDENTITY,
             font: None,
             size: 0.0,
             char_space: 0.0,
+            clip: None,
             word_space: 0.0,
             scale: 1.0,
             leading: 0.0,
             rise: 0.0,
             line_width: 1.0,
             stroked_fill: false,
+            render_mode: 0,
+            fill_white: false,
+            stroke_white: false,
         }
     }
 }
@@ -441,6 +460,7 @@ pub(crate) struct Ruling {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Reposition {
+    Glyph,
     #[default]
     Join,
     Split,
@@ -708,7 +728,7 @@ impl Interpreter<'_, '_> {
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
-        if self.capture.structure
+        if (self.capture.structure || self.capture.reposition == Reposition::Glyph)
             && let Some(bounds) = stream
                 .dict
                 .get(b"BBox")
@@ -720,14 +740,8 @@ impl Interpreter<'_, '_> {
         {
             let [x0, y0, x1, y1] =
                 transformed_bounds(&inner_state.ctm, bounds[0], bounds[1], bounds[2], bounds[3]);
-            self.clip = Some(outer_clip.map_or([x0, y0, x1, y1], |outer| {
-                [
-                    outer[0].max(x0),
-                    outer[1].max(y0),
-                    outer[2].min(x1),
-                    outer[3].min(y1),
-                ]
-            }));
+            let bounds = [x0, y0, x1, y1];
+            self.clip = Some(outer_clip.map_or(bounds, |outer| rect_intersection(outer, bounds)));
         }
         let mut inner_matrices = *matrices;
         if let Some(inner_reference) = reference {
@@ -832,6 +846,9 @@ impl Interpreter<'_, '_> {
     }
 
     fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64) -> Join {
+        if self.capture.reposition == Reposition::Glyph {
+            return Join::Split;
+        }
         if !self.pending.open {
             return Join::Closed;
         }
@@ -983,10 +1000,11 @@ impl Interpreter<'_, '_> {
         &mut self,
         code: u32,
         operands: &[Operand<'_>],
-        state: &GState,
+        state: &mut GState,
         path: &mut PathBuilder,
     ) -> bool {
-        if !self.capture.structure {
+        let glyphs = self.capture.reposition == Reposition::Glyph;
+        if !self.capture.structure && !glyphs {
             return false;
         }
         match code {
@@ -1012,6 +1030,33 @@ impl Interpreter<'_, '_> {
             }
             OP_CLOSE => path.close(self.ruling_cap),
             OP_NO_PAINT => path.clear(),
+            OP_CLIP | OP_CLIP_EO if glyphs => {
+                if let [bounds] = path.rects.as_slice()
+                    && path.segments.is_empty()
+                {
+                    state.clip = Some(
+                        state
+                            .clip
+                            .map_or(*bounds, |prior| rect_intersection(prior, *bounds)),
+                    );
+                }
+            }
+            _ if glyphs
+                && matches!(
+                    code,
+                    OP_STROKE
+                        | OP_FILL_STROKE
+                        | OP_FILL_STROKE_EO
+                        | OP_CLOSE_STROKE
+                        | OP_CLOSE_FILL_STROKE
+                        | OP_CLOSE_FILL_STROKE_EO
+                        | OP_FILL
+                        | OP_FILL_OLD
+                        | OP_FILL_EO
+                ) =>
+            {
+                path.clear()
+            }
             OP_STROKE | OP_FILL_STROKE | OP_FILL_STROKE_EO => self.paint(path, state, true),
             OP_CLOSE_STROKE | OP_CLOSE_FILL_STROKE | OP_CLOSE_FILL_STROKE_EO => {
                 path.close(self.ruling_cap);
@@ -1088,15 +1133,7 @@ impl Interpreter<'_, '_> {
                 step_x = width + spacing * scale;
                 step_y = 0.0_f64;
             }
-            let clipped = usable
-                && self.clip.is_some_and(|clip| {
-                    let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                    bounds[2] < clip[0]
-                        || bounds[0] > clip[2]
-                        || bounds[3] < clip[1]
-                        || bounds[1] > clip[3]
-                });
-            if usable && !clipped {
+            if usable && self.visible_placement(state, &mapping, [x0, y0, x1, y1]) {
                 let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
                 let origin = (
                     pen_x * a + (pen_y + state.rise) * c + e,
@@ -1109,11 +1146,7 @@ impl Interpreter<'_, '_> {
                 let mut join = self.join(origin, direction, effective_size);
                 if repositioned
                     && matches!(join, Join::Same | Join::Spaced)
-                    && match self.capture.reposition {
-                        Reposition::Join => false,
-                        Reposition::Split => true,
-                        Reposition::SplitGapped => !self.touches_ink(origin, effective_size),
-                    }
+                    && self.split_at_reposition(origin, effective_size)
                 {
                     join = Join::Split;
                 }
@@ -1394,6 +1427,14 @@ impl Interpreter<'_, '_> {
         result
     }
 
+    fn split_at_reposition(&self, origin: (f64, f64), size: f64) -> bool {
+        match self.capture.reposition {
+            Reposition::Glyph | Reposition::Join => false,
+            Reposition::Split => true,
+            Reposition::SplitGapped => !self.touches_ink(origin, size),
+        }
+    }
+
     fn state_operator(
         &mut self,
         code: u32,
@@ -1441,6 +1482,11 @@ impl Interpreter<'_, '_> {
             OP_TR => {
                 if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.stroked_fill = (value - 2.0).abs() < 0.5_f64;
+                    if self.capture.reposition == Reposition::Glyph {
+                        state.render_mode = (0_u8..8)
+                            .find(|mode| (value - f64::from(*mode)).abs() < 0.5_f64)
+                            .unwrap_or(0);
+                    }
                 }
             }
             OP_TF => {
@@ -1481,6 +1527,9 @@ impl Interpreter<'_, '_> {
                 if let Some([width]) = tail_numbers::<1, _>(operands) {
                     state.line_width = width;
                 }
+            }
+            _ if self.capture.reposition == Reposition::Glyph => {
+                return glyph_paint(code, operands, state);
             }
             _ => return false,
         }
@@ -1526,6 +1575,52 @@ impl Interpreter<'_, '_> {
             (DEFAULT_ASCENT, DEFAULT_DESCENT)
         }
     }
+    fn visible_placement(&self, state: &GState, mapping: &Matrix, rect: [f64; 4]) -> bool {
+        if self.capture.reposition == Reposition::Glyph && !state.has_ink() {
+            return false;
+        }
+        for clip in self.clip.into_iter().chain(state.clip) {
+            let [x0, y0, x1, y1] = rect;
+            let [left, bottom, right, top] = transformed_bounds(mapping, x0, y0, x1, y1);
+            let [clip_left, clip_bottom, clip_right, clip_top] = clip;
+            if right < clip_left || left > clip_right || top < clip_bottom || bottom > clip_top {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+const fn rect_intersection(
+    [ax0, ay0, ax1, ay1]: [f64; 4],
+    [bx0, by0, bx1, by1]: [f64; 4],
+) -> [f64; 4] {
+    [ax0.max(bx0), ay0.max(by0), ax1.min(bx1), ay1.min(by1)]
+}
+
+fn glyph_paint(code: u32, operands: &[Operand<'_>], state: &mut GState) -> bool {
+    const GRAY_FILL: u32 = op(b"g");
+    const GRAY_STROKE: u32 = op(b"G");
+    const RGB_FILL: u32 = op(b"rg");
+    const RGB_STROKE: u32 = op(b"RG");
+    const CMYK_FILL: u32 = op(b"k");
+    const CMYK_STROKE: u32 = op(b"K");
+    let white = match code {
+        GRAY_FILL | GRAY_STROKE => {
+            tail_numbers::<1, _>(operands).is_some_and(|[gray]| gray >= 0.999_f64)
+        }
+        RGB_FILL | RGB_STROKE => tail_numbers::<3, _>(operands)
+            .is_some_and(|rgb| rgb.into_iter().all(|value| value >= 0.999_f64)),
+        CMYK_FILL | CMYK_STROKE => tail_numbers::<4, _>(operands)
+            .is_some_and(|cmyk| cmyk.into_iter().all(|value| value <= 0.001_f64)),
+        _ => return false,
+    };
+    if matches!(code, GRAY_FILL | RGB_FILL | CMYK_FILL) {
+        state.fill_white = white;
+    } else {
+        state.stroke_white = white;
+    }
+    true
 }
 
 const fn op(name: &[u8]) -> u32 {
@@ -1737,7 +1832,7 @@ pub(crate) fn extract_content(
 mod tests {
     use super::*;
     use crate::document::inspect;
-    use crate::inspection::{InspectOptions, Inspection};
+    use crate::inspection::{InspectOptions, Inspection, TextItems};
     use core::fmt::Write as _;
     use core::hint::black_box;
     use core::iter;
@@ -2185,6 +2280,28 @@ mod tests {
         ));
         assert_eq!(texts(&items), ["[[licitei-assinatura]]"]);
         assert!(close(items[0].font_size, 4.0));
+    }
+
+    #[test]
+    fn glyph_inspection_excludes_nonpainting_white_and_clipped_text() {
+        let bytes = simple_pdf(
+            "q 0 0 200 792 re W n BT /F1 10 Tf 50 700 Td (Ab) Tj 3 Tr (hidden) Tj 0 Tr 1 g (white) Tj 0 g 300 0 Td (clipped) Tj ET Q",
+        );
+        let inspection = inspect(
+            &bytes,
+            &InspectOptions {
+                text: true,
+                text_items: TextItems::Glyphs,
+                ..InspectOptions::default()
+            },
+            &Limits::default(),
+        )
+        .unwrap();
+        let [page] = inspection.text.as_slice() else {
+            panic!("expected one text page")
+        };
+        assert_eq!(texts(&page.items), ["A", "b"]);
+        assert!(page.items[0].rect[2] <= page.items[1].rect[0] + f64::EPSILON);
     }
 
     #[test]
@@ -2847,7 +2964,7 @@ mod tests {
         inspect(
             bytes,
             &InspectOptions {
-                runs: false,
+                text_items: TextItems::Joined,
                 text: true,
                 links: false,
                 page_indexes: None,

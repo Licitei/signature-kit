@@ -10,7 +10,9 @@ use std::collections::{HashMap, HashSet};
 use crate::encryption::Encryption;
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::filters;
-use crate::inspection::{InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText};
+use crate::inspection::{
+    InspectOptions, Inspection, Limits, LinkInfo, PageInfo, PageText, TextItems,
+};
 use crate::lazy::Sparse;
 use crate::object::{Dict, ObjRef, Object, Resolver, Stream};
 use crate::syntax::{
@@ -1604,12 +1606,14 @@ pub(crate) fn inspect(
                 continue;
             };
             let capture = Capture {
-                reposition: if options.runs {
+                reposition: if options.text_items == TextItems::Glyphs {
+                    Reposition::Glyph
+                } else if options.text_items == TextItems::Runs {
                     Reposition::SplitGapped
                 } else {
                     Reposition::Join
                 },
-                split_style: options.runs,
+                split_style: options.text_items == TextItems::Runs,
                 structure: false,
             };
             let content = extract_content(&document, page, limits, capture, &mut session)?;
@@ -1739,7 +1743,7 @@ mod tests {
         inspect(
             bytes,
             &InspectOptions {
-                runs: false,
+                text_items: TextItems::Joined,
                 text: true,
                 links: true,
                 page_indexes: None,
@@ -1820,7 +1824,11 @@ mod tests {
             let inspection = inspect(
                 &bytes,
                 &InspectOptions {
-                    runs,
+                    text_items: if runs {
+                        TextItems::Runs
+                    } else {
+                        TextItems::Joined
+                    },
                     text: true,
                     links: false,
                     page_indexes: None,
@@ -1868,7 +1876,7 @@ mod tests {
         let inspection = inspect(
             &bytes,
             &InspectOptions {
-                runs: true,
+                text_items: TextItems::Runs,
                 text: true,
                 links: false,
                 page_indexes: None,
@@ -1893,7 +1901,7 @@ mod tests {
         let error = inspect(&bytes, &InspectOptions::default(), &tiny).unwrap_err();
         assert_eq!(error.code, FailureCode::LimitExceeded);
         let options = InspectOptions {
-            runs: false,
+            text_items: TextItems::Joined,
             text: true,
             links: false,
             page_indexes: Some(vec![5]),
@@ -1901,7 +1909,7 @@ mod tests {
         let error_2 = inspect(&bytes, &options, &Limits::default()).unwrap_err();
         assert_eq!(error_2.code, FailureCode::InvalidPdf);
         let options_2 = InspectOptions {
-            runs: false,
+            text_items: TextItems::Joined,
             text: true,
             links: false,
             page_indexes: Some(vec![0, 0]),
@@ -2844,7 +2852,7 @@ mod tests {
             ..Limits::default()
         };
         let options = InspectOptions {
-            runs: false,
+            text_items: TextItems::Joined,
             text: true,
             links: true,
             page_indexes: None,

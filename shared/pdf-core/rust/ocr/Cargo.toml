@@ -19,3 +19,11 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true
+
+[features]
+synth = []
+
+[[bin]]
+name = "pdf-core-ocr-synth"
+path = "src/bin/ocr-synth/main.rs"
+required-features = ["synth"]

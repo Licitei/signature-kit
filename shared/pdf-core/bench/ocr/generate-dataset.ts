@@ -3,14 +3,18 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
-type Box = [number, number, number, number];
-type Word = { text: string; box: Box; line: number };
-type Raster = { width: number; height: number; pixels: Uint8Array };
+import { degradation, degrade, mapDegradedBox, parsePgm, pgm, presets } from "./degradation";
+import type { Box, Raster } from "./degradation";
+import type { Glyph } from "./glyph-labels";
+type Word = Glyph & { line: number; glyphs?: Glyph[] };
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     output: { type: "string", default: join(import.meta.dir, "../../.cache/ocr-dataset") },
+    preset: { type: "string", default: "clean" },
+    labels: { type: "string", default: "pdf-core" },
+    seed: { type: "string", default: "0" },
     dpi: { type: "string", default: "300" },
     mode: { type: "string", default: "pages" },
     split: { type: "string", default: "all" },
@@ -22,24 +26,39 @@ const { values, positionals } = parseArgs({
 const source = positionals[0];
 const dpi = Number(values.dpi);
 const mode = values.mode;
+const preset = values.preset;
+const labelSource = values.labels;
+const seed = values.seed;
 const selectedSplit = values.split;
 const maxDocs = Number(values["max-docs"] ?? Number.MAX_SAFE_INTEGER);
 const maxPages = Number(values["max-pages"] ?? Number.MAX_SAFE_INTEGER);
 
 if (
-  positionals.length !== 1 || source === undefined ||
+  positionals.length !== 1 ||
+  source === undefined ||
   ![150, 200, 300].includes(dpi) ||
+  preset === undefined ||
+  !presets.includes(preset) ||
+  seed === undefined ||
+  (labelSource !== "pdf-core" && labelSource !== "poppler") ||
   (mode !== "pages" && mode !== "lines") ||
   !["all", "train", "val", "test"].includes(selectedSplit ?? "") ||
   ![maxDocs, maxPages].every((count) => Number.isSafeInteger(count) && count >= 1)
 ) {
-  console.error("Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300] [--mode pages|lines] [--split all|train|val|test] [--max-docs N] [--max-pages N]");
+  console.error(
+    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300] [--mode pages|lines] [--preset clean|scan|photocopy|jpeg|fax] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N]",
+  );
   process.exit(2);
 }
 
 const pdfRoot = resolve(source);
 const output = resolve(values.output);
 const root = (await stat(pdfRoot)).isDirectory() ? pdfRoot : resolve(pdfRoot, "..");
+const labeler = labelSource === "pdf-core" ? await import("./glyph-labels") : undefined;
+const pdfCore =
+  labeler === undefined
+    ? undefined
+    : await import("../../dist/node.js").then(({ loadPdfCoreNode }) => loadPdfCoreNode());
 
 async function* pdfFiles(path: string): AsyncGenerator<string> {
   if (path.split(sep).includes("digitalizados")) return;
@@ -49,14 +68,14 @@ async function* pdfFiles(path: string): AsyncGenerator<string> {
     return;
   }
   const entries = await readdir(path, { withFileTypes: true });
-  entries.sort((left, right) => left.name < right.name ? -1 : Number(left.name !== right.name));
+  entries.sort((left, right) => (left.name < right.name ? -1 : Number(left.name !== right.name)));
   for (const entry of entries) {
     if (entry.isDirectory()) yield* pdfFiles(join(path, entry.name));
     if (entry.isFile() && entry.name.toLowerCase().endsWith(".pdf")) yield join(path, entry.name);
   }
 }
 
-async function run(argv: string[]): Promise<Uint8Array | undefined> {
+async function run(argv: string[]): Promise<Uint8Array<ArrayBuffer> | undefined> {
   const subprocess = Bun.spawn(argv, { stdout: "pipe", stderr: "inherit" });
   const [bytes, exitCode] = await Promise.all([
     new Response(subprocess.stdout).bytes(),
@@ -84,56 +103,88 @@ function parsePages(tsv: string): Map<number, Word[]> {
     const right = x + Number(width);
     const bottom = y + Number(height);
     if (text && [x, y, right, bottom].every(Number.isFinite) && x < right && y < bottom) {
-      words.push({ text, box: [Math.floor(x), Math.floor(y), Math.ceil(right), Math.ceil(bottom)], line });
+      words.push({
+        text,
+        box: [Math.floor(x), Math.floor(y), Math.ceil(right), Math.ceil(bottom)],
+        line,
+      });
     }
   }
   return pages;
 }
 
-function readPgm(bytes: Uint8Array): Raster | undefined {
-  const header = /^P5\s+(\d+)\s+(\d+)\s+255\n/.exec(new TextDecoder().decode(bytes.subarray(0, 80)));
-  if (header === null) return undefined;
-  const width = Number(header[1]);
-  const height = Number(header[2]);
-  const pixels = bytes.subarray(header[0].length);
-  if (width < 1 || height < 1 || width * height !== pixels.length) return undefined;
-  return { width, height, pixels };
-}
-
-function crop(raster: Raster, [x0, y0, x1, y1]: Box): Raster {
-  const width = x1 - x0;
-  const height = y1 - y0;
-  const pixels = new Uint8Array(width * height);
+function crop(raster: Raster, [x0, y0, x1, y1]: Box, pad: number): Raster {
+  const width = x1 - x0 + 2 * pad;
+  const height = y1 - y0 + 2 * pad;
+  const pixels = new Uint8Array(width * height).fill(255);
   for (let y = y0; y < y1; y += 1) {
     const row = y * raster.width;
-    pixels.set(raster.pixels.subarray(row + x0, row + x1), (y - y0) * width);
+    pixels.set(raster.pixels.subarray(row + x0, row + x1), (y - y0 + pad) * width + pad);
   }
   return { width, height, pixels };
 }
 
 function lineBox(words: readonly Word[], raster: Raster): Box {
   const bounds: Box = [raster.width, raster.height, 0, 0];
-  for (const { box: [x0, y0, x1, y1] } of words) {
+  for (const {
+    box: [x0, y0, x1, y1],
+  } of words) {
     bounds[0] = Math.min(bounds[0], x0);
     bounds[1] = Math.min(bounds[1], y0);
     bounds[2] = Math.max(bounds[2], x1);
     bounds[3] = Math.max(bounds[3], y1);
   }
   return [
-    Math.max(0, bounds[0] - 4), Math.max(0, bounds[1] - 4),
-    Math.min(raster.width, bounds[2] + 4), Math.min(raster.height, bounds[3] + 4),
+    Math.max(0, bounds[0] - 4),
+    Math.max(0, bounds[1] - 4),
+    Math.min(raster.width, bounds[2] + 4),
+    Math.min(raster.height, bounds[3] + 4),
   ];
 }
 
 async function writeSample(
-  directory: string, id: string, raster: Raster, origin: string, lines: ReadonlyArray<readonly Word[]>,
+  directory: string,
+  base: string,
+  raster: Raster,
+  origin: string,
+  lines: ReadonlyArray<readonly Word[]>,
+  preset: string,
+  seed: string,
 ) {
-  const { width, height, pixels } = raster;
-  const words = lines.flatMap((line, index) => line.map((word) => ({ ...word, line: index })));
-  const text = lines.map((line) => line.map((word) => word.text).join(" ")).join("\n");
-  const pgm = new Blob([new TextEncoder().encode(`P5\n${width} ${height}\n255\n`), pixels]);
-  await Bun.write(join(directory, `${id}.pgm`), pgm);
-  await Bun.write(join(directory, `${id}.json`), `${JSON.stringify({ id, dpi, width, height, source: origin, degradation: {}, text, words })}\n`);
+  const { width, height } = raster;
+  const params = degradation(preset, seed, base);
+  const id = preset === "clean" ? base : `${base}-${preset}-${params.seed.toString(16)}`;
+  const labels = lines
+    .map((line) =>
+      line.flatMap((word) => {
+        const box = mapDegradedBox(word.box, raster, params);
+        return box[0] < box[2] && box[1] < box[3] ? [{ ...word, box }] : [];
+      }),
+    )
+    .filter((line) => line.length > 0);
+  if (labels.length === 0) return false;
+  const words = labels.flatMap((line, index) =>
+    line.map(({ text, box }) => ({ text, box, line: index })),
+  );
+  const glyphs = labels.flatMap((line) =>
+    line
+      .flatMap((word) => word.glyphs ?? [])
+      .flatMap(({ text, box }) => {
+        const mapped = mapDegradedBox(box, raster, params);
+        return mapped[0] < mapped[2] && mapped[1] < mapped[3] ? [{ text, box: mapped }] : [];
+      }),
+  );
+  const text = labels.map((line) => line.map((word) => word.text).join(" ")).join("\n");
+  const image =
+    preset === "clean" ? { pgm: pgm(raster), jpeg: undefined } : await degrade(raster, params);
+  if (image === undefined) return false;
+  await Bun.write(join(directory, `${id}.pgm`), image.pgm);
+  if (image.jpeg !== undefined) await Bun.write(join(directory, `${id}.jpg`), image.jpeg);
+  await Bun.write(
+    join(directory, `${id}.json`),
+    `${JSON.stringify({ id, dpi, width, height, source: origin, degradation: params, text, words, glyphs: pdfCore === undefined ? undefined : glyphs })}\n`,
+  );
+  return true;
 }
 
 const started = performance.now();
@@ -152,51 +203,119 @@ for await (const file of pdfFiles(pdfRoot)) {
   documents += 1;
   const directory = join(output, split);
   const pagesArgs = maxPages === Number.MAX_SAFE_INTEGER ? [] : ["-l", String(maxPages)];
-  const extracted = await run(["pdftotext", "-q", "-cropbox", "-tsv", "-r", String(dpi), ...pagesArgs, file, "-"]);
+  const extracted = await run([
+    "pdftotext",
+    "-q",
+    "-cropbox",
+    "-tsv",
+    "-r",
+    String(dpi),
+    ...pagesArgs,
+    file,
+    "-",
+  ]);
   if (extracted === undefined) {
     failed += 1;
     console.error(`Could not extract labels from ${file}`);
     continue;
   }
+  const input = pdfCore === undefined ? undefined : await Bun.file(file).bytes();
   for (const [page, words] of parsePages(new TextDecoder().decode(extracted))) {
     if (!words.length) continue;
-    const bytes = await run(["pdftoppm", "-q", "-cropbox", "-gray", "-r", String(dpi), "-f", String(page), "-l", String(page), "-singlefile", file]);
-    const raster = bytes === undefined ? undefined : readPgm(bytes);
+    const bytes = await run([
+      "pdftoppm",
+      "-q",
+      "-cropbox",
+      "-gray",
+      "-r",
+      String(dpi),
+      "-f",
+      String(page),
+      "-l",
+      String(page),
+      "-singlefile",
+      file,
+    ]);
+    const raster = bytes === undefined ? undefined : parsePgm(bytes);
     if (raster === undefined) {
       failed += 1;
       console.error(`Could not render ${file} page ${page}`);
       continue;
     }
+    const glyphs =
+      input === undefined || pdfCore === undefined || labeler === undefined
+        ? undefined
+        : labeler.indexGlyphs(await labeler.glyphLabels(pdfCore, input, page - 1, dpi), raster);
     const lines = new Map<number, Word[]>();
     for (const word of words) {
       const [x0, y0, x1, y1] = word.box;
-      const box: Box = [Math.max(0, x0), Math.max(0, y0), Math.min(raster.width, x1), Math.min(raster.height, y1)];
+      const box: Box = [
+        Math.max(0, x0),
+        Math.max(0, y0),
+        Math.min(raster.width, x1),
+        Math.min(raster.height, y1),
+      ];
       if (box[0] >= box[2] || box[1] >= box[3]) continue;
+      const matching = glyphs?.({ text: word.text, box });
+      if (matching?.length === 0) continue;
       const line = lines.get(word.line) ?? [];
-      line.push({ ...word, box });
+      line.push(matching === undefined ? { ...word, box } : { ...word, box, glyphs: matching });
       lines.set(word.line, line);
     }
     if (lines.size === 0) continue;
     await mkdir(directory, { recursive: true });
     const origin = `${file}#page=${page - 1}`;
-    const id = `${digest.slice(0, 20)}-p${page - 1}-${dpi}`;
+    const id = `${digest.slice(0, 20)}-p${page - 1}-${dpi}${labelSource === "poppler" ? "-poppler" : ""}`;
     if (mode === "pages") {
-      await writeSample(directory, id, raster, origin, [...lines.values()]);
-      samples += 1;
+      if (await writeSample(directory, id, raster, origin, [...lines.values()], preset, seed))
+        samples += 1;
+      else failed += 1;
     } else {
       for (const [line, items] of lines) {
         const box = lineBox(items, raster);
-        const [left, top] = box;
-        const labels = items.map(({ text, line: index, box: [x0, y0, x1, y1] }): Word => ({
-          text, line: index, box: [x0 - left, y0 - top, x1 - left, y1 - top],
+        const [left, top, right] = box;
+        const padding = preset === "clean" ? 0 : Math.ceil((right - left) * 0.027) + 4;
+        const relocate = ([x0, y0, x1, y1]: Box): Box => [
+          x0 - left + padding,
+          y0 - top + padding,
+          x1 - left + padding,
+          y1 - top + padding,
+        ];
+        const labels = items.map(({ text, line: index, box, glyphs }): Word => ({
+          text,
+          line: index,
+          box: relocate(box),
+          ...(glyphs === undefined
+            ? {}
+            : { glyphs: glyphs.map(({ text, box }) => ({ text, box: relocate(box) })) }),
         }));
-        await writeSample(directory, `${id}-l${line}`, crop(raster, box), origin, [labels]);
-        samples += 1;
+        if (
+          await writeSample(
+            directory,
+            `${id}-l${line}`,
+            crop(raster, box, padding),
+            origin,
+            [labels],
+            preset,
+            seed,
+          )
+        )
+          samples += 1;
+        else failed += 1;
       }
     }
     pages += 1;
   }
 }
 
-console.log(JSON.stringify({ documents, pages, samples, failed, seconds: (performance.now() - started) / 1000, output }));
+console.log(
+  JSON.stringify({
+    documents,
+    pages,
+    samples,
+    failed,
+    seconds: (performance.now() - started) / 1000,
+    output,
+  }),
+);
 if (samples === 0 || failed > 0) process.exitCode = 1;

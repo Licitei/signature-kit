@@ -154,6 +154,7 @@ const FLAG_PAGE_INDEXES = 4;
 const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
 const FLAG_RUNS = 32;
+const FLAG_GLYPHS = 64;
 const STATUS_OK = 0;
 const STATUS_LIMIT_EXCEEDED = 3;
 const MAGIC = 0x4346_4450;
@@ -767,9 +768,10 @@ export const makePdfCore = (
       );
       const pageIndexes = options.pageIndexes ?? [];
       const flags =
-        (options.text ? FLAG_TEXT : 0) |
+        (options.text || options.glyphs ? FLAG_TEXT : 0) |
         (options.links ? FLAG_LINKS : 0) |
         (options.runs === true ? FLAG_RUNS : 0) |
+        (options.glyphs === true ? FLAG_GLYPHS : 0) |
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES);
       return yield* readBlock(
         PdfCoreOperationValue.inspect,
