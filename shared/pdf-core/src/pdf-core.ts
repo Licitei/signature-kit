@@ -183,7 +183,7 @@ const FLAG_PAGE_INDEXES = 4;
 const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
 const FLAG_RUNS = 32;
-const FLAG_OCR_TABLES = 64;
+const FLAG_OCR_TABLES = 128;
 const STATUS_OK = 0;
 const STATUS_LIMIT_EXCEEDED = 3;
 const MAGIC = 0x4346_4450;
@@ -192,9 +192,9 @@ const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
 const DIAGNOSTICS_MAGIC = 0x4744_4450;
-const DIAGNOSTICS_VERSION = 1;
+const DIAGNOSTICS_VERSION = 2;
 const DIAGNOSTICS_HEADER_BYTES = 16;
-const DIAGNOSTICS_RECORD_BYTES = 48;
+const DIAGNOSTICS_RECORD_BYTES = 88;
 const TABLES_MAGIC = 0x4254_4450;
 const TABLES_VERSION = 1;
 const TABLES_HEADER_BYTES = 16;
@@ -1098,6 +1098,13 @@ export const makePdfCore = (
           textLayer: textLayers[view.getUint32(at + 28, true)],
           textArea: view.getFloat64(at + 32, true),
           rasterCoverage: view.getFloat64(at + 40, true),
+          pageBox: [
+            view.getFloat64(at + 48, true),
+            view.getFloat64(at + 56, true),
+            view.getFloat64(at + 64, true),
+            view.getFloat64(at + 72, true),
+          ],
+          rotate: view.getInt32(at + 80, true),
         });
       }
       return yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsSchema)(diagnostics).pipe(
@@ -1656,19 +1663,17 @@ export const makePdfCore = (
       );
     });
 
-    const readOcrDetails = Effect.fn(function* (
-      read: BlockReader,
-      pageIndexes: ReadonlyArray<number> | undefined,
-    ): Effect.fn.Return<ReadonlyArray<Omit<PdfCoreOcrRequest, "image">>, PdfCoreError> {
-      const pages = yield* runRenderPages(read, { pageIndexes, scale: 1 });
-      const text = yield* readText(read, { pageIndexes, dropRunningHeaders: false });
-      return pages.map(({ pageIndex, view, rotate }, index) => ({
-        pageIndex,
-        pageBox: view,
-        rotate,
-        textLayer: (text[index]?.trim().length ?? 0) > 0 ? "usable" : "none",
-      }));
-    });
+    const readOcrDetails = (read: BlockReader, pageIndexes: ReadonlyArray<number> | undefined) =>
+      runPageDiagnostics(read, { pageIndexes }).pipe(
+        Effect.map((pages) =>
+          pages.map(({ pageIndex, pageBox, rotate, textLayer }) => ({
+            pageIndex,
+            pageBox,
+            rotate,
+            textLayer,
+          })),
+        ),
+      );
 
     const encodeOcr = (pages: ReadonlyArray<OcrPage>): Uint8Array | undefined => {
       if (pages.length === 0) return undefined;
@@ -1742,6 +1747,13 @@ export const makePdfCore = (
         options.format === "markdown",
       );
       const text = yield* readText(read, options, encodeOcr(recognized));
+      if (text.length !== pages.length) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.wasmLoadFailed,
+          operation: PdfCoreOperationValue.text,
+          reason: "Page diagnostics and extracted text have different page counts.",
+        });
+      }
       const replaced = new Map(recognized.map((page) => [page.pageIndex, page]));
       return pages.map(({ pageIndex, textLayer }, index) => {
         const page = replaced.get(pageIndex);

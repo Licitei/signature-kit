@@ -225,9 +225,29 @@ export type PdfCoreTextLayer = (typeof PdfCoreTextLayerSchema)["Type"];
 
 const fractionSchema = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
 
+export const PdfCoreBoxSchema = Schema.Tuple([
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+]);
+export type PdfCoreBox = (typeof PdfCoreBoxSchema)["Type"];
+
+export const PdfCoreCellSchema = Schema.Struct({
+  row: pageIndexSchema,
+  col: pageIndexSchema,
+  rowSpan: pageIndexSchema,
+  colSpan: pageIndexSchema,
+  bbox: PdfCoreBoxSchema,
+  text: Schema.String,
+});
+export type PdfCoreCell = (typeof PdfCoreCellSchema)["Type"];
+
 export const PdfCorePageDiagnosticsSchema = Schema.Array(
   Schema.Struct({
     pageIndex: pageIndexSchema,
+    pageBox: PdfCoreBoxSchema,
+    rotate: Schema.Int,
     glyphs: pageIndexSchema,
     unmapped: pageIndexSchema,
     replacement: pageIndexSchema,
@@ -266,24 +286,6 @@ export type PdfCorePaintOptions = (typeof PdfCorePaintOptionsSchema)["Type"];
 
 export const PdfCoreTextSchema = Schema.Array(Schema.String);
 export type PdfCoreText = (typeof PdfCoreTextSchema)["Type"];
-
-export const PdfCoreBoxSchema = Schema.Tuple([
-  Schema.Finite,
-  Schema.Finite,
-  Schema.Finite,
-  Schema.Finite,
-]);
-export type PdfCoreBox = (typeof PdfCoreBoxSchema)["Type"];
-
-export const PdfCoreCellSchema = Schema.Struct({
-  row: pageIndexSchema,
-  col: pageIndexSchema,
-  rowSpan: pageIndexSchema,
-  colSpan: pageIndexSchema,
-  bbox: PdfCoreBoxSchema,
-  text: Schema.String,
-});
-export type PdfCoreCell = (typeof PdfCoreCellSchema)["Type"];
 
 const ocrConfidenceSchema = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
 const ocrDimensionSchema = pageIndexSchema.check(Schema.isGreaterThan(0));

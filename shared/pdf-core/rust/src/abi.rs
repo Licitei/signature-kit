@@ -38,15 +38,15 @@ const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
 const FLAG_RUNS: u32 = 32;
-const FLAG_OCR_TABLES: u32 = 64;
+const FLAG_OCR_TABLES: u32 = 128;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
 const TEXT_HEADER_LEN: usize = 16;
 const DIAGNOSTICS_MAGIC: u32 = 0x4744_4450;
-const DIAGNOSTICS_VERSION: u32 = 1;
+const DIAGNOSTICS_VERSION: u32 = 2;
 const DIAGNOSTICS_HEADER_LEN: usize = 16;
-const DIAGNOSTICS_RECORD_LEN: usize = 48;
+const DIAGNOSTICS_RECORD_LEN: usize = 88;
 const TABLES_MAGIC: u32 = 0x4254_4450;
 const TABLES_VERSION: u32 = 1;
 const TABLES_HEADER_LEN: usize = 16;
@@ -427,6 +427,9 @@ fn encode_diagnostics(pages: &[PageDiagnostics]) -> Outcome<Writer> {
         });
         out.f64(page.text_area);
         out.f64(page.raster_coverage);
+        out.boxed(&page.page_box);
+        out.i32(page.rotate);
+        out.u32(0);
     }
     out.done()
 }
