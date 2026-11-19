@@ -14,6 +14,8 @@ import {
   PdfCoreErrorCodeValue,
   PdfCoreExportsSchema,
   PdfCoreFieldNameFailureSchema,
+  PdfCoreHeadingsOptionsSchema,
+  PdfCoreHeadingsSchema,
   PdfCoreInspectionSchema,
   PdfCoreInspectOptionsSchema,
   PdfCoreMergeOptionsSchema,
@@ -45,6 +47,9 @@ import type {
   PdfCoreEditOptions,
   PdfCoreEditTarget,
   PdfCoreFontMetrics,
+  PdfCoreHeading,
+  PdfCoreHeadings,
+  PdfCoreHeadingsOptions,
   PdfCoreInspection,
   PdfCoreInspectOptions,
   PdfCoreLazyOptions,
@@ -77,6 +82,9 @@ export type PdfCoreLazyDocument = {
   readonly inspect: (
     options: PdfCoreInspectOptions,
   ) => Effect.Effect<PdfCoreInspection, PdfCoreError>;
+  readonly headings: (
+    options?: PdfCoreHeadingsOptions,
+  ) => Effect.Effect<PdfCoreHeadings, PdfCoreError>;
   readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
   readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
   readonly renderPages: (
@@ -119,6 +127,10 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options?: PdfCoreTextOptions,
   ) => Effect.Effect<PdfCoreText, PdfCoreError>;
+  readonly headings: (
+    pdf: Uint8Array,
+    options?: PdfCoreHeadingsOptions,
+  ) => Effect.Effect<PdfCoreHeadings, PdfCoreError>;
   readonly tables: (
     pdf: Uint8Array,
     options?: PdfCoreTablesOptions,
@@ -170,6 +182,10 @@ const VERSION = 3;
 const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
+const HEADINGS_MAGIC = 0x4748_4450;
+const HEADINGS_VERSION = 1;
+const HEADINGS_HEADER_BYTES = 16;
+const HEADING_RECORD_BYTES = 68;
 const TABLES_MAGIC = 0x4254_4450;
 const TABLES_VERSION = 1;
 const TABLES_HEADER_BYTES = 16;
@@ -424,14 +440,23 @@ type BlockReader = <A>(
   pageIndexes: ReadonlyArray<number>,
   decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
   scale?: number,
+  arguments32?: readonly [number, number],
 ) => Effect.Effect<A, PdfCoreError>;
 
+const PROFILE_TEXT = 0;
+const PROFILE_TABLES = 1;
+const PROFILE_RENDER = 2;
+const PROFILE_INSPECT = 3;
+const PROFILE_INFO = 4;
+const PROFILE_HEADINGS = 5;
+
 const lazyProfiles = {
-  [PdfCoreOperationValue.text]: 0,
-  [PdfCoreOperationValue.tables]: 1,
-  [PdfCoreOperationValue.render]: 2,
-  [PdfCoreOperationValue.inspect]: 3,
-  [PdfCoreOperationValue.info]: 4,
+  [PdfCoreOperationValue.text]: PROFILE_TEXT,
+  [PdfCoreOperationValue.tables]: PROFILE_TABLES,
+  [PdfCoreOperationValue.render]: PROFILE_RENDER,
+  [PdfCoreOperationValue.inspect]: PROFILE_INSPECT,
+  [PdfCoreOperationValue.info]: PROFILE_INFO,
+  [PdfCoreOperationValue.headings]: PROFILE_HEADINGS,
 };
 
 export const makePdfCore = (
@@ -914,12 +939,173 @@ export const makePdfCore = (
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
         (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
         (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
+      const chars = (options.maxChars ?? -1) + 1;
+      const blocks = (options.maxBlocks ?? -1) + 1;
       return yield* read(
         PdfCoreOperationValue.text,
-        core.pdf_core_text,
+        (pdf, length, entryFlags, pages, count) =>
+          core.pdf_core_text(pdf, length, entryFlags, pages, count, chars, blocks),
         flags,
         pageIndexes,
         decodeTextBlock,
+        undefined,
+        [chars, blocks],
+      );
+    });
+
+    const decodeHeadingsBlock = Effect.fn(function* (block: ResultBlock, limit: number) {
+      const operation = PdfCoreOperationValue.headings;
+      const view = new DataView(block.memory, block.pointer, block.length);
+      if (view.getUint32(4, true) !== STATUS_OK) {
+        return yield* failStatus(operation, block);
+      }
+      const base = RESULT_HEADER_BYTES;
+      if (
+        block.length < base + HEADINGS_HEADER_BYTES ||
+        view.getUint32(base, true) !== HEADINGS_MAGIC ||
+        view.getUint32(base + 4, true) !== HEADINGS_VERSION
+      ) {
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.wasmLoadFailed,
+          operation,
+          reason: "The PDF core headings format is not supported by this package version.",
+        });
+      }
+      const pageCount = view.getUint32(base + 8, true);
+      let cursor = base + HEADINGS_HEADER_BYTES;
+      const pages = [];
+      const positions = new Map<string, number>();
+      for (let page = 0; page < pageCount; page += 1) {
+        if (cursor + 8 > block.length) {
+          return yield* new PdfCoreError({
+            code: PdfCoreErrorCodeValue.wasmLoadFailed,
+            operation,
+            reason: "The PDF core returned a truncated headings page.",
+          });
+        }
+        const pageIndex = view.getUint32(cursor, true);
+        const count = view.getUint32(cursor + 4, true);
+        cursor += 8;
+        const candidates = [];
+        for (let index = 0; index < count; index += 1) {
+          const textAt = cursor + HEADING_RECORD_BYTES;
+          const textLength = textAt <= block.length ? view.getUint32(cursor + 64, true) : 0;
+          const next = align8(textAt + textLength);
+          if (next > block.length || next < textAt) {
+            return yield* new PdfCoreError({
+              code: PdfCoreErrorCodeValue.wasmLoadFailed,
+              operation,
+              reason: "The PDF core returned a truncated heading record.",
+            });
+          }
+          const style = view.getUint32(cursor + 60, true);
+          const bounds: PdfCoreHeading["bounds"] = [
+            view.getFloat64(cursor, true),
+            view.getFloat64(cursor + 8, true),
+            view.getFloat64(cursor + 16, true),
+            view.getFloat64(cursor + 24, true),
+          ];
+          const fontSize = view.getFloat64(cursor + 32, true);
+          const relativeFontSize = view.getFloat64(cursor + 40, true);
+          const isolation = view.getFloat64(cursor + 48, true);
+          const readingOrder = view.getUint32(cursor + 56, true);
+          const text = utf8
+            .decode(new Uint8Array(block.memory, block.pointer + textAt, textLength))
+            .replaceAll(/\p{White_Space}+/gu, " ")
+            .trim();
+          cursor = next;
+          if (text.length === 0 || limit === 0) {
+            continue;
+          }
+          const [left, top, right] = bounds;
+          const band = (style & 4) !== 0;
+          const positionKey =
+            pageCount > 1 ? `${Math.round(left * 25)},${Math.round(top * 25)}:${text}` : undefined;
+          if (positionKey !== undefined) {
+            const first = positions.get(positionKey);
+            positions.set(positionKey, first === undefined || first === pageIndex ? pageIndex : -1);
+          }
+          const bold = (style & 1) !== 0;
+          const upper = text.match(/\p{Uppercase}/gu)?.length ?? 0;
+          const lower = text.match(/\p{Lowercase}/gu)?.length ?? 0;
+          const uppercaseRatio = upper / Math.max(1, upper + lower);
+          const centered = 1 - Math.abs(left + right - 1);
+          const brevity = Math.max(0, 1 - Array.from(text).length / 120);
+          const score =
+            3 * (Math.min(relativeFontSize, 3) - 1) +
+            Number(bold) +
+            Math.max(0, 1 - 2 * top) +
+            isolation +
+            0.75 * centered +
+            brevity +
+            0.25 * uppercaseRatio;
+          candidates.push({
+            bounds,
+            fontSize,
+            relativeFontSize,
+            uppercaseRatio,
+            score,
+            readingOrder,
+            lineCount: 1,
+            bold,
+            italic: (style & 2) !== 0,
+            band,
+            positionKey,
+            text,
+          });
+        }
+        pages.push({ pageIndex, candidates });
+      }
+      const ranked = pages.map(({ pageIndex, candidates }) => ({
+        pageIndex,
+        candidates: candidates
+          .map(({ band, positionKey, ...candidate }) => {
+            const repeated =
+              band || (positionKey !== undefined && positions.get(positionKey) === -1);
+            return { ...candidate, repeated, score: candidate.score - (repeated ? 4 : 0) };
+          })
+          .sort((left, right) => right.score - left.score || left.readingOrder - right.readingOrder)
+          .slice(0, limit),
+      }));
+      return yield* Schema.decodeUnknownEffect(PdfCoreHeadingsSchema)(ranked).pipe(
+        Effect.mapError(
+          (issue) =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.wasmLoadFailed,
+              operation,
+              schemaName: PdfCoreSchemaNameValue.headings,
+              reason: "The PDF core returned an invalid headings result.",
+              issueMessage: String(issue),
+            }),
+        ),
+      );
+    });
+
+    const runHeadings = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCoreHeadingsOptions = {},
+    ) {
+      const operation = PdfCoreOperationValue.headings;
+      const options = yield* Schema.decodeUnknownEffect(PdfCoreHeadingsOptionsSchema)(
+        rawOptions,
+      ).pipe(
+        Effect.mapError(
+          (issue) =>
+            new PdfCoreError({
+              code: PdfCoreErrorCodeValue.invalidOptions,
+              operation,
+              schemaName: PdfCoreSchemaNameValue.headingsOptions,
+              issueMessage: String(issue),
+            }),
+        ),
+      );
+      const limit = options.limit ?? 8;
+      return yield* read(
+        operation,
+        core.pdf_core_headings,
+        options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES,
+        options.pageIndexes ?? [],
+        (block) => decodeHeadingsBlock(block, limit),
       );
     });
 
@@ -1770,7 +1956,15 @@ export const makePdfCore = (
         );
       });
 
-      const read: BlockReader = (operation, entry, flags, indexes, decode, scale = 1) =>
+      const read: BlockReader = (
+        operation,
+        entry,
+        flags,
+        indexes,
+        decode,
+        scale = 1,
+        [argument, extra] = [0, 0],
+      ) =>
         lock.withPermits(1)(
           Effect.scoped(
             Effect.gen(function* () {
@@ -1779,7 +1973,8 @@ export const makePdfCore = (
                 operation === PdfCoreOperationValue.tables ||
                 operation === PdfCoreOperationValue.render ||
                 operation === PdfCoreOperationValue.inspect ||
-                operation === PdfCoreOperationValue.info
+                operation === PdfCoreOperationValue.info ||
+                operation === PdfCoreOperationValue.headings
                   ? lazyProfiles[operation]
                   : undefined;
               if (profile === undefined) {
@@ -1803,7 +1998,8 @@ export const makePdfCore = (
                       yield* ensureOpen;
                       const result = yield* resultBlock(
                         operation,
-                        () => core.pdf_core_lazy_run(handle, profile, flags, scale),
+                        () =>
+                          core.pdf_core_lazy_run(handle, profile, flags, scale, argument, extra),
                         closed,
                       );
                       const view = new DataView(result.memory, result.pointer, result.length);
@@ -1851,6 +2047,7 @@ export const makePdfCore = (
         info: runInfo(read),
         inspect: (options: PdfCoreInspectOptions) => runInspect(read, options),
         text: (options?: PdfCoreTextOptions) => runText(read, options),
+        headings: (options?: PdfCoreHeadingsOptions) => runHeadings(read, options),
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
         stats: Ref.get(state).pipe(
@@ -1865,6 +2062,7 @@ export const makePdfCore = (
       info: (pdf) => runInfo(full(pdf)),
       inspect: (pdf, options) => runInspect(full(pdf), options),
       text: (pdf, options) => runText(full(pdf), options),
+      headings: (pdf, options) => runHeadings(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,

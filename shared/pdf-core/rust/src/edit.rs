@@ -1186,7 +1186,7 @@ fn standard_font(name: &[u8]) -> Outcome<Object> {
 )]
 mod tests {
     use super::*;
-    use crate::layout::{TextOptions, document_text, text_limits};
+    use crate::layout::{TextBudget, TextOptions, document_text, text_limits};
     use crate::object::Resolver;
     use crate::revision::{Analysis, analyze};
     use crate::test_pdf::{build, document, page, stream_object, text};
@@ -1258,6 +1258,7 @@ mod tests {
             None,
             &text_limits(),
             TextOptions {
+                budget: TextBudget::UNLIMITED,
                 drop_running: false,
                 markdown: false,
             },

@@ -16,6 +16,7 @@ const payloadSections: Record<string, string> = {
   VERSION: "Payload",
   INFO_VERSION: "Info payload",
   TEXT_VERSION: "Text payload",
+  HEADINGS_VERSION: "Headings payload",
   TABLES_VERSION: "Tables payload",
   SIGNATURES_VERSION: "Signatures payload",
   DOCUMENT_VERSION: "Document payload",
@@ -25,7 +26,7 @@ const payloadSections: Record<string, string> = {
 };
 
 const isAbiConstant = (name: string): boolean =>
-  /^(?:(?:\w+_)?(?:MAGIC|VERSION)|FLAG_\w+)$/.test(name);
+  /^(?:(?:\w+_)?(?:MAGIC|VERSION)|(?:FLAG|PROFILE)_\w+)$/.test(name);
 
 const parseRustValue = (literal: string): number => {
   const shift = /^1 << (\d+)$/.exec(literal);

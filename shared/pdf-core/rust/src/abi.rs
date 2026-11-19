@@ -16,7 +16,7 @@ use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits, Metadata};
-use crate::layout::{self, TextOptions};
+use crate::layout::{self, HeadingPage, TextBudget, TextOptions};
 use crate::lazy::{Lazy, PageProfile, Plan, Tuning};
 use crate::num::widen;
 use crate::png;
@@ -40,6 +40,8 @@ const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
 const TEXT_HEADER_LEN: usize = 16;
+const HEADINGS_MAGIC: u32 = 0x4748_4450;
+const HEADINGS_VERSION: u32 = 1;
 const TABLES_MAGIC: u32 = 0x4254_4450;
 const TABLES_VERSION: u32 = 1;
 const TABLES_HEADER_LEN: usize = 16;
@@ -62,7 +64,12 @@ const MERGE_OBJECT_STREAMS: u32 = 2;
 const ALL_PAGES: u32 = u32::MAX;
 const INFO_MAGIC: u32 = 0x464e_4450;
 const INFO_VERSION: u32 = 1;
+const PROFILE_TEXT: u32 = 0;
+const PROFILE_TABLES: u32 = 1;
+const PROFILE_RENDER: u32 = 2;
+const PROFILE_INSPECT: u32 = 3;
 const PROFILE_INFO: u32 = 4;
+const PROFILE_HEADINGS: u32 = 5;
 const METRICS_MAGIC: u32 = 0x4d46_4450;
 const METRICS_VERSION: u32 = 1;
 
@@ -253,10 +260,6 @@ impl Request<'_> {
         };
         Ok(Self { flags, pages, pdf })
     }
-
-    const fn has(&self, flag: u32) -> bool {
-        self.flags & flag != 0
-    }
 }
 
 fn block_layout(len: usize) -> Option<Layout> {
@@ -374,6 +377,34 @@ fn encode(inspection: &Inspection) -> Outcome<Writer> {
     }
 
     let _: usize = padded(out.payload_len())?;
+    out.done()
+}
+
+fn encode_headings(pages: &[HeadingPage]) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(16);
+    out.u32(HEADINGS_MAGIC);
+    out.u32(HEADINGS_VERSION);
+    out.u32(len32(pages.len())?);
+    out.u32(0);
+    for page in pages {
+        out.u32(len32(page.page_index)?);
+        out.u32(len32(page.candidates.len())?);
+        for heading in &page.candidates {
+            out.boxed(&heading.bounds);
+            out.f64(heading.font_size);
+            out.f64(heading.relative_font_size);
+            out.f64(heading.isolation);
+            out.u32(len32(heading.reading_order)?);
+            out.u32(
+                u32::from(heading.bold)
+                    | (u32::from(heading.italic) << 1)
+                    | (u32::from(heading.running_band) << 2),
+            );
+            out.u32(len32(heading.text.len())?);
+            out.bytes(heading.text.as_bytes());
+            out.align();
+        }
+    }
     out.done()
 }
 
@@ -612,6 +643,17 @@ pub(crate) unsafe extern "C" fn pdf_core_info(pdf_ptr: *const u8, pdf_len: usize
     }))
 }
 
+fn text_options(flags: u32, chars: u32, blocks: u32) -> TextOptions {
+    TextOptions {
+        budget: TextBudget {
+            max_chars: chars.checked_sub(1).map(widen),
+            max_blocks: blocks.checked_sub(1).map(widen),
+        },
+        markdown: flags & FLAG_MARKDOWN != 0,
+        drop_running: flags & FLAG_DROP_RUNNING != 0,
+    }
+}
+
 /// # Safety
 ///
 /// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
@@ -622,14 +664,13 @@ pub(crate) unsafe extern "C" fn pdf_core_text(
     flags: u32,
     pages_ptr: *const u32,
     pages_len: usize,
+    chars: u32,
+    blocks: u32,
 ) -> *mut u8 {
     // SAFETY: forwarded from this function's contract.
     let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
     finish(request.and_then(|inner_request| {
-        let options = TextOptions {
-            markdown: inner_request.has(FLAG_MARKDOWN),
-            drop_running: inner_request.has(FLAG_DROP_RUNNING),
-        };
+        let options = text_options(flags, chars, blocks);
         let pages = layout::document_text(
             inner_request.pdf,
             inner_request.pages,
@@ -637,6 +678,28 @@ pub(crate) unsafe extern "C" fn pdf_core_text(
             options,
         )?;
         encode_text(&pages)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_headings(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|inner_request| {
+        encode_headings(&layout::document_headings(
+            inner_request.pdf,
+            inner_request.pages,
+            &layout::text_limits(),
+        )?)
     }))
 }
 
@@ -1182,9 +1245,9 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_plan(
                 document.plan_info(&limits)
             } else {
                 let page_profile = match profile {
-                    0 | 1 => PageProfile::Extract,
-                    2 => PageProfile::Render,
-                    3 => PageProfile::Inspect {
+                    PROFILE_TEXT | PROFILE_TABLES | PROFILE_HEADINGS => PageProfile::Extract,
+                    PROFILE_RENDER => PageProfile::Render,
+                    PROFILE_INSPECT => PageProfile::Inspect {
                         text: flags & FLAG_TEXT != 0,
                     },
                     _ => return Err(Failure::request("invalid lazy profile")),
@@ -1201,7 +1264,7 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_plan(
 }
 
 fn lazy_limits(profile: u32) -> Limits {
-    if matches!(profile, 2 | PROFILE_INFO) {
+    if matches!(profile, PROFILE_RENDER | PROFILE_INFO) {
         Limits::default()
     } else {
         layout::text_limits()
@@ -1214,6 +1277,8 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
     profile: u32,
     flags: u32,
     scale: f64,
+    argument: u32,
+    extra: u32,
 ) -> *mut u8 {
     finish(LAZY_DOCUMENTS.with(|documents| {
         let all = documents.borrow();
@@ -1227,23 +1292,25 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
             lazy.info(&limits)?.as_ref().map(encode_info).transpose()?
         } else {
             lazy.execute(&limits, |document, pages| match profile {
-                0 => encode_text(&layout::opened_text(
+                PROFILE_TEXT => encode_text(&layout::opened_text(
                     document,
                     pages,
                     &limits,
-                    TextOptions {
-                        markdown: flags & FLAG_MARKDOWN != 0,
-                        drop_running: flags & FLAG_DROP_RUNNING != 0,
-                    },
+                    text_options(flags, argument, extra),
                 )?),
-                1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
-                2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
-                3 => encode(&document::inspect_opened(
+                PROFILE_TABLES => encode_tables(&layout::opened_tables(document, pages, &limits)?),
+                PROFILE_RENDER => {
+                    encode_render(&render::opened_render(document, pages, scale, &limits)?)
+                }
+                PROFILE_INSPECT => encode(&document::inspect_opened(
                     document,
                     pages,
                     &inspect_options(flags, None),
                     &limits,
                 )?),
+                PROFILE_HEADINGS => {
+                    encode_headings(&layout::opened_headings(document, pages, &limits)?)
+                }
                 _ => Err(Failure::request("invalid lazy profile")),
             })?
         };
@@ -1547,7 +1614,17 @@ mod tests {
     }
 
     fn call_text(bytes: &[u8], flags: u32, pages: &[u32]) -> Block {
-        call_entry(pdf_core_text, bytes, flags, pages)
+        unsafe extern "C" fn unbounded(
+            input: *const u8,
+            len: usize,
+            options: u32,
+            indexes: *const u32,
+            count: usize,
+        ) -> *mut u8 {
+            // SAFETY: the caller must supply the buffers and lengths required by pdf_core_text.
+            unsafe { pdf_core_text(input, len, options, indexes, count, 0, 0) }
+        }
+        call_entry(unbounded, bytes, flags, pages)
     }
 
     fn call_tables(bytes: &[u8], flags: u32, pages: &[u32]) -> Block {

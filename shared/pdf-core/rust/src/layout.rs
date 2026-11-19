@@ -1,4 +1,4 @@
-use crate::num::{f64_to_i64, fold_char, widen};
+use crate::num::{f64_to_i64, f64_to_usize, fold_char, widen};
 use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
@@ -59,6 +59,23 @@ const FURNITURE_PITCH: f64 = 2.0;
 const FURNITURE_MIN_PAGES: usize = 3;
 
 const FURNITURE_SHARE: usize = 20;
+
+pub(crate) struct Heading {
+    pub bold: bool,
+    pub bounds: [f64; 4],
+    pub font_size: f64,
+    pub isolation: f64,
+    pub italic: bool,
+    pub reading_order: usize,
+    pub relative_font_size: f64,
+    pub running_band: bool,
+    pub text: String,
+}
+
+pub(crate) struct HeadingPage {
+    pub candidates: Vec<Heading>,
+    pub page_index: usize,
+}
 
 #[derive(Clone, Copy)]
 struct Frag<'data> {
@@ -175,6 +192,7 @@ struct Piece {
 #[derive(Clone, Copy)]
 struct Mode {
     aligned: bool,
+    budget: TextBudget,
     markdown: bool,
     text: bool,
 }
@@ -188,6 +206,7 @@ struct PoolOut {
 
 #[derive(Default)]
 struct PageLayout {
+    bounded_text: Option<String>,
     height: f64,
     md: Vec<MdItem>,
     pieces: Vec<Piece>,
@@ -196,8 +215,65 @@ struct PageLayout {
 
 type LinkRect = ([f64; 4], usize);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TextBudget {
+    pub max_blocks: Option<usize>,
+    pub max_chars: Option<usize>,
+}
+
+impl TextBudget {
+    pub(crate) const UNLIMITED: Self = Self {
+        max_chars: None,
+        max_blocks: None,
+    };
+
+    const fn bounded(self) -> bool {
+        self.max_chars.is_some() || self.max_blocks.is_some()
+    }
+}
+
+pub(crate) struct TextOutput {
+    budget: TextBudget,
+    text: String,
+}
+
+impl TextOutput {
+    pub(crate) fn append(&mut self, separator: &str, text: &str) -> bool {
+        let lead = if self.text.is_empty() { "" } else { separator };
+        if let Some(remaining) = self.budget.max_chars.as_mut() {
+            let length = lead.len().saturating_add(text.chars().count());
+            let Some(left) = remaining.checked_sub(length) else {
+                return false;
+            };
+            *remaining = left;
+        }
+        if let Some(remaining) = self.budget.max_blocks.as_mut() {
+            *remaining = remaining.saturating_sub(1);
+        }
+        self.text.push_str(lead);
+        self.text.push_str(text);
+        true
+    }
+
+    pub(crate) fn full(&self) -> bool {
+        self.budget.max_blocks == Some(0) || self.budget.max_chars == Some(0)
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
+
+    pub(crate) const fn new(budget: TextBudget) -> Self {
+        Self {
+            budget,
+            text: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TextOptions {
+    pub budget: TextBudget,
     pub drop_running: bool,
     pub markdown: bool,
 }
@@ -906,10 +982,11 @@ fn cell_text(frags: &[Frag<'_>]) -> String {
     let mode = Mode {
         markdown: false,
         aligned: false,
+        budget: TextBudget::UNLIMITED,
         text: true,
     };
-    layout_pool(frags, &[], None, mode, &[], &mut sink);
-    assemble(&sink.pieces, &HashMap::new(), 0).replace("\n\n", "\n")
+    layout_pool(frags, &[], None, mode, &[], &mut sink, None);
+    assemble(&sink.pieces, &HashMap::new(), 0, TextBudget::UNLIMITED).replace("\n\n", "\n")
 }
 
 fn ruled_tables<'data>(
@@ -1042,6 +1119,20 @@ fn md_line(
     }
 }
 
+fn positioned_lines(frags: &[Frag<'_>]) -> (Vec<Segment>, Vec<(usize, usize)>) {
+    let text_lines = cluster_lines(frags);
+    let mut segments: Vec<Segment> = Vec::with_capacity(text_lines.len());
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(text_lines.len());
+    for line in &text_lines {
+        let before = segments.len();
+        split_segments(frags, line, &mut segments);
+        if segments.len() > before {
+            ranges.push((before, segments.len()));
+        }
+    }
+    (segments, ranges)
+}
+
 fn layout_pool(
     frags: &[Frag<'_>],
     rulings: &[Rule],
@@ -1049,6 +1140,7 @@ fn layout_pool(
     mode: Mode,
     links: &[LinkRect],
     out: &mut PoolOut,
+    bounded: Option<&mut TextOutput>,
 ) {
     if frags.is_empty() {
         return;
@@ -1063,16 +1155,7 @@ fn layout_pool(
         None => (None, Vec::new()),
     };
     let free: &[Frag<'_>] = owned.as_deref().unwrap_or(frags);
-    let text_lines = cluster_lines(free);
-    let mut segments: Vec<Segment> = Vec::with_capacity(text_lines.len());
-    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(text_lines.len());
-    for line in &text_lines {
-        let before = segments.len();
-        split_segments(free, line, &mut segments);
-        if segments.len() > before {
-            ranges.push((before, segments.len()));
-        }
-    }
+    let (segments, mut ranges) = positioned_lines(free);
     if mode.aligned {
         let (found, consumed) = aligned_tables(free, &segments, &ranges);
         if !found.is_empty() {
@@ -1102,55 +1185,93 @@ fn layout_pool(
         let ids: Vec<usize> = (0..blocks.len()).collect();
         let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
         reading_order(&blocks, ids, 0, mode.markdown, &mut order);
-        let mut previous: Option<&Block> = None;
-        for id in order {
-            let Some(block) = blocks.get(id) else {
-                continue;
-            };
-            if let Some(table) = block.table.and_then(|index| tables.get(index)) {
-                let band = band_of(extent, table.bbox[1], table.bbox[3]);
-                if mode.markdown {
+        if mode.markdown {
+            for block in order.iter().filter_map(|&id| blocks.get(id)) {
+                if let Some(table) = block.table.and_then(|index| tables.get(index)) {
                     out.md.push(MdItem::Table {
                         text: render_markdown(table),
-                        band,
+                        band: band_of(extent, table.bbox[1], table.bbox[3]),
                         top: table.bbox[3],
                     });
                 } else {
-                    out.pieces.push(Piece {
-                        text: render_text(table),
-                        lead: if previous.is_some() { "\n\n" } else { "" },
-                        band,
-                    });
-                }
-                previous = Some(block);
-                continue;
-            }
-            if mode.markdown {
-                for &segment_index in &block.segments {
-                    if let Some(segment) = segments.get(segment_index) {
-                        push_md_line(&mut out.md, md_line(free, segment, extent, links));
+                    for &segment_index in &block.segments {
+                        if let Some(segment) = segments.get(segment_index) {
+                            push_md_line(&mut out.md, md_line(free, segment, extent, links));
+                        }
                     }
                 }
-                previous = Some(block);
-                continue;
             }
-            let leading = previous.map_or("", |before| separator(&segments, before, block));
+        } else {
+            plain_pieces(
+                free,
+                &segments,
+                order.iter().filter_map(|&id| blocks.get(id)),
+                &tables,
+                extent,
+                &mut out.pieces,
+                bounded,
+            );
+        }
+    }
+    out.tables.extend(tables);
+}
+
+fn plain_pieces<'data, O>(
+    frags: &[Frag<'_>],
+    segments: &[Segment],
+    order: O,
+    tables: &[Table],
+    extent: Option<[f64; 4]>,
+    pieces: &mut Vec<Piece>,
+    mut bounded: Option<&mut TextOutput>,
+) where
+    O: Iterator<Item = &'data Block>,
+{
+    let first_lead = if bounded.is_some() { "\n\n" } else { "" };
+    let mut emit = |text: String, lead, band| {
+        if let Some(output) = bounded.as_deref_mut() {
+            if output.full() || !output.append(lead, &text) {
+                output.budget.max_blocks = Some(0);
+                return false;
+            }
+            return !output.full();
+        }
+        pieces.push(Piece { band, lead, text });
+        true
+    };
+    let mut previous = None;
+    for block in order {
+        let leading = previous.map_or(first_lead, |before| separator(segments, before, block));
+        if let Some(table) = block.table.and_then(|index| tables.get(index)) {
+            if !emit(
+                render_text(table),
+                if previous.is_some() {
+                    "\n\n"
+                } else {
+                    first_lead
+                },
+                band_of(extent, table.bbox[1], table.bbox[3]),
+            ) {
+                return;
+            }
+        } else {
             for (row, &segment_index) in block.segments.iter().enumerate() {
                 let Some(segment) = segments.get(segment_index) else {
                     continue;
                 };
                 let mut text = String::new();
-                write_segment(free, segment, &mut text);
-                out.pieces.push(Piece {
+                write_segment(frags, segment, &mut text);
+                if !emit(
                     text,
-                    lead: if row == 0 { leading } else { "\n" },
-                    band: band_of(extent, segment.center, segment.center),
-                });
+                    if row == 0 { leading } else { "\n" },
+                    band_of(extent, segment.center, segment.center),
+                ) {
+                    return;
+                }
             }
-            previous = Some(block);
         }
+        previous = Some(block);
     }
-    out.tables.extend(tables);
 }
 
 fn separator(segments: &[Segment], before: &Block, after: &Block) -> &'static str {
@@ -1247,23 +1368,32 @@ fn running_keys(pages: &[Vec<(Band, &str)>], recurring: Recurring) -> RunningKey
         .collect()
 }
 
-fn assemble(pieces: &[Piece], dropped: &RunningKeys, position: usize) -> String {
-    let mut out = String::with_capacity(
-        pieces
-            .iter()
-            .map(|piece| piece.text.len().saturating_add(2))
-            .sum(),
-    );
-    for piece in pieces {
-        if is_dropped(dropped, piece.band, &piece.text, position) {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push_str(piece.lead);
-        }
-        out.push_str(&piece.text);
+fn assemble(
+    pieces: &[Piece],
+    dropped: &RunningKeys,
+    position: usize,
+    budget: TextBudget,
+) -> String {
+    let mut out = TextOutput::new(budget);
+    if !budget.bounded() {
+        out.text.reserve(
+            pieces
+                .iter()
+                .map(|piece| piece.text.len().saturating_add(2))
+                .sum(),
+        );
     }
-    out
+    for piece in pieces {
+        if out.full() {
+            break;
+        }
+        if !is_dropped(dropped, piece.band, &piece.text, position)
+            && !out.append(piece.lead, &piece.text)
+        {
+            break;
+        }
+    }
+    out.text
 }
 
 fn turn_rect(quarter: usize, rect: [f64; 4]) -> [f64; 4] {
@@ -1273,17 +1403,9 @@ fn turn_rect(quarter: usize, rect: [f64; 4]) -> [f64; 4] {
     [ax.min(bx), ay.min(by), ax.max(bx), ay.max(by)]
 }
 
-fn page_layout(
-    content: &PageContent,
-    rotate: i32,
-    extent: Option<[f64; 4]>,
-    mode: Mode,
-    links: &[LinkRect],
-) -> PageLayout {
-    let page = page_quarter(rotate);
+fn fragment_pools(content: &PageContent, page: usize) -> ([Vec<Frag<'_>>; 4], Vec<usize>) {
     let mut pools: [Vec<Frag<'_>>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     let mut weights = [0_usize; 4];
-    let rulings = content.rulings.as_slice();
     for run in &content.runs {
         let text = content.text_of(run);
         if text.is_empty() || !run.direction.0.is_finite() || !run.direction.1.is_finite() {
@@ -1328,8 +1450,25 @@ fn page_layout(
             .cmp(&weights.get(a).copied().unwrap_or(0))
             .then(a.cmp(&b))
     });
+    (pools, ranking)
+}
+
+fn page_layout(
+    content: &PageContent,
+    rotate: i32,
+    extent: Option<[f64; 4]>,
+    mode: Mode,
+    links: &[LinkRect],
+) -> PageLayout {
+    let page = page_quarter(rotate);
+    let (pools, ranking) = fragment_pools(content, page);
+    let rulings = content.rulings.as_slice();
     let mut layout = PageLayout::default();
+    let mut bounded = mode.budget.bounded().then(|| TextOutput::new(mode.budget));
     for (rank, quarter) in ranking.into_iter().enumerate() {
+        if bounded.as_ref().is_some_and(TextOutput::full) {
+            break;
+        }
         let Some(pool) = pools.get(quarter) else {
             continue;
         };
@@ -1350,7 +1489,15 @@ fn page_layout(
             .map(|&(rect, index)| (turn_rect(turns, rect), index))
             .collect();
         let mut sink = PoolOut::default();
-        layout_pool(pool, &ruled_lines, pool_extent, mode, &turned, &mut sink);
+        layout_pool(
+            pool,
+            &ruled_lines,
+            pool_extent,
+            mode,
+            &turned,
+            &mut sink,
+            bounded.as_mut(),
+        );
         if !layout.md.is_empty() && !sink.md.is_empty() {
             layout.md.push(MdItem::Break);
         }
@@ -1370,6 +1517,7 @@ fn page_layout(
             layout.tables.push(table);
         }
     }
+    layout.bounded_text = bounded.map(|out| out.text);
     layout
 }
 pub(crate) fn text_limits() -> Limits {
@@ -1445,6 +1593,11 @@ pub(crate) fn opened_text(
     let mode = Mode {
         markdown: options.markdown,
         aligned: options.markdown,
+        budget: if !options.markdown && (!options.drop_running || selected.len() <= 1) {
+            options.budget
+        } else {
+            TextBudget::UNLIMITED
+        },
         text: true,
     };
     let mut all_links = Vec::new();
@@ -1490,8 +1643,10 @@ pub(crate) fn opened_text(
     };
     let mut texts: Vec<String> = Vec::with_capacity(layouts.len());
     let mut total_bytes = 0_usize;
-    for (position, layout) in layouts.iter().enumerate() {
-        let text = assemble(&layout.pieces, &dropped, position);
+    for (position, layout) in layouts.into_iter().enumerate() {
+        let text = layout
+            .bounded_text
+            .unwrap_or_else(|| assemble(&layout.pieces, &dropped, position, options.budget));
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
@@ -1595,7 +1750,7 @@ fn markdown_pages(
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
     let mut total_bytes = 0_usize;
     for blocks in &pages {
-        let text = render_page(blocks, links);
+        let text = render_page(blocks, links, options.budget);
         total_bytes = total_bytes.saturating_add(text.len());
         if total_bytes > limits.max_text_bytes {
             return Err(Failure::limit("text bytes exceed limit"));
@@ -1628,6 +1783,7 @@ pub(crate) fn opened_tables(
     let mode = Mode {
         markdown: false,
         aligned: true,
+        budget: TextBudget::UNLIMITED,
         text: false,
     };
     let mut session = Session::default();
@@ -1650,6 +1806,173 @@ pub(crate) fn opened_tables(
     Ok(tables)
 }
 
+fn body_size(pools: &[Vec<Frag<'_>>]) -> f64 {
+    let mut counts = HashMap::<u32, u32>::new();
+    for frag in pools.iter().flatten() {
+        let rounded = f64_to_usize((frag.size * 4.0).round()).max(1);
+        let key = u32::try_from(rounded).unwrap_or(u32::MAX);
+        let count = counts.entry(key).or_default();
+        let chars = frag.text.chars().filter(|ch| !ch.is_whitespace()).count();
+        *count = count.saturating_add(u32::try_from(chars).unwrap_or(u32::MAX));
+    }
+    counts
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then(right.0.cmp(&left.0)))
+        .map_or(1.0, |(size, _)| f64::from(size) / 4.0_f64)
+}
+
+fn relative_bounds(rect: [f64; 4], [left, bottom, right, top]: [f64; 4]) -> Option<[f64; 4]> {
+    let width = right - left;
+    let height = top - bottom;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0_f64 || height <= 0.0_f64 {
+        return None;
+    }
+    let [x0, y0, x1, y1] = rect;
+    let bounds = [
+        ((x0 - left) / width).clamp(0.0, 1.0),
+        ((top - y1) / height).clamp(0.0, 1.0),
+        ((x1 - left) / width).clamp(0.0, 1.0),
+        ((top - y0) / height).clamp(0.0, 1.0),
+    ];
+    let [bx0, by0, bx1, by1] = bounds;
+    (bx0 < bx1 && by0 < by1).then_some(bounds)
+}
+
+fn candidate(
+    frags: &[Frag<'_>],
+    segment: &Segment,
+    bounds: [f64; 4],
+    body: f64,
+    isolation: f64,
+    reading_order: usize,
+) -> Heading {
+    let mut text = String::new();
+    write_segment(frags, segment, &mut text);
+    let [_, top, _, bottom] = bounds;
+    Heading {
+        bold: segment.bold,
+        bounds,
+        font_size: segment.size,
+        isolation,
+        italic: segment.italic,
+        reading_order,
+        relative_font_size: (segment.size / body).min(f64::MAX),
+        running_band: band_of(Some([0.0, 0.0, 1.0, 1.0]), 1.0 - bottom, 1.0 - top) != Band::Free,
+        text,
+    }
+}
+
+fn pool_candidates(
+    frags: &[Frag<'_>],
+    undo: usize,
+    crop: [f64; 4],
+    body: f64,
+    line_index: &mut usize,
+    candidates: &mut Vec<Heading>,
+) {
+    let (segments, ranges) = positioned_lines(frags);
+    let blocks = build_blocks(&segments, &ranges);
+    let mut order = Vec::with_capacity(blocks.len());
+    reading_order(&blocks, (0..blocks.len()).collect(), 0, false, &mut order);
+    let center_at = |index: usize| -> Option<f64> {
+        segments
+            .get(ranges.get(index)?.0)
+            .map(|segment| segment.center)
+    };
+    for block in order.iter().filter_map(|&id| blocks.get(id)) {
+        for (&id, segment) in block
+            .segments
+            .iter()
+            .filter_map(|id| segments.get(*id).map(|segment| (id, segment)))
+        {
+            let line = ranges.partition_point(|&(_, end)| end <= id);
+            let above = line.checked_sub(1).and_then(center_at);
+            let below = center_at(line.saturating_add(1));
+            let spacing = |neighbor: Option<f64>| {
+                neighbor.map_or(1.0_f64, |center| {
+                    ((center - segment.center).abs() / segment.size - 1.0).clamp(0.0, 1.0)
+                })
+            };
+            let isolation = f64::midpoint(spacing(above), spacing(below));
+            let rect = turn_rect(undo, [segment.x0, segment.y0, segment.x1, segment.y1]);
+            if let Some(bounds) = relative_bounds(rect, crop) {
+                candidates.push(candidate(
+                    frags,
+                    segment,
+                    bounds,
+                    body,
+                    isolation,
+                    *line_index,
+                ));
+            }
+            *line_index = line_index.saturating_add(1);
+        }
+    }
+}
+
+fn page_candidates(page: &Page, content: &PageContent) -> Vec<Heading> {
+    let rotation = page_quarter(page.info.rotate);
+    let crop = turn_rect(rotation, page.info.crop_box);
+    let (pools, ranking) = fragment_pools(content, rotation);
+    let body = body_size(&pools);
+    let mut candidates = Vec::new();
+    let mut reading_order = 0;
+    for quarter in ranking {
+        if let Some(frags) = pools.get(quarter) {
+            pool_candidates(
+                frags,
+                4_usize.saturating_sub(quarter),
+                crop,
+                body,
+                &mut reading_order,
+                &mut candidates,
+            );
+        }
+    }
+    candidates
+}
+
+#[inline(never)]
+pub(crate) fn opened_headings(
+    document: &Document<'_>,
+    selected: &[(usize, &Page)],
+    limits: &Limits,
+) -> Outcome<Vec<HeadingPage>> {
+    let capture = Capture {
+        reposition: Reposition::Split,
+        structure: true,
+        split_style: true,
+    };
+    let mut session = Session::default();
+    let mut result = Vec::with_capacity(selected.len());
+    for &(page_index, page) in selected {
+        let candidates = match extract_content(document, page, limits, capture, &mut session) {
+            Ok(content) => page_candidates(page, &content),
+            Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
+            Err(_) => Vec::new(),
+        };
+        result.push(HeadingPage {
+            candidates,
+            page_index,
+        });
+    }
+    Ok(result)
+}
+
+pub(crate) fn document_headings(
+    bytes: &[u8],
+    indexes: Option<&[u32]>,
+    limits: &Limits,
+) -> Outcome<Vec<HeadingPage>> {
+    if bytes.len() > limits.max_pdf_bytes {
+        return Err(Failure::limit("pdf exceeds size limit"));
+    }
+    let document = Document::open(bytes, limits)?;
+    let pages = document.pages()?;
+    let selected = select_pages(pages.len(), indexes)?;
+    opened_headings(&document, &pick_pages(&pages, selected), limits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1661,6 +1984,7 @@ mod tests {
 
     const SIZE: f64 = 10.0;
     const OPTIONS: TextOptions = TextOptions {
+        budget: TextBudget::UNLIMITED,
         markdown: false,
         drop_running: true,
     };
@@ -1689,10 +2013,11 @@ mod tests {
         let mode = Mode {
             markdown: false,
             aligned: false,
+            budget: TextBudget::UNLIMITED,
             text: true,
         };
         let layout = page_layout(&content, rotate, None, mode, &[]);
-        assemble(&layout.pieces, &HashMap::new(), 0)
+        assemble(&layout.pieces, &HashMap::new(), 0, TextBudget::UNLIMITED)
     }
 
     fn run(x: f64, baseline: f64, width: f64, text: &str) -> Piece {
@@ -2096,14 +2421,17 @@ mod structure_tests {
     use core::hint::black_box;
 
     const PLAIN: TextOptions = TextOptions {
+        budget: TextBudget::UNLIMITED,
         markdown: false,
         drop_running: false,
     };
     const MARKDOWN: TextOptions = TextOptions {
+        budget: TextBudget::UNLIMITED,
         markdown: true,
         drop_running: false,
     };
     const OPTIONS: TextOptions = TextOptions {
+        budget: TextBudget::UNLIMITED,
         markdown: false,
         drop_running: true,
     };
@@ -2128,6 +2456,7 @@ mod structure_tests {
             };
         }
         let options = TextOptions {
+            budget: TextBudget::UNLIMITED,
             markdown: true,
             drop_running: true,
         };
@@ -2365,6 +2694,7 @@ mod structure_tests {
         }
         let bytes = document(&pages, &[]);
         let options = TextOptions {
+            budget: TextBudget::UNLIMITED,
             markdown: true,
             drop_running: true,
         };
@@ -2694,6 +3024,7 @@ mod structure_tests {
         assert!(kept[0].contains("Prefeitura Municipal de Marilac"));
         assert!(kept[0].contains("Edital 12/2026 - pg. 1"));
         let options = TextOptions {
+            budget: TextBudget::UNLIMITED,
             markdown: false,
             drop_running: true,
         };
@@ -2715,6 +3046,7 @@ mod structure_tests {
     fn varying_headers_below_half_of_the_pages_are_kept() {
         let bytes = running_document(|index| format!("Capitulo {}", ["A", "B", "C", "D"][index]));
         let options = TextOptions {
+            budget: TextBudget::UNLIMITED,
             markdown: false,
             drop_running: true,
         };
@@ -2729,6 +3061,7 @@ mod structure_tests {
     fn single_pages_and_selected_pages_never_lose_their_header() {
         let bytes = running_document(|_| "Prefeitura Municipal de Marilac".to_owned());
         let options = TextOptions {
+            budget: TextBudget::UNLIMITED,
             markdown: false,
             drop_running: true,
         };
@@ -2766,6 +3099,7 @@ mod structure_tests {
         }
         let bytes = document(&pages, &[]);
         let options = TextOptions {
+            budget: TextBudget::UNLIMITED,
             markdown: false,
             drop_running: true,
         };

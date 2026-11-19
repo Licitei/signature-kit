@@ -6,7 +6,7 @@ import { Effect, Layer } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
 import { PDF_CORE_FIXTURES_DIR, type CorpusFixtureName } from "./corpus.ts";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
@@ -120,6 +120,61 @@ describe("PdfCore.text", () => {
       const encrypted = yield* Effect.flip(core.text(encryptedFixture()));
       expect(encrypted.code).toBe(PdfCoreErrorCodeValue.encryptedPdf);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bounds plain text at whole lines and counts Unicode characters and separators", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const pdf = readFixture("helvetica-winansi.pdf");
+        const options = { pageIndexes: [0] };
+        const [full = ""] = yield* core.text(pdf, options);
+        const first = "Declaração de habilitação — corpus SignatureKit";
+        expect(yield* core.text(pdf, { ...options, maxBlocks: 1 })).toEqual([first]);
+        expect(yield* core.text(pdf, { ...options, maxChars: Array.from(first).length })).toEqual([
+          first,
+        ]);
+        expect(
+          yield* core.text(pdf, { ...options, maxChars: Array.from(first).length - 1 }),
+        ).toEqual([""]);
+        expect(yield* core.text(pdf, { ...options, maxBlocks: 0 })).toEqual([""]);
+        const second = "Ação, coração, situação e à margem do edital.";
+        const end = full.indexOf(second) + second.length;
+        const prefix = full.slice(0, end);
+        const maxChars = Array.from(prefix).length;
+        expect(yield* core.text(pdf, { ...options, maxChars })).toEqual([prefix]);
+        expect(yield* core.text(pdf, { ...options, maxChars: maxChars - 1 })).toEqual([first]);
+        expect(yield* core.text(pdf, { ...options, maxChars, maxBlocks: 1 })).toEqual([first]);
+        const lazy = yield* core.openLazy(pdfCoreBytesSource(pdf));
+        expect(yield* lazy.text({ ...options, maxChars })).toEqual([prefix]);
+        const invalid = yield* Effect.flip(lazy.text({ ...options, maxBlocks: -1 }));
+        expect(invalid.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bounds complete markdown blocks after applying the normal layout", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const pdf = readFixture("helvetica-winansi.pdf");
+        const options = { pageIndexes: [0], format: "markdown" } satisfies Parameters<
+          typeof core.text
+        >[1];
+        const [full = ""] = yield* core.text(pdf, options);
+        const [heading = ""] = full.split("\n\n");
+        expect(heading).toContain("Declaração de habilitação");
+        expect(heading).not.toBe(full);
+        const lazy = yield* core.openLazy(pdfCoreBytesSource(pdf));
+        expect(yield* core.text(pdf, { ...options, maxBlocks: 1 })).toEqual([heading]);
+        expect(yield* lazy.text({ ...options, maxChars: Array.from(heading).length })).toEqual([
+          heading,
+        ]);
+        expect(yield* lazy.text({ ...options, maxChars: Array.from(heading).length - 1 })).toEqual([
+          "",
+        ]);
+      }),
+    ).pipe(Effect.provide(layer)),
   );
 
   it.effect("stays usable after repeated calls", () =>
