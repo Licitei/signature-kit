@@ -10,6 +10,8 @@ export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.PAINT_FAILED",
   "pdfCore.RANGE_READ_FAILED",
   "pdfCore.DOCUMENT_CLOSED",
+  "pdfCore.INVALID_OCR_IMAGE",
+  "pdfCore.OCR_FAILED",
 ]);
 export type PdfCoreErrorCode = (typeof PdfCoreErrorCodeSchema)["Type"];
 
@@ -23,6 +25,8 @@ export const PdfCoreErrorCodeValue = {
   paintFailed: "pdfCore.PAINT_FAILED",
   rangeReadFailed: "pdfCore.RANGE_READ_FAILED",
   documentClosed: "pdfCore.DOCUMENT_CLOSED",
+  invalidOcrImage: "pdfCore.INVALID_OCR_IMAGE",
+  ocrFailed: "pdfCore.OCR_FAILED",
 } satisfies Record<string, PdfCoreErrorCode>;
 
 export const PdfCoreErrorMessageLocaleSchema = Schema.Literals(["en-US", "pt-BR"]);
@@ -44,6 +48,8 @@ export const pdfCoreErrorMessages = {
     "pdfCore.PAINT_FAILED": "The PDF page could not be painted.",
     "pdfCore.RANGE_READ_FAILED": "The PDF byte range could not be read.",
     "pdfCore.DOCUMENT_CLOSED": "The PDF document is closed.",
+    "pdfCore.INVALID_OCR_IMAGE": "The PDF OCR image is invalid or unsupported.",
+    "pdfCore.OCR_FAILED": "The PDF OCR operation could not be completed.",
   },
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
@@ -55,6 +61,8 @@ export const pdfCoreErrorMessages = {
     "pdfCore.PAINT_FAILED": "Não foi possível desenhar a página do PDF.",
     "pdfCore.RANGE_READ_FAILED": "Não foi possível ler o intervalo de bytes do PDF.",
     "pdfCore.DOCUMENT_CLOSED": "O documento PDF está fechado.",
+    "pdfCore.INVALID_OCR_IMAGE": "A imagem para OCR do PDF é inválida ou não é suportada.",
+    "pdfCore.OCR_FAILED": "Não foi possível concluir o OCR do PDF.",
   },
 } satisfies Record<PdfCoreErrorMessageLocale, Record<PdfCoreErrorCode, string>>;
 
@@ -76,6 +84,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.create",
   "pdfCore.fontMetrics",
   "pdfCore.pngSize",
+  "pdfCore.recognize",
 ]);
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
@@ -96,10 +105,14 @@ export const PdfCoreOperationValue = {
   create: "pdfCore.create",
   fontMetrics: "pdfCore.fontMetrics",
   pngSize: "pdfCore.pngSize",
+  recognize: "pdfCore.recognize",
 } satisfies Record<string, PdfCoreOperation>;
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreExports",
+  "PdfCoreOcrExports",
+  "PdfCoreOcrEngineImage",
+  "PdfCoreOcrEngineResult",
   "PdfCoreLazyOptions",
   "PdfCoreInspectOptions",
   "PdfCoreInspection",
@@ -123,6 +136,9 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
 export type PdfCoreSchemaName = (typeof PdfCoreSchemaNameSchema)["Type"];
 export const PdfCoreSchemaNameValue = {
   exports: "PdfCoreExports",
+  ocrExports: "PdfCoreOcrExports",
+  ocrImage: "PdfCoreOcrEngineImage",
+  ocrResult: "PdfCoreOcrEngineResult",
   lazyOptions: "PdfCoreLazyOptions",
   inspectOptions: "PdfCoreInspectOptions",
   inspection: "PdfCoreInspection",
@@ -758,3 +774,69 @@ export const PdfCorePngSizeSchema = Schema.Struct({
   height: Schema.Int,
 });
 export type PdfCorePngSize = (typeof PdfCorePngSizeSchema)["Type"];
+
+const MAX_OCR_PIXELS = 32_000_000;
+const ocrDimension = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 }));
+const ocrDpi = Schema.Finite.check(Schema.isBetween({ minimum: 1, maximum: 65_535 }));
+const ocrCoordinate = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_OCR_PIXELS }));
+
+export const PdfCoreOcrEngineImageSchema = Schema.Struct({
+  mediaType: Schema.Literals(["image/jpeg", "image/x-gray"]),
+  bytes: Schema.Uint8Array,
+  width: ocrDimension,
+  height: ocrDimension,
+  dpiX: ocrDpi,
+  dpiY: ocrDpi,
+}).check(
+  Schema.makeFilter(
+    ({ bytes, width, height, mediaType }) =>
+      (bytes.byteLength > 0 &&
+        bytes.byteLength <= MAX_OCR_PIXELS &&
+        width * height <= MAX_OCR_PIXELS &&
+        (mediaType === "image/jpeg" || bytes.byteLength === width * height)) ||
+      "The supplied OCR raster has invalid dimensions or byte length.",
+  ),
+);
+export type PdfCoreOcrEngineImage = (typeof PdfCoreOcrEngineImageSchema)["Type"];
+
+export const PdfCoreOcrEngineResultSchema = Schema.Struct({
+  kind: Schema.Literal("words"),
+  width: ocrDimension,
+  height: ocrDimension,
+  words: Schema.Array(
+    Schema.Struct({
+      text: Schema.String,
+      box: Schema.Tuple([ocrCoordinate, ocrCoordinate, ocrCoordinate, ocrCoordinate]),
+      confidence: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+      line: ocrCoordinate,
+    }),
+  ),
+  text: Schema.String,
+});
+export type PdfCoreOcrEngineResult = (typeof PdfCoreOcrEngineResultSchema)["Type"];
+
+const isOcrVersionFunction = (value: unknown): value is () => number =>
+  typeof value === "function" && value.length === 0;
+const isOcrRecognizeFunction = (
+  value: unknown,
+): value is (
+  pointer: number,
+  length: number,
+  kind: number,
+  width: number,
+  height: number,
+  dpi: number,
+  options: number,
+) => number => typeof value === "function" && value.length === 7;
+
+export const PdfCoreOcrExportsSchema = Schema.Struct({
+  memory: Schema.instanceOf(WebAssembly.Memory),
+  pdf_core_ocr_alloc: Schema.declare(isAllocFunction, { identifier: "pdf_core_ocr_alloc" }),
+  pdf_core_ocr_free: Schema.declare(isFreeFunction, { identifier: "pdf_core_ocr_free" }),
+  pdf_core_ocr_recognize: Schema.declare(isOcrRecognizeFunction, {
+    identifier: "pdf_core_ocr_recognize",
+  }),
+  pdf_core_ocr_version: Schema.declare(isOcrVersionFunction, {
+    identifier: "pdf_core_ocr_version",
+  }),
+});
