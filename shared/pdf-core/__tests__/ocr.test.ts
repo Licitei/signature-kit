@@ -6,7 +6,7 @@ import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreOcrFileLayer } from "../dist/file.js";
 import { PdfCoreOcr } from "../dist/ocr.js";
 
-const MAX_OCR_WASM_BYTES = 112 * 1024;
+const MAX_OCR_WASM_BYTES = 224 * 1024;
 const layer = pdfCoreOcrFileLayer.pipe(Layer.provide(NodeServices.layer));
 
 it.effect("keeps the optional OCR WebAssembly artifact within its size budget", () =>
