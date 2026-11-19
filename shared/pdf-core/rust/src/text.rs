@@ -1013,7 +1013,6 @@ impl Interpreter<'_, '_> {
                 Shows::Forms | Shows::Nothing => return Ok(()),
             }
         }
-        let images_only = SCAN && self.scan.as_ref().is_some_and(|scan| scan.images_only());
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
         let mut overflow = 0_usize;
@@ -1079,11 +1078,8 @@ impl Interpreter<'_, '_> {
                     self.marked_content(code, &operands, &mut marked, max_stack);
                 }
                 _ => {
-                    let handled = (!images_only || matches!(code, OP_CM | OP_GS))
-                        && self.state_operator(code, &operands, scope, state, matrices);
-                    if !handled
+                    if !self.state_operator(code, &operands, scope, state, matrices)
                         && !self.path_operator(code, &operands, state, &mut path)
-                        && (!images_only || code == OP_DO)
                     {
                         let shown = ShowContext {
                             operands: &operands,
@@ -1572,6 +1568,9 @@ impl Interpreter<'_, '_> {
         scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
         let ShowContext { operands, depth } = shown;
+        if code != OP_DO && self.scan.as_ref().is_some_and(|scan| scan.images_only()) {
+            return Ok(());
+        }
         match code {
             OP_TJ => {
                 if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
@@ -1647,6 +1646,11 @@ impl Interpreter<'_, '_> {
         state: &mut GState,
         matrices: &mut TextMatrices,
     ) -> bool {
+        if !matches!(code, OP_CM | OP_GS)
+            && self.scan.as_ref().is_some_and(|scan| scan.images_only())
+        {
+            return false;
+        }
         match code {
             OP_CM => {
                 if let Some(matrix) = tail_numbers::<6, _>(operands) {
