@@ -3,7 +3,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { Context, Deferred, Effect, Fiber, Layer, Ref } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import type { PdfCoreEditOperation, PdfCoreOcrRequest, PdfCoreOcrResult } from "../dist/config.js";
+import type {
+  PdfCoreDisplayList,
+  PdfCoreEditOperation,
+  PdfCoreOcrRaster,
+  PdfCoreOcrRequest,
+  PdfCoreOcrResult,
+} from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
 import { loadPdfCoreNode } from "../dist/node.js";
 import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
@@ -272,6 +278,38 @@ describe("caller-supplied PDF OCR", () => {
         });
         expect(rendered).toEqual(["# Title\n"]);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("rebuilds positioned text and tables from a rendered raster", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const pdf = yield* fixture(["blank"]);
+      const twin = yield* fixture(["native"]);
+      const raster: PdfCoreOcrRaster = {
+        mediaType: "application/octet-stream",
+        bytes: grayscale(),
+        width,
+        height,
+        dpiX: 72,
+        dpiY: 72,
+        placement: [width, 0, 0, height, 0, 0],
+      };
+      const ocr = {
+        render: (page: PdfCoreDisplayList) => {
+          expect(page.view).toEqual([0, 0, width, height]);
+          return Effect.succeed(raster);
+        },
+        recognize: (request: PdfCoreOcrRequest) => {
+          expect(request.image.mediaType).toBe("application/octet-stream");
+          expect(request.image.bytes).toEqual(raster.bytes);
+          return Effect.succeed(recognizeTable(request));
+        },
+      };
+      expect(yield* core.text(pdf, { ocr, format: "markdown" })).toEqual(
+        yield* core.text(twin, { format: "markdown" }),
+      );
+      expect(yield* core.tables(pdf, { ocr })).toMatchObject([{ source: "ocr", rows: 3, cols: 3 }]);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("reads only the requested scan through the lazy document", () =>
