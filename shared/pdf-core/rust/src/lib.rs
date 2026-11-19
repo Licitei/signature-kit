@@ -21,6 +21,7 @@ mod image;
 mod inflate;
 mod inspection;
 mod layout;
+mod lazy;
 mod markdown;
 mod num;
 mod object;

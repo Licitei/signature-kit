@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match, Schema } from "effect";
+import { Context, Effect, Layer, Match, Schema, Semaphore } from "effect";
 import type { Scope } from "effect";
 
 import {
@@ -18,6 +18,7 @@ import {
   PdfCoreMergeOptionsSchema,
   PdfCoreMergeSourcesSchema,
   PdfCoreOperationValue,
+  PdfCoreRangeSizeSchema,
   PdfCoreRenderOptionsSchema,
   PdfCoreSchemaNameValue,
   PdfCoreSignatureAnalysisSchema,
@@ -42,6 +43,7 @@ import type {
   PdfCoreFontMetrics,
   PdfCoreInspection,
   PdfCoreInspectOptions,
+  PdfCoreLazyStats,
   PdfCoreMergeOptions,
   PdfCoreMergeSources,
   PdfCoreObjectRef,
@@ -58,7 +60,44 @@ import type {
   PdfCoreWinAnsiFont,
 } from "./config.js";
 
+export type PdfCoreRangeSource = {
+  readonly size: number;
+  readonly read: (offset: number, length: number) => Effect.Effect<Uint8Array, PdfCoreError>;
+};
+
+export type PdfCoreLazyDocument = {
+  readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
+  readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
+  readonly renderPages: (
+    options?: PdfCoreRenderOptions,
+  ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
+  readonly stats: Effect.Effect<PdfCoreLazyStats>;
+};
+
+export const pdfCoreBytesSource = (bytes: Uint8Array): PdfCoreRangeSource => ({
+  size: bytes.byteLength,
+  read: (offset, length) => Effect.sync(() => bytes.subarray(offset, offset + length)),
+});
+
+export const pdfCoreBlobSource = (blob: Blob): PdfCoreRangeSource => ({
+  size: blob.size,
+  read: (offset, length) =>
+    Effect.tryPromise({
+      try: async () => new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer()),
+      catch: () =>
+        new PdfCoreError({
+          code: PdfCoreErrorCodeValue.rangeReadFailed,
+          operation: PdfCoreOperationValue.readRange,
+          reason: "The PDF Blob range could not be read.",
+        }),
+    }),
+});
+
 export type PdfCoreService = {
+  readonly openLazy: (
+    source: PdfCoreRangeSource,
+  ) => Effect.Effect<PdfCoreLazyDocument, PdfCoreError, Scope.Scope>;
+  readonly wasmMemoryBytes: () => Effect.Effect<number>;
   readonly inspect: (
     pdf: Uint8Array,
     options: PdfCoreInspectOptions,
@@ -349,6 +388,21 @@ type Entry = (
   pagesPointer: number,
   pagesLength: number,
 ) => number;
+
+type BlockReader = <A>(
+  operation: PdfCoreOperation,
+  entry: Entry,
+  flags: number,
+  pageIndexes: ReadonlyArray<number>,
+  decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
+  scale?: number,
+) => Effect.Effect<A, PdfCoreError>;
+
+const lazyProfiles = {
+  [PdfCoreOperationValue.text]: 0,
+  [PdfCoreOperationValue.tables]: 1,
+  [PdfCoreOperationValue.render]: 2,
+};
 
 export const makePdfCore = (
   module: WebAssembly.Module,
@@ -758,7 +812,7 @@ export const makePdfCore = (
         );
       });
 
-    const text = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreTextOptions = {}) {
+    const runText = Effect.fn(function* (read: BlockReader, rawOptions: PdfCoreTextOptions = {}) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreTextOptionsSchema)(rawOptions).pipe(
         Effect.mapError(
           (issue) =>
@@ -775,10 +829,9 @@ export const makePdfCore = (
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
         (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
         (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
-      return yield* readBlock(
+      return yield* read(
         PdfCoreOperationValue.text,
         core.pdf_core_text,
-        pdf,
         flags,
         pageIndexes,
         decodeTextBlock,
@@ -861,7 +914,10 @@ export const makePdfCore = (
         );
       });
 
-    const tables = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreTablesOptions = {}) {
+    const runTables = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCoreTablesOptions = {},
+    ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreTablesOptionsSchema)(
         rawOptions,
       ).pipe(
@@ -877,10 +933,9 @@ export const makePdfCore = (
       );
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      return yield* readBlock(
+      return yield* read(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
-        pdf,
         flags,
         pageIndexes,
         decodeTablesBlock,
@@ -1410,8 +1465,8 @@ export const makePdfCore = (
           );
         });
 
-    const renderPages = Effect.fn(function* (
-      pdf: Uint8Array,
+    const runRenderPages = Effect.fn(function* (
+      read: BlockReader,
       rawOptions: PdfCoreRenderOptions = {},
     ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreRenderOptionsSchema)(
@@ -1430,22 +1485,222 @@ export const makePdfCore = (
       const scale = options.scale ?? PDF_CORE_DEFAULT_RENDER_SCALE;
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      return yield* readBlock(
+      return yield* read(
         PdfCoreOperationValue.render,
         (pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength) =>
           core.pdf_core_render(pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength, scale),
-        pdf,
         flags,
         pageIndexes,
         decodeRenderBlock(scale),
+        scale,
       );
     });
 
+    const full =
+      (pdf: Uint8Array): BlockReader =>
+      (operation, entry, flags, indexes, decode) =>
+        readBlock(operation, entry, pdf, flags, indexes, decode);
+
+    const openLazy = Effect.fn(function* (source: PdfCoreRangeSource) {
+      const size = yield* Schema.decodeUnknownEffect(PdfCoreRangeSizeSchema)(source.size).pipe(
+        Effect.mapError(invalidOptions(PdfCoreOperationValue.openLazy)),
+      );
+      const lock = yield* Semaphore.make(1);
+      let closed = false;
+      let bytesRead = 0;
+      let rounds = 0;
+      let strategy: PdfCoreLazyStats["strategy"] = "lazy";
+      let fallback: Uint8Array | undefined;
+      const handle = yield* Effect.acquireRelease(
+        Effect.suspend(() => {
+          const opened = core.pdf_core_lazy_open(size) >>> 0;
+          return opened === 0
+            ? Effect.fail(
+                new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.limitExceeded,
+                  operation: PdfCoreOperationValue.openLazy,
+                  reason: "The PDF core could not open the lazy document within its limits.",
+                }),
+              )
+            : Effect.succeed(opened);
+        }),
+        (opened) =>
+          Effect.sync(() => {
+            closed = true;
+            fallback = undefined;
+            core.pdf_core_lazy_close(opened);
+          }),
+      );
+
+      const ensureOpen = Effect.suspend(() =>
+        closed
+          ? Effect.fail(
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.documentClosed,
+                operation: PdfCoreOperationValue.openLazy,
+              }),
+            )
+          : Effect.void,
+      );
+
+      const fetchRange = Effect.fn(function* (offset: number, length: number) {
+        yield* ensureOpen;
+        const bytes = yield* source.read(offset, length);
+        bytesRead += bytes.byteLength;
+        yield* ensureOpen;
+        if (bytes.byteLength !== length) {
+          return yield* new PdfCoreError({
+            code: PdfCoreErrorCodeValue.rangeReadFailed,
+            operation: PdfCoreOperationValue.readRange,
+            reason: `Expected ${length} bytes at offset ${offset}, received ${bytes.byteLength}.`,
+          });
+        }
+        return bytes;
+      });
+
+      const supply = Effect.fn(function* (offset: number, length: number) {
+        const bytes = yield* fetchRange(offset, length);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const input = yield* copyIn(PdfCoreOperationValue.readRange, bytes);
+            yield* ensureOpen;
+            if (core.pdf_core_lazy_feed(handle, offset, input.pointer, input.length) !== 1) {
+              return yield* new PdfCoreError({
+                code: PdfCoreErrorCodeValue.rangeReadFailed,
+                operation: PdfCoreOperationValue.readRange,
+                reason: "The PDF core rejected a planned byte range.",
+              });
+            }
+          }),
+        );
+      });
+
+      const plan = Effect.fn(function* (
+        operation: PdfCoreOperation,
+        profile: number,
+        flags: number,
+        indexes: ReadonlyArray<number>,
+      ) {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const pages = yield* allocate(
+              operation,
+              indexes.length * Uint32Array.BYTES_PER_ELEMENT,
+            );
+            new Uint32Array(core.memory.buffer, pages.pointer, indexes.length).set(indexes);
+            yield* ensureOpen;
+            const result = yield* resultBlock(operation, () =>
+              core.pdf_core_lazy_plan(handle, flags, pages.pointer, indexes.length, profile),
+            );
+            const view = new DataView(result.memory, result.pointer, result.length);
+            if (view.getUint32(4, true) !== STATUS_OK) {
+              return yield* failStatus(operation, result);
+            }
+            const payload = result.length - RESULT_HEADER_BYTES;
+            const status = payload >= 4 ? view.getUint32(RESULT_HEADER_BYTES, true) : -1;
+            if ((status === 0 || status === 2) && payload === 4) {
+              return { status, ranges: [] };
+            }
+            if (status !== 1 || payload < 12 || (payload - 4) % 8 !== 0) {
+              return yield* new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                operation,
+                reason: "The PDF core returned an invalid lazy plan.",
+              });
+            }
+            const ranges = [];
+            for (let cursor = RESULT_HEADER_BYTES + 4; cursor < result.length; cursor += 8) {
+              const offset = view.getUint32(cursor, true);
+              const length = view.getUint32(cursor + 4, true);
+              if (length === 0 || offset + length > size) {
+                return yield* new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                  operation,
+                  reason: "The PDF core planned a byte range outside the document.",
+                });
+              }
+              ranges.push({ offset, length });
+            }
+            return { status, ranges };
+          }),
+        );
+      });
+
+      const read: BlockReader = (operation, entry, flags, indexes, decode, scale = 1) =>
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            const profile =
+              operation === PdfCoreOperationValue.text ||
+              operation === PdfCoreOperationValue.tables ||
+              operation === PdfCoreOperationValue.render
+                ? lazyProfiles[operation]
+                : undefined;
+            if (profile === undefined) {
+              return yield* Effect.die("Invalid lazy PDF operation.");
+            }
+            yield* ensureOpen;
+            while (strategy === "lazy") {
+              const next = yield* plan(operation, profile, flags, indexes);
+              if (next.status === 1) {
+                rounds += 1;
+                yield* Effect.forEach(next.ranges, ({ offset, length }) => supply(offset, length), {
+                  concurrency: 4,
+                  discard: true,
+                });
+                continue;
+              }
+              if (next.status === 0) {
+                const decoded = yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    yield* ensureOpen;
+                    const result = yield* resultBlock(operation, () =>
+                      core.pdf_core_lazy_run(handle, profile, flags, scale),
+                    );
+                    if (
+                      result.length === RESULT_HEADER_BYTES &&
+                      new DataView(result.memory, result.pointer, result.length).getUint32(
+                        4,
+                        true,
+                      ) === STATUS_OK
+                    ) {
+                      return { fallback: true };
+                    }
+                    return { value: yield* decode(result) };
+                  }),
+                );
+                if ("value" in decoded) {
+                  return decoded.value;
+                }
+              }
+              strategy = "fallback";
+              core.pdf_core_lazy_close(handle);
+            }
+            if (fallback === undefined) {
+              rounds += 1;
+              const bytes = yield* fetchRange(0, size);
+              yield* ensureOpen;
+              fallback = bytes;
+            }
+            yield* ensureOpen;
+            return yield* full(fallback)(operation, entry, flags, indexes, decode);
+          }),
+        );
+
+      return {
+        text: (options?: PdfCoreTextOptions) => runText(read, options),
+        tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
+        renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
+        stats: Effect.sync(() => ({ bytesRead, rounds, strategy })),
+      };
+    });
+
     return {
+      openLazy,
+      wasmMemoryBytes: () => Effect.sync(() => core.memory.buffer.byteLength),
       inspect,
-      text,
-      tables,
-      renderPages,
+      text: (pdf, options) => runText(full(pdf), options),
+      tables: (pdf, options) => runTables(full(pdf), options),
+      renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,
       revisionComplete,
       document,

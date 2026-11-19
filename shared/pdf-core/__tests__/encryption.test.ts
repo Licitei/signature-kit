@@ -9,7 +9,7 @@ import { Effect, Layer } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const id = "<31415926535897932384626433832795>";
@@ -161,6 +161,20 @@ const vectors = {
 const fixture = (vector: (typeof vectors)[keyof typeof vectors]): Uint8Array =>
   pdf(Buffer.from(vector.content, "hex"), vector.uri, vector.dictionary);
 
+const compareLazy = Effect.fn(function* (input: Uint8Array) {
+  const core = yield* PdfCore;
+  const doc = yield* core.openLazy(pdfCoreBytesSource(input));
+  for (const pageIndexes of [[0], [0, 0], []]) {
+    const plain = { pageIndexes };
+    const markdown = { pageIndexes, format: "markdown" } satisfies Parameters<typeof doc.text>[0];
+    expect(yield* doc.text(plain)).toStrictEqual(yield* core.text(input, plain));
+    expect(yield* doc.text(markdown)).toStrictEqual(yield* core.text(input, markdown));
+    expect(yield* doc.tables(plain)).toStrictEqual(yield* core.tables(input, plain));
+    expect(yield* doc.renderPages(plain)).toStrictEqual(yield* core.renderPages(input, plain));
+  }
+  expect((yield* doc.stats).strategy).toBe("lazy");
+});
+
 describe("PdfCore encrypted PDFs", () => {
   const plain = pdf(Buffer.from(contents), "(https://example.test)");
   const options = { text: true, links: true };
@@ -171,6 +185,7 @@ describe("PdfCore encrypted PDFs", () => {
       Effect.gen(function* () {
         const core = yield* PdfCore;
         const input = fixture(vector);
+        yield* Effect.scoped(compareLazy(input));
         const expected = yield* core.inspect(plain, options);
         expect(expected.links[0]?.uri).toBe("https://example.test");
         expect(yield* core.inspect(input, options)).toEqual(expected);
@@ -187,6 +202,10 @@ describe("PdfCore encrypted PDFs", () => {
       }).pipe(Effect.provide(layer)),
     );
   }
+
+  it.effect("extracts lazily from an encrypted object stream", () =>
+    Effect.scoped(compareLazy(encryptedObjectStreamPdf())).pipe(Effect.provide(layer)),
+  );
 
   it.effect("reads both legacy version and revision combinations", () =>
     Effect.gen(function* () {

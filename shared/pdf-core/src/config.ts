@@ -8,6 +8,8 @@ export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.UNSUPPORTED_FEATURE",
   "pdfCore.INVALID_OPTIONS",
   "pdfCore.PAINT_FAILED",
+  "pdfCore.RANGE_READ_FAILED",
+  "pdfCore.DOCUMENT_CLOSED",
 ]);
 export type PdfCoreErrorCode = (typeof PdfCoreErrorCodeSchema)["Type"];
 
@@ -19,6 +21,8 @@ export const PdfCoreErrorCodeValue = {
   unsupportedFeature: "pdfCore.UNSUPPORTED_FEATURE",
   invalidOptions: "pdfCore.INVALID_OPTIONS",
   paintFailed: "pdfCore.PAINT_FAILED",
+  rangeReadFailed: "pdfCore.RANGE_READ_FAILED",
+  documentClosed: "pdfCore.DOCUMENT_CLOSED",
 } satisfies Record<string, PdfCoreErrorCode>;
 
 export const PdfCoreErrorMessageLocaleSchema = Schema.Literals(["en-US", "pt-BR"]);
@@ -38,6 +42,8 @@ export const pdfCoreErrorMessages = {
     "pdfCore.UNSUPPORTED_FEATURE": "The PDF document uses an unsupported feature.",
     "pdfCore.INVALID_OPTIONS": "Invalid PDF inspection options.",
     "pdfCore.PAINT_FAILED": "The PDF page could not be painted.",
+    "pdfCore.RANGE_READ_FAILED": "The PDF byte range could not be read.",
+    "pdfCore.DOCUMENT_CLOSED": "The PDF document is closed.",
   },
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
@@ -47,11 +53,15 @@ export const pdfCoreErrorMessages = {
     "pdfCore.UNSUPPORTED_FEATURE": "O documento PDF usa um recurso não suportado.",
     "pdfCore.INVALID_OPTIONS": "Opções de inspeção de PDF inválidas.",
     "pdfCore.PAINT_FAILED": "Não foi possível desenhar a página do PDF.",
+    "pdfCore.RANGE_READ_FAILED": "Não foi possível ler o intervalo de bytes do PDF.",
+    "pdfCore.DOCUMENT_CLOSED": "O documento PDF está fechado.",
   },
 } satisfies Record<PdfCoreErrorMessageLocale, Record<PdfCoreErrorCode, string>>;
 
 export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.load",
+  "pdfCore.openLazy",
+  "pdfCore.readRange",
   "pdfCore.inspect",
   "pdfCore.text",
   "pdfCore.tables",
@@ -70,6 +80,8 @@ export const PdfCoreOperationSchema = Schema.Literals([
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
   load: "pdfCore.load",
+  openLazy: "pdfCore.openLazy",
+  readRange: "pdfCore.readRange",
   inspect: "pdfCore.inspect",
   text: "pdfCore.text",
   tables: "pdfCore.tables",
@@ -321,6 +333,26 @@ const isEditFunction = (
   operationsLength: number,
 ) => number => typeof value === "function" && value.length === 4;
 
+const isLazyCloseFunction = (value: unknown): value is (handle: number) => void =>
+  typeof value === "function" && value.length === 1;
+const isLazyFeedFunction = (
+  value: unknown,
+): value is (handle: number, offset: number, pointer: number, length: number) => number =>
+  typeof value === "function" && value.length === 4;
+const isLazyPlanFunction = (
+  value: unknown,
+): value is (
+  handle: number,
+  flags: number,
+  pages: number,
+  count: number,
+  profile: number,
+) => number => typeof value === "function" && value.length === 5;
+const isLazyRunFunction = (
+  value: unknown,
+): value is (handle: number, profile: number, flags: number, scale: number) => number =>
+  typeof value === "function" && value.length === 4;
+
 export const PdfCoreExportsSchema = Schema.Struct({
   memory: Schema.instanceOf(WebAssembly.Memory),
   pdf_core_alloc: Schema.declare(isAllocFunction, { identifier: "pdf_core_alloc" }),
@@ -340,10 +372,23 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_create: Schema.declare(isBufferFunction, { identifier: "pdf_core_create" }),
   pdf_core_font_metrics: Schema.declare(isBufferFunction, { identifier: "pdf_core_font_metrics" }),
   pdf_core_png_size: Schema.declare(isBufferFunction, { identifier: "pdf_core_png_size" }),
+  pdf_core_lazy_open: Schema.declare(isAllocFunction, { identifier: "pdf_core_lazy_open" }),
+  pdf_core_lazy_close: Schema.declare(isLazyCloseFunction, { identifier: "pdf_core_lazy_close" }),
+  pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
+  pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
+  pdf_core_lazy_run: Schema.declare(isLazyRunFunction, { identifier: "pdf_core_lazy_run" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 
 const byteOffsetSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: maxUint32 }));
+export const PdfCoreRangeSizeSchema = byteOffsetSchema;
+export const PdfCoreLazyStatsSchema = Schema.Struct({
+  bytesRead: Schema.Int,
+  rounds: Schema.Int,
+  strategy: Schema.Literals(["lazy", "fallback"]),
+});
+export type PdfCoreLazyStats = (typeof PdfCoreLazyStatsSchema)["Type"];
+
 const safeOffsetSchema = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );

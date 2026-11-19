@@ -3,7 +3,7 @@ use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
 
-use crate::document::{Document, Page, select_pages};
+use crate::document::{Document, Page, pick_pages, select_pages};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
@@ -1432,6 +1432,15 @@ pub(crate) fn document_text(
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let selected = select_pages(pages.len(), page_indexes)?;
+    opened_text(&document, &pick_pages(&pages, selected), limits, options)
+}
+
+pub(crate) fn opened_text(
+    document: &Document<'_>,
+    selected: &[(usize, &Page)],
+    limits: &Limits,
+    options: TextOptions,
+) -> Outcome<Vec<String>> {
     let mode = Mode {
         markdown: options.markdown,
         aligned: options.markdown,
@@ -1439,20 +1448,17 @@ pub(crate) fn document_text(
     };
     let mut all_links = Vec::new();
     if options.markdown {
-        for &position in &selected {
-            if let (Some(page), Ok(page_index)) = (pages.get(position), u32::try_from(position)) {
+        for &(position, page) in selected {
+            if let Ok(page_index) = u32::try_from(position) {
                 document.page_links(page, page_index, &mut all_links)?;
             }
         }
     }
     let mut session = Session::default();
     let mut layouts: Vec<PageLayout> = Vec::with_capacity(selected.len());
-    for position in selected {
-        let Some(page) = pages.get(position) else {
-            continue;
-        };
+    for &(position, page) in selected {
         layouts.push(single_page(
-            &document,
+            document,
             page,
             position,
             &all_links,
@@ -1609,6 +1615,14 @@ pub(crate) fn document_tables(
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let selected = select_pages(pages.len(), page_indexes)?;
+    opened_tables(&document, &pick_pages(&pages, selected), limits)
+}
+
+pub(crate) fn opened_tables(
+    document: &Document<'_>,
+    selected: &[(usize, &Page)],
+    limits: &Limits,
+) -> Outcome<Vec<Table>> {
     let mode = Mode {
         markdown: false,
         aligned: true,
@@ -1617,11 +1631,8 @@ pub(crate) fn document_tables(
     let mut session = Session::default();
     let mut tables: Vec<Table> = Vec::new();
     let mut total_bytes = 0_usize;
-    for position in selected {
-        let Some(page) = pages.get(position) else {
-            continue;
-        };
-        let layout = single_page(&document, page, position, &[], limits, &mut session, mode)?;
+    for &(position, page) in selected {
+        let layout = single_page(document, page, position, &[], limits, &mut session, mode)?;
         for mut table in layout.tables {
             table.page_index = u32::try_from(position).unwrap_or(u32::MAX);
             total_bytes = table

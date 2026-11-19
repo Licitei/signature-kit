@@ -4,7 +4,7 @@ use crate::display::{
     OP_LINE_CAP, OP_LINE_JOIN, OP_LINE_WIDTH, OP_MITER, OP_RESTORE, OP_SAVE, OP_SHADE, OP_STROKE,
     OP_STROKE_GRADIENT, OP_TEXT_CLIP, PathData,
 };
-use crate::document::{Document, Page, select_pages};
+use crate::document::{Document, Page, pick_pages, select_pages};
 use crate::failure::{Failure, Outcome};
 use crate::filters;
 use crate::font::{Font, Glyph};
@@ -2184,15 +2184,51 @@ fn render_document(
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let selected = select_pages(pages.len(), selection.page_indexes)?;
-    let content = OptionalContent::load(&document);
+    render_selected(
+        &document,
+        &pick_pages(&pages, selected),
+        selection,
+        limits,
+        session,
+    )
+}
+
+pub(crate) fn opened_render(
+    document: &Document<'_>,
+    selected: &[(usize, &Page)],
+    scale: f64,
+    limits: &Limits,
+) -> Outcome<Vec<RenderedPage>> {
+    if !scale.is_finite() || scale <= 0.0_f64 || scale > 64.0_f64 {
+        return Err(Failure::invalid("render scale out of range"));
+    }
+    render_selected(
+        document,
+        selected,
+        &PageSelection {
+            operator_limit: MAX_OPERATORS,
+            page_indexes: None,
+            scale,
+        },
+        limits,
+        &mut RenderSession::default(),
+    )
+}
+
+fn render_selected(
+    document: &Document<'_>,
+    selected: &[(usize, &Page)],
+    selection: &PageSelection<'_>,
+    limits: &Limits,
+    session: &mut RenderSession,
+) -> Outcome<Vec<RenderedPage>> {
+    let scale = selection.scale;
+    let content = OptionalContent::load(document);
     let mut rendered = Vec::with_capacity(selected.len());
-    for position in selected {
-        let Some(page) = pages.get(position) else {
-            continue;
-        };
+    for &(position, page) in selected {
         let target = PageTarget {
             content: &content,
-            document: &document,
+            document,
             limits,
             operator_limit: selection.operator_limit,
             page,
