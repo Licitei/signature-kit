@@ -257,6 +257,36 @@ matched a nominal validation or test PDF. None matched the four evaluated
 synthetic source documents or the original real scans. Exclude the shards
 for all thirteen paths from the corpus training roster.
 
+The resulting roster contained 3,584 shards and 822,467 records. A stride
+of six admitted 119,999 usable lines to the training pool and skipped
+17,534 more during segmentation. The corpus fine-tune used that pool
+with 12,672 replay entries from the Liberation archive. It retained the
+same 378-line validation archive as the mixed run. The roster and
+validation archive are local generated data. The roster contains one
+absolute shard filename per line, sorted by shard ID.
+
+```sh
+mapfile -t shards < "$out/full-corpus/fit-shards.txt"
+replay=()
+for ((copy=0; copy<16; copy++)); do replay+=("$out/bootstrap/train.ocrt"); done
+"$runner" --cpu 12 --mem 12G "$trainer" train-sequence "$out/v3-corpus.bin" \
+  7291 12 4 --lines=2000 --qat=1 --shard-stride=6 \
+  --initial="$rust/ocr/data/sequence-v3-mixed.bin" \
+  --validation="$out/v3-mixed-val.ocrt" "${replay[@]}" "${shards[@]}"
+```
+
+The corpus run completed four epochs and 7,969 training line visits in
+212.08 seconds of measured epoch time. After the launcher was interrupted,
+`--resume` restored the second epoch checkpoint and completed epochs
+three and four. The saved corpus table beat the mixed validation score
+of 8,043 edits with 7,118 edits over the same 14,832 characters
+(47.99% CER). The selected final epoch used quantization-aware training.
+Its corresponding f32 error count was 7,126.
+
+[sequence-v3-corpus.bin](../data/sequence-v3-corpus.bin) contains 600,963
+parameters across 195 labels. It is 609,180 bytes and has SHA-256
+`d1d2c933ed1f6543065c0ed070eee9d8c9319a2311824473a578bb04398bc557`.
+
 ## Training and evaluation
 
 From the workspace root, install the repository dependencies and make Bun,
