@@ -67,6 +67,7 @@ const grayscale = (): Uint8Array<ArrayBuffer> => {
 const fixture = Effect.fn(function* (
   pages: ReadonlyArray<"cover" | "scan" | "overlay" | "native" | "blank">,
   padding = 0,
+  rotated = false,
 ) {
   const core = yield* PdfCore;
   const pdf = yield* core.create({
@@ -98,16 +99,33 @@ const fixture = Effect.fn(function* (
         ? `BT /F1 12 Tf 40 220 Td (Native cover) Tj ET\n%${"A".repeat(padding)}\n`
         : "";
     const picture =
-      kind === "scan" || kind === "overlay" ? `q ${width} 0 0 ${height} 0 0 cm /Scan Do Q\n` : "";
+      kind === "scan" || kind === "overlay"
+        ? `q ${rotated ? `0 ${width} -${height} 0 ${height} 0` : `${width} 0 0 ${height} 0 0`} cm /Scan Do Q\n`
+        : "";
     const overlay =
       kind === "overlay" ? "BT /F1 10 Tf 3 Tr 45 210 Td (Stale text layer) Tj ET" : "";
+    const content = native + cover + picture + overlay;
+    if (rotated) {
+      ops.push({
+        op: "set",
+        target: { base: { kind: "page", pageIndex } },
+        key: "Rotate",
+        value: "90",
+      });
+    }
     ops.push(
       { op: "addResource", pageIndex, category: "Font", name: "F1", value: `${font.number} 0 R` },
       {
         op: "appendContent",
         pageIndex,
         ref: { number: nextObjectNumber + 2 + pageIndex, generation: 0 },
-        data: encoder.encode(native + cover + picture + overlay),
+        data: encoder.encode(
+          rotated && native !== ""
+            ? `q 0 1 -1 0 ${height} 0 cm
+${content}
+Q`
+            : content,
+        ),
         compress: false,
       },
     );
@@ -185,6 +203,28 @@ describe("caller-supplied PDF OCR", () => {
         { pageIndex: 0, source: "native", text: "Native cover", textLayer: "usable" },
       ]);
       expect(yield* Ref.get(calls)).toEqual([1, 1, 1, 1]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("maps rotated image words into the same Markdown as rotated native text", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const pdf = yield* fixture(["scan"], 0, true);
+      const twin = yield* fixture(["native"], 0, true);
+      const expected = yield* core.text(twin, { format: "markdown" });
+      expect(expected[0]).toContain("| ITEM | QTY | COST |");
+      expect(
+        yield* core.text(pdf, {
+          format: "markdown",
+          ocr: {
+            recognize: (request) => {
+              expect(request.rotate).toBe(90);
+              expect(request.placement).toEqual([0, width, -height, 0, height, 0]);
+              return Effect.succeed(recognizeTable(request));
+            },
+          },
+        }),
+      ).toEqual(expected);
     }).pipe(Effect.provide(layer)),
   );
 
