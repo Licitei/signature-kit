@@ -49,7 +49,7 @@ const glyphs: Readonly<Record<string, ReadonlyArray<string>>> = {
   "5": ["111", "100", "111", "001", "111"],
 };
 
-const grayscale = (): Uint8Array => {
+const grayscale = (): Uint8Array<ArrayBuffer> => {
   const pixels = new Uint8Array(width * height).fill(255);
   for (const { text, x, y } of entries) {
     Array.from(text).forEach((letter, index) => {
