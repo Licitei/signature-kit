@@ -219,6 +219,44 @@ the clean and degraded pages, use the corpus root above and
 --max-pages 2 --seed d3`, with `--preset clean` and `--preset scan`
 respectively. Use `prepare-real.ts` for the 20 real pages.
 
+### WebAssembly measurements
+
+The scalar and SIMD v3 probes were rebuilt with the same flags other than
+`simd128`. They returned byte-identical transcripts on 32 evenly spaced
+reviewed dev lines and on the real page whose PGM contains a header
+comment. Both v3 variants loaded the 601,680-byte mixed table.
+
+| Workload                    | Scalar mean ms | SIMD mean ms | Tesseract fast mean ms |
+| --------------------------- | -------------: | -----------: | ---------------------: |
+| 32 real dev lines, per line |         176.77 |        62.58 |                 132.18 |
+| Commented PGM, per page     |      11,892.44 |     4,823.58 |               5,970.08 |
+
+The SIMD probe was 236,150 bytes. Probe plus table was 837,830 bytes.
+The scalar probe was 234,365 bytes. The older bootstrap probe run also
+matched scalar and SIMD transcripts on eight clean and eight degraded
+test pages. On those page batches SIMD took 11,612.96 and 9,851.10
+ms/page, compared with 6,125.20 and 2,957.77 for Tesseract fast. Its scalar
+times were 30,571.04 and 29,346.35 ms/page. The page and line results were
+measured in different shared-host windows. The probe timer includes
+page preparation and OCR. The Tesseract batch infers DPI and measures
+one process over the same input files.
+
+The main PDF WASM was rebuilt from the base and this branch using the same
+Rust 1.99.1 and Binaryen binaries. Both files were 1,155,988 bytes and
+matched SHA-256
+`220869496257eae3419cbbc84eb2e4edf32b8447b49a7f04014e4f60d4228b19`.
+
+### Full training corpus
+
+The [streaming generator](../../../bench/ocr/DATASETS.md#stream-the-full-training-corpus)
+completed all 4,016 training PDF paths with zero render failures. It
+rendered 71,003 pages and wrote 828,361 OCRL records across 3,597 shards.
+There were 70,406 pages with at least one usable training line. The
+split was audited by SHA-256 of PDF bytes. Thirteen training paths
+matched a nominal validation or test PDF. None matched the four evaluated
+synthetic source documents or the original real scans. Exclude the shards
+for all thirteen paths from the corpus training roster.
+
 ## Training and evaluation
 
 From the workspace root, install the repository dependencies and make Bun,

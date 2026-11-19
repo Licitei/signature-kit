@@ -626,16 +626,17 @@ async function importDataset(directory, output, jpeg, limit, textOnly) {
       typeof text === "string" &&
       text.length > 0;
     const glyphs = label.glyphs ?? [];
-    const text = label.text?.trim();
-    const labeledWords = textOnly
-      ? [{ text, box: [0, 0, raster.width, raster.height], line: 0 }]
-      : label.words;
+    const text = typeof label.text === "string" ? label.text.trim() : "";
+    const labeledWords =
+      textOnly === true
+        ? [{ text, box: [0, 0, raster.width, raster.height], line: 0 }]
+        : label.words;
     if (
       label.width !== raster.width ||
       label.height !== raster.height ||
       !Array.isArray(labeledWords) ||
       labeledWords.every(validBox) !== true ||
-      (textOnly && /[\r\n]/u.test(text)) ||
+      (textOnly === true && /[\r\n]/u.test(text)) ||
       glyphs.every(validBox) !== true
     ) {
       fail(`Invalid labels in ${name}`);

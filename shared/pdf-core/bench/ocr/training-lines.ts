@@ -2,7 +2,6 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { parsePgm } from "./degradation";
-import type { Raster } from "./degradation";
 import { ReferenceSchema } from "./metrics";
 import { augment, mix, trainingLineHeader } from "./training-raster";
 

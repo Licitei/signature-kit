@@ -374,7 +374,7 @@ for await (const file of pdfFiles(pdfRoot)) {
     .update(JSON.stringify({ key, seed, dpi, maxPages, preset, linesPerPage }))
     .digest("hex");
   const target = join(directory, `${shardId}.ocrl`);
-  if (trainingShards && (await Bun.file(target).exists())) {
+  if (trainingShards && (await Bun.file(target).exists()) === true) {
     resumedDocuments += 1;
     continue;
   }
