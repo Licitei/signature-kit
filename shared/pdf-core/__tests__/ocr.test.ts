@@ -321,7 +321,7 @@ describe("caller-supplied PDF OCR", () => {
           },
         });
         const fiber = yield* Effect.forkScoped(read);
-        yield* Deferred.await(admitted);
+        yield* Effect.raceFirst(Deferred.await(admitted), Fiber.join(fiber));
         yield* Fiber.interrupt(fiber);
         expect(yield* Ref.get(started)).toBe(2);
         expect(yield* Ref.get(finalized)).toBe(2);
