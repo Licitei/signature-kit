@@ -992,6 +992,105 @@ impl Interpreter<'_, '_> {
         style
     }
 
+    #[inline(never)]
+    fn interpret<const SCAN: bool>(
+        &mut self,
+        data: &[u8],
+        scope: &mut Scope,
+        state: &mut GState,
+        matrices: &mut TextMatrices,
+        depth: usize,
+    ) -> Outcome<()> {
+        self.budget = self
+            .budget
+            .checked_sub(data.len())
+            .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
+        if !SCAN {
+            match scan_shows(data) {
+                Shows::Text => {}
+                Shows::Forms if scope.has_forms(self.document) => {}
+                Shows::Forms | Shows::Nothing => return Ok(()),
+            }
+        }
+        let max_stack = self.limits.max_nesting.saturating_mul(4);
+        let mut stack: Vec<GState> = Vec::new();
+        let mut overflow = 0_usize;
+        let mut operands: Vec<Operand<'_>> = Vec::new();
+        let mut path = PathBuilder::default();
+        let mut scan_path = ScanPath::default();
+        let mut marked: Vec<bool> = Vec::new();
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut lexer = ContentLexer::new(data);
+        while let Some(token) = lexer.next() {
+            let name = match token {
+                Err(_) => break,
+                Ok(ContentToken::Operand(operand)) => {
+                    if operands.len() >= MAX_OPERANDS {
+                        while let Some(stale) = operands.pop() {
+                            lexer.recycle(stale);
+                        }
+                    }
+                    operands.push(operand);
+                    continue;
+                }
+                Ok(ContentToken::Operator(name)) => name,
+            };
+            let code = op(name);
+            if SCAN && let Some(scan) = self.scan.as_deref_mut() {
+                scan_path.operator(code, &operands, state, scan);
+                if code == OP_INLINE_IMAGE
+                    && !state.scan.transparent[0]
+                    && let Some((dict, bytes)) = lexer.take_inline_image()
+                    && let Some(coverage) = scan.image(state.ctm, state.scan.clip)?
+                {
+                    scan.select_image(
+                        coverage,
+                        state.ctm,
+                        &scope.resources,
+                        ImageSource::Inline(Box::new((dict, bytes.to_vec()))),
+                    );
+                }
+            }
+            match code {
+                OP_SAVE => {
+                    if stack.len() >= max_stack {
+                        overflow = overflow.saturating_add(1);
+                    } else {
+                        stack.push(state.clone());
+                    }
+                }
+                OP_RESTORE => {
+                    if overflow > 0 {
+                        overflow = overflow.saturating_sub(1);
+                    } else if let Some(previous) = stack.pop() {
+                        *state = previous;
+                    }
+                }
+                OP_BMC | OP_BDC | OP_EMC => {
+                    self.marked_content(code, &operands, &mut marked, max_stack);
+                }
+                _ => {
+                    if !self.state_operator(code, &operands, scope, state, matrices)
+                        && !self.path_operator(code, &operands, state, &mut path)
+                    {
+                        let shown = ShowContext {
+                            operands: &operands,
+                            depth,
+                        };
+                        self.show_operator(code, shown, scope, state, matrices, &mut scratch)?;
+                    }
+                }
+            }
+            while let Some(used) = operands.pop() {
+                lexer.recycle(used);
+            }
+        }
+        if marked.contains(&true) {
+            self.actual = None;
+        }
+        Ok(())
+    }
+
     fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64) -> Join {
         if !self.pending.open {
             return Join::Closed;
@@ -1377,105 +1476,6 @@ impl Interpreter<'_, '_> {
         {
             self.rulings.push(ruling);
         }
-    }
-
-    #[inline(never)]
-    fn interpret<const SCAN: bool>(
-        &mut self,
-        data: &[u8],
-        scope: &mut Scope,
-        state: &mut GState,
-        matrices: &mut TextMatrices,
-        depth: usize,
-    ) -> Outcome<()> {
-        self.budget = self
-            .budget
-            .checked_sub(data.len())
-            .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
-        if !SCAN {
-            match scan_shows(data) {
-                Shows::Text => {}
-                Shows::Forms if scope.has_forms(self.document) => {}
-                Shows::Forms | Shows::Nothing => return Ok(()),
-            }
-        }
-        let max_stack = self.limits.max_nesting.saturating_mul(4);
-        let mut stack: Vec<GState> = Vec::new();
-        let mut overflow = 0_usize;
-        let mut operands: Vec<Operand<'_>> = Vec::new();
-        let mut path = PathBuilder::default();
-        let mut scan_path = ScanPath::default();
-        let mut marked: Vec<bool> = Vec::new();
-        let mut scratch: Vec<u8> = Vec::new();
-        let mut lexer = ContentLexer::new(data);
-        while let Some(token) = lexer.next() {
-            let name = match token {
-                Err(_) => break,
-                Ok(ContentToken::Operand(operand)) => {
-                    if operands.len() >= MAX_OPERANDS {
-                        while let Some(stale) = operands.pop() {
-                            lexer.recycle(stale);
-                        }
-                    }
-                    operands.push(operand);
-                    continue;
-                }
-                Ok(ContentToken::Operator(name)) => name,
-            };
-            let code = op(name);
-            if SCAN && let Some(scan) = self.scan.as_deref_mut() {
-                scan_path.operator(code, &operands, state, scan);
-                if code == OP_INLINE_IMAGE
-                    && !state.scan.transparent[0]
-                    && let Some((dict, bytes)) = lexer.take_inline_image()
-                    && let Some(coverage) = scan.image(state.ctm, state.scan.clip)?
-                {
-                    scan.select_image(
-                        coverage,
-                        state.ctm,
-                        &scope.resources,
-                        ImageSource::Inline(Box::new((dict, bytes.to_vec()))),
-                    );
-                }
-            }
-            match code {
-                OP_SAVE => {
-                    if stack.len() >= max_stack {
-                        overflow = overflow.saturating_add(1);
-                    } else {
-                        stack.push(state.clone());
-                    }
-                }
-                OP_RESTORE => {
-                    if overflow > 0 {
-                        overflow = overflow.saturating_sub(1);
-                    } else if let Some(previous) = stack.pop() {
-                        *state = previous;
-                    }
-                }
-                OP_BMC | OP_BDC | OP_EMC => {
-                    self.marked_content(code, &operands, &mut marked, max_stack);
-                }
-                _ => {
-                    if !self.state_operator(code, &operands, scope, state, matrices)
-                        && !self.path_operator(code, &operands, state, &mut path)
-                    {
-                        let shown = ShowContext {
-                            operands: &operands,
-                            depth,
-                        };
-                        self.show_operator(code, shown, scope, state, matrices, &mut scratch)?;
-                    }
-                }
-            }
-            while let Some(used) = operands.pop() {
-                lexer.recycle(used);
-            }
-        }
-        if marked.contains(&true) {
-            self.actual = None;
-        }
-        Ok(())
     }
 
     fn run(
