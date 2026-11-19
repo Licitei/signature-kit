@@ -8,6 +8,7 @@ mod ctc;
 mod deskew;
 pub mod engine;
 pub mod jpeg;
+mod lexicon;
 mod model;
 mod network;
 #[cfg(not(target_arch = "wasm32"))]
