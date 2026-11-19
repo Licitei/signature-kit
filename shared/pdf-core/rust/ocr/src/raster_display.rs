@@ -1,6 +1,10 @@
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use core::f64::consts::TAU;
+use core::iter;
+
+use crate::jpeg;
+use crate::raster::Gray;
 
 const BLACK: Color = [0, 255];
 const MAX_PIXELS: usize = 32_000_000;
@@ -46,7 +50,13 @@ struct Rect {
 #[derive(Debug)]
 struct Clip {
     bounds: Rect,
-    pixels: Option<Vec<u8>>,
+    coverage: Coverage,
+}
+
+#[derive(Debug)]
+enum Coverage {
+    Mask(Vec<u8>),
+    Rectangle([f64; 4]),
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +73,6 @@ struct State {
 struct Painter<'data> {
     base: Matrix,
     blobs: Vec<&'data [u8]>,
-    clip_budget: usize,
     glyphs: BTreeMap<u32, Vec<Segment>>,
     path: Path,
     raster: GrayRaster,
@@ -281,12 +290,12 @@ impl Path {
         edges
     }
 
-    fn pixel_rectangle(&self) -> bool {
+    fn rectangle(&self) -> Option<[f64; 4]> {
         let [contour] = self.0.as_slice() else {
-            return false;
+            return None;
         };
         let [[ax, ay], [bx, by], [cx, cy], [dx, dy]] = contour.points.as_slice() else {
-            return false;
+            return None;
         };
         let horizontal = (ay - by).abs() < f64::EPSILON
             && (bx - cx).abs() < f64::EPSILON
@@ -296,12 +305,7 @@ impl Path {
             && (by - cy).abs() < f64::EPSILON
             && (cx - dx).abs() < f64::EPSILON
             && (dy - ay).abs() < f64::EPSILON;
-        (horizontal || vertical)
-            && contour
-                .points
-                .iter()
-                .flatten()
-                .all(|value| value.fract().abs() < f64::EPSILON)
+        (horizontal || vertical).then_some([ax.min(*cx), ay.min(*cy), ax.max(*cx), ay.max(*cy)])
     }
 
     fn stroke(&self, radius: f64, cap: u8) -> Self {
@@ -411,21 +415,41 @@ impl Clip {
         if x < left || x >= right || y < top || y >= bottom {
             return 0;
         }
-        let Some(pixels) = self.pixels.as_ref() else {
-            return 255;
-        };
-        pixels
-            .get(
-                y.saturating_sub(top)
-                    .saturating_mul(self.bounds.width())
-                    .saturating_add(x.saturating_sub(left)),
-            )
-            .copied()
-            .unwrap_or(0)
+        match &self.coverage {
+            Coverage::Rectangle([x0, y0, x1, y1]) => {
+                let px = scalar(x);
+                let py = scalar(y);
+                let horizontal = ((px + 1.0_f64).min(*x1) - px.max(*x0)).max(0.0_f64);
+                let vertical = ((py + 1.0_f64).min(*y1) - py.max(*y0)).max(0.0_f64);
+                channel(horizontal * vertical * 255.0_f64)
+            }
+            Coverage::Mask(pixels) => pixels
+                .get(
+                    y.saturating_sub(top)
+                        .saturating_mul(self.bounds.width())
+                        .saturating_add(x.saturating_sub(left)),
+                )
+                .copied()
+                .unwrap_or(0),
+        }
+    }
+
+    const fn bytes(&self) -> usize {
+        match &self.coverage {
+            Coverage::Mask(pixels) => pixels.len(),
+            Coverage::Rectangle(_) => 0,
+        }
     }
 }
 
 impl Image {
+    fn decode(&self, blobs: &[&[u8]], flag: u8, index: usize) -> Option<Gray> {
+        if self.flags & flag == 0 {
+            return None;
+        }
+        jpeg::decode(blobs.get(index)?).ok()
+    }
+
     fn read(reader: &mut Reader<'_>) -> Option<Self> {
         let flags = reader.byte()?;
         let opacity = reader.byte()?;
@@ -449,7 +473,14 @@ impl Image {
         })
     }
 
-    fn sample(&self, blobs: &[&[u8]], image_x: f64, image_y: f64) -> Option<Color> {
+    fn sample(
+        &self,
+        blobs: &[&[u8]],
+        decoded: Option<&Gray>,
+        mask: Option<&Gray>,
+        image_x: f64,
+        image_y: f64,
+    ) -> Option<Color> {
         let column = pixel(image_x * scalar(self.width));
         let row = pixel(image_y * scalar(self.height));
         let at = row
@@ -460,7 +491,10 @@ impl Image {
         let [red, green, blue, source_alpha] = if self.flags & 1 == 0 {
             bytes.get(at..at.checked_add(4)?)?.try_into().ok()?
         } else {
-            [128, 128, 128, 255]
+            let tone = decoded
+                .and_then(|gray| jpeg_sample(gray, image_x, image_y))
+                .unwrap_or(128);
+            [tone, tone, tone, 255]
         };
         let mask_alpha = if self.flags & 2 == 0 {
             let mask_at = pixel(image_y * scalar(self.mask_height))
@@ -472,7 +506,8 @@ impl Image {
                 .copied()
                 .unwrap_or(255)
         } else {
-            255
+            mask.and_then(|gray| jpeg_sample(gray, image_x, image_y))
+                .unwrap_or(255)
         };
         let tone = if self.flags & 4 != 0 && mask_alpha > 0 && mask_alpha < 255 {
             let [mr, mg, mb] = self.matte;
@@ -495,6 +530,23 @@ impl Image {
 }
 
 impl Painter<'_> {
+    fn available_clip_budget(&self) -> usize {
+        let mut bytes = 0_usize;
+        let mut held = Vec::new();
+        for mask in self
+            .stack
+            .iter()
+            .chain(iter::once(&self.state))
+            .filter_map(|state| state.clip.as_ref())
+        {
+            if mask.bytes() != 0 && !held.iter().any(|earlier| Rc::ptr_eq(earlier, mask)) {
+                bytes = bytes.saturating_add(mask.bytes());
+                held.push(mask);
+            }
+        }
+        CLIP_BUDGET.saturating_sub(bytes)
+    }
+
     fn drawing(&mut self, code: u8, reader: &mut Reader<'_>) -> Option<()> {
         match code {
             1 => {
@@ -533,7 +585,7 @@ impl Painter<'_> {
                     &self.path,
                     self.state.clip.as_deref(),
                     reader.byte()? == 1,
-                    &mut self.clip_budget,
+                    self.available_clip_budget(),
                 )?);
             }
             8 => self.state.fill = reader.color()?,
@@ -597,13 +649,24 @@ impl Painter<'_> {
         );
         let clip = self.state.clip.as_deref();
         let area = clip.map_or(bounds, |mask| bounds.intersect(mask.bounds));
+        if area.width() == 0 || area.top >= area.bottom {
+            return;
+        }
+        let decoded = image.decode(&self.blobs, 1, image.blob);
+        let mask = image.decode(&self.blobs, 2, image.mask);
         for y in area.top..area.bottom {
             for x in area.left..area.right {
                 let [image_x, pdf_v] = transform(back, [scalar(x) + 0.5_f64, scalar(y) + 0.5_f64]);
                 let image_y = 1.0_f64 - pdf_v;
                 if (0.0_f64..1.0_f64).contains(&image_x)
                     && (0.0_f64..1.0_f64).contains(&image_y)
-                    && let Some(color) = image.sample(&self.blobs, image_x, image_y)
+                    && let Some(color) = image.sample(
+                        &self.blobs,
+                        decoded.as_ref(),
+                        mask.as_ref(),
+                        image_x,
+                        image_y,
+                    )
                     && let Some(slot) = self
                         .raster
                         .pixels
@@ -651,7 +714,7 @@ impl Painter<'_> {
                             &self.text_clip,
                             self.state.clip.as_deref(),
                             false,
-                            &mut self.clip_budget,
+                            self.available_clip_budget(),
                         )?);
                         self.text_clip.0.clear();
                     }
@@ -693,6 +756,15 @@ fn pixel(value: f64) -> usize {
 
 fn channel(value: f64) -> u8 {
     u8::try_from(pixel_index(value.round()).min(255)).unwrap_or(255)
+}
+
+fn jpeg_sample(gray: &Gray, x: f64, y: f64) -> Option<u8> {
+    let width = usize::try_from(gray.width).ok()?;
+    let row = pixel(y * f64::from(gray.height));
+    let column = pixel(x * f64::from(gray.width));
+    gray.pixels
+        .get(row.checked_mul(width)?.checked_add(column)?)
+        .copied()
 }
 
 fn scalar(value: usize) -> f64 {
@@ -861,21 +933,32 @@ fn clip_path(
     path: &Path,
     clip: Option<&Clip>,
     even_odd: bool,
-    budget: &mut usize,
+    budget: usize,
 ) -> Option<Rc<Clip>> {
     let edges = path.edges();
     let bounds = Rect::points(edges.iter().flat_map(|edge| [edge.start, edge.end]), raster);
     let area = clip.map_or(bounds, |mask| bounds.intersect(mask.bounds));
-    if path.pixel_rectangle() && clip.is_none_or(|mask| mask.pixels.is_none()) {
-        return Some(Rc::new(Clip {
-            bounds: area,
-            pixels: None,
-        }));
+    if let Some([x0, y0, x1, y1]) = path.rectangle() {
+        let rectangle = match clip.map(|mask| &mask.coverage) {
+            None => Some([x0, y0, x1, y1]),
+            Some(Coverage::Rectangle([left, top, right, bottom])) => {
+                Some([x0.max(*left), y0.max(*top), x1.min(*right), y1.min(*bottom)])
+            }
+            Some(Coverage::Mask(_)) => None,
+        };
+        if let Some(coordinates) = rectangle {
+            return Some(Rc::new(Clip {
+                bounds: area,
+                coverage: Coverage::Rectangle(coordinates),
+            }));
+        }
     }
     let len = area
         .width()
         .checked_mul(area.bottom.saturating_sub(area.top))?;
-    *budget = budget.checked_sub(len)?;
+    if len > budget {
+        return None;
+    }
     let mut pixels = vec![0; len];
     scan(&edges, area, even_odd, |x, y, coverage| {
         let at = y
@@ -888,7 +971,7 @@ fn clip_path(
     });
     Some(Rc::new(Clip {
         bounds: area,
-        pixels: Some(pixels),
+        coverage: Coverage::Mask(pixels),
     }))
 }
 
@@ -918,7 +1001,6 @@ pub(crate) fn rasterize(payload: &[u8], scale_x1000: u32) -> Option<GrayRaster> 
     let mut painter = Painter {
         base,
         blobs,
-        clip_budget: CLIP_BUDGET,
         glyphs: BTreeMap::new(),
         path: Path::default(),
         raster: GrayRaster {
@@ -1005,6 +1087,24 @@ mod tests {
         assert_eq!((raster.width, raster.height), (2, 4));
         assert_eq!(raster.pixels, [0, 0, 0, 0, 255, 255, 128, 128]);
         assert!(rasterize(&bytes[..bytes.len().saturating_sub(1)], 1000).is_none());
+    }
+
+    #[test]
+    fn samples_progressive_jpeg_images() {
+        let mut ops = vec![3];
+        for value in [4.0_f32, 0.0_f32, 0.0_f32, 2.0_f32, 10.0_f32, 20.0_f32] {
+            ops.extend(value.to_le_bytes());
+        }
+        ops.extend([20, 1, 255]);
+        let bytes = include_bytes!("../tests/fixtures/progressive.jpg");
+        let gray = jpeg::decode(bytes).unwrap();
+        for word in [0_u32, gray.width, gray.height, u32::MAX, 0, 0, 0] {
+            ops.extend(word.to_le_bytes());
+        }
+        let encoded = payload(0, &ops, &[bytes]);
+        let raster = rasterize(&encoded, 1000).unwrap();
+        assert_eq!(raster.pixels.len(), 8);
+        assert!(raster.pixels.iter().any(|&value| value != 128));
     }
 
     #[test]

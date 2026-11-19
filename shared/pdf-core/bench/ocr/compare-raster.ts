@@ -50,9 +50,15 @@ try {
       pageIndexes: [0],
       scale,
     });
-    if (list === undefined) continue;
+    if (list === undefined) {
+      console.error(`Could not build a display list for ${file}`);
+      continue;
+    }
     const raster = rasterize(renderPayload(list), scale);
-    if (raster === undefined) continue;
+    if (raster === undefined) {
+      console.error(`Could not rasterize ${file}`);
+      continue;
+    }
     const { ops, blobs, ...metadata } = list;
     const sample: Sample = {
       list: metadata,
