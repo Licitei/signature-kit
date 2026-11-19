@@ -1,12 +1,14 @@
 {
-  "version": 1,
+  "version": 2,
   "commit": "b2cf7c3fd1b6b333e295902abab854ddae8c1989",
-  "sample": "fisher-yates-mulberry32-then-path-sort",
+  "sample": "sample-file",
   "seed": 1,
   "requested": 400,
   "sampleCount": 400,
-  "corpusCount": 2655,
+  "corpusCount": 3099,
   "sampleKey": "54ed54fc02f42501f5f1e69e89c9db55b98f940fbba762da8a274abbe999d8a0",
+  "sampleContentKey": "0bf2783f4f3a63543ccbf870aef5d0d9a6486dc5797d14bf830636f336fb44e9",
+  "sampleFile": "shared/pdf-core/bench/baselines/sample-400.json",
   "sampleBasenames": [
     "0003d883f87d7a60d0ede8abf34241792a445a013ccebbced034914c6b4a598d.pdf",
     "0028e07f0ae2506e5209b3ca6b36ab69e7c10c93fbb48da0fbc17feef35ae211.pdf",
@@ -425,6 +427,8 @@
       "access": "eager",
       "reason": null,
       "documents": 400,
+      "singlePage": 0,
+      "latencyDocuments": 400,
       "successes": 400,
       "failures": 0,
       "failuresByCode": {},
@@ -432,12 +436,12 @@
       "failureBasenames": [],
       "failureBasenamesTruncated": false,
       "latencyMs": {
-        "p50": 4.982385000002978,
-        "p90": 13.022954000000027,
-        "p99": 87.80907399999705,
-        "mean": 11.70686489999992
+        "p50": 4.322670000001381,
+        "p90": 11.892984999998589,
+        "p99": 72.06847700000071,
+        "mean": 10.371176084999997
       },
-      "throughputDocsPerSec": 85.31698208572857,
+      "throughputDocsPerSec": 96.22129189014355,
       "bytesRead": {
         "p50": 386614,
         "p90": 3009938,
@@ -447,10 +451,14 @@
       },
       "rangeRequests": null,
       "wasmMemoryBytes": {
-        "max": 112721920,
-        "p90": 112721920
+        "peak": 112721920
       },
-      "elapsedMs": 4688.398373
+      "perDocWasmMemoryBytes": {
+        "p50": 2228224,
+        "p90": 5505024,
+        "max": 116523008
+      },
+      "elapsedMs": 4157.084073000002
     },
     {
       "id": "text-lazy-page1",
@@ -458,6 +466,8 @@
       "access": "lazy",
       "reason": null,
       "documents": 400,
+      "singlePage": 0,
+      "latencyDocuments": 400,
       "successes": 400,
       "failures": 0,
       "failuresByCode": {},
@@ -465,12 +475,12 @@
       "failureBasenames": [],
       "failureBasenamesTruncated": false,
       "latencyMs": {
-        "p50": 4.3428619999976945,
-        "p90": 12.174199000000954,
-        "p99": 57.297623000002204,
-        "mean": 9.360231050000039
+        "p50": 4.096441000001505,
+        "p90": 10.349354999998468,
+        "p99": 67.07863799999905,
+        "mean": 9.229143960000119
       },
-      "throughputDocsPerSec": 105.58847944542698,
+      "throughputDocsPerSec": 107.2818751231217,
       "bytesRead": {
         "p50": 268824,
         "p90": 733693,
@@ -486,10 +496,14 @@
         "total": 1617
       },
       "wasmMemoryBytes": {
-        "max": 123600896,
-        "p90": 123600896
+        "peak": 123600896
       },
-      "elapsedMs": 3788.2920760000006
+      "perDocWasmMemoryBytes": {
+        "p50": 2293760,
+        "p90": 4325376,
+        "max": 116916224
+      },
+      "elapsedMs": 3728.4956060000004
     },
     {
       "id": "text-lazy-escalate",
@@ -497,63 +511,44 @@
       "access": "lazy",
       "reason": null,
       "documents": 400,
-      "successes": 309,
-      "failures": 91,
-      "failuresByCode": {
-        "pdfCore.INVALID_PDF": 91
-      },
-      "failureReasons": {
-        "page index out of range": 91
-      },
-      "failureBasenames": [
-        "06fd66390a4928a1146bf51ef188e26c66f3cd20624414cd7a1a9c6aca128cdd.pdf",
-        "0985161b4230dc637c3a9266d367536ded4822ba40bf2ffafca37b02a33f5237.pdf",
-        "0c9c54d5692d4e994d8130efabc163e553f81efe6ce985cc3c4b36320cbca2cf.pdf",
-        "0e7a57bc837d5a0fcea7a167ae99cf8d4d4b0ff182ce8954795cb1004926af1c.pdf",
-        "0ff3888dd800eed76567d4e65a9fd7fe7b776b317bb94d450234f8a6f3d8e752.pdf",
-        "1074c0f594ad9719659634b09aca9de2342aa93587146c6074385487236817c3.pdf",
-        "147bdbc34c2f51ba86e34336baa568d906741612c64223c2f147e6b48b18e1c5.pdf",
-        "15a55194a8b0f621cb7286a1e87ce56afd01ae2a538b6418e684fbad66fd8973.pdf",
-        "1b72e66b5171ae7e2511c5fd6a23fad801305d1013631fe42cc20f69ecf57e03.pdf",
-        "1c33689e46a163842efc1d50bc6c2047a1195f5ef23eef6f04afdbb29ba602af.pdf",
-        "1d2abfc154eef72f47c3f0a158aec5d82e6ef12acab40d267345658153aa34fd.pdf",
-        "219a7ac70cb281e84b866bf2412658a4c62dd43c10f71a87c57912eb74d21aea.pdf",
-        "22885dc8c14cb7fdb9c4e4fae686022a0323eefb151a892549c11fbd0f4fbc78.pdf",
-        "25790f5de6f3d0d683824e5a26b527ef5a8f336ca36d10def35800abe526eb5a.pdf",
-        "29cda27552bda111d31a81cfecb51d9beae151008d7ea44590cd32269cb9fdf0.pdf",
-        "2c5c5af66df34153dba2dce87ef8c8e101371ef8f2fecb409cba5b289b422e83.pdf",
-        "2c8e2a007ee0f0187f504452ba28c4964c02bd9c814f3aed09e55a42542f1bd0.pdf",
-        "2dc300199c1f64906a38f34d7fe5d8ade89c81815a8510131a075beb70a085b1.pdf",
-        "323826d5b912917df6bed8b418548b2f51a424083ec75c854adc36e8ecc990be.pdf",
-        "35727642be158c73129c301e5da9ad4cc3161ee09141f9a48c6d81cf00943671.pdf"
-      ],
-      "failureBasenamesTruncated": true,
+      "singlePage": 91,
+      "latencyDocuments": 309,
+      "successes": 400,
+      "failures": 0,
+      "failuresByCode": {},
+      "failureReasons": {},
+      "failureBasenames": [],
+      "failureBasenamesTruncated": false,
       "latencyMs": {
-        "p50": 8.035847000002832,
-        "p90": 17.381562000002305,
-        "p99": 69.00956399999995,
-        "mean": 11.942054864077564
+        "p50": 7.651934999999867,
+        "p90": 16.99626300000091,
+        "p99": 64.39575100000002,
+        "mean": 12.107034954692553
       },
-      "throughputDocsPerSec": 76.32663443040897,
+      "throughputDocsPerSec": 76.33042443250847,
       "bytesRead": {
-        "p50": 374097,
-        "p90": 1302586,
-        "p99": 5316392,
-        "mean": 696691.4725,
-        "total": 278676589
+        "p50": 324013,
+        "p90": 1254201,
+        "p99": 4588635,
+        "mean": 628487.235,
+        "total": 251394894
       },
       "rangeRequests": {
         "p50": 4,
         "p90": 7,
         "p99": 12,
-        "mean": 5.155,
-        "total": 2062
+        "mean": 4.94,
+        "total": 1976
       },
       "wasmMemoryBytes": {
-        "max": 113573888,
-        "p90": 113573888
+        "peak": 113573888
       },
-      "elapsedMs": 5240.634583000003
+      "perDocWasmMemoryBytes": {
+        "p50": 2555904,
+        "p90": 5439488,
+        "max": 116916224
+      },
+      "elapsedMs": 5240.374372
     },
     {
       "id": "inspect-lazy-page1",
@@ -561,6 +556,8 @@
       "access": "n/a",
       "reason": "Lazy document has no inspect method.",
       "documents": 0,
+      "singlePage": 0,
+      "latencyDocuments": 0,
       "successes": 0,
       "failures": 0,
       "failuresByCode": {},
@@ -572,6 +569,7 @@
       "bytesRead": null,
       "rangeRequests": null,
       "wasmMemoryBytes": null,
+      "perDocWasmMemoryBytes": null,
       "elapsedMs": 0
     },
     {
@@ -580,6 +578,8 @@
       "access": "n/a",
       "reason": "Service has no info method.",
       "documents": 0,
+      "singlePage": 0,
+      "latencyDocuments": 0,
       "successes": 0,
       "failures": 0,
       "failuresByCode": {},
@@ -591,6 +591,7 @@
       "bytesRead": null,
       "rangeRequests": null,
       "wasmMemoryBytes": null,
+      "perDocWasmMemoryBytes": null,
       "elapsedMs": 0
     },
     {
@@ -599,6 +600,8 @@
       "access": "n/a",
       "reason": "Lazy document has no info method.",
       "documents": 0,
+      "singlePage": 0,
+      "latencyDocuments": 0,
       "successes": 0,
       "failures": 0,
       "failuresByCode": {},
@@ -610,6 +613,7 @@
       "bytesRead": null,
       "rangeRequests": null,
       "wasmMemoryBytes": null,
+      "perDocWasmMemoryBytes": null,
       "elapsedMs": 0
     },
     {
@@ -618,6 +622,8 @@
       "access": "n/a",
       "reason": "Neither the service nor the lazy document has headings.",
       "documents": 0,
+      "singlePage": 0,
+      "latencyDocuments": 0,
       "successes": 0,
       "failures": 0,
       "failuresByCode": {},
@@ -629,6 +635,7 @@
       "bytesRead": null,
       "rangeRequests": null,
       "wasmMemoryBytes": null,
+      "perDocWasmMemoryBytes": null,
       "elapsedMs": 0
     },
     {
@@ -637,6 +644,8 @@
       "access": "n/a",
       "reason": "PdfCoreTextOptionsSchema does not keep maxChars: 4000.",
       "documents": 0,
+      "singlePage": 0,
+      "latencyDocuments": 0,
       "successes": 0,
       "failures": 0,
       "failuresByCode": {},
@@ -648,6 +657,7 @@
       "bytesRead": null,
       "rangeRequests": null,
       "wasmMemoryBytes": null,
+      "perDocWasmMemoryBytes": null,
       "elapsedMs": 0
     }
   ],
@@ -659,6 +669,8 @@
         "access": "eager",
         "reason": null,
         "documents": 400,
+        "singlePage": 0,
+        "latencyDocuments": 400,
         "successes": 400,
         "failures": 0,
         "failuresByCode": {},
@@ -666,12 +678,12 @@
         "failureBasenames": [],
         "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 9.788532000000487,
-          "p90": 27.724745999999868,
-          "p99": 102.19715699999995,
-          "mean": 16.98353839000002
+          "p50": 6.4384289999998146,
+          "p90": 18.51977800000077,
+          "p99": 126.66874899999993,
+          "mean": 13.4311252175
         },
-        "throughputDocsPerSec": 58.64825913247104,
+        "throughputDocsPerSec": 74.09328049308056,
         "bytesRead": {
           "p50": 386614,
           "p90": 3009938,
@@ -681,10 +693,10 @@
         },
         "rangeRequests": null,
         "wasmMemoryBytes": {
-          "max": 112721920,
-          "p90": 112721920
+          "peak": 112721920
         },
-        "elapsedMs": 6820.321795
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 5398.600215
       },
       {
         "id": "text-lazy-page1",
@@ -692,6 +704,8 @@
         "access": "lazy",
         "reason": null,
         "documents": 400,
+        "singlePage": 0,
+        "latencyDocuments": 400,
         "successes": 400,
         "failures": 0,
         "failuresByCode": {},
@@ -699,12 +713,12 @@
         "failureBasenames": [],
         "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 4.75353399999949,
-          "p90": 13.58999600000061,
-          "p99": 55.40071699999953,
-          "mean": 9.360231050000039
+          "p50": 5.524069999999483,
+          "p90": 14.777256999999736,
+          "p99": 67.07863799999905,
+          "mean": 10.256677610000024
         },
-        "throughputDocsPerSec": 105.58847944542698,
+        "throughputDocsPerSec": 96.5640860924236,
         "bytesRead": {
           "p50": 268824,
           "p90": 733693,
@@ -720,10 +734,10 @@
           "total": 1617
         },
         "wasmMemoryBytes": {
-          "max": 123600896,
-          "p90": 123600896
+          "peak": 123600896
         },
-        "elapsedMs": 3788.2920760000006
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 4142.326782
       },
       {
         "id": "text-lazy-escalate",
@@ -731,63 +745,40 @@
         "access": "lazy",
         "reason": null,
         "documents": 400,
-        "successes": 309,
-        "failures": 91,
-        "failuresByCode": {
-          "pdfCore.INVALID_PDF": 91
-        },
-        "failureReasons": {
-          "page index out of range": 91
-        },
-        "failureBasenames": [
-          "06fd66390a4928a1146bf51ef188e26c66f3cd20624414cd7a1a9c6aca128cdd.pdf",
-          "0985161b4230dc637c3a9266d367536ded4822ba40bf2ffafca37b02a33f5237.pdf",
-          "0c9c54d5692d4e994d8130efabc163e553f81efe6ce985cc3c4b36320cbca2cf.pdf",
-          "0e7a57bc837d5a0fcea7a167ae99cf8d4d4b0ff182ce8954795cb1004926af1c.pdf",
-          "0ff3888dd800eed76567d4e65a9fd7fe7b776b317bb94d450234f8a6f3d8e752.pdf",
-          "1074c0f594ad9719659634b09aca9de2342aa93587146c6074385487236817c3.pdf",
-          "147bdbc34c2f51ba86e34336baa568d906741612c64223c2f147e6b48b18e1c5.pdf",
-          "15a55194a8b0f621cb7286a1e87ce56afd01ae2a538b6418e684fbad66fd8973.pdf",
-          "1b72e66b5171ae7e2511c5fd6a23fad801305d1013631fe42cc20f69ecf57e03.pdf",
-          "1c33689e46a163842efc1d50bc6c2047a1195f5ef23eef6f04afdbb29ba602af.pdf",
-          "1d2abfc154eef72f47c3f0a158aec5d82e6ef12acab40d267345658153aa34fd.pdf",
-          "219a7ac70cb281e84b866bf2412658a4c62dd43c10f71a87c57912eb74d21aea.pdf",
-          "22885dc8c14cb7fdb9c4e4fae686022a0323eefb151a892549c11fbd0f4fbc78.pdf",
-          "25790f5de6f3d0d683824e5a26b527ef5a8f336ca36d10def35800abe526eb5a.pdf",
-          "29cda27552bda111d31a81cfecb51d9beae151008d7ea44590cd32269cb9fdf0.pdf",
-          "2c5c5af66df34153dba2dce87ef8c8e101371ef8f2fecb409cba5b289b422e83.pdf",
-          "2c8e2a007ee0f0187f504452ba28c4964c02bd9c814f3aed09e55a42542f1bd0.pdf",
-          "2dc300199c1f64906a38f34d7fe5d8ade89c81815a8510131a075beb70a085b1.pdf",
-          "323826d5b912917df6bed8b418548b2f51a424083ec75c854adc36e8ecc990be.pdf",
-          "35727642be158c73129c301e5da9ad4cc3161ee09141f9a48c6d81cf00943671.pdf"
-        ],
-        "failureBasenamesTruncated": true,
+        "singlePage": 91,
+        "latencyDocuments": 309,
+        "successes": 400,
+        "failures": 0,
+        "failuresByCode": {},
+        "failureReasons": {},
+        "failureBasenames": [],
+        "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 8.934563999999227,
-          "p90": 19.871735999999146,
-          "p99": 92.23545800000102,
-          "mean": 13.262225352750844
+          "p50": 7.651934999999867,
+          "p90": 17.38544599999841,
+          "p99": 74.63297800000146,
+          "mean": 12.107034954692553
         },
-        "throughputDocsPerSec": 69.04164253262834,
+        "throughputDocsPerSec": 76.33042443250847,
         "bytesRead": {
-          "p50": 374097,
-          "p90": 1302586,
-          "p99": 5316392,
-          "mean": 696691.4725,
-          "total": 278676589
+          "p50": 324013,
+          "p90": 1254201,
+          "p99": 4588635,
+          "mean": 628487.235,
+          "total": 251394894
         },
         "rangeRequests": {
           "p50": 4,
           "p90": 7,
           "p99": 12,
-          "mean": 5.155,
-          "total": 2062
+          "mean": 4.94,
+          "total": 1976
         },
         "wasmMemoryBytes": {
-          "max": 113573888,
-          "p90": 113573888
+          "peak": 113573888
         },
-        "elapsedMs": 5793.604921999999
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 5240.374372
       },
       {
         "id": "inspect-lazy-page1",
@@ -795,6 +786,8 @@
         "access": "n/a",
         "reason": "Lazy document has no inspect method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -806,6 +799,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -814,6 +808,8 @@
         "access": "n/a",
         "reason": "Service has no info method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -825,6 +821,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -833,6 +830,8 @@
         "access": "n/a",
         "reason": "Lazy document has no info method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -844,6 +843,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -852,6 +852,8 @@
         "access": "n/a",
         "reason": "Neither the service nor the lazy document has headings.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -863,6 +865,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -871,6 +874,8 @@
         "access": "n/a",
         "reason": "PdfCoreTextOptionsSchema does not keep maxChars: 4000.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -882,6 +887,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       }
     ],
@@ -892,6 +898,8 @@
         "access": "eager",
         "reason": null,
         "documents": 400,
+        "singlePage": 0,
+        "latencyDocuments": 400,
         "successes": 400,
         "failures": 0,
         "failuresByCode": {},
@@ -899,12 +907,12 @@
         "failureBasenames": [],
         "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 4.982385000002978,
-          "p90": 13.022954000000027,
-          "p99": 87.80907399999705,
-          "mean": 11.70686489999992
+          "p50": 3.5750999999982014,
+          "p90": 10.651819999999134,
+          "p99": 60.82686399999875,
+          "mean": 8.482036454999989
         },
-        "throughputDocsPerSec": 85.31698208572857,
+        "throughputDocsPerSec": 117.67999776641005,
         "bytesRead": {
           "p50": 386614,
           "p90": 3009938,
@@ -914,10 +922,10 @@
         },
         "rangeRequests": null,
         "wasmMemoryBytes": {
-          "max": 112721920,
-          "p90": 112721920
+          "peak": 112721920
         },
-        "elapsedMs": 4688.398373
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 3399.048331000002
       },
       {
         "id": "text-lazy-page1",
@@ -925,6 +933,8 @@
         "access": "lazy",
         "reason": null,
         "documents": 400,
+        "singlePage": 0,
+        "latencyDocuments": 400,
         "successes": 400,
         "failures": 0,
         "failuresByCode": {},
@@ -932,12 +942,12 @@
         "failureBasenames": [],
         "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 4.137528000002931,
-          "p90": 10.63253800000166,
-          "p99": 57.297623000002204,
-          "mean": 8.899389620000001
+          "p50": 4.0584710000002815,
+          "p90": 10.304291000000376,
+          "p99": 59.38964099999794,
+          "mean": 9.229143960000119
         },
-        "throughputDocsPerSec": 111.28579828343989,
+        "throughputDocsPerSec": 107.2818751231217,
         "bytesRead": {
           "p50": 268824,
           "p90": 733693,
@@ -953,10 +963,10 @@
           "total": 1617
         },
         "wasmMemoryBytes": {
-          "max": 123600896,
-          "p90": 123600896
+          "peak": 123600896
         },
-        "elapsedMs": 3594.3490200000015
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 3728.4956060000004
       },
       {
         "id": "text-lazy-escalate",
@@ -964,63 +974,40 @@
         "access": "lazy",
         "reason": null,
         "documents": 400,
-        "successes": 309,
-        "failures": 91,
-        "failuresByCode": {
-          "pdfCore.INVALID_PDF": 91
-        },
-        "failureReasons": {
-          "page index out of range": 91
-        },
-        "failureBasenames": [
-          "06fd66390a4928a1146bf51ef188e26c66f3cd20624414cd7a1a9c6aca128cdd.pdf",
-          "0985161b4230dc637c3a9266d367536ded4822ba40bf2ffafca37b02a33f5237.pdf",
-          "0c9c54d5692d4e994d8130efabc163e553f81efe6ce985cc3c4b36320cbca2cf.pdf",
-          "0e7a57bc837d5a0fcea7a167ae99cf8d4d4b0ff182ce8954795cb1004926af1c.pdf",
-          "0ff3888dd800eed76567d4e65a9fd7fe7b776b317bb94d450234f8a6f3d8e752.pdf",
-          "1074c0f594ad9719659634b09aca9de2342aa93587146c6074385487236817c3.pdf",
-          "147bdbc34c2f51ba86e34336baa568d906741612c64223c2f147e6b48b18e1c5.pdf",
-          "15a55194a8b0f621cb7286a1e87ce56afd01ae2a538b6418e684fbad66fd8973.pdf",
-          "1b72e66b5171ae7e2511c5fd6a23fad801305d1013631fe42cc20f69ecf57e03.pdf",
-          "1c33689e46a163842efc1d50bc6c2047a1195f5ef23eef6f04afdbb29ba602af.pdf",
-          "1d2abfc154eef72f47c3f0a158aec5d82e6ef12acab40d267345658153aa34fd.pdf",
-          "219a7ac70cb281e84b866bf2412658a4c62dd43c10f71a87c57912eb74d21aea.pdf",
-          "22885dc8c14cb7fdb9c4e4fae686022a0323eefb151a892549c11fbd0f4fbc78.pdf",
-          "25790f5de6f3d0d683824e5a26b527ef5a8f336ca36d10def35800abe526eb5a.pdf",
-          "29cda27552bda111d31a81cfecb51d9beae151008d7ea44590cd32269cb9fdf0.pdf",
-          "2c5c5af66df34153dba2dce87ef8c8e101371ef8f2fecb409cba5b289b422e83.pdf",
-          "2c8e2a007ee0f0187f504452ba28c4964c02bd9c814f3aed09e55a42542f1bd0.pdf",
-          "2dc300199c1f64906a38f34d7fe5d8ade89c81815a8510131a075beb70a085b1.pdf",
-          "323826d5b912917df6bed8b418548b2f51a424083ec75c854adc36e8ecc990be.pdf",
-          "35727642be158c73129c301e5da9ad4cc3161ee09141f9a48c6d81cf00943671.pdf"
-        ],
-        "failureBasenamesTruncated": true,
+        "singlePage": 91,
+        "latencyDocuments": 309,
+        "successes": 400,
+        "failures": 0,
+        "failuresByCode": {},
+        "failureReasons": {},
+        "failureBasenames": [],
+        "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 8.035847000002832,
-          "p90": 17.381562000002305,
-          "p99": 69.00956399999995,
-          "mean": 11.942054864077564
+          "p50": 8.38353300000017,
+          "p90": 16.99626300000091,
+          "p99": 64.39575100000002,
+          "mean": 12.944112181229734
         },
-        "throughputDocsPerSec": 76.32663443040897,
+        "throughputDocsPerSec": 71.25897848275838,
         "bytesRead": {
-          "p50": 374097,
-          "p90": 1302586,
-          "p99": 5316392,
-          "mean": 696691.4725,
-          "total": 278676589
+          "p50": 324013,
+          "p90": 1254201,
+          "p99": 4588635,
+          "mean": 628487.235,
+          "total": 251394894
         },
         "rangeRequests": {
           "p50": 4,
           "p90": 7,
           "p99": 12,
-          "mean": 5.155,
-          "total": 2062
+          "mean": 4.94,
+          "total": 1976
         },
         "wasmMemoryBytes": {
-          "max": 113573888,
-          "p90": 113573888
+          "peak": 113573888
         },
-        "elapsedMs": 5240.634583000003
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 5613.327731000001
       },
       {
         "id": "inspect-lazy-page1",
@@ -1028,6 +1015,8 @@
         "access": "n/a",
         "reason": "Lazy document has no inspect method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1039,6 +1028,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1047,6 +1037,8 @@
         "access": "n/a",
         "reason": "Service has no info method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1058,6 +1050,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1066,6 +1059,8 @@
         "access": "n/a",
         "reason": "Lazy document has no info method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1077,6 +1072,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1085,6 +1081,8 @@
         "access": "n/a",
         "reason": "Neither the service nor the lazy document has headings.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1096,6 +1094,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1104,6 +1103,8 @@
         "access": "n/a",
         "reason": "PdfCoreTextOptionsSchema does not keep maxChars: 4000.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1115,6 +1116,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       }
     ],
@@ -1125,6 +1127,8 @@
         "access": "eager",
         "reason": null,
         "documents": 400,
+        "singlePage": 0,
+        "latencyDocuments": 400,
         "successes": 400,
         "failures": 0,
         "failuresByCode": {},
@@ -1132,12 +1136,12 @@
         "failureBasenames": [],
         "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 4.889080000000831,
-          "p90": 12.075205000001006,
-          "p99": 77.87592500000028,
-          "mean": 10.354855557499867
+          "p50": 4.322670000001381,
+          "p90": 11.892984999998589,
+          "p99": 72.06847700000071,
+          "mean": 10.371176084999997
         },
-        "throughputDocsPerSec": 96.25080794522356,
+        "throughputDocsPerSec": 96.22129189014355,
         "bytesRead": {
           "p50": 386614,
           "p90": 3009938,
@@ -1147,10 +1151,10 @@
         },
         "rangeRequests": null,
         "wasmMemoryBytes": {
-          "max": 112721920,
-          "p90": 112721920
+          "peak": 112721920
         },
-        "elapsedMs": 4155.809270999995
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 4157.084073000002
       },
       {
         "id": "text-lazy-page1",
@@ -1158,6 +1162,8 @@
         "access": "lazy",
         "reason": null,
         "documents": 400,
+        "singlePage": 0,
+        "latencyDocuments": 400,
         "successes": 400,
         "failures": 0,
         "failuresByCode": {},
@@ -1165,12 +1171,12 @@
         "failureBasenames": [],
         "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 4.3428619999976945,
-          "p90": 12.174199000000954,
-          "p99": 85.49064400000498,
-          "mean": 9.561100052500006
+          "p50": 4.096441000001505,
+          "p90": 10.349354999998468,
+          "p99": 70.48691400000098,
+          "mean": 8.858708645000151
         },
-        "throughputDocsPerSec": 103.70752315959714,
+        "throughputDocsPerSec": 112.00751678860931,
         "bytesRead": {
           "p50": 268824,
           "p90": 733693,
@@ -1186,10 +1192,10 @@
           "total": 1617
         },
         "wasmMemoryBytes": {
-          "max": 123600896,
-          "p90": 123600896
+          "peak": 123600896
         },
-        "elapsedMs": 3857.0008020000023
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 3571.188893999999
       },
       {
         "id": "text-lazy-escalate",
@@ -1197,63 +1203,40 @@
         "access": "lazy",
         "reason": null,
         "documents": 400,
-        "successes": 309,
-        "failures": 91,
-        "failuresByCode": {
-          "pdfCore.INVALID_PDF": 91
-        },
-        "failureReasons": {
-          "page index out of range": 91
-        },
-        "failureBasenames": [
-          "06fd66390a4928a1146bf51ef188e26c66f3cd20624414cd7a1a9c6aca128cdd.pdf",
-          "0985161b4230dc637c3a9266d367536ded4822ba40bf2ffafca37b02a33f5237.pdf",
-          "0c9c54d5692d4e994d8130efabc163e553f81efe6ce985cc3c4b36320cbca2cf.pdf",
-          "0e7a57bc837d5a0fcea7a167ae99cf8d4d4b0ff182ce8954795cb1004926af1c.pdf",
-          "0ff3888dd800eed76567d4e65a9fd7fe7b776b317bb94d450234f8a6f3d8e752.pdf",
-          "1074c0f594ad9719659634b09aca9de2342aa93587146c6074385487236817c3.pdf",
-          "147bdbc34c2f51ba86e34336baa568d906741612c64223c2f147e6b48b18e1c5.pdf",
-          "15a55194a8b0f621cb7286a1e87ce56afd01ae2a538b6418e684fbad66fd8973.pdf",
-          "1b72e66b5171ae7e2511c5fd6a23fad801305d1013631fe42cc20f69ecf57e03.pdf",
-          "1c33689e46a163842efc1d50bc6c2047a1195f5ef23eef6f04afdbb29ba602af.pdf",
-          "1d2abfc154eef72f47c3f0a158aec5d82e6ef12acab40d267345658153aa34fd.pdf",
-          "219a7ac70cb281e84b866bf2412658a4c62dd43c10f71a87c57912eb74d21aea.pdf",
-          "22885dc8c14cb7fdb9c4e4fae686022a0323eefb151a892549c11fbd0f4fbc78.pdf",
-          "25790f5de6f3d0d683824e5a26b527ef5a8f336ca36d10def35800abe526eb5a.pdf",
-          "29cda27552bda111d31a81cfecb51d9beae151008d7ea44590cd32269cb9fdf0.pdf",
-          "2c5c5af66df34153dba2dce87ef8c8e101371ef8f2fecb409cba5b289b422e83.pdf",
-          "2c8e2a007ee0f0187f504452ba28c4964c02bd9c814f3aed09e55a42542f1bd0.pdf",
-          "2dc300199c1f64906a38f34d7fe5d8ade89c81815a8510131a075beb70a085b1.pdf",
-          "323826d5b912917df6bed8b418548b2f51a424083ec75c854adc36e8ecc990be.pdf",
-          "35727642be158c73129c301e5da9ad4cc3161ee09141f9a48c6d81cf00943671.pdf"
-        ],
-        "failureBasenamesTruncated": true,
+        "singlePage": 91,
+        "latencyDocuments": 309,
+        "successes": 400,
+        "failures": 0,
+        "failuresByCode": {},
+        "failureReasons": {},
+        "failureBasenames": [],
+        "failureBasenamesTruncated": false,
         "latencyMs": {
-          "p50": 7.288304000001517,
-          "p90": 14.878465000001597,
-          "p99": 64.59827999999834,
-          "mean": 11.090658883495065
+          "p50": 6.705499999996391,
+          "p90": 15.342076000000816,
+          "p99": 60.53013500000088,
+          "mean": 11.344722375404272
         },
-        "throughputDocsPerSec": 81.71349837869724,
+        "throughputDocsPerSec": 81.93340534337425,
         "bytesRead": {
-          "p50": 374097,
-          "p90": 1302586,
-          "p99": 5316392,
-          "mean": 696691.4725,
-          "total": 278676589
+          "p50": 324013,
+          "p90": 1254201,
+          "p99": 4588635,
+          "mean": 628487.235,
+          "total": 251394894
         },
         "rangeRequests": {
           "p50": 4,
           "p90": 7,
           "p99": 12,
-          "mean": 5.155,
-          "total": 2062
+          "mean": 4.94,
+          "total": 1976
         },
         "wasmMemoryBytes": {
-          "max": 113573888,
-          "p90": 113573888
+          "peak": 113573888
         },
-        "elapsedMs": 4895.152061000001
+        "perDocWasmMemoryBytes": null,
+        "elapsedMs": 4882.013610000002
       },
       {
         "id": "inspect-lazy-page1",
@@ -1261,6 +1244,8 @@
         "access": "n/a",
         "reason": "Lazy document has no inspect method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1272,6 +1257,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1280,6 +1266,8 @@
         "access": "n/a",
         "reason": "Service has no info method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1291,6 +1279,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1299,6 +1288,8 @@
         "access": "n/a",
         "reason": "Lazy document has no info method.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1310,6 +1301,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1318,6 +1310,8 @@
         "access": "n/a",
         "reason": "Neither the service nor the lazy document has headings.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1329,6 +1323,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       },
       {
@@ -1337,6 +1332,8 @@
         "access": "n/a",
         "reason": "PdfCoreTextOptionsSchema does not keep maxChars: 4000.",
         "documents": 0,
+        "singlePage": 0,
+        "latencyDocuments": 0,
         "successes": 0,
         "failures": 0,
         "failuresByCode": {},
@@ -1348,6 +1345,7 @@
         "bytesRead": null,
         "rangeRequests": null,
         "wasmMemoryBytes": null,
+        "perDocWasmMemoryBytes": null,
         "elapsedMs": 0
       }
     ]

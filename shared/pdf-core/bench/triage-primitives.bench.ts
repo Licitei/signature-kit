@@ -43,6 +43,10 @@ const INSPECT_PAGE_ONE = {
   links: false,
   pageIndexes: [0],
 } satisfies PdfCoreInspectOptions;
+const INSPECT_GEOMETRY = {
+  text: false,
+  links: false,
+} satisfies PdfCoreInspectOptions;
 const HEADING_OPTIONS = { pageIndexes: [0] };
 const wasmFile = fileURLToPath(new URL("../dist/pdf-core.wasm", import.meta.url));
 
@@ -94,10 +98,16 @@ const MeasuredSchema = Schema.Struct({
 type Measured = (typeof MeasuredSchema)["Type"];
 
 const WasmMemorySchema = Schema.Struct({
-  max: Schema.Finite,
-  p90: Schema.Finite,
+  peak: Schema.Finite,
 });
 type WasmMemory = (typeof WasmMemorySchema)["Type"];
+
+const PerDocWasmMemorySchema = Schema.Struct({
+  p50: Schema.Finite,
+  p90: Schema.Finite,
+  max: Schema.Finite,
+});
+type PerDocWasmMemory = (typeof PerDocWasmMemorySchema)["Type"];
 
 const WorkloadReportSchema = Schema.Struct({
   id: WorkloadIdSchema,
@@ -105,6 +115,8 @@ const WorkloadReportSchema = Schema.Struct({
   access: Schema.Literals(["eager", "lazy", "n/a"]),
   reason: Schema.NullOr(Schema.String),
   documents: Schema.Finite,
+  singlePage: Schema.Finite,
+  latencyDocuments: Schema.Finite,
   successes: Schema.Finite,
   failures: Schema.Finite,
   failuresByCode: Schema.Record(Schema.String, Schema.Finite),
@@ -116,6 +128,7 @@ const WorkloadReportSchema = Schema.Struct({
   bytesRead: Schema.NullOr(MeasuredSchema),
   rangeRequests: Schema.NullOr(MeasuredSchema),
   wasmMemoryBytes: Schema.NullOr(WasmMemorySchema),
+  perDocWasmMemoryBytes: Schema.NullOr(PerDocWasmMemorySchema),
   elapsedMs: Schema.Finite,
 });
 type WorkloadReport = (typeof WorkloadReportSchema)["Type"];
@@ -128,14 +141,16 @@ const WasmSizeSchema = Schema.Struct({
 type WasmSize = (typeof WasmSizeSchema)["Type"];
 
 const ReportSchema = Schema.Struct({
-  version: Schema.Literals([1]),
+  version: Schema.Literals([2]),
   commit: Schema.String,
-  sample: Schema.Literals(["fisher-yates-mulberry32-then-path-sort"]),
+  sample: Schema.Literals(["fisher-yates-mulberry32-then-path-sort", "sample-file"]),
   seed: Schema.Int,
   requested: Schema.Int,
   sampleCount: Schema.Int,
   corpusCount: Schema.Int,
   sampleKey: Schema.String,
+  sampleContentKey: Schema.String,
+  sampleFile: Schema.NullOr(Schema.String),
   sampleBasenames: Schema.Array(Schema.String),
   corpora: Schema.Array(Schema.String),
   runs: Schema.Int,
@@ -146,6 +161,29 @@ const ReportSchema = Schema.Struct({
   runDetails: Schema.Array(Schema.Array(WorkloadReportSchema)),
 });
 type Report = (typeof ReportSchema)["Type"];
+
+const Sha256HexSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const ByteSizeSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: 9_007_199_254_740_991 }),
+);
+const PageCountSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 }));
+const FrozenSampleEntrySchema = Schema.Struct({
+  basename: Schema.String.check(Schema.isMinLength(1)),
+  sha256: Sha256HexSchema,
+  bytes: ByteSizeSchema,
+  pages: PageCountSchema,
+});
+const FrozenSampleSchema = Schema.Struct({
+  version: Schema.Literals([1]),
+  seed: Schema.Int,
+  requested: Schema.Int,
+  files: Schema.NonEmptyArray(FrozenSampleEntrySchema),
+});
+const InfoPageCountSchema = Schema.Struct({
+  pageCount: PageCountSchema,
+});
+const SEEDED_SAMPLE = "fisher-yates-mulberry32-then-path-sort" satisfies Report["sample"];
+const FILE_SAMPLE = "sample-file" satisfies Report["sample"];
 
 type EffectMethod = (...args: ReadonlyArray<unknown>) => Effect.Effect<unknown, unknown>;
 
@@ -169,6 +207,17 @@ type LazyProbe = (typeof LazyProbeSchema)["Type"];
 type SampleFile = {
   readonly path: string;
   readonly basename: string;
+  readonly sha256: string | null;
+  readonly bytes: number | null;
+  readonly pages: number | null;
+};
+
+type MeasuredFile = {
+  readonly path: string;
+  readonly basename: string;
+  readonly sha256: string;
+  readonly bytes: number;
+  readonly pages: number;
 };
 
 type Attempt = {
@@ -180,17 +229,29 @@ type Attempt = {
   readonly bytesRead: number | null;
   readonly rangeRequests: number | null;
   readonly wasmBytes: number;
+  readonly singlePage: boolean;
 };
+
+type LazyCall = {
+  readonly exit: Exit.Exit<unknown, unknown>;
+  readonly singlePage: boolean;
+};
+
+type PageSource = "lazy-info" | "recorded";
 
 type Features = {
   readonly service: ServiceProbe;
   readonly lazy: LazyProbe;
   readonly bounded: PdfCoreTextOptions | undefined;
+  readonly pageSource: PageSource;
 };
 
 type Cli = {
   readonly compare: readonly [string, string] | undefined;
   readonly out: string | undefined;
+  readonly writeSample: string | undefined;
+  readonly sampleFile: string | undefined;
+  readonly memoryPerDoc: boolean;
   readonly n: number;
   readonly runs: number;
   readonly seed: number;
@@ -198,7 +259,8 @@ type Cli = {
   readonly help: boolean;
 };
 
-const usage = `bun shared/pdf-core/bench/triage-primitives.bench.ts --out report.json [--n 400] [--runs 3] [--seed 1] [--corpus DIR]
+const usage = `bun shared/pdf-core/bench/triage-primitives.bench.ts --out report.json [--n 400] [--runs 3] [--seed 1] [--corpus DIR] [--sample-file PATH] [--memory-per-doc]
+bun shared/pdf-core/bench/triage-primitives.bench.ts --write-sample PATH [--n 400] [--seed 1] [--corpus DIR]
 bun shared/pdf-core/bench/triage-primitives.bench.ts --compare baseline.json candidate.json`;
 
 const parseInteger = (value: string): number | undefined => {
@@ -212,6 +274,9 @@ const parseInteger = (value: string): number | undefined => {
 const parseCli = (argv: ReadonlyArray<string>): Cli | BenchFailure => {
   let compare: readonly [string, string] | undefined;
   let out: string | undefined;
+  let writeSample: string | undefined;
+  let sampleFile: string | undefined;
+  let memoryPerDoc = false;
   let n = 400;
   let runs = 3;
   let seed = 1;
@@ -221,6 +286,10 @@ const parseCli = (argv: ReadonlyArray<string>): Cli | BenchFailure => {
     const flag = argv[index];
     if (flag === "--help") {
       help = true;
+      continue;
+    }
+    if (flag === "--memory-per-doc") {
+      memoryPerDoc = true;
       continue;
     }
     const value = argv[index + 1];
@@ -246,11 +315,17 @@ const parseCli = (argv: ReadonlyArray<string>): Cli | BenchFailure => {
       index += 1;
       continue;
     }
-    if (flag === "--out") {
+    if (flag === "--out" || flag === "--sample-file" || flag === "--write-sample") {
       if (value === undefined || value.startsWith("--")) {
         return new BenchFailure({ reason: usage });
       }
-      out = value;
+      if (flag === "--out") {
+        out = value;
+      } else if (flag === "--sample-file") {
+        sampleFile = value;
+      } else {
+        writeSample = value;
+      }
       index += 1;
       continue;
     }
@@ -274,8 +349,16 @@ const parseCli = (argv: ReadonlyArray<string>): Cli | BenchFailure => {
     }
     return new BenchFailure({ reason: usage });
   }
-  if (!help && compare === undefined && out === undefined) {
+  if (!help && compare === undefined && out === undefined && writeSample === undefined) {
     return new BenchFailure({ reason: usage });
+  }
+  if (
+    writeSample !== undefined &&
+    (out !== undefined || compare !== undefined || sampleFile !== undefined)
+  ) {
+    return new BenchFailure({
+      reason: "--write-sample cannot be combined with --out, --compare, or --sample-file.",
+    });
   }
   if (n < 1 || runs < 1) {
     return new BenchFailure({ reason: "--n and --runs must be at least 1." });
@@ -283,6 +366,9 @@ const parseCli = (argv: ReadonlyArray<string>): Cli | BenchFailure => {
   return {
     compare,
     out,
+    writeSample,
+    sampleFile,
+    memoryPerDoc,
     n,
     runs,
     seed,
@@ -343,11 +429,19 @@ const measured = (values: ReadonlyArray<number>): Measured | null => {
 };
 
 const wasmMemory = (values: ReadonlyArray<number>): WasmMemory | null => {
-  const p90 = quantile(values, 0.9);
-  if (p90 === null) {
+  if (values.length === 0) {
     return null;
   }
-  return { max: Math.max(...values), p90 };
+  return { peak: Math.max(...values) };
+};
+
+const perDocWasm = (values: ReadonlyArray<number>): PerDocWasmMemory | null => {
+  const p50 = quantile(values, 0.5);
+  const p90 = quantile(values, 0.9);
+  if (p50 === null || p90 === null) {
+    return null;
+  }
+  return { p50, p90, max: Math.max(...values) };
 };
 
 const present = (rows: ReadonlyArray<Distribution | null>): ReadonlyArray<Distribution> =>
@@ -375,12 +469,11 @@ const medianMeasured = (rows: ReadonlyArray<Measured | null>): Measured | null =
 };
 
 const medianWasm = (rows: ReadonlyArray<WasmMemory | null>): WasmMemory | null => {
-  const max = median(rows.flatMap((row) => (row === null ? [] : [row.max])));
-  const p90 = median(rows.flatMap((row) => (row === null ? [] : [row.p90])));
-  if (max === null || p90 === null) {
+  const peak = median(rows.flatMap((row) => (row === null ? [] : [row.peak])));
+  if (peak === null) {
     return null;
   }
-  return { max, p90 };
+  return { peak };
 };
 
 const medianRecord = (
@@ -436,7 +529,10 @@ const listPdfs = (root: string): Effect.Effect<ReadonlyArray<string>, BenchFailu
   Effect.try({
     try: () =>
       readdirSync(root, { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".pdf"))
+        .filter(
+          (entry) =>
+            entry.name.toLowerCase().endsWith(".pdf") && (entry.isFile() || entry.isSymbolicLink()),
+        )
         .map((entry) => join(entry.parentPath, entry.name))
         .sort((left, right) => left.localeCompare(right, "en")),
     catch: () => new BenchFailure({ reason: `Could not read corpus ${corpusLabel(root)}.` }),
@@ -552,6 +648,7 @@ const fromExit = (
   exit: Exit.Exit<unknown, unknown>,
   bytesRead: number | null,
   rangeRequests: number | null,
+  singlePage: boolean,
 ): Attempt => {
   if (Exit.isSuccess(exit)) {
     return {
@@ -563,6 +660,7 @@ const fromExit = (
       bytesRead,
       rangeRequests,
       wasmBytes,
+      singlePage,
     };
   }
   const classified = reasonText(Cause.squash(exit.cause));
@@ -575,6 +673,7 @@ const fromExit = (
     bytesRead,
     rangeRequests,
     wasmBytes,
+    singlePage,
   };
 };
 
@@ -594,6 +693,7 @@ const measureEager = (
         loaded,
         null,
         null,
+        false,
       );
     }
     const outcome = yield* Effect.exit(call(loaded.value));
@@ -604,13 +704,19 @@ const measureEager = (
       outcome,
       loaded.value.byteLength,
       null,
+      false,
     );
   });
+
+const asCall = (
+  effect: Effect.Effect<Exit.Exit<unknown, unknown>, unknown>,
+): Effect.Effect<LazyCall, unknown> =>
+  effect.pipe(Effect.map((exit) => ({ exit, singlePage: false })));
 
 const measureLazy = (
   core: PdfCoreService,
   file: SampleFile,
-  call: (document: PdfCoreLazyDocument) => Effect.Effect<Exit.Exit<unknown, unknown>, unknown>,
+  call: (document: PdfCoreLazyDocument) => Effect.Effect<LazyCall, unknown>,
 ): Effect.Effect<Attempt, BenchFailure | PdfCoreError> =>
   Effect.gen(function* () {
     const started = performance.now();
@@ -626,6 +732,7 @@ const measureLazy = (
               opened,
               null,
               null,
+              false,
             );
           }
           const called = yield* Effect.exit(call(opened.value));
@@ -635,13 +742,32 @@ const measureLazy = (
           const wasmBytes = yield* core.wasmMemoryBytes();
           const latencyMs = performance.now() - started;
           if (Exit.isFailure(called)) {
-            return fromExit(file, latencyMs, wasmBytes, called, bytesRead, rangeRequests);
+            return fromExit(file, latencyMs, wasmBytes, called, bytesRead, rangeRequests, false);
           }
-          return fromExit(file, latencyMs, wasmBytes, called.value, bytesRead, rangeRequests);
+          return fromExit(
+            file,
+            latencyMs,
+            wasmBytes,
+            called.value.exit,
+            bytesRead,
+            rangeRequests,
+            called.value.singlePage,
+          );
         }),
       ),
     );
   });
+
+const lazyPageCount = (document: object) =>
+  lazyMethod(document, "info").pipe(
+    Effect.flatMap((method) => method()),
+    Effect.flatMap((value) =>
+      Schema.decodeUnknownEffect(InfoPageCountSchema)(value).pipe(
+        Effect.mapError(() => new BenchFailure({ reason: "Lazy info did not include pageCount." })),
+        Effect.map((info) => info.pageCount),
+      ),
+    ),
+  );
 
 const lazyMethod = (
   document: object,
@@ -691,6 +817,9 @@ const summarize = (
   elapsedMs: number,
 ): WorkloadReport => {
   const successes = attempts.flatMap((attempt) => (attempt.ok ? [attempt] : []));
+  const latencySamples = successes.flatMap((attempt) =>
+    attempt.singlePage ? [] : [attempt.latencyMs],
+  );
   const names = failureNames(attempts);
   const seconds = elapsedMs / 1000;
   return {
@@ -699,13 +828,15 @@ const summarize = (
     access,
     reason: null,
     documents: attempts.length,
+    singlePage: attempts.filter((attempt) => attempt.singlePage).length,
+    latencyDocuments: latencySamples.length,
     successes: successes.length,
     failures: attempts.length - successes.length,
     failuresByCode: countMap(attempts, (attempt) => attempt.code),
     failureReasons: countMap(attempts, (attempt) => (attempt.ok ? null : attempt.reason)),
     failureBasenames: names.names,
     failureBasenamesTruncated: names.truncated,
-    latencyMs: distribution(successes.map((attempt) => attempt.latencyMs)),
+    latencyMs: distribution(latencySamples),
     throughputDocsPerSec: seconds === 0 ? null : attempts.length / seconds,
     bytesRead: measured(
       attempts.flatMap((attempt) => (attempt.bytesRead === null ? [] : [attempt.bytesRead])),
@@ -716,6 +847,7 @@ const summarize = (
       ),
     ),
     wasmMemoryBytes: wasmMemory(attempts.map((attempt) => attempt.wasmBytes)),
+    perDocWasmMemoryBytes: null,
     elapsedMs,
   };
 };
@@ -726,6 +858,8 @@ const unavailable = (id: WorkloadId, reason: string): WorkloadReport => ({
   access: "n/a",
   reason,
   documents: 0,
+  singlePage: 0,
+  latencyDocuments: 0,
   successes: 0,
   failures: 0,
   failuresByCode: {},
@@ -737,6 +871,7 @@ const unavailable = (id: WorkloadId, reason: string): WorkloadReport => ({
   bytesRead: null,
   rangeRequests: null,
   wasmMemoryBytes: null,
+  perDocWasmMemoryBytes: null,
   elapsedMs: 0,
 });
 
@@ -774,7 +909,7 @@ const measureAll = (
   Effect.gen(function* () {
     const started = performance.now();
     const attempts = yield* Effect.forEach(files, (file, index) => {
-      if (index % 50 === 0) {
+      if (files.length > 1 && index % 50 === 0) {
         console.error(`${id} ${index + 1}/${files.length}`);
       }
       return one(file);
@@ -800,27 +935,49 @@ const runWorkload = (
         );
       case "text-lazy-page1":
         return yield* measureAll(id, files, "lazy", (file) =>
-          measureLazy(core, file, (document) => Effect.exit(document.text(PAGE_ONE))),
+          measureLazy(core, file, (document) => asCall(Effect.exit(document.text(PAGE_ONE)))),
         );
       case "text-lazy-escalate":
         return yield* measureAll(id, files, "lazy", (file) =>
           measureLazy(core, file, (document) =>
             Effect.gen(function* () {
+              const counted =
+                features.pageSource === "lazy-info"
+                  ? yield* Effect.exit(lazyPageCount(document))
+                  : file.pages === null
+                    ? Exit.fail(
+                        new BenchFailure({
+                          reason: `Sample file ${file.basename} is missing a page count.`,
+                        }),
+                      )
+                    : Exit.succeed(file.pages);
+              if (Exit.isFailure(counted)) {
+                return { exit: counted, singlePage: false };
+              }
+              const singlePage = counted.value < 2;
               const first = yield* Effect.exit(document.text(PAGE_ONE));
               if (Exit.isFailure(first)) {
-                return first;
+                return { exit: first, singlePage };
               }
-              return yield* Effect.exit(document.text(PAGE_TWO));
+              if (singlePage) {
+                return { exit: Exit.succeed(undefined), singlePage: true };
+              }
+              return {
+                exit: yield* Effect.exit(document.text(PAGE_TWO)),
+                singlePage: false,
+              };
             }),
           ),
         );
       case "inspect-lazy-page1":
         return yield* measureAll(id, files, "lazy", (file) =>
           measureLazy(core, file, (document) =>
-            Effect.gen(function* () {
-              const method = yield* lazyMethod(document, "inspect");
-              return yield* Effect.exit(method(INSPECT_PAGE_ONE));
-            }),
+            asCall(
+              Effect.gen(function* () {
+                const method = yield* lazyMethod(document, "inspect");
+                return yield* Effect.exit(method(INSPECT_PAGE_ONE));
+              }),
+            ),
           ),
         );
       case "info-eager": {
@@ -840,10 +997,12 @@ const runWorkload = (
       case "info-lazy":
         return yield* measureAll(id, files, "lazy", (file) =>
           measureLazy(core, file, (document) =>
-            Effect.gen(function* () {
-              const method = yield* lazyMethod(document, "info");
-              return yield* Effect.exit(method());
-            }),
+            asCall(
+              Effect.gen(function* () {
+                const method = yield* lazyMethod(document, "info");
+                return yield* Effect.exit(method());
+              }),
+            ),
           ),
         );
       case "headings-page1":
@@ -863,10 +1022,12 @@ const runWorkload = (
         }
         return yield* measureAll(id, files, "lazy", (file) =>
           measureLazy(core, file, (document) =>
-            Effect.gen(function* () {
-              const method = yield* lazyMethod(document, "headings");
-              return yield* Effect.exit(method(HEADING_OPTIONS));
-            }),
+            asCall(
+              Effect.gen(function* () {
+                const method = yield* lazyMethod(document, "headings");
+                return yield* Effect.exit(method(HEADING_OPTIONS));
+              }),
+            ),
           ),
         );
       case "text-bounded-4000": {
@@ -897,7 +1058,9 @@ const detectFeatures = (
         }),
       ),
     );
-    return { service, lazy, bounded };
+    const pageSource: PageSource =
+      service.info !== undefined && lazy.info !== undefined ? "lazy-info" : "recorded";
+    return { service, lazy, bounded, pageSource };
   });
 
 const freshWorkload = (
@@ -935,6 +1098,8 @@ const medianReport = (
       access: ok[0]?.access ?? first.access,
       reason: null,
       documents: medianNumber(ok.map((row) => row.documents)),
+      singlePage: medianNumber(ok.map((row) => row.singlePage)),
+      latencyDocuments: medianNumber(ok.map((row) => row.latencyDocuments)),
       successes: medianNumber(ok.map((row) => row.successes)),
       failures: medianNumber(ok.map((row) => row.failures)),
       failuresByCode: medianRecord(ok.map((row) => row.failuresByCode)),
@@ -949,6 +1114,7 @@ const medianReport = (
       bytesRead: medianMeasured(ok.map((row) => row.bytesRead)),
       rangeRequests: medianMeasured(ok.map((row) => row.rangeRequests)),
       wasmMemoryBytes: medianWasm(ok.map((row) => row.wasmMemoryBytes)),
+      perDocWasmMemoryBytes: null,
       elapsedMs: medianNumber(ok.map((row) => row.elapsedMs)),
     };
   });
@@ -958,14 +1124,30 @@ const fmt = (value: number | null, digits: number): string =>
 
 const workloadTable = (rows: ReadonlyArray<WorkloadReport>): string => {
   const header =
-    "| workload | status | access | docs | fail | p50 ms | p90 ms | p99 ms | mean ms | docs/s | bytes p50 | rounds p50 | wasm max | wasm p90 |";
+    "| workload | status | access | docs | single | fail | p50 ms | p90 ms | p99 ms | mean ms | docs/s | bytes p50 | rounds p50 | wasm peak |";
   const divider =
     "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |";
   const body = rows.map(
     (row) =>
-      `| ${row.id} | ${row.status} | ${row.access} | ${fmt(row.documents, 0)} | ${fmt(row.failures, 0)} | ${fmt(row.latencyMs?.p50 ?? null, 2)} | ${fmt(row.latencyMs?.p90 ?? null, 2)} | ${fmt(row.latencyMs?.p99 ?? null, 2)} | ${fmt(row.latencyMs?.mean ?? null, 2)} | ${fmt(row.throughputDocsPerSec, 3)} | ${fmt(row.bytesRead?.p50 ?? null, 0)} | ${fmt(row.rangeRequests?.p50 ?? null, 2)} | ${fmt(row.wasmMemoryBytes?.max ?? null, 0)} | ${fmt(row.wasmMemoryBytes?.p90 ?? null, 0)} |`,
+      `| ${row.id} | ${row.status} | ${row.access} | ${fmt(row.documents, 0)} | ${fmt(row.singlePage, 0)} | ${fmt(row.failures, 0)} | ${fmt(row.latencyMs?.p50 ?? null, 2)} | ${fmt(row.latencyMs?.p90 ?? null, 2)} | ${fmt(row.latencyMs?.p99 ?? null, 2)} | ${fmt(row.latencyMs?.mean ?? null, 2)} | ${fmt(row.throughputDocsPerSec, 3)} | ${fmt(row.bytesRead?.p50 ?? null, 0)} | ${fmt(row.rangeRequests?.p50 ?? null, 2)} | ${fmt(row.wasmMemoryBytes?.peak ?? null, 0)} |`,
   );
   return [header, divider, ...body].join("\n");
+};
+
+const perDocTable = (rows: ReadonlyArray<WorkloadReport>): string => {
+  if (rows.every((row) => row.perDocWasmMemoryBytes === null)) {
+    return "";
+  }
+  const body = rows.map((row) => {
+    const memory = row.perDocWasmMemoryBytes;
+    return `| ${row.id} | ${fmt(memory?.p50 ?? null, 0)} | ${fmt(memory?.p90 ?? null, 0)} | ${fmt(memory?.max ?? null, 0)} |`;
+  });
+  return [
+    "",
+    "| workload | per-doc p50 | per-doc p90 | per-doc max |",
+    "| --- | ---: | ---: | ---: |",
+    ...body,
+  ].join("\n");
 };
 
 const failureTable = (rows: ReadonlyArray<WorkloadReport>): string => {
@@ -989,11 +1171,13 @@ const wasmTable = (wasm: WasmSize): string =>
 
 const reportMarkdown = (report: Report): string =>
   [
-    `commit ${report.commit} | sample ${report.sampleCount}/${report.corpusCount} | seed ${report.seed} | runs ${report.runs} median | worker ${report.worker}`,
+    `commit ${report.commit} | sample ${report.sampleCount}/${report.corpusCount} | ${report.sample} | seed ${report.seed} | runs ${report.runs} median | worker ${report.worker}`,
+    report.sampleFile === null ? "" : `sample file ${report.sampleFile}`,
     "",
     wasmTable(report.wasm),
     "",
     workloadTable(report.workloads),
+    perDocTable(report.workloads),
     failureTable(report.workloads),
     "",
     ...report.workloads.flatMap((row) =>
@@ -1021,17 +1205,18 @@ const compareMarkdown = (baseline: Report, candidate: Report): string => {
   const rows = workloadOrder.map((id) => {
     const before = baseline.workloads.find((row) => row.id === id);
     const after = candidate.workloads.find((row) => row.id === id);
-    return `| ${id} | ${before?.status ?? "missing"} -> ${after?.status ?? "missing"} | ${delta(after?.latencyMs?.p50 ?? null, before?.latencyMs?.p50 ?? null, 2)} | ${delta(after?.latencyMs?.p90 ?? null, before?.latencyMs?.p90 ?? null, 2)} | ${delta(after?.latencyMs?.p99 ?? null, before?.latencyMs?.p99 ?? null, 2)} | ${delta(after?.latencyMs?.mean ?? null, before?.latencyMs?.mean ?? null, 2)} | ${delta(after?.throughputDocsPerSec ?? null, before?.throughputDocsPerSec ?? null, 3)} | ${delta(after?.bytesRead?.p50 ?? null, before?.bytesRead?.p50 ?? null, 0)} | ${delta(after?.rangeRequests?.p50 ?? null, before?.rangeRequests?.p50 ?? null, 2)} | ${delta(after?.wasmMemoryBytes?.max ?? null, before?.wasmMemoryBytes?.max ?? null, 0)} | ${delta(after?.wasmMemoryBytes?.p90 ?? null, before?.wasmMemoryBytes?.p90 ?? null, 0)} |`;
+    return `| ${id} | ${before?.status ?? "missing"} -> ${after?.status ?? "missing"} | ${delta(after?.latencyMs?.p50 ?? null, before?.latencyMs?.p50 ?? null, 2)} | ${delta(after?.latencyMs?.p90 ?? null, before?.latencyMs?.p90 ?? null, 2)} | ${delta(after?.latencyMs?.p99 ?? null, before?.latencyMs?.p99 ?? null, 2)} | ${delta(after?.latencyMs?.mean ?? null, before?.latencyMs?.mean ?? null, 2)} | ${delta(after?.throughputDocsPerSec ?? null, before?.throughputDocsPerSec ?? null, 3)} | ${delta(after?.bytesRead?.p50 ?? null, before?.bytesRead?.p50 ?? null, 0)} | ${delta(after?.rangeRequests?.p50 ?? null, before?.rangeRequests?.p50 ?? null, 2)} | ${delta(after?.singlePage ?? null, before?.singlePage ?? null, 0)} | ${delta(after?.wasmMemoryBytes?.peak ?? null, before?.wasmMemoryBytes?.peak ?? null, 0)} | ${delta(after?.perDocWasmMemoryBytes?.p50 ?? null, before?.perDocWasmMemoryBytes?.p50 ?? null, 0)} | ${delta(after?.perDocWasmMemoryBytes?.max ?? null, before?.perDocWasmMemoryBytes?.max ?? null, 0)} |`;
   });
   return [
     `sample key ${baseline.sampleKey === candidate.sampleKey ? "matches" : "differs"}`,
+    `sample content ${baseline.sampleContentKey === candidate.sampleContentKey ? "matches" : "differs"}`,
     `baseline ${baseline.commit} -> candidate ${candidate.commit}`,
     "",
     wasmTable(candidate.wasm),
     `raw ${delta(candidate.wasm.raw, baseline.wasm.raw, 0)} | gzip ${delta(candidate.wasm.gzip, baseline.wasm.gzip, 0)} | brotli ${delta(candidate.wasm.brotli, baseline.wasm.brotli, 0)}`,
     "",
-    "| workload | status | p50 ms | p90 ms | p99 ms | mean ms | docs/s | bytes p50 | rounds p50 | wasm max | wasm p90 |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| workload | status | p50 ms | p90 ms | p99 ms | mean ms | docs/s | bytes p50 | rounds p50 | single | wasm peak | per-doc p50 | per-doc max |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...rows,
   ].join("\n");
 };
@@ -1093,29 +1278,354 @@ const bunVersion = (): Effect.Effect<string | null> =>
     return decoded.success.bun ?? null;
   });
 
+const compileWasm = (bytes: Uint8Array): Effect.Effect<WebAssembly.Module, BenchFailure> =>
+  Effect.tryPromise({
+    try: () => WebAssembly.compile(bytes),
+    catch: () => new BenchFailure({ reason: "Could not compile pdf-core.wasm." }),
+  });
+
+const listedPdfs = (
+  corpora: readonly string[],
+): Effect.Effect<ReadonlyArray<string>, BenchFailure> =>
+  Effect.forEach(corpora, listPdfs).pipe(
+    Effect.map((groups) => groups.flat().sort((left, right) => left.localeCompare(right, "en"))),
+  );
+
+const isMeasured = (file: SampleFile): file is MeasuredFile =>
+  file.sha256 !== null && file.bytes !== null && file.pages !== null;
+
+const contentKey = (files: ReadonlyArray<MeasuredFile>): string => {
+  const lines = [...files]
+    .sort((left, right) => left.basename.localeCompare(right.basename, "en"))
+    .map((file) => `${file.basename}\t${file.sha256}\t${file.bytes}`);
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+};
+
+const pathKey = (files: ReadonlyArray<MeasuredFile>): string =>
+  createHash("sha256")
+    .update(files.map((file) => file.path).join("\n"))
+    .digest("hex");
+
+const writeJson = (path: string, value: unknown): Effect.Effect<void, BenchFailure> =>
+  Effect.try({
+    try: () => {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+      execFileSync("bunx", ["oxfmt", "-c", "tooling/oxc/oxfmt.json", "--write", path], {
+        stdio: "ignore",
+      });
+    },
+    catch: () => new BenchFailure({ reason: `Could not write ${basename(path)}.` }),
+  });
+
+const digestFile = (
+  path: string,
+): Effect.Effect<{ readonly sha256: string; readonly bytes: number }, BenchFailure> =>
+  readAll(path).pipe(
+    Effect.map((pdf) => ({
+      sha256: createHash("sha256").update(pdf).digest("hex"),
+      bytes: pdf.byteLength,
+    })),
+  );
+
+const pageCountOf = (
+  core: PdfCoreService,
+  file: SampleFile,
+  pdf: Uint8Array,
+): Effect.Effect<number, BenchFailure | PdfCoreError> => {
+  if (file.pages !== null) {
+    return Effect.succeed(file.pages);
+  }
+  return core.inspect(pdf, INSPECT_GEOMETRY).pipe(
+    Effect.mapError(
+      (error) =>
+        new BenchFailure({
+          reason: `Could not count pages in ${file.basename}: ${error.reason ?? error.code}.`,
+        }),
+    ),
+    Effect.map((inspected) => inspected.pages.length),
+  );
+};
+
+const ensureMeasured = (
+  module: WebAssembly.Module,
+  files: ReadonlyArray<SampleFile>,
+): Effect.Effect<ReadonlyArray<MeasuredFile>, BenchFailure | PdfCoreError> =>
+  Effect.gen(function* () {
+    if (files.every(isMeasured)) {
+      return files.flatMap((file) => (isMeasured(file) ? [file] : []));
+    }
+    const core = yield* makePdfCore(module);
+    return yield* Effect.forEach(files, (file, index) =>
+      Effect.gen(function* () {
+        if (isMeasured(file)) {
+          return file;
+        }
+        if (index % 50 === 0) {
+          console.error(`pages ${index + 1}/${files.length}`);
+        }
+        const pdf = yield* readAll(file.path);
+        const sha256 = createHash("sha256").update(pdf).digest("hex");
+        const size = pdf.byteLength;
+        if (file.sha256 !== null && file.sha256 !== sha256) {
+          return yield* new BenchFailure({ reason: `Sample file ${file.basename} hash differs.` });
+        }
+        if (file.bytes !== null && file.bytes !== size) {
+          return yield* new BenchFailure({
+            reason: `Sample file ${file.basename} byte size differs.`,
+          });
+        }
+        const pages = yield* pageCountOf(core, file, pdf);
+        return { path: file.path, basename: file.basename, sha256, bytes: size, pages };
+      }),
+    );
+  });
+
+const pathsByBasename = (paths: ReadonlyArray<string>): Record<string, ReadonlyArray<string>> => {
+  const grouped: Record<string, Array<string>> = {};
+  for (const path of paths) {
+    const name = basename(path);
+    const current = grouped[name] ?? [];
+    current.push(path);
+    grouped[name] = current;
+  }
+  return grouped;
+};
+
+const resolveSampleFile = (
+  samplePath: string,
+  corpora: readonly string[],
+): Effect.Effect<
+  {
+    readonly files: ReadonlyArray<MeasuredFile>;
+    readonly corpusCount: number;
+    readonly seed: number;
+    readonly requested: number;
+  },
+  BenchFailure
+> =>
+  Effect.gen(function* () {
+    const text = yield* Effect.try({
+      try: () => readFileSync(samplePath, "utf8"),
+      catch: () => new BenchFailure({ reason: `Could not read ${basename(samplePath)}.` }),
+    });
+    const frozen = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrozenSampleSchema))(
+      text,
+    ).pipe(
+      Effect.mapError(
+        () => new BenchFailure({ reason: `Invalid sample file ${basename(samplePath)}.` }),
+      ),
+    );
+    const seen: Record<string, true> = {};
+    for (const entry of frozen.files) {
+      if (seen[entry.basename] === true) {
+        return yield* new BenchFailure({
+          reason: `Sample file lists ${entry.basename} more than once.`,
+        });
+      }
+      seen[entry.basename] = true;
+    }
+    const all = yield* listedPdfs(corpora);
+    const grouped = pathsByBasename(all);
+    const resolved: Array<MeasuredFile> = [];
+    for (const entry of frozen.files) {
+      const found = grouped[entry.basename] ?? [];
+      const path = found[0];
+      if (found.length === 0 || path === undefined) {
+        return yield* new BenchFailure({ reason: `Sample file ${entry.basename} is missing.` });
+      }
+      if (found.length > 1) {
+        return yield* new BenchFailure({
+          reason: `Sample file ${entry.basename} occurs more than once.`,
+        });
+      }
+      const identity = yield* digestFile(path);
+      if (identity.bytes !== entry.bytes) {
+        return yield* new BenchFailure({
+          reason: `Sample file ${entry.basename} byte size differs.`,
+        });
+      }
+      if (identity.sha256 !== entry.sha256) {
+        return yield* new BenchFailure({ reason: `Sample file ${entry.basename} hash differs.` });
+      }
+      resolved.push({
+        path,
+        basename: entry.basename,
+        sha256: entry.sha256,
+        bytes: entry.bytes,
+        pages: entry.pages,
+      });
+    }
+    return {
+      files: [...resolved].sort((left, right) => left.path.localeCompare(right.path, "en")),
+      corpusCount: all.length,
+      seed: frozen.seed,
+      requested: frozen.requested,
+    };
+  });
+
+const selectSeeded = (
+  cli: Cli,
+): Effect.Effect<
+  { readonly files: ReadonlyArray<SampleFile>; readonly corpusCount: number },
+  BenchFailure
+> =>
+  Effect.gen(function* () {
+    const all = yield* listedPdfs(cli.corpora);
+    const chosen = samplePaths(all, cli.n, cli.seed);
+    const names = chosen.map((path) => basename(path));
+    if (new Set(names).size !== names.length) {
+      return yield* new BenchFailure({ reason: "The seeded sample has duplicate basenames." });
+    }
+    return {
+      files: chosen.map((path) => ({
+        path,
+        basename: basename(path),
+        sha256: null,
+        bytes: null,
+        pages: null,
+      })),
+      corpusCount: all.length,
+    };
+  });
+
+const writeSample = (cli: Cli): Effect.Effect<void, BenchFailure | PdfCoreError> =>
+  Effect.gen(function* () {
+    const output = cli.writeSample;
+    if (output === undefined) {
+      return yield* new BenchFailure({ reason: usage });
+    }
+    const wasmBytes = yield* loadWasm();
+    const module = yield* compileWasm(wasmBytes);
+    const selected = yield* selectSeeded(cli);
+    const probe = selected.files[0];
+    if (probe === undefined) {
+      return yield* new BenchFailure({ reason: "No PDFs found in the selected corpora." });
+    }
+    const measured = yield* ensureMeasured(module, selected.files);
+    const files = [...measured].sort((left, right) =>
+      left.basename.localeCompare(right.basename, "en"),
+    );
+    const document = yield* Schema.decodeUnknownEffect(FrozenSampleSchema)({
+      version: 1,
+      seed: cli.seed,
+      requested: cli.n,
+      files: files.map((file) => ({
+        basename: file.basename,
+        sha256: file.sha256,
+        bytes: file.bytes,
+        pages: file.pages,
+      })),
+    }).pipe(
+      Effect.mapError(
+        (issue) =>
+          new BenchFailure({
+            reason: `Could not encode the frozen sample. ${String(issue).slice(0, 180)}`,
+          }),
+      ),
+    );
+    yield* writeJson(output, document);
+    console.error(`wrote ${output}`);
+    console.log(`sample ${document.files.length} seed ${document.seed}`);
+  });
+
+const collectGarbage = (): void => {
+  const host: unknown = globalThis;
+  if (typeof host !== "object" || host === null || !("Bun" in host)) {
+    return;
+  }
+  const runtime: unknown = host.Bun;
+  if (typeof runtime !== "object" || runtime === null || !("gc" in runtime)) {
+    return;
+  }
+  const collect: unknown = runtime.gc;
+  if (typeof collect !== "function") {
+    return;
+  }
+  Reflect.apply(collect, runtime, [true]);
+};
+
+const perDocPeaks = (
+  module: WebAssembly.Module,
+  id: WorkloadId,
+  files: ReadonlyArray<MeasuredFile>,
+  features: Features,
+): Effect.Effect<ReadonlyArray<number>, BenchFailure | PdfCoreError> =>
+  Effect.forEach(files, (file, index) =>
+    Effect.gen(function* () {
+      collectGarbage();
+      if (index % 50 === 0) {
+        console.error(`memory ${id} ${index + 1}/${files.length}`);
+      }
+      const core = yield* makePdfCore(module);
+      const report = yield* runWorkload(id, core, [file], features);
+      const peak = report.wasmMemoryBytes?.peak ?? null;
+      if (peak === null) {
+        return yield* new BenchFailure({ reason: `No memory reading for ${file.basename}.` });
+      }
+      return peak;
+    }),
+  );
+
+const withPerDocMemory = (
+  module: WebAssembly.Module,
+  rows: ReadonlyArray<WorkloadReport>,
+  files: ReadonlyArray<MeasuredFile>,
+  features: Features,
+): Effect.Effect<ReadonlyArray<WorkloadReport>, BenchFailure | PdfCoreError> =>
+  Effect.forEach(rows, (row) =>
+    Effect.gen(function* () {
+      if (row.status !== "ok") {
+        return row;
+      }
+      const peaks = yield* perDocPeaks(module, row.id, files, features);
+      const memory = perDocWasm(peaks);
+      if (memory === null) {
+        return row;
+      }
+      return { ...row, perDocWasmMemoryBytes: memory };
+    }),
+  );
+
 const benchmark = (cli: Cli): Effect.Effect<void, BenchFailure | PdfCoreError> =>
   Effect.gen(function* () {
     const out = cli.out;
     if (out === undefined) {
       return yield* new BenchFailure({ reason: usage });
     }
-    const bytes = yield* loadWasm();
-    const module = yield* Effect.tryPromise({
-      try: () => WebAssembly.compile(bytes),
-      catch: () => new BenchFailure({ reason: "Could not compile pdf-core.wasm." }),
-    });
-    const listed = yield* Effect.forEach(cli.corpora, listPdfs);
-    const all = listed.flat().sort((left, right) => left.localeCompare(right, "en"));
-    const chosen = samplePaths(all, cli.n, cli.seed);
-    const files = chosen.map((path) => ({ path, basename: basename(path) }));
-    const probe = files[0];
+    const wasmBytes = yield* loadWasm();
+    const module = yield* compileWasm(wasmBytes);
+    const selected =
+      cli.sampleFile === undefined
+        ? yield* selectSeeded(cli).pipe(
+            Effect.map((seeded) => ({
+              files: seeded.files,
+              corpusCount: seeded.corpusCount,
+              seed: cli.seed,
+              requested: cli.n,
+              sample: SEEDED_SAMPLE,
+              sampleFile: null,
+            })),
+          )
+        : yield* resolveSampleFile(cli.sampleFile, cli.corpora).pipe(
+            Effect.map((resolved) => ({
+              files: resolved.files,
+              corpusCount: resolved.corpusCount,
+              seed: resolved.seed,
+              requested: resolved.requested,
+              sample: FILE_SAMPLE,
+              sampleFile: cli.sampleFile ?? null,
+            })),
+          );
+    const probe = selected.files[0];
     if (probe === undefined) {
       return yield* new BenchFailure({ reason: "No PDFs found in the selected corpora." });
     }
-    console.error(
-      `sample ${files.length}/${all.length} seed ${cli.seed} runs ${cli.runs} corpora ${cli.corpora.map(corpusLabel).join(", ")}`,
-    );
     const features = yield* detectFeatures(module, probe);
+    const files = yield* ensureMeasured(module, selected.files);
+    console.error(
+      `sample ${files.length}/${selected.corpusCount} ${selected.sample} seed ${selected.seed} runs ${cli.runs} page-count ${features.pageSource} corpora ${cli.corpora.map(corpusLabel).join(", ")}`,
+    );
     const runDetails = yield* Effect.forEach(
       Array.from({ length: cli.runs }, (_unused, index) => index),
       (run) =>
@@ -1126,24 +1636,29 @@ const benchmark = (cli: Cli): Effect.Effect<void, BenchFailure | PdfCoreError> =
           );
         }),
     );
-    const workloads = yield* Effect.forEach(workloadOrder, (id) =>
+    const medianRows = yield* Effect.forEach(workloadOrder, (id) =>
       medianReport(runDetails.flatMap((run) => run.filter((row) => row.id === id))),
     );
+    const workloads = cli.memoryPerDoc
+      ? yield* withPerDocMemory(module, medianRows, files, features)
+      : medianRows;
     const report = yield* Schema.decodeUnknownEffect(ReportSchema)({
-      version: 1,
+      version: 2,
       commit: yield* gitCommit(),
-      sample: "fisher-yates-mulberry32-then-path-sort",
-      seed: cli.seed,
-      requested: cli.n,
+      sample: selected.sample,
+      seed: selected.seed,
+      requested: selected.requested,
       sampleCount: files.length,
-      corpusCount: all.length,
-      sampleKey: createHash("sha256").update(chosen.join("\n")).digest("hex"),
+      corpusCount: selected.corpusCount,
+      sampleKey: pathKey(files),
+      sampleContentKey: contentKey(files),
+      sampleFile: selected.sampleFile,
       sampleBasenames: files.map((file) => file.basename),
       corpora: cli.corpora.map(corpusLabel),
       runs: cli.runs,
       worker: "single",
       bun: yield* bunVersion(),
-      wasm: wasmSize(bytes),
+      wasm: wasmSize(wasmBytes),
       workloads,
       runDetails,
     }).pipe(
@@ -1151,10 +1666,7 @@ const benchmark = (cli: Cli): Effect.Effect<void, BenchFailure | PdfCoreError> =
         () => new BenchFailure({ reason: "The benchmark report did not match its schema." }),
       ),
     );
-    yield* Effect.sync(() => {
-      mkdirSync(dirname(out), { recursive: true });
-      writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
-    });
+    yield* writeJson(out, report);
     console.error(`wrote ${out}`);
     console.log(reportMarkdown(report));
   });
@@ -1166,11 +1678,13 @@ if (Schema.is(BenchFailure)(parsed)) {
 } else if (parsed.help) {
   console.log(usage);
 } else {
-  const finished = await Effect.runPromise(
-    Effect.result(
-      parsed.compare === undefined ? benchmark(parsed) : compareReports(parsed.compare),
-    ),
-  );
+  const program =
+    parsed.compare !== undefined
+      ? compareReports(parsed.compare)
+      : parsed.writeSample !== undefined
+        ? writeSample(parsed)
+        : benchmark(parsed);
+  const finished = await Effect.runPromise(Effect.result(program));
   if (Result.isFailure(finished)) {
     const error = finished.failure;
     if (Schema.is(BenchFailure)(error)) {
