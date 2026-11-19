@@ -118,12 +118,13 @@ inputs for each engine. That measurement supplies crop geometry directly
 to CTC. The raw grayscale page and single-line benchmarks also exercise
 the page preprocessing and segmentation pipeline.
 
-| Model                             | Training pool                                     | Epochs | Training wall time | Parameters | Table bytes | Clean CER | Degraded CER | Reviewed scan CER | Native clean ms/line |
-| --------------------------------- | ------------------------------------------------- | -----: | -----------------: | ---------: | ----------: | --------: | -----------: | ----------------: | -------------------: |
-| v3 bootstrap                      | 792 Liberation lines                              |     24 |         1,082.20 s |    592,004 |     599,880 |    23.51% |       26.49% |            93.70% |                29.17 |
-| v3 mixed, QAT in final two epochs | 54,579 accepted entries before alphabet filtering |      6 |           240.47 s |    593,738 |     601,680 |    21.09% |       26.35% |            76.17% |                31.52 |
-| Tesseract LSTM 5.3.0              | Published Portuguese model                        |      — |                  — |          — |  15,336,931 |     0.49% |        0.82% |            12.92% |                96.69 |
-| Tesseract fast 5.3.0              | Published Portuguese fast model                   |      — |                  — |          — |   1,982,756 |     0.75% |        1.36% |            13.11% |                61.65 |
+| Model                             | Training pool                                      | Epochs | Training wall time | Parameters | Table bytes | Clean CER | Degraded CER | Reviewed scan CER | Native clean ms/line |
+| --------------------------------- | -------------------------------------------------- | -----: | -----------------: | ---------: | ----------: | --------: | -----------: | ----------------: | -------------------: |
+| v3 bootstrap                      | 792 Liberation lines                               |     24 |         1,082.20 s |    592,004 |     599,880 |    23.51% |       26.49% |            93.70% |                29.17 |
+| v3 mixed, QAT in final two epochs | 54,579 accepted entries before alphabet filtering  |      6 |           240.47 s |    593,738 |     601,680 |    21.09% |       26.35% |            76.17% |                31.52 |
+| v3 corpus, QAT in final epoch     | 132,671 accepted entries before alphabet filtering |      4 |           212.08 s |    600,963 |     609,180 |    20.62% |       24.82% |            65.88% |                28.63 |
+| Tesseract LSTM 5.3.0              | Published Portuguese model                         |      — |                  — |          — |  15,336,931 |     0.49% |        0.82% |            12.92% |                96.69 |
+| Tesseract fast 5.3.0              | Published Portuguese fast model                    |      — |                  — |          — |   1,982,756 |     0.75% |        1.36% |            13.11% |                61.65 |
 
 The clean and degraded line sets each contain 96 lines and 4,254
 non-whitespace characters. The reviewed scan column uses 431 lines and
@@ -169,18 +170,20 @@ variants used their full native pipeline. Raw CER retains whitespace and
 case. Normalized CER collapses whitespace and lowercases. Each time is
 the mean of the per-crop medians over three separate processes.
 
-| Engine                        | Raw CER | Normalized CER | Raw WER | Mean ms/crop |
-| ----------------------------- | ------: | -------------: | ------: | -----------: |
-| SignatureKit glyph            |  59.78% |         53.51% | 175.64% |        11.65 |
-| SignatureKit v3 mixed, greedy |  44.95% |         39.74% | 104.10% |        84.82 |
-| Tesseract LSTM 5.3.0          |   0.96% |          0.91% |   5.06% |       498.57 |
-| Tesseract fast 5.3.0          |   0.90% |          0.89% |   4.29% |       585.61 |
+| Engine                         | Raw CER | Normalized CER | Raw WER | Mean ms/crop |
+| ------------------------------ | ------: | -------------: | ------: | -----------: |
+| SignatureKit glyph             |  59.78% |         53.51% | 175.64% |        11.65 |
+| SignatureKit v3 mixed, greedy  |  44.95% |         39.74% | 104.10% |        84.82 |
+| SignatureKit v3 corpus, greedy |  40.57% |         35.71% |  95.36% |        29.02 |
+| Tesseract LSTM 5.3.0           |   0.96% |          0.91% |   5.06% |       498.57 |
+| Tesseract fast 5.3.0           |   0.90% |          0.89% |   4.29% |       585.61 |
 
 The real-crop references were seeded by Tesseract and visually reviewed.
 They favor legible, successfully segmented lines. The separate 20-page
 benchmark measures reading order and page segmentation on less constrained
-inputs. During timing, other jobs shared the Xeon E5-2680 v4 host and its
-logical CPU 0. Comparisons establish the observed latency in these runs.
+inputs. The corpus run used logical CPU 5. The earlier runs used
+logical CPU 0. Other jobs shared the Xeon E5-2680 v4 host, so these
+latencies describe separate timing windows.
 
 ### Full-page benchmark
 
@@ -194,6 +197,7 @@ were run per page. Tesseract used PSM 3.
 | SignatureKit glyph         |    12.07% / 66.18 |    28.17% / 81.59 |    192.92% / 62.35 |
 | v3 mixed, greedy           | 15.96% / 4,871.54 | 23.40% / 4,852.78 | 107.74% / 5,441.96 |
 | v3 mixed, beam and lexicon | 14.25% / 3,593.31 | 21.51% / 1,816.43 | 110.96% / 2,190.77 |
+| v3 corpus, greedy          | 11.54% / 1,447.66 | 20.06% / 1,628.58 | 104.01% / 1,725.79 |
 | Tesseract LSTM 5.3.0       |  4.00% / 5,667.12 | 12.98% / 4,441.45 |  11.15% / 2,036.13 |
 | Tesseract fast 5.3.0       |  4.03% / 2,973.21 | 13.25% / 2,599.57 |  14.05% / 1,313.85 |
 
@@ -201,7 +205,8 @@ CER can exceed 100% when inserted text outnumbers reference characters.
 Against greedy CTC, beam and lexicon lowered clean and degraded CER by
 1.71 and 1.89 points and raised real-page CER by 3.22 points. These variants
 were timed in separate shared-host windows, with different levels of CPU
-contention. The wall times do not isolate decoder overhead.
+contention. The corpus model used CPU 5. The other runs used CPU 0.
+The wall times do not isolate decoder overhead.
 
 ```sh
 for dataset in "$out/clean-pages/test" "$out/scan-pages/test" "$out/real-pages"; do
@@ -239,7 +244,12 @@ ms/page, compared with 6,125.20 and 2,957.77 for Tesseract fast. Its scalar
 times were 30,571.04 and 29,346.35 ms/page. The page and line results were
 measured in different shared-host windows. The probe timer includes
 page preparation and OCR. The Tesseract batch infers DPI and measures
-one process over the same input files.
+one process over the same input files. With the final corpus table
+the same 32 dev lines had identical scalar and SIMD transcripts at
+171.57 and 65.35 ms/line. Probe plus corpus table was 845,330 bytes.
+The Tesseract batch in this last run took 2,593.13 ms/line, compared
+with 132.18 in the prior window. The wide variation prevents a
+stable cross-engine speed ratio for that sample.
 
 The main PDF WASM was rebuilt from the base and this branch using the same
 Rust 1.99.1 and Binaryen binaries. Both files were 1,155,988 bytes and
@@ -281,7 +291,17 @@ The corpus run completed four epochs and 7,969 training line visits in
 three and four. The saved corpus table beat the mixed validation score
 of 8,043 edits with 7,118 edits over the same 14,832 characters
 (47.99% CER). The selected final epoch used quantization-aware training.
-Its corresponding f32 error count was 7,126.
+Its corresponding f32 error count was 7,126. The 431 original
+grayscale test crops were scored after choosing this checkpoint.
+The corpus table reduced raw CER by 4.38 percentage points from the
+mixed run. The checked-in model remains opt-in because the font line
+errors and full-page inference cost still favor the glyph path.
+
+```sh
+OCR_BENCH_CTC_MODEL="$rust/ocr/data/sequence-v3-corpus.bin" \
+  "$runner" --cpu 3 --mem 6G taskset -c 5 bun "$bench/run.ts" \
+  --dataset "$out/line-reviews/test" --engines ours-native --psm 7
+```
 
 [sequence-v3-corpus.bin](../data/sequence-v3-corpus.bin) contains 600,963
 parameters across 195 labels. It is 609,180 bytes and has SHA-256
