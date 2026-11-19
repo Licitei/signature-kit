@@ -343,7 +343,7 @@ const ocrDpiSchema = Schema.Finite.check(Schema.isGreaterThan(0));
 
 export const PdfCoreOcrImageSchema = Schema.Struct({
   mediaType: Schema.Union([PdfCoreImageTypeSchema, Schema.Literal("application/octet-stream")]),
-  bytes: Schema.instanceOf(Uint8Array),
+  bytes: Schema.Uint8Array,
   width: ocrDimensionSchema,
   height: ocrDimensionSchema,
   dpiX: ocrDpiSchema,
