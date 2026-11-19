@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,13 +10,14 @@ async function loadWasm(path) {
 
 function pageInput(pgm, label, weights) {
   const header = /^P5\s+(\d+)\s+(\d+)\s+255\n/.exec(pgm.toString("ascii", 0, 80));
-  if (header === null) throw new Error("Expected an 8-bit P5 page");
+  assert.ok(header !== null, "Expected an 8-bit P5 page");
   const width = Number(header[1]);
   const height = Number(header[2]);
   const pixels = pgm.subarray(header[0].length);
-  if (width * height !== pixels.length || label.width !== width || label.height !== height) {
-    throw new Error("Page dimensions do not match the fixtures");
-  }
+  assert.ok(
+    width * height === pixels.length && label.width === width && label.height === height,
+    "Page dimensions do not match the fixtures",
+  );
   const input = Buffer.alloc(16 + weights.length + pixels.length);
   input.writeUInt32LE(width, 0);
   input.writeUInt32LE(height, 4);
@@ -28,13 +30,13 @@ function pageInput(pgm, label, weights) {
 
 function recognize(wasm, input) {
   const pointer = wasm.pdf_core_ocr_raster_alloc(input.length);
-  if (pointer === 0) throw new Error("WASM input allocation failed");
+  assert.notEqual(pointer, 0, "WASM input allocation failed");
   new Uint8Array(wasm.memory.buffer, pointer, input.length).set(input);
   const start = performance.now();
   const output = wasm.pdf_core_ocr_ctc_probe(pointer, input.length);
   const elapsed = performance.now() - start;
   wasm.pdf_core_ocr_raster_free(pointer, input.length);
-  if (output === 0) throw new Error("WASM CTC probe failed");
+  assert.notEqual(output, 0, "WASM CTC probe failed");
   const size = new DataView(wasm.memory.buffer, output, 4).getUint32(0, true);
   const text = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, output + 4, size - 4));
   wasm.pdf_core_ocr_raster_free(output, size);
@@ -49,7 +51,7 @@ const [scalar, simd, model, files] = await Promise.all([
   readdir(cases),
 ]);
 const pages = files.filter((name) => name.endsWith(".pgm")).sort();
-if (pages.length === 0) throw new Error("No held-out pages");
+assert.ok(pages.length > 0, "No held-out pages");
 const timings = { scalar: 0, simd: 0 };
 let outputs = 0;
 for (const name of pages) {
@@ -58,7 +60,7 @@ for (const name of pages) {
   const input = pageInput(pgm, label, model);
   const left = recognize(scalar, input);
   const right = recognize(simd, input);
-  if (left.text !== right.text) throw new Error(`Scalar and SIMD differ on ${name}`);
+  assert.equal(left.text, right.text, `Scalar and SIMD differ on ${name}`);
   outputs += right.text.length;
   timings.scalar += left.elapsed;
   timings.simd += right.elapsed;
@@ -75,7 +77,7 @@ const tessElapsed = await (async () => {
     env: { ...globalThis.process.env, OMP_THREAD_LIMIT: "1" },
   });
   const status = await process.exited;
-  if (status !== 0) throw new Error(`Tesseract exited with status ${status}`);
+  assert.equal(status, 0, "Tesseract failed");
   return performance.now() - clock;
 })().finally(() => rm(directory, { recursive: true }));
 

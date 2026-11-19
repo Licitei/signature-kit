@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ const normalize = (text) => text.normalize("NFC").replace(/\s/gu, "");
 
 async function load(archive, directory) {
   const bytes = await readFile(archive);
-  if (bytes.toString("ascii", 0, 4) !== "OCRT") throw new Error("Invalid OCR archive");
+  assert.equal(bytes.toString("ascii", 0, 4), "OCRT", "Invalid OCR archive");
   let position = 4;
   function number() {
     const value = bytes.readUInt32LE(position);
@@ -53,7 +54,7 @@ async function load(archive, directory) {
     images.push(file);
     expected.push(normalize(transcript.join("")));
   }
-  if (lines === 0 || position !== bytes.length) throw new Error("Invalid or empty OCR archive");
+  assert.ok(lines > 0 && position === bytes.length, "Invalid or empty OCR archive");
   const list = join(directory, "images.txt");
   await writeFile(list, `${images.join("\n")}\n`);
   return { list, expected };
@@ -69,10 +70,13 @@ async function compare(archive, executable, directory) {
   });
   const [text, status] = await Promise.all([new Response(child.stdout).text(), child.exited]);
   const elapsed = performance.now() - start;
-  if (status !== 0) throw new Error(`Tesseract exited with status ${status}`);
+  assert.equal(status, 0, "Tesseract failed");
   const output = text.replace(/\f$/, "").split("\f");
-  if (output.length !== expected.length)
-    throw new Error("Tesseract output does not match the input line count");
+  assert.equal(
+    output.length,
+    expected.length,
+    "Tesseract output does not match the input line count",
+  );
   let edits = 0;
   let characters = 0;
   for (const [index, reference] of expected.entries()) {
