@@ -25,13 +25,13 @@ const pdfDir = resolve(process.env.PDF_CORPUS ?? join(repo, ".cache/bench/pdfs")
 const distDir = resolve(process.env.PDF_CORE_BENCH_DIST ?? join(pkg, "dist"));
 const fixtureDir = join(pkg, "__tests__/fixtures");
 
-async function loadCore() {
+async function loadCore(dist: string) {
   const effectUrl = pathToFileURL(join(repo, "node_modules/effect/dist/index.js")).href;
   const nodeUrl = pathToFileURL(
     join(repo, "node_modules/@effect/platform-node/dist/NodeServices.js"),
   ).href;
-  const coreUrl = pathToFileURL(join(distDir, "pdf-core.js")).href;
-  const fileUrl = pathToFileURL(join(distDir, "file.js")).href;
+  const coreUrl = pathToFileURL(join(dist, "pdf-core.js")).href;
+  const fileUrl = pathToFileURL(join(dist, "file.js")).href;
   const { Effect, Layer } = await import(effectUrl);
   const NodeServices = await import(nodeUrl);
   const { PdfCore } = await import(coreUrl);
@@ -130,7 +130,9 @@ async function timeSignatures(
   return { signScanMs, documentMs, textMs, bytes: bytes.byteLength };
 }
 
-const { Effect, core } = await loadCore();
+const { Effect, core } = await loadCore(distDir);
+const baselineDist = process.env.PDF_CORE_BENCH_BASELINE_DIST;
+const baseline = baselineDist === undefined ? undefined : await loadCore(resolve(baselineDist));
 const editais = listEditais();
 const textFiles = quick ? editais.slice(0, 5) : editais;
 const renderFiles = editais
@@ -146,12 +148,15 @@ const warmRender = renderFiles[0] ?? warmText;
 
 const runs = quick ? 5 : 5;
 const textRuns: number[] = [];
+const baselineTextRuns: number[] = [];
 const renderRuns: number[] = [];
 const habRuns: Awaited<ReturnType<typeof timeSignatures>>[] = [];
 const largeRuns: Awaited<ReturnType<typeof timeSignatures>>[] = [];
 
 for (let warm = 0; warm < 3; warm += 1) {
-  await Effect.runPromise(core.text(new Uint8Array(readFileSync(warmText))));
+  const bytes = new Uint8Array(readFileSync(warmText));
+  await Effect.runPromise(core.text(bytes));
+  if (baseline !== undefined) await baseline.Effect.runPromise(baseline.core.text(bytes));
   await Effect.runPromise(
     core.renderPages(new Uint8Array(readFileSync(warmRender)), {
       pageIndexes: [0, 1, 2],
@@ -162,8 +167,13 @@ for (let warm = 0; warm < 3; warm += 1) {
 }
 
 for (let i = 0; i < runs; i += 1) {
-  const text = await timeText(Effect, core, textFiles);
-  textRuns.push(text.msPerPage);
+  if (baseline !== undefined && i % 2 === 0) {
+    baselineTextRuns.push((await timeText(baseline.Effect, baseline.core, textFiles)).msPerPage);
+  }
+  textRuns.push((await timeText(Effect, core, textFiles)).msPerPage);
+  if (baseline !== undefined && i % 2 !== 0) {
+    baselineTextRuns.push((await timeText(baseline.Effect, baseline.core, textFiles)).msPerPage);
+  }
   const render = await timeRender(Effect, core, renderFiles);
   renderRuns.push(render.msPerPage);
   habRuns.push(await timeSignatures(Effect, core, habilitacao));
@@ -179,6 +189,8 @@ const result = {
     textRuns.length > 1
       ? (100 * (Math.max(...textRuns) - Math.min(...textRuns))) / median(textRuns)
       : 0,
+  baselineTextMsPerPage: baseline === undefined ? undefined : median(baselineTextRuns),
+  baselineTextMsPerPageRuns: baseline === undefined ? undefined : baselineTextRuns,
   renderMsPerPage: median(renderRuns),
   renderMsPerPageRuns: renderRuns,
   renderNoisePct:
