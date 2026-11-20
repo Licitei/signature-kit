@@ -1,5 +1,5 @@
 use crate::num::f64_to_i64;
-use crate::num::widen;
+use crate::num::{transformed_bounds, widen};
 use alloc::rc::Rc;
 use core::mem;
 use core::ops::Range;
@@ -10,7 +10,7 @@ use crate::failure::{Failure, FailureCode, Outcome};
 use crate::font::{Font, Glyph, embedded_style};
 use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
-use crate::object::{Dict, ObjRef, Object, Resolver as _};
+use crate::object::{Dict, ObjRef, Object, Resolver as _, Stream};
 use crate::syntax::{ContentLexer, ContentToken, Operand};
 
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -527,6 +527,38 @@ pub(crate) struct Session {
 }
 
 impl Interpreter<'_, '_> {
+    fn annotation_text(&mut self, page: &Page, scope: &Scope) -> Outcome<()> {
+        let Some(annotations) = self.document.page_annotations(page) else {
+            return Ok(());
+        };
+        let Some(items) = annotations.as_array() else {
+            return Ok(());
+        };
+        for item in items {
+            let Ok(annotation) = self.document.follow(item) else {
+                continue;
+            };
+            let Some(dict) = annotation.as_dict() else {
+                continue;
+            };
+            let Some((appearance, placement)) = self.document.annotation_appearance(dict) else {
+                continue;
+            };
+            let Some(stream) = appearance.as_stream() else {
+                continue;
+            };
+            self.flush()?;
+            let mut state = GState::initial();
+            state.ctm = placement;
+            let matrices = TextMatrices {
+                tm: IDENTITY,
+                tlm: IDENTITY,
+            };
+            self.enter_form(stream, None, scope, &state, &matrices, 0)?;
+        }
+        Ok(())
+    }
+
     fn apply_ext_gstate(
         &mut self,
         operands: &[Operand<'_>],
@@ -670,6 +702,18 @@ impl Interpreter<'_, '_> {
             }
             return Ok(());
         }
+        self.enter_form(stream, reference, scope, state, matrices, depth)
+    }
+
+    fn enter_form(
+        &mut self,
+        stream: &Stream,
+        reference: Option<ObjRef>,
+        scope: &Scope,
+        state: &GState,
+        matrices: &TextMatrices,
+        depth: usize,
+    ) -> Outcome<()> {
         let cached = reference.and_then(|known| self.forms.get(known, self.generation));
         let data: Rc<[u8]> = match cached {
             Some(data) => data,
@@ -689,21 +733,27 @@ impl Interpreter<'_, '_> {
                 Err(_) => return Ok(()),
             },
         };
-        let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
+        let form_matrix = stream
+            .dict
+            .get(b"Matrix")
+            .and_then(Object::as_matrix)
+            .unwrap_or(IDENTITY);
         let own = stream.dict.get(b"Resources");
-        let (resources, origin) = match own
+        let (resources, origin) = own
             .and_then(|object| self.document.follow(object).ok())
             .filter(|object| object.as_dict().is_some())
-        {
-            Some(resources) => (
-                resources,
-                match own {
-                    Some(Object::Ref(own_ref)) => Some(*own_ref),
-                    _ => None,
+            .map_or_else(
+                || (Rc::clone(&scope.resources), scope.origin),
+                |resources| {
+                    (
+                        resources,
+                        match own {
+                            Some(Object::Ref(own_ref)) => Some(*own_ref),
+                            _ => None,
+                        },
+                    )
                 },
-            ),
-            None => (Rc::clone(&scope.resources), scope.origin),
-        };
+            );
         let mut inner_scope = Scope::new(self.next_scope(), resources, origin);
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
@@ -1583,33 +1633,6 @@ where
     Some(out)
 }
 
-fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
-    let items = object?.as_array()?;
-    if items.len() != 6 {
-        return None;
-    }
-    tail_numbers::<6, _>(items)
-}
-
-fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
-    let [a, b, c, d, e, f] = *matrix;
-    let mut bounds = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
-        let px = x * a + y * c + e;
-        let py = x * b + y * d + f;
-        bounds[0] = bounds[0].min(px);
-        bounds[1] = bounds[1].min(py);
-        bounds[2] = bounds[2].max(px);
-        bounds[3] = bounds[3].max(py);
-    }
-    bounds
-}
-
 fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
     let [a, b, c, d, e, f] = *matrix;
     (x * a + y * c + e, x * b + y * d + f)
@@ -1674,7 +1697,7 @@ pub(crate) fn extract_content(
     session: &mut Session,
 ) -> Outcome<PageContent> {
     let content = document.content(page)?;
-    if content.is_empty() {
+    if content.is_empty() && page.dict.get(b"Annots").is_none() {
         return Ok(PageContent::default());
     }
     let [mx0, my0, mx1, my1] = page.info.crop_box;
@@ -1720,6 +1743,7 @@ pub(crate) fn extract_content(
     };
     let outcome = interpreter
         .run(&content, &mut scope, &mut state, &mut matrices, 0)
+        .and_then(|()| interpreter.annotation_text(page, &scope))
         .and_then(|()| interpreter.flush());
     session.fonts = mem::take(&mut interpreter.fonts);
     session.forms = mem::take(&mut interpreter.forms);
@@ -2044,6 +2068,51 @@ mod tests {
                 "rect {:?} != {expected:?}",
                 item.rect
             );
+        }
+    }
+
+    #[test]
+    fn extracts_the_visible_annotation_appearance_without_page_contents() {
+        let pdf = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned()),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Annots 4 0 R >>".to_owned()),
+            (4, "[5 0 R 9 0 R 10 0 R]".to_owned()),
+            (5, "<< /Subtype /Widget /FT /Sig /F 132 /Rect [100 200 140 400] /AP << /N << /On 6 0 R /Off 7 0 R >> >> /AS /On /V (Metadata) >>".to_owned()),
+            (6, stream_object("/Subtype /Form /BBox [0 0 100 20] /Matrix [0 1 -1 0 20 0] /Resources << /XObject << /Nested 7 0 R >> >>", "/Nested Do")),
+            (7, stream_object("/Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 8 0 R >> >>", "BT /F1 10 Tf 3 5 Td (Hello) Tj ET")),
+            (8, HELVETICA.to_owned()),
+            (9, "<< /Subtype /Widget /F 2 /Rect [0 0 100 20] /AP << /N 7 0 R >> >>".to_owned()),
+            (10, "<< /Subtype /Widget /F 32 /Rect [0 20 100 40] /AP << /N 7 0 R >> >>".to_owned()),
+        ]);
+        let items = extract(&pdf);
+        assert_eq!(texts(&items), ["Hello"]);
+        assert_rect(
+            items.first().unwrap(),
+            [111.1_f64, 206.0_f64, 134.48_f64, 251.56_f64],
+        );
+    }
+
+    #[test]
+    fn reads_printable_latin1_from_a_one_byte_adobe_identity_cmap() {
+        const CODESPACE: &str = "1 begincodespacerange <00> <FF> endcodespacerange";
+        for (registry, cid_range, expected) in [
+            ("Adobe", "<00> <FF> 0", "A\u{e7}\u{e3}o"),
+            ("Other", "<00> <FF> 0", ""),
+            ("Adobe", "<00> <FF> 1", ""),
+        ] {
+            let pdf = page_pdf(
+                "<< /Font << /F1 5 0 R >> >>",
+                "BT /F1 10 Tf 10 20 Td <0041E7E36F7F> Tj ET",
+                &[
+                    (5, "<< /Type /Font /Subtype /Type0 /Encoding 6 0 R /DescendantFonts [7 0 R] >>".to_owned()),
+                    (6, stream_object("/Type /CMap", &format!("{CODESPACE} 1 begincidrange {cid_range} endcidrange"))),
+                    (7, format!("<< /Type /Font /Subtype /CIDFontType2 /CIDSystemInfo << /Registry ({registry}) /Ordering (Identity) /Supplement 0 >> >>")),
+                ],
+            );
+            let runs = extract(&pdf);
+            let text = texts(&runs).join("");
+            assert_eq!(text, expected);
         }
     }
 

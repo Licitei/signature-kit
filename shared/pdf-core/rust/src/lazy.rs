@@ -257,11 +257,9 @@ impl Frontier {
                 if let Some(value) = page.dict.get(b"Contents") {
                     collect(value, &mut pending);
                 }
-            }
-            if !matches!(profile, PageProfile::Inspect { .. })
-                && let Some(annots) = page.dict.get(b"Annots")
-            {
-                collect(annots, &mut pending);
+                if let Some(annots) = page.dict.get(b"Annots") {
+                    collect(annots, &mut pending);
+                }
             }
         }
         if profile == PageProfile::Render

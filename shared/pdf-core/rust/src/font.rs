@@ -80,6 +80,7 @@ struct CompositeFont {
     gid_to_cid: OnceCell<HashMap<u16, u32>>,
     horizontal: CidWidths,
     identity: RefCell<IdentityTable>,
+    latin1_cid: bool,
     program: Option<FontProgram>,
     to_unicode: UnicodeMap,
     vertical: VerticalCidMetrics,
@@ -569,7 +570,7 @@ impl CompositeFont {
             push_codepoints(text, &direct);
             return;
         }
-        if self.program.is_none() {
+        if self.program.is_none() && !self.latin1_cid {
             return;
         }
         let key = cid.unwrap_or(code);
@@ -577,7 +578,13 @@ impl CompositeFont {
             push_codepoints(text, cached);
             return;
         }
-        let resolved: Box<[u32]> = self.program_text(key).unwrap_or_default().into();
+        let resolved: Box<[u32]> = self
+            .program_text(key)
+            .or_else(|| {
+                (self.latin1_cid && matches!(key, 0x20..=0x7E | 0xA0..=0xFF)).then(|| vec![key])
+            })
+            .unwrap_or_default()
+            .into();
         push_codepoints(text, &resolved);
         drop(self.cache.borrow_mut().insert(code, resolved));
     }
@@ -835,6 +842,12 @@ fn load_type0(
     let descendant = resolve_descendant(resolver, font)?;
     let to_unicode = load_to_unicode(font, resolver, limits);
     let cmap = load_cmap(resolver, font.get(b"Encoding"), limits, 0);
+    let latin1_cid = to_unicode.is_empty()
+        && cmap.is_one_byte_identity()
+        && deref_dict(resolver, descendant.get(b"CIDSystemInfo")).is_some_and(|info| {
+            info.get(b"Registry").and_then(Object::as_string) == Some(b"Adobe")
+                && info.get(b"Ordering").and_then(Object::as_string) == Some(b"Identity")
+        });
     let horizontal = load_cid_widths(resolver, &descendant);
     let vertical = load_vertical_metrics(resolver, &descendant);
     let needs_program = force_program
@@ -865,6 +878,7 @@ fn load_type0(
         gid_to_cid: OnceCell::new(),
         horizontal,
         vertical,
+        latin1_cid,
         cache: RefCell::new(HashMap::new()),
         identity: RefCell::new(IdentityTable::default()),
     })

@@ -186,3 +186,28 @@ pub(crate) fn parse_decimal(text: &[u8]) -> Option<f64> {
     }
     Some(if negative { -value } else { value })
 }
+
+pub(crate) fn transformed_bounds(
+    matrix: &[f64; 6],
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+) -> [f64; 4] {
+    let [a, b, c, d, e, f] = *matrix;
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+        let px = x * a + y * c + e;
+        let py = x * b + y * d + f;
+        bounds[0] = bounds[0].min(px);
+        bounds[1] = bounds[1].min(py);
+        bounds[2] = bounds[2].max(px);
+        bounds[3] = bounds[3].max(py);
+    }
+    bounds
+}

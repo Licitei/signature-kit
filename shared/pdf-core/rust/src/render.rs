@@ -444,10 +444,7 @@ impl Renderer<'_, '_> {
     }
 
     fn annotations(&mut self, page: &Page, frame: &Frame) -> Outcome<()> {
-        let Some(annots) = page.dict.get(b"Annots") else {
-            return Ok(());
-        };
-        let Ok(resolved) = self.document.follow(annots) else {
+        let Some(resolved) = self.document.page_annotations(page) else {
             return Ok(());
         };
         let Some(items) = resolved.as_array() else {
@@ -460,88 +457,20 @@ impl Renderer<'_, '_> {
             let Some(dict) = annotation.as_dict() else {
                 continue;
             };
-            let flags = dict.get(b"F").and_then(Object::as_integer).unwrap_or(0);
-            if flags & (2 | 32) != 0
-                || dict.get(b"Subtype").and_then(Object::as_name) == Some(b"Popup")
-                || dict.get(b"OC").is_some_and(|marker| self.hidden(marker))
-            {
+            if dict.get(b"OC").is_some_and(|marker| self.hidden(marker)) {
                 continue;
             }
-            let Some(appearance) = self.appearance_stream(dict) else {
+            let Some((appearance, placement)) = self.document.annotation_appearance(dict) else {
                 continue;
             };
             let Some(stream) = appearance.as_stream() else {
                 continue;
             };
-            let rect = self.rect(dict.get(b"Rect"));
-            let bbox = self.rect(stream.dict.get(b"BBox"));
-            let (Some(target), Some(source)) = (rect, bbox) else {
-                continue;
-            };
-            let form_matrix = matrix_of(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
-            let corners = [
-                (source[0], source[1]),
-                (source[2], source[1]),
-                (source[0], source[3]),
-                (source[2], source[3]),
-            ]
-            .map(|(x, y)| {
-                (
-                    x * form_matrix[0] + y * form_matrix[2] + form_matrix[4],
-                    x * form_matrix[1] + y * form_matrix[3] + form_matrix[5],
-                )
-            });
-            let min_x = corners
-                .iter()
-                .map(|corner| corner.0)
-                .fold(f64::INFINITY, f64::min);
-            let max_x = corners
-                .iter()
-                .map(|corner| corner.0)
-                .fold(f64::NEG_INFINITY, f64::max);
-            let min_y = corners
-                .iter()
-                .map(|corner| corner.1)
-                .fold(f64::INFINITY, f64::min);
-            let max_y = corners
-                .iter()
-                .map(|corner| corner.1)
-                .fold(f64::NEG_INFINITY, f64::max);
-            let width = max_x - min_x;
-            let height = max_y - min_y;
-            if width.abs() < f64::EPSILON || height.abs() < f64::EPSILON {
-                continue;
-            }
-            let sx = (target[2] - target[0]) / width;
-            let sy = (target[3] - target[1]) / height;
-            let placement = [
-                sx,
-                0.0_f64,
-                0.0_f64,
-                sy,
-                target[0] - min_x * sx,
-                target[1] - min_y * sy,
-            ];
             let mut state = GState::initial();
             state.ctm = placement;
             self.form(stream, None, &state, frame, 1)?;
         }
         Ok(())
-    }
-
-    fn appearance_stream(&self, dict: &Dict) -> Option<Rc<Object>> {
-        let appearances = self.document.follow(dict.get(b"AP")?).ok()?;
-        let normal = self
-            .document
-            .follow(appearances.as_dict()?.get(b"N")?)
-            .ok()?;
-        if normal.as_stream().is_some() {
-            return Some(normal);
-        }
-        let states = normal.as_dict()?;
-        let state = dict.get(b"AS").and_then(Object::as_name)?;
-        let chosen = self.document.follow(states.get(state)?).ok()?;
-        chosen.as_stream().is_some().then_some(chosen)
     }
 
     fn apply_ext_gstate(&mut self, name: &[u8], frame: &Frame, state: &mut GState) {
@@ -843,7 +772,11 @@ impl Renderer<'_, '_> {
             self.active.push(inner);
         }
         let data = self.stream_bytes(stream, reference);
-        let matrix = matrix_of(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
+        let matrix = stream
+            .dict
+            .get(b"Matrix")
+            .and_then(Object::as_matrix)
+            .unwrap_or(IDENTITY);
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&matrix, &state.ctm);
         self.save();

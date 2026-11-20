@@ -102,6 +102,15 @@ impl Object {
         }
     }
 
+    pub(crate) fn as_matrix(&self) -> Option<[f64; 6]> {
+        let items: &[Self; 6] = self.as_array()?.try_into().ok()?;
+        let mut matrix = [0.0_f64; 6];
+        for (slot, item) in matrix.iter_mut().zip(items) {
+            *slot = item.as_number().filter(|number| number.is_finite())?;
+        }
+        Some(matrix)
+    }
+
     pub(crate) fn as_name(&self) -> Option<&[u8]> {
         if let Self::Name(value) = self {
             Some(value)

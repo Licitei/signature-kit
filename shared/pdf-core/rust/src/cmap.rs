@@ -544,6 +544,27 @@ impl CMap {
         self.kind == Kind::Identity
     }
 
+    pub(crate) const fn is_one_byte_identity(&self) -> bool {
+        self.parent.is_none()
+            && matches!(
+                self.codespace.as_slice(),
+                [Codespace {
+                    low: [0, 0, 0, 0],
+                    high: [255, 0, 0, 0],
+                    length: 1,
+                }]
+            )
+            && matches!(
+                self.cid_ranges.as_slice(),
+                [CidRange {
+                    cid: 0,
+                    high: 255,
+                    length: 1,
+                    low: 0
+                }]
+            )
+    }
+
     pub(crate) const fn is_unicode_keyed(&self) -> bool {
         matches!(self.kind, Kind::Ucs2 | Kind::Utf16)
     }

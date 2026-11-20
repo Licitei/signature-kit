@@ -1,5 +1,5 @@
-use crate::num::widen;
 use crate::num::{f64_to_i64, f64_to_usize};
+use crate::num::{transformed_bounds, widen};
 use crate::syntax::is_whitespace;
 use crate::text::Session;
 use crate::text::{Capture, Reposition, extract_content};
@@ -162,6 +162,42 @@ impl<'data> Document<'data> {
             }
         }
         Err(Failure::invalid("no document catalog found"))
+    }
+
+    pub(crate) fn annotation_appearance(&self, dict: &Dict) -> Option<(Rc<Object>, [f64; 6])> {
+        let flags = dict.get(b"F").and_then(Object::as_integer).unwrap_or(0);
+        if flags & (2 | 32) != 0 || name_is(dict, b"Subtype", b"Popup") {
+            return None;
+        }
+        let appearances = self.follow(dict.get(b"AP")?).ok()?;
+        let normal = self.follow(appearances.as_dict()?.get(b"N")?).ok()?;
+        let chosen = if normal.as_stream().is_some() {
+            normal
+        } else {
+            let state = dict.get(b"AS")?.as_name()?;
+            self.follow(normal.as_dict()?.get(state)?).ok()?
+        };
+        let stream = chosen.as_stream()?;
+        let [x0, y0, x1, y1] = self.rect(stream.dict.get(b"BBox")?).ok()??;
+        let [min_x, min_y, max_x, max_y] = stream
+            .dict
+            .get(b"Matrix")
+            .and_then(Object::as_matrix)
+            .map_or([x0, y0, x1, y1], |matrix| {
+                transformed_bounds(&matrix, x0, y0, x1, y1)
+            });
+        let [left, bottom, right, top] = self.rect(dict.get(b"Rect")?).ok()??;
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        if width < f64::EPSILON || height < f64::EPSILON {
+            return None;
+        }
+        let sx = (right - left) / width;
+        let sy = (top - bottom) / height;
+        Some((
+            chosen,
+            [sx, 0.0, 0.0, sy, left - min_x * sx, bottom - min_y * sy],
+        ))
     }
 
     pub(crate) const fn bytes(&self) -> &'data [u8] {
@@ -622,6 +658,10 @@ impl<'data> Document<'data> {
             return Err(Failure::invalid("missing document catalog"));
         }
         Ok(document)
+    }
+
+    pub(crate) fn page_annotations(&self, page: &Page) -> Option<Rc<Object>> {
+        self.follow(page.dict.get(b"Annots")?).ok()
     }
 
     fn page_info(&self, inherited: &Inherited) -> Outcome<PageInfo> {
