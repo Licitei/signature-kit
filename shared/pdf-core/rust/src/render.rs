@@ -28,6 +28,7 @@ const MAX_STATE_STACK: usize = 256;
 const MAX_OPERATORS: usize = 4_000_000;
 const MAX_OPS_BYTES: usize = 96 << 20;
 const MAX_BLOB_BYTES: usize = 384 << 20;
+const MAX_RENDER_RESULT_BYTES: usize = 384 << 20;
 const MAX_CACHED_FONTS: usize = 1024;
 const MAX_CACHED_OUTLINES: usize = 1 << 16;
 const MAX_CACHED_IMAGE_BYTES: usize = 96 << 20;
@@ -2146,6 +2147,7 @@ fn render_document(
         selection,
         limits,
         session,
+        MAX_RENDER_RESULT_BYTES,
     )
 }
 
@@ -2168,6 +2170,7 @@ pub(crate) fn opened_render(
         },
         limits,
         &mut RenderSession::default(),
+        MAX_RENDER_RESULT_BYTES,
     )
 }
 
@@ -2178,10 +2181,12 @@ fn render_selected(
     selection: &PageSelection<'_>,
     limits: &Limits,
     session: &mut RenderSession,
+    max_result_bytes: usize,
 ) -> Outcome<Vec<RenderedPage>> {
     let scale = selection.scale;
     let content = OptionalContent::load(document);
     let mut rendered = Vec::with_capacity(selected.len());
+    let mut remaining = max_result_bytes;
     for &(position, page) in selected {
         let target = PageTarget {
             content: &content,
@@ -2192,6 +2197,10 @@ fn render_selected(
             scale,
         };
         let list = render_page(&target, session)?;
+        let bytes = list.ops.len().saturating_add(list.blob_bytes);
+        remaining = remaining
+            .checked_sub(bytes)
+            .ok_or_else(|| Failure::limit("render result exceeds size limit"))?;
         rendered.push(RenderedPage {
             list,
             page_index: u32::try_from(position)
@@ -2536,6 +2545,47 @@ mod tests {
         let ops = decode(&pages[0].list);
         assert!(ops.contains(&Op::Image(false, 0, 2, 1)));
         assert_eq!(pages[0].list.blobs[0], vec![255, 0, 0, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn render_budget_applies_across_selected_pages() {
+        let bytes = page_pdf("<< >>", "0 0 10 10 re f", &[]);
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let page = pages.first().unwrap();
+        let selection = PageSelection {
+            operator_limit: MAX_OPERATORS,
+            page_indexes: None,
+            scale: 1.0,
+        };
+        let mut session = RenderSession::default();
+        let one = [(0, page)];
+        let result = render_selected(
+            &document,
+            &one,
+            &selection,
+            &limits,
+            &mut session,
+            usize::MAX,
+        )
+        .unwrap();
+        let list = &result.first().unwrap().list;
+        let budget = list.ops.len().saturating_add(list.blob_bytes);
+        let selected = [(0, page), (1, page)];
+        let failure = render_selected(
+            &document,
+            &selected,
+            &selection,
+            &limits,
+            &mut session,
+            budget,
+        )
+        .unwrap_err();
+        assert_eq!(failure.reason, "render result exceeds size limit");
+        let within_budget =
+            render_selected(&document, &one, &selection, &limits, &mut session, budget).unwrap();
+        assert_eq!(within_budget.len(), 1);
     }
 
     #[test]
