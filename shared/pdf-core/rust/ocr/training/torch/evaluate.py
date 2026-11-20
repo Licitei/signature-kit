@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import hashlib
 import json
 from pathlib import Path
@@ -90,7 +91,11 @@ def evaluate_native(args):
             observed = subprocess.check_output([args.native, "text", source], text=True)
             times.append(time.perf_counter() - start)
             pairs.append((reference, unicodedata.normalize("NFC", observed).strip()))
-    if not times:
+    report(pairs, sum(times))
+
+
+def report(pairs, seconds):
+    if not pairs:
         raise ValueError("empty evaluation dataset")
     raw = raw_metrics(pairs)
     normalized = raw_metrics([(record_text(reference).lower(), record_text(observed).lower())
@@ -98,7 +103,36 @@ def evaluate_native(args):
     for result in (raw, normalized):
         result["cer"] = result["character_edits"] / result["characters"]
         result["wer"] = result["word_edits"] / result["words"]
-    print(json.dumps(dict(raw=raw, normalized=normalized, wall_ms_per_line=sum(times) * 1000 / len(times))))
+    print(json.dumps(dict(raw=raw, normalized=normalized, wall_ms_per_line=seconds * 1000 / len(pairs))))
+
+
+def evaluate_tesseract(args):
+    groups = defaultdict(list)
+    for label in sorted(args.dataset.glob("*.json")):
+        data = json.loads(label.read_text())
+        groups[data["dpi"]].append((label.with_suffix(".pgm").name, record_text(data["text"])))
+    pairs = []
+    seconds = 0.0
+    with tempfile.TemporaryDirectory(prefix="ocr-v4-tesseract-") as temporary:
+        images = Path(temporary) / "images.txt"
+        for dpi, entries in sorted(groups.items()):
+            images.write_text("".join(f"/dataset/{path}\n" for path, _ in entries))
+            start = time.perf_counter()
+            command = [
+                "docker", "run", "--rm", "--network", "none", "--cpuset-cpus", str(args.cpu),
+                "-e", "OMP_THREAD_LIMIT=1",
+                "--mount", f"type=bind,source={args.dataset.resolve()},target=/dataset,readonly",
+                "--mount", f"type=bind,source={images},target=/images.txt,readonly",
+                "signature-kit-ocr-bench:5.3.0", "tesseract", "/images.txt", "stdout",
+                "--tessdata-dir", f"/models/{args.model}", "-l", "por",
+                "--dpi", str(dpi), "--oem", "1", "--psm", "7",
+            ]
+            output = subprocess.run(command, check=True, capture_output=True, text=True)
+            seconds += time.perf_counter() - start
+            texts = output.stdout.removesuffix("\f").split("\f")
+            pairs.extend((reference, unicodedata.normalize("NFC", text).strip())
+                         for (_, reference), text in zip(entries, texts, strict=True))
+    report(pairs, seconds)
 
 
 if __name__ == "__main__":
@@ -115,6 +149,10 @@ if __name__ == "__main__":
     native = commands.add_parser("native")
     for option in ("table", "dataset", "native"):
         native.add_argument(option, type=Path)
+    baseline = commands.add_parser("tesseract")
+    baseline.add_argument("model", choices=("standard", "fast"))
+    baseline.add_argument("dataset", type=Path)
+    baseline.add_argument("--cpu", type=int, default=5)
     payload = commands.add_parser("packet")
     for option in ("table", "pgm", "output"):
         payload.add_argument(option, type=Path)
@@ -125,5 +163,7 @@ if __name__ == "__main__":
         fixture(args)
     elif args.command == "native":
         evaluate_native(args)
+    elif args.command == "tesseract":
+        evaluate_tesseract(args)
     else:
         args.output.write_bytes(packet(pgm(args.pgm), args.table.read_bytes()))
