@@ -14,7 +14,7 @@ pub(crate) const MAGIC: &[u8; 4] = b"OCR5";
 const WIDTH: usize = 384;
 const LOCAL: usize = 64;
 const GROUP_WIDTH: usize = 16;
-const MAX_GROUP: usize = 16;
+const MAX_PACKED: usize = 1024;
 const SLOPES: [i32; 13] = [0, -16, 16, -32, 32, -48, 48, -64, 64, -80, 80, -96, 96];
 
 type Activations = [i8; WIDTH];
@@ -29,6 +29,7 @@ type HeadRow = [u8; LOCAL.saturating_add(ROW_HEADER)];
 struct Downsample<'table> {
     data: &'table [u8],
     group: usize,
+    phase: usize,
 }
 
 #[derive(Debug)]
@@ -182,9 +183,10 @@ impl<'table> Sequence<'table> {
         if *format != [1, 0] {
             return None;
         }
-        let (group, dilations): (_, &[usize]) = match *architecture {
-            [1, 0] => (8_usize, &[1, 2, 4, 8]),
-            [2, 0] => (16_usize, &[1, 2, 4]),
+        let (group, phase, dilations): (_, _, &[usize]) = match *architecture {
+            [1, 0] => (8_usize, LOCAL, &[1, 2, 4, 8]),
+            [2, 0] => (16_usize, LOCAL, &[1, 2, 4]),
+            [3, 0] => (32_usize, 32_usize, &[1, 3]),
             _ => return None,
         };
         let (class_count, payload) = metadata.get(60..)?.split_first_chunk::<2>()?;
@@ -195,7 +197,7 @@ impl<'table> Sequence<'table> {
         let (classes, parameters) = labels(payload, count)?;
         let (stem, after_stem) = layer_rows(parameters, LOCAL)?;
         let (local, after_local) = layer_rows(after_stem, LOCAL)?;
-        let stride = group.checked_mul(LOCAL)?.checked_add(ROW_HEADER)?;
+        let stride = group.checked_mul(phase)?.checked_add(ROW_HEADER)?;
         let (data, mut tail) = after_local.split_at_checked(stride.checked_mul(WIDTH)?)?;
         if data
             .chunks_exact(stride)
@@ -214,7 +216,7 @@ impl<'table> Sequence<'table> {
             });
             tail = rest;
         }
-        let (up, after_up) = layer_rows(tail, group.checked_mul(LOCAL)?)?;
+        let (up, after_up) = layer_rows(tail, group.checked_mul(phase)?)?;
         let (head, []) = layer_rows(after_up, count)? else {
             return None;
         };
@@ -222,7 +224,7 @@ impl<'table> Sequence<'table> {
             blocks,
             classes,
             dot: nonnegative_dot_kernel(),
-            down: Downsample { data, group },
+            down: Downsample { data, group, phase },
             head,
             local,
             stem,
@@ -311,23 +313,24 @@ impl<'table> Sequence<'table> {
         }
         scratch.coarse.clear();
         let group = self.down.group;
-        let inputs = group.saturating_mul(LOCAL);
+        let phase = self.down.phase;
+        let inputs = group.saturating_mul(phase);
         let row_size = inputs.saturating_add(ROW_HEADER);
-        let mut packed = [[0; LOCAL]; MAX_GROUP];
+        let mut packed = [0_i8; MAX_PACKED];
+        let Some(input) = packed.get_mut(..inputs) else {
+            return;
+        };
         for window in scratch.fine.chunks(group) {
-            for (frame, destination) in window.iter().zip(&mut packed) {
-                *destination = *frame;
+            let mut segments = input.chunks_exact_mut(phase);
+            for (source, destination) in window.iter().zip(segments.by_ref()) {
+                let Some(prefix) = source.get(..phase) else {
+                    return;
+                };
+                destination.copy_from_slice(prefix);
             }
-            for destination in packed
-                .iter_mut()
-                .skip(window.len())
-                .take(group.saturating_sub(window.len()))
-            {
-                *destination = zero;
+            for remaining in segments {
+                remaining.fill(0);
             }
-            let Some(input) = packed.as_flattened().get(..inputs) else {
-                return;
-            };
             let mut output = [0; WIDTH];
             for (slot, row) in output.iter_mut().zip(self.down.data.chunks_exact(row_size)) {
                 *slot = relu(project(dot, input, row));
@@ -369,7 +372,7 @@ impl<'table> Sequence<'table> {
             return;
         };
         for (coarse, frames) in scratch.coarse.iter().zip(scratch.fine.chunks_mut(group)) {
-            for (fine, rows) in frames.iter_mut().zip(self.up.as_chunks::<LOCAL>().0) {
+            for (fine, rows) in frames.iter_mut().zip(self.up.chunks_exact(phase)) {
                 for (slot, row) in fine.iter_mut().zip(rows) {
                     *slot = slot.saturating_add(relu(project(dot, coarse, row)));
                 }

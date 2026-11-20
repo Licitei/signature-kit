@@ -80,16 +80,17 @@ def manifest(files):
 
 
 class Archive:
-    def __init__(self, paths, training=False, align=False, normalize_line=normalize, scan=None):
+    def __init__(self, paths, training=False, align=False, normalize_line=normalize, scan=None, supplement=()):
         self.scan = scan
-        self.paths = paths
+        self.paths = [*paths, *supplement]
         self.training = training
         self.align = align
         self.normalize = normalize_line
         self.samples = []
         self.files = OrderedDict()
         self.rejected = 0
-        for source, path in enumerate(paths):
+        self.primary_count = 0
+        for source, path in enumerate(self.paths):
             for line in records(path, align):
                 text = record_text(line.text)
                 if training and (not text or any(char not in CLASS for char in text)):
@@ -100,6 +101,8 @@ class Archive:
                     continue
                 self.samples.append((source, Line(line.offset, line.width, line.height, text,
                                                   line.glyphs, line.binary)))
+            if source < len(paths):
+                self.primary_count = len(self.samples)
 
     def __len__(self):
         return len(self.samples)
@@ -212,24 +215,36 @@ def augment(gray, rng, strength):
     return values.clip(0, 255).astype(np.uint8)
 
 
-def batches(dataset, batch_size, seed, strength, limit=0, epoch=0):
-    order = list(range(len(dataset)))
+def batches(dataset, batch_size, seed, strength, limit=0, epoch=0, supplement_fraction=0):
+    primary = dataset.primary_count if isinstance(dataset, Archive) else len(dataset)
+    extras = min(batch_size - 1, round(batch_size * supplement_fraction))
+    primary_batch = batch_size - extras
+    order = list(range(primary))
     if limit:
-        count = limit * batch_size
+        count = limit * primary_batch
         offset = (epoch * count) % len(order)
         random.Random(seed).shuffle(order)
         order = (order[offset:] + order[:offset])[:count]
     else:
         random.Random(seed + epoch).shuffle(order)
     rng = random.Random(seed + epoch)
-    for start in range(0, len(order), batch_size * 16):
-        block = order[start:start + batch_size * 16]
+    supplement = list(range(primary, len(dataset)))
+    rng.shuffle(supplement)
+    cursor = 0
+    for start in range(0, len(order), primary_batch * 16):
+        block = order[start:start + primary_batch * 16]
         if isinstance(dataset, Archive):
             block.sort(key=lambda index: dataset.samples[index][1].width * 32 //
                        dataset.samples[index][1].height)
-        groups = [block[i:i + batch_size] for i in range(0, len(block), batch_size)]
+        groups = [block[i:i + primary_batch] for i in range(0, len(block), primary_batch)]
         rng.shuffle(groups)
         for group in groups:
+            for _ in range(extras):
+                if cursor == len(supplement):
+                    rng.shuffle(supplement)
+                    cursor = 0
+                group.append(supplement[cursor])
+                cursor += 1
             yield [(index, rng.getrandbits(64), strength) for index in group]
 
 

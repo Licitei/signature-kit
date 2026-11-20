@@ -105,8 +105,12 @@ def train(args):
     if checkpoint.exists() != args.resume:
         raise ValueError("use --resume for an existing checkpoint or choose a fresh output directory")
     paths = [Path(line) for line in args.shards.read_text().splitlines() if line]
-    if len(set(paths)) != len(paths) or not paths:
-        raise ValueError("the training roster must contain distinct OCRL archive paths")
+    supplement = ([Path(line) for line in args.supplement.read_text().splitlines() if line]
+                  if args.supplement else [])
+    if len(set(paths + supplement)) != len(paths) + len(supplement) or not paths:
+        raise ValueError("training rosters must contain distinct OCRL archive paths")
+    if not 0 <= args.supplement_fraction < 1 or bool(supplement) != bool(args.supplement_fraction):
+        raise ValueError("use --supplement and a nonzero --supplement-fraction together")
     if not 0 <= args.qat < args.epochs or args.epochs < 2:
         raise ValueError("reserve at least one epoch for fp32 training")
     if args.batch_size <= 0 or args.steps < 0 or args.workers < 0 or args.learning_rate <= 0:
@@ -121,7 +125,7 @@ def train(args):
     clean = [args.clean] if args.clean else []
     if args.real_dev.is_dir() and args.real_dev.name != "dev":
         raise ValueError("model selection requires the real development split")
-    sources = [("clean", clean), ("shard", paths)]
+    sources = [("clean", clean), ("shard", paths), ("supplement", supplement)]
     if scan is not None:
         sources.extend([("profile", [scan.profile_path]), ("degradation", [args.scan_binary])])
     training_data = manifest(sources)
@@ -141,12 +145,15 @@ def train(args):
         digest = training_data
     log(args.output, event="indexing", shards=len(paths), manifest=digest, parent=parent,
         architecture=args.architecture, parameters=sum(p.numel() for p in model.parameters()))
-    lines = Archive(paths, training=True, normalize_line=normalize_line, scan=scan)
+    lines = Archive(paths, training=True, normalize_line=normalize_line, scan=scan,
+                    supplement=supplement)
     warm = Archive(clean, training=True, align=True, normalize_line=normalize_line) if clean else None
     real = dataset(args.real_dev, normalize_line)
     synthetic = dataset(args.synthetic_val, normalize_line)
-    if len(real) != 186 or not len(synthetic) or not len(lines) or (warm is not None and not len(warm)):
+    if len(real) != 186 or not len(synthetic) or not lines.primary_count or (warm is not None and not len(warm)):
         raise ValueError("training requires 186 real dev lines and nonempty synthetic datasets")
+    if supplement and len(lines) == lines.primary_count:
+        raise ValueError("no eligible supplemental lines")
     provenance = {
         "training": digest,
         "validation": manifest([
@@ -169,6 +176,7 @@ def train(args):
         previous = state["provenance"]
         previous["options"].setdefault("learning_rate", 0.003)
         previous["options"].setdefault("architecture", 0)
+        previous["options"].setdefault("supplement_fraction", 0.0)
         if previous != provenance:
             raise ValueError("checkpoint data or training schedule changed")
         model.load_state_dict(state["model"])
@@ -179,18 +187,21 @@ def train(args):
         stale = state["stale"]
         commit = state["commit"]
     ctc = nn.CTCLoss(blank=0, zero_infinity=False)
-    log(args.output, event="ready", records=len(lines), rejected=lines.rejected,
+    log(args.output, event="ready", records=lines.primary_count, rejected=lines.rejected,
+        supplement=len(lines) - lines.primary_count,
         clean=len(warm) if warm is not None else 0, start_epoch=first_epoch,
         dev=len(real), synthetic_val=len(synthetic), seed=args.seed, commit=commit)
     if first_epoch == 0 and warm is not None:
         warm_start(model, ema, warm, args)
-    available_steps = math.ceil(len(lines) / args.batch_size)
+    primary_batch = args.batch_size - min(args.batch_size - 1, round(args.batch_size * args.supplement_fraction))
+    available_steps = math.ceil(lines.primary_count / primary_batch)
     steps = min(args.steps or available_steps, available_steps)
     for epoch in range(first_epoch, args.epochs):
         start = time.perf_counter()
         mode = "qat" if epoch >= args.epochs - args.qat else "float"
         curriculum = min(1, (epoch if scan is not None else epoch + 1) / 3)
-        line_batches = batches(lines, args.batch_size, args.seed, curriculum, args.steps, epoch)
+        line_batches = batches(lines, args.batch_size, args.seed, curriculum, args.steps, epoch,
+                               args.supplement_fraction)
         loader = DataLoader(lines, batch_sampler=line_batches, collate_fn=collate,
                             num_workers=args.workers)
         loss_total = 0.0
@@ -252,12 +263,14 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--shards", type=Path, required=True)
+    parser.add_argument("--supplement", type=Path)
+    parser.add_argument("--supplement-fraction", type=float, default=0.0)
     parser.add_argument("--clean", type=Path)
     parser.add_argument("--initial-run", type=Path)
     parser.add_argument("--synthetic-val", type=Path, required=True)
     parser.add_argument("--real-dev", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--architecture", type=int, choices=(0, 1, 2), default=0)
+    parser.add_argument("--architecture", type=int, choices=(0, 1, 2, 3), default=0)
     parser.add_argument("--seed", type=int, default=7291)
     parser.add_argument("--learning-rate", type=float, default=0.003)
     parser.add_argument("--batch-size", type=int, default=32)

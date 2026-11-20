@@ -13,7 +13,7 @@ from model import (
 
 WIDTH = 384
 LOCAL = 64
-ARCHITECTURES = {1: (8, (1, 2, 4, 8)), 2: (16, (1, 2, 4))}
+ARCHITECTURES = {1: (8, 64, (1, 2, 4, 8)), 2: (16, 64, (1, 2, 4)), 3: (32, 32, (1, 3))}
 SLOPES = (0, -16, 16, -32, 32, -48, 48, -64, 64, -80, 80, -96, 96)
 
 
@@ -51,10 +51,10 @@ class Recognizer(nn.Module):
     def __init__(self, architecture):
         super().__init__()
         self.architecture = architecture
-        self.group, dilations = ARCHITECTURES[architecture]
+        self.group, self.phase, dilations = ARCHITECTURES[architecture]
         self.stem = nn.Conv1d(HEIGHT * STRIDE, LOCAL, 1)
         self.local = nn.Conv1d(LOCAL, LOCAL, 3, padding=1, groups=4)
-        self.down = nn.Conv1d(self.group * LOCAL, WIDTH, 1)
+        self.down = nn.Conv1d(self.group * self.phase, WIDTH, 1)
         self.temporal = nn.ModuleList(
             nn.ModuleList((
                 nn.Conv1d(WIDTH, WIDTH, 3, padding=dilation, dilation=dilation, groups=WIDTH),
@@ -62,7 +62,7 @@ class Recognizer(nn.Module):
             ))
             for dilation in dilations
         )
-        self.up = nn.Conv1d(WIDTH, self.group * LOCAL, 1)
+        self.up = nn.Conv1d(WIDTH, self.group * self.phase, 1)
         self.head = nn.Conv1d(LOCAL, len(LABELS), 1)
 
     def forward(self, frames, lengths, mode="float"):
@@ -83,17 +83,18 @@ class Recognizer(nn.Module):
         fine = layer(self.stem, frames / 128, input_unit=128) * valid
         fine = (fine + layer(self.local, fine)).clamp(0, 127 / ACTIVATION_UNIT) * valid
         coarse_count = (frames_count + self.group - 1) // self.group
-        grouped = F.pad(fine.transpose(1, 2), (0, 0, 0, coarse_count * self.group - frames_count))
-        grouped = grouped.reshape(batch, coarse_count, self.group * LOCAL).transpose(1, 2)
+        grouped = F.pad(fine[:, :self.phase].transpose(1, 2), (0, 0, 0, coarse_count * self.group - frames_count))
+        grouped = grouped.reshape(batch, coarse_count, self.group * self.phase).transpose(1, 2)
         coarse_valid = valid[:, :, ::self.group]
         coarse = layer(self.down, grouped) * coarse_valid
         for depthwise, mixer in self.temporal:
             context = layer(depthwise, coarse) * coarse_valid
             coarse = (coarse + layer(mixer, context)).clamp(0, 127 / ACTIVATION_UNIT) * coarse_valid
-        expanded = layer(self.up, coarse).transpose(1, 2).reshape(batch, -1, LOCAL)
-        decoded = (fine + expanded[:, :frames_count, :].transpose(1, 2)).clamp(
+        expanded = layer(self.up, coarse).transpose(1, 2).reshape(batch, -1, self.phase)
+        decoded = (fine[:, :self.phase] + expanded[:, :frames_count, :].transpose(1, 2)).clamp(
             0, 127 / ACTIVATION_UNIT
         )
+        decoded = torch.cat((decoded, fine[:, self.phase:]), dim=1)
         return layer(self.head, decoded, output_unit=LOGIT_UNIT, activate=False)
 
     @torch.no_grad()
