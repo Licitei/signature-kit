@@ -1080,8 +1080,11 @@ impl<const TRACK: bool> Interpreter<'_, '_, TRACK> {
                     self.marked_content(code, &operands, &mut marked, max_stack);
                 }
                 _ => {
-                    if !self.state_operator::<SCAN>(code, &operands, scope, state, matrices)
-                        && !self.path_operator(code, &operands, state, &mut path)
+                    let text_show = !cfg!(target_arch = "wasm32")
+                        && matches!(code, OP_TJ | OP_TJ_ARRAY | OP_QUOTE | OP_DQUOTE | OP_DO);
+                    if text_show
+                        || (!self.state_operator::<SCAN>(code, &operands, scope, state, matrices)
+                            && !self.path_operator(code, &operands, state, &mut path))
                     {
                         let shown = ShowContext {
                             operands: &operands,

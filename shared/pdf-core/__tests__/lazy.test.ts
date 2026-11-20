@@ -82,7 +82,7 @@ describe("PdfCore byte-range documents", () => {
               expect(stats.bytesRead).toBe(pdf.byteLength);
             }
             let previousEnd = 0;
-            for (const [offset, length] of reads.toSorted(([left], [right]) => left - right)) {
+            for (const [offset, length] of reads.sort(([left], [right]) => left - right)) {
               expect(offset).toBeGreaterThanOrEqual(previousEnd);
               previousEnd = offset + length;
             }
