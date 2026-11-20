@@ -480,10 +480,19 @@ export const PdfCoreLazyOptionsSchema = Schema.Struct({
   ),
 });
 export type PdfCoreLazyOptions = (typeof PdfCoreLazyOptionsSchema)["Type"];
+export const PdfCoreLazyFallbackReasonSchema = Schema.Literals([
+  "header",
+  "startxref",
+  "cross-reference",
+  "range-budget",
+  "document-validation",
+  "document-repair",
+]);
 export const PdfCoreLazyStatsSchema = Schema.Struct({
   bytesRead: Schema.Int,
   rounds: Schema.Int,
   strategy: Schema.Literals(["lazy", "fallback"]),
+  fallbackReason: Schema.optional(PdfCoreLazyFallbackReasonSchema),
 });
 export type PdfCoreLazyStats = (typeof PdfCoreLazyStatsSchema)["Type"];
 

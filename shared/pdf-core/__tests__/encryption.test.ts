@@ -86,7 +86,7 @@ const xrefRow = (type: number, offset: number, index: number): Buffer => {
   return row;
 };
 
-const encryptedObjectStreamPdf = (): Buffer => {
+const encryptedObjectStreamPdf = (hybrid = false): Buffer => {
   const uri = "(https://example.test)";
   const filters = " /Filter /FlateDecode";
   const members = aes256(deflateSync(`4 0 ${link(uri)}`));
@@ -111,7 +111,17 @@ const encryptedObjectStreamPdf = (): Buffer => {
     9,
     stream(xref, ` /Type /XRef /Size 10 /Root 1 0 R /W [1 4 2]${encryptedTrailer}${filters}`),
   );
-  return Buffer.from(`${body}startxref\n${startxref}\n%%EOF\n`, "latin1");
+  if (!hybrid) return Buffer.from(`${body}startxref\n${startxref}\n%%EOF\n`, "latin1");
+  const classicXref = body.length;
+  body += "xref\n0 10\n0000000000 65535 f \n";
+  for (const row of [...rows, xrefRow(1, startxref, 0)]) {
+    body +=
+      row.readUInt8() === 1
+        ? `${String(row.readUInt32BE(1)).padStart(10, "0")} 00000 n \n`
+        : "0000000000 00000 f \n";
+  }
+  body += `trailer\n<< /Size 10 /Root 1 0 R /XRefStm ${startxref}${encryptedTrailer} >>\n`;
+  return Buffer.from(`${body}startxref\n${classicXref}\n%%EOF\n`, "latin1");
 };
 
 const vectors = {
@@ -217,8 +227,10 @@ describe("PdfCore encrypted PDFs", () => {
     );
   }
 
-  it.effect("extracts lazily from an encrypted object stream", () =>
-    Effect.scoped(compareLazy(encryptedObjectStreamPdf())).pipe(Effect.provide(layer)),
+  it.effect.each([false, true])(
+    "extracts lazily from an encrypted object stream (hybrid: %s)",
+    (hybrid) =>
+      Effect.scoped(compareLazy(encryptedObjectStreamPdf(hybrid))).pipe(Effect.provide(layer)),
   );
 
   it.effect("reads both legacy version and revision combinations", () =>

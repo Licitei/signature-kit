@@ -22,6 +22,7 @@ import {
   PdfCoreMergeSourcesSchema,
   PdfCoreOperationValue,
   PDF_CORE_MAX_LAZY_BYTES,
+  PdfCoreLazyFallbackReasonSchema,
   PdfCoreLazyOptionsSchema,
   PdfCoreRangeSizeSchema,
   PdfCoreRenderOptionsSchema,
@@ -1923,8 +1924,20 @@ export const makePdfCore = (
             }
             const payload = result.length - RESULT_HEADER_BYTES;
             const status = payload >= 4 ? view.getUint32(RESULT_HEADER_BYTES, true) : -1;
-            if ((status === 0 || status === 2) && payload === 4) {
+            if (status === 0 && payload === 4) {
               return { status, ranges: [] };
+            }
+            if (status === 2 && (payload === 4 || payload === 8)) {
+              const fallbackReason =
+                payload === 4
+                  ? "document-validation"
+                  : PdfCoreLazyFallbackReasonSchema.literals[
+                      view.getUint32(RESULT_HEADER_BYTES + 4, true) - 1
+                    ];
+              if (fallbackReason === undefined) {
+                return yield* Effect.die("The PDF core returned an invalid lazy fallback reason.");
+              }
+              return { status, ranges: [], fallbackReason };
             }
             if (status !== 1 || payload < 12 || (payload - 4) % 8 !== 0) {
               return yield* Effect.die("The PDF core returned an invalid lazy plan.");
@@ -2025,6 +2038,7 @@ export const makePdfCore = (
                 yield* Ref.update(state, (current): LazyState => ({
                   ...current,
                   strategy: "fallback",
+                  fallbackReason: next.fallbackReason ?? "document-repair",
                 }));
                 core.pdf_core_lazy_close(handle);
               }
@@ -2047,7 +2061,7 @@ export const makePdfCore = (
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
         stats: Ref.get(state).pipe(
-          Effect.map(({ bytesRead, rounds, strategy }) => ({ bytesRead, rounds, strategy })),
+          Effect.map(({ closed: _closed, fallback: _fallback, ...stats }) => stats),
         ),
       };
     });

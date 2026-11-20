@@ -758,9 +758,11 @@ impl<'data> Document<'data> {
         let end = start.saturating_add(window.len());
         let parsed = parse_indirect_object(window, 0, self.limits.max_nesting, resolve);
         if let Ok(object) = &parsed
-            && (object.end < window.len() || end == ceiling)
+            && (object.end < window.len() || end == sparse.source.size())
             && object_terminated(window, object.end)
-            && (!matches!(object.object, Object::Stream(_)) || end == ceiling)
+            && (!matches!(object.object, Object::Stream(_))
+                || object.stream_length_verified
+                || end == sparse.source.size())
         {
             return parsed.map(Some);
         }
@@ -864,23 +866,15 @@ impl<'data> Document<'data> {
     fn read_stream_section(&self, pos: usize, complete: bool) -> Outcome<Section> {
         let parsed = parse_indirect_object(self.bytes, pos, self.limits.max_nesting, &|_| None)?;
         if !complete
-            && (parsed.end >= self.bytes.len() || !object_terminated(self.bytes, parsed.end))
+            && (parsed.end >= self.bytes.len()
+                || !object_terminated(self.bytes, parsed.end)
+                || !parsed.stream_length_verified)
         {
             return Err(Failure::invalid("incomplete xref stream"));
         }
         let Object::Stream(stream) = parsed.object else {
             return Err(Failure::invalid("xref stream expected"));
         };
-        if !complete
-            && stream
-                .dict
-                .get(b"Length")
-                .and_then(Object::as_integer)
-                .and_then(|value| usize::try_from(value).ok())
-                .is_some_and(|length| stream.data.start.saturating_add(length) >= self.bytes.len())
-        {
-            return Err(Failure::invalid("incomplete xref stream data"));
-        }
         let widths = stream
             .dict
             .get(b"W")
@@ -2825,7 +2819,7 @@ mod tests {
         for _ in 0_i32..64_i32 {
             match lazy.plan(Some(&[0]), PageProfile::Extract, &Limits::default()) {
                 Plan::Ready => return Some(lazy),
-                Plan::Fallback => return None,
+                Plan::Fallback(_) => return None,
                 Plan::Need(ranges) => {
                     for range in ranges {
                         let offset = range.start;

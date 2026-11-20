@@ -19,9 +19,19 @@ const MIN_PROBE: usize = 128;
 
 #[derive(Debug)]
 pub(crate) enum Plan {
-    Fallback,
+    Fallback(FallbackReason),
     Need(Vec<Range<usize>>),
     Ready,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(u32)]
+pub(crate) enum FallbackReason {
+    Header = 1,
+    StartXref = 2,
+    CrossReference = 3,
+    RangeBudget = 4,
+    DocumentValidation = 5,
 }
 
 #[derive(Debug)]
@@ -132,7 +142,8 @@ impl Sparse {
         {
             return Plan::Need(requests);
         }
-        self.ranges(&wanted, 0).map_or(Plan::Fallback, Plan::Need)
+        self.ranges(&wanted, 0)
+            .map_or(Plan::Fallback(FallbackReason::RangeBudget), Plan::Need)
     }
 
     fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Option<Vec<Range<usize>>> {
@@ -185,6 +196,10 @@ impl Sparse {
 
     pub(crate) fn request(&self, start: usize, end: usize) {
         self.missing.borrow_mut().push(start..end);
+    }
+
+    pub(crate) const fn size(&self) -> usize {
+        self.size
     }
 
     fn window(&self, start: usize, end: usize) -> &[u8] {
@@ -392,18 +407,21 @@ impl Lazy {
         }
         let head = sparse.window(0, head_end);
         if !head.starts_with(b"%PDF-") {
-            return Some(Plan::Fallback);
+            return Some(Plan::Fallback(FallbackReason::Header));
         }
         let tail = sparse.window(tail_start, sparse.size);
         self.next_section = find_startxref(tail);
         if self.next_section.is_none() && tail.len() < STARTXREF_PROBE.min(sparse.size) {
-            return Some(sparse.plan_ranges(
-                iter::once(sparse.size.saturating_sub(STARTXREF_PROBE)..sparse.size).collect(),
-                false,
-            ));
+            let range = sparse.size.saturating_sub(STARTXREF_PROBE)..sparse.size;
+            let Some(expanded) = sparse.bytes(range.clone()) else {
+                return Some(sparse.plan_ranges(iter::once(range).collect(), false));
+            };
+            self.next_section = find_startxref(expanded);
         }
         self.linearized = linearized_first_page(head, sparse.size, limits);
-        self.next_section.is_none().then_some(Plan::Fallback)
+        self.next_section
+            .is_none()
+            .then_some(Plan::Fallback(FallbackReason::StartXref))
     }
 
     fn hinted_end(&self) -> Option<usize> {
@@ -432,7 +450,7 @@ impl Lazy {
                 || self.index.visited.len() >= MAX_SECTIONS
                 || self.index.visited.contains(&offset)
             {
-                return Some(Plan::Fallback);
+                return Some(Plan::Fallback(FallbackReason::CrossReference));
             }
             let window = self.sparse.window(offset, size);
             let complete = offset.saturating_add(window.len()) == size;
@@ -445,7 +463,7 @@ impl Lazy {
                         && !keyword_at(window, start, b"xref")
                         && parse_object_header(window, start).is_none())
                 {
-                    return Some(Plan::Fallback);
+                    return Some(Plan::Fallback(FallbackReason::CrossReference));
                 }
                 let tail_bytes = size.saturating_sub(offset);
                 let current = if tail_bytes <= self.sparse.tuning.probe.saturating_mul(4) {
@@ -479,7 +497,7 @@ impl Lazy {
             self.accept_section(section, bound);
         }
         if self.index.table.is_empty() {
-            return Some(Plan::Fallback);
+            return Some(Plan::Fallback(FallbackReason::CrossReference));
         }
         self.sparse.offsets.sort_unstable();
         self.sparse.offsets.dedup();
@@ -562,7 +580,7 @@ impl Lazy {
         }
         self.profile = profile;
         if self.sparse.size > limits.max_pdf_bytes {
-            return Plan::Fallback;
+            return Plan::Fallback(FallbackReason::DocumentValidation);
         }
         let prefetch = profile != (PageProfile::Inspect { text: false })
             && indexes
@@ -605,7 +623,7 @@ impl Lazy {
         if result.is_ok() && self.frontier.is_some() {
             Plan::Ready
         } else {
-            Plan::Fallback
+            Plan::Fallback(FallbackReason::DocumentValidation)
         }
     }
 

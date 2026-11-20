@@ -1149,12 +1149,16 @@ pub(crate) extern "C" fn pdf_core_lazy_open(
     if size > Limits::default().max_pdf_bytes {
         return 0;
     }
-    NEXT_LAZY_HANDLE.with(|next| {
-        let handle = next.get();
-        if handle != 0 {
-            next.set(handle.checked_add(1).unwrap_or(0));
-            LAZY_DOCUMENTS.with(|documents| {
-                documents.borrow_mut().push((
+    LAZY_DOCUMENTS.with(|documents| {
+        let mut all = documents.borrow_mut();
+        if all.len() >= 1024 {
+            return 0;
+        }
+        NEXT_LAZY_HANDLE.with(|next| {
+            let handle = next.get();
+            if handle != 0 {
+                next.set(handle.checked_add(1).unwrap_or(0));
+                all.push((
                     handle,
                     Lazy::new(
                         size,
@@ -1165,9 +1169,9 @@ pub(crate) extern "C" fn pdf_core_lazy_open(
                         },
                     ),
                 ));
-            });
-        }
-        handle
+            }
+            handle
+        })
     })
 }
 
@@ -1207,11 +1211,18 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_feed(
     })
 }
 
+#[expect(
+    clippy::as_conversions,
+    reason = "fallback reason discriminants are Wasm ABI codes"
+)]
 fn encode_plan(plan: Plan) -> Outcome<Writer> {
-    let mut out = Writer::with_capacity(4);
+    let mut out = Writer::with_capacity(8);
     match plan {
         Plan::Ready => out.u32(0),
-        Plan::Fallback => out.u32(2),
+        Plan::Fallback(reason) => {
+            out.u32(2);
+            out.u32(reason as u32);
+        }
         Plan::Need(ranges) => {
             out.u32(1);
             for range in ranges {

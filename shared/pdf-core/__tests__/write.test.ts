@@ -5,26 +5,10 @@ import { Effect, Layer, Result } from "effect";
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
 import { PdfCore } from "../dist/pdf-core.js";
+import { buildPdf, stream } from "./pdf-fixture.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const encoder = new TextEncoder();
-
-const buildPdf = (objects: ReadonlyArray<string>): Uint8Array => {
-  let pdf = "%PDF-1.7\n";
-  const offsets: Array<number> = [];
-  objects.forEach((body, index) => {
-    offsets.push(pdf.length);
-    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
-  });
-  const xref = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  pdf += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return encoder.encode(pdf);
-};
-
-const stream = (content: string): string =>
-  `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
 
 const twoPages = (): Uint8Array =>
   buildPdf([

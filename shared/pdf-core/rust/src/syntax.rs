@@ -805,6 +805,7 @@ pub(crate) struct IndirectObject {
     pub end: usize,
     pub obj_ref: ObjRef,
     pub object: Object,
+    pub stream_length_verified: bool,
 }
 
 #[inline]
@@ -1021,23 +1022,23 @@ fn end_marker_follows(data: &[u8], pos: usize) -> bool {
     keyword_at(data, cursor, b"endstream") || keyword_at(data, cursor, b"endobj")
 }
 
-fn stream_range(data: &[u8], start: usize, declared: Option<usize>) -> Range<usize> {
+fn stream_range(data: &[u8], start: usize, declared: Option<usize>) -> (Range<usize>, bool) {
     let declared_end = declared
         .and_then(|length| start.checked_add(length))
         .filter(|&end| end <= data.len());
     if let Some(end) = declared_end
         && end_marker_follows(data, end)
     {
-        return start..end;
+        return (start..end, true);
     }
     if let Some(marker) = find_bytes(data, start, b"endstream") {
-        return start..trim_stream_end(data, start, marker);
+        return (start..trim_stream_end(data, start, marker), false);
     }
     if let Some(end) = declared_end {
-        return start..end;
+        return (start..end, false);
     }
     let end = find_bytes(data, start, b"endobj").unwrap_or(data.len());
-    start..trim_stream_end(data, start, end)
+    (start..trim_stream_end(data, start, end), false)
 }
 
 fn object_tail(data: &[u8], from: usize) -> usize {
@@ -1049,6 +1050,16 @@ fn object_tail(data: &[u8], from: usize) -> usize {
         pos = pos.saturating_add(6);
     }
     pos
+}
+
+fn stream_length(dict: &Dict, resolve: &dyn Fn(ObjRef) -> Option<i64>) -> Option<usize> {
+    let value = dict.get(b"Length")?;
+    let length = if let Object::Ref(reference) = value {
+        resolve(*reference)?
+    } else {
+        value.as_integer()?
+    };
+    usize::try_from(length).ok()
 }
 
 #[inline(never)]
@@ -1071,15 +1082,9 @@ pub(crate) fn parse_indirect_object(
     let keyword = skip_whitespace_at(data, after);
     let has_stream = matches!(object, Object::Dict(_)) && keyword_at(data, keyword, b"stream");
     if has_stream && let Object::Dict(dict) = object {
-        let declared = match dict.get(b"Length") {
-            Some(Object::Integer(length)) => usize::try_from(*length).ok(),
-            Some(Object::Ref(reference)) => {
-                resolve_length(*reference).and_then(|length| usize::try_from(length).ok())
-            }
-            _ => None,
-        };
+        let declared = stream_length(&dict, resolve_length);
         let start = stream_start(data, keyword.saturating_add(6));
-        let range = stream_range(data, start, declared);
+        let (range, stream_length_verified) = stream_range(data, start, declared);
         let end = object_tail(data, range.end);
         return Ok(IndirectObject {
             obj_ref,
@@ -1089,12 +1094,14 @@ pub(crate) fn parse_indirect_object(
                 decrypted: None,
             }),
             end,
+            stream_length_verified,
         });
     }
     Ok(IndirectObject {
         obj_ref,
         object,
         end: object_tail(data, after),
+        stream_length_verified: false,
     })
 }
 
