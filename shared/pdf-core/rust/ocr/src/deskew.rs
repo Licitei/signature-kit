@@ -141,15 +141,18 @@ fn estimate(page: &Bits) -> i32 {
     let columns = usize::try_from(page.width.div_ceil(SAMPLE_X)).unwrap_or_default();
     let row_step = usize::try_from(SAMPLE_Y).unwrap_or(1);
     let mut bins = Vec::with_capacity(columns.saturating_add(1));
-    let mut samples = Vec::new();
+    let mut samples = vec![Vec::new(); columns];
+    let mut sample_count = 0_usize;
     for yy in (0..page.height).step_by(row_step) {
         ink_counts(page.row(yy), &mut bins);
-        samples.extend(bins.iter().enumerate().filter_map(|(index, &count)| {
-            let xx = u32::try_from(index).ok()? * SAMPLE_X + (SAMPLE_X >> 1_u32);
-            (count > 0).then_some((xx, yy, count))
-        }));
+        for (column, &count) in samples.iter_mut().zip(&bins) {
+            if count > 0 {
+                column.push((to_i32(yy), count));
+                sample_count += 1;
+            }
+        }
     }
-    if samples.len() < 30 {
+    if sample_count < 30 {
         return 0;
     }
     let height = usize::try_from(page.height).unwrap_or_default();
@@ -157,12 +160,16 @@ fn estimate(page: &Bits) -> i32 {
     let margin = i32::try_from(MARGIN).unwrap_or_default();
     let mut evaluate = |slope| {
         profile.fill(0);
-        for &(xx, yy, weight) in &samples {
-            let row = to_i32(yy) + margin - offset(xx, page.width, slope);
-            if let Ok(index) = usize::try_from(row)
-                && let Some(slot) = profile.get_mut(index)
-            {
-                *slot += weight;
+        for (column_index, column) in samples.iter().enumerate() {
+            let xx =
+                u32::try_from(column_index).unwrap_or_default() * SAMPLE_X + (SAMPLE_X >> 1_u32);
+            let shift = margin - offset(xx, page.width, slope);
+            for &(yy, weight) in column {
+                if let Ok(row_index) = usize::try_from(yy + shift)
+                    && let Some(slot) = profile.get_mut(row_index)
+                {
+                    *slot += weight;
+                }
             }
         }
         profile.windows(3).fold(0_u64, |score, neighborhood| {
@@ -267,7 +274,12 @@ pub(crate) fn straighten(
         let (rise_x, fall_x) = edge_energy(&vertical);
         let horizontal_score = axis_score(&horizontal, rise_y, fall_y);
         let vertical_score = axis_score(&vertical, rise_x, fall_x);
-        if vertical_score > horizontal_score * 1.15_f64 {
+        let sideways_margin = if rise_x.max(fall_x) > rise_x.min(fall_x) * 1.20_f64 {
+            1.15_f64
+        } else {
+            1.30_f64
+        };
+        if vertical_score > horizontal_score * sideways_margin {
             transform.quarter_turns = if rise_x > fall_x * 1.2_f64 { 3 } else { 1 };
         } else if rise_y > fall_y * 1.2_f64 {
             transform.quarter_turns = 2;

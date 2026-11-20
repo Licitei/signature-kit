@@ -240,3 +240,102 @@ for labels in pdf-core poppler; do
     --dpi 150 --preset clean --seed d3 --output "$out/labels-$labels"
 done
 ```
+
+### Pipeline round 2
+
+The starting point is `1f4e0e1`. On the 20 real scans, the PSM 3 boxes
+flagged 337 predictions without reciprocal overlap, 68 splits, 47 merges,
+30 misses, and eight order inversions. Overlap is a proxy for segmentation
+on these pages. In the five full-transcript dev pages, 46 of the 104
+predictions without overlap generated nonempty PSM 7 output. Among the
+77 candidate boxes with IoU at least 0.5, 18 had more than two pixels of
+estimated shear across the crop. Two covered less than 75% of the reference
+height. This put graphic fragments and line grouping ahead of crop skew
+and tightness in the tuning pass.
+
+The front end now uses a darker threshold at 150 DPI and above, keeps
+the previous threshold for small rasters and training crops, and requires
+stronger evidence to rotate a page when the vertical projection has
+balanced edges. Small marks can attach across the baseline and consecutive
+leader dots can extend the crop. Horizontal whitespace separates headings
+and footers from the body. Column cuts require overlapping text of
+substantial width on both sides. Vertical rules can split neighboring
+words even when the grid detector has too few intersections to recover
+a full table.
+
+The engine reads ruled tables by row, then left to right within each row.
+PDF-core's native table renderer also iterates rows, using spaces for
+single-line cells and newlines between multiline cells. Poppler TSV
+sometimes enumerates an entire column first. On a clean validation page
+from the Seropédica cafeteria procurement, it also labels widely
+justified words in one cell as separate lines. Those differences contribute
+to the geometry and order scores. The renewed eight-page ground-truth
+check reproduced 1,951 of 1,979 words in the hybrid native mode. Synthetic
+labels retain Poppler word and line membership.
+
+`--rectify` measures the effect of recognizing crops in the engine's
+deskewed coordinate system. It rotates the source grayscale raster by the
+CLI layout's `quarterTurns`, applies its shear with bilinear sampling, and
+samples a small DPI-scaled margin before adding the usual white padding.
+The geometry metrics still use source boxes and the PSM 3 control still
+uses the original page. The default run continues to use axis-aligned
+source crops for direct comparison with round 1.
+
+| Candidate measured on dev                                       | Real PSM 7 CER | Reviewed real matches / 186 | Clean synthetic validation matches / predictions | Calibrated synthetic validation matches / predictions |
+| --------------------------------------------------------------- | -------------: | --------------------------: | -----------------------------------------------: | ----------------------------------------------------: |
+| Round 1                                                         |         12.00% |                         181 |                                        245 / 532 |                                             253 / 538 |
+| Deskew work hoisted out of the sample loop                      |         12.00% |                         181 |                                        245 / 532 |                                             253 / 538 |
+| Darker threshold at all DPIs                                    |          8.63% |                         175 |                                        247 / 524 |                                             215 / 536 |
+| Horizontal bands and wider column evidence                      |          8.63% |                         175 |                                        244 / 508 |                                             212 / 520 |
+| Intermediate threshold and mark attachment                      |         11.83% |                         175 |                                        249 / 523 |                                             251 / 516 |
+| DPI-gated threshold, orientation guard, marks and partial rules |          9.02% |                         180 |                                        275 / 592 |                                             271 / 626 |
+
+The first timing experiment produced identical layout JSON for all 16
+300-DPI test pages. The darker-threshold experiment incorrectly rotated one
+calibrated validation table page. The final guard kept that page upright.
+The final calibrated validation candidate recovered 18 line matches and
+emitted 88 more boxes than round 1.
+
+| Real PSM 3 proxy geometry |         Round 1 |         Round 2 |
+| ------------------------- | --------------: | --------------: |
+| Predictions               |             789 |             656 |
+| Without overlap           |             337 |             207 |
+| Missed                    |              30 |              26 |
+| Split                     |              68 |              54 |
+| Merged                    |              47 |              29 |
+| Order inversions          |               8 |               5 |
+| IoU precision / recall    | 43.09% / 75.39% | 54.73% / 79.60% |
+
+| Test pages             | Whole-page PSM 3 CER / WER | Round 1 PSM 7 CER / WER | Round 2 PSM 7 CER / WER | Round 1 → 2 synthetic precision / recall |
+| ---------------------- | -------------------------: | ----------------------: | ----------------------: | ---------------------------------------: |
+| 20 real                |            11.15% / 18.74% |         21.96% / 39.63% |         19.72% / 35.57% |                                          |
+| 15 held-out real       |            12.24% / 20.34% |         25.17% / 43.55% |         23.18% / 40.67% |                                          |
+| 8 clean synthetic      |            10.92% / 14.31% |         17.23% / 22.85% |         16.88% / 22.20% |        80.36% / 88.82% → 83.23% / 89.80% |
+| 8 calibrated synthetic |            10.74% / 13.98% |         12.53% / 17.71% |         12.17% / 16.47% |        90.38% / 91.12% → 94.03% / 90.62% |
+
+The held-out real CER remains 10.94 points above the page control. Clean
+synthetic precision and recall improved. Calibrated synthetic precision
+improved and recall fell by 0.50 points. Both synthetic sets remain short
+of 97% precision and 98% recall.
+
+Five interleaved layout trials per page on the 300-DPI test set gave mean
+and maximum page medians of 19.60 / 27.74 ms → 17.64 / 24.20 ms on clean
+pages and 22.90 / 37.79 ms → 20.14 / 31.37 ms on calibrated pages.
+The measurements exclude image decode. The round 1 rerun was below 50 ms
+on this host, so the earlier 56 ms maximum should be interpreted alongside
+the fresh baseline.
+
+With `--rectify`, round 2 reached 19.13% CER / 33.06% WER on all 20
+real pages and 22.81% CER / 38.23% WER on the 15 held-out pages. The crop
+change shaved 0.37 CER points on the held-out set.
+
+Build both CLIs with `cargo build --release -p signature-kit-pdf-core-ocr
+--bin pdf-core-ocr` from `shared/pdf-core/rust` under the resource
+wrapper. The command loop above applies to round 2 with `baseline` built
+from `1f4e0e1`. The rectified comparison uses the same real dataset and
+the same candidate binary.
+
+```bash
+"$resource" --cpu 2 --mem 4G python "$bench/segment-pages.py" \
+  "$out/real" "$out/real-rectified.json" --segmenter "$out/candidate" --rectify
+```
