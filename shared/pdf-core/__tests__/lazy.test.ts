@@ -137,9 +137,9 @@ describe("PdfCore byte-range documents", () => {
             read: (offset, length) =>
               Effect.gen(function* () {
                 expect(length).toBeLessThanOrEqual(128);
-                expect(coverage.subarray(offset, offset + length).every((count) => count === 0)).toBe(
-                  true,
-                );
+                expect(
+                  coverage.subarray(offset, offset + length).every((count) => count === 0),
+                ).toBe(true);
                 coverage.fill(1, offset, offset + length);
                 return yield* source.read(offset, length);
               }),

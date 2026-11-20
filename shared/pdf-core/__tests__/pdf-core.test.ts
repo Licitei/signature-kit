@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import binaryen from "binaryen";
 import { Effect, FileSystem, Layer, Result } from "effect";
 
 import { PdfCoreError, PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore, makePdfCore } from "../dist/pdf-core.js";
+import { PdfCore, makePdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
 import {
   CORPUS_FIXTURE_NAMES,
   LINK_FIXTURE_URIS,
@@ -127,6 +128,76 @@ const textItems = (page: { text: string; offsets: Uint32Array; styles: Uint8Arra
   }));
 
 describe("PdfCore", () => {
+  it.effect("recovers the service after a WASM trap", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const instrumented = yield* Effect.acquireRelease(
+          Effect.sync(() => binaryen.readBinary(readFileSync(wasmUrl))),
+          (module) => Effect.sync(() => module.dispose()),
+        );
+        const i32 = binaryen.i32;
+        const name = "pdf_core_text";
+        const original = binaryen.getExportInfo(instrumented.getExport(name)).value;
+        instrumented.addGlobal("trapped", i32, true, instrumented.i32.const(0));
+        instrumented.addFunction(
+          "trap_text",
+          binaryen.createType([i32, i32, i32, i32, i32]),
+          i32,
+          [],
+          instrumented.block(
+            null,
+            [
+              instrumented.if(
+                instrumented.i32.or(
+                  instrumented.global.get("trapped", i32),
+                  instrumented.i32.eq(instrumented.local.get(1, i32), instrumented.i32.const(1)),
+                ),
+                instrumented.block(null, [
+                  instrumented.global.set("trapped", instrumented.i32.const(1)),
+                  instrumented.unreachable(),
+                ]),
+              ),
+              instrumented.call(
+                original,
+                [0, 1, 2, 3, 4].map((index) => instrumented.local.get(index, i32)),
+                i32,
+              ),
+            ],
+            i32,
+          ),
+        );
+        instrumented.removeExport(name);
+        instrumented.addFunctionExport("trap_text", name);
+        const module = yield* Effect.promise(() =>
+          WebAssembly.compile(Uint8Array.from(instrumented.emitBinary())),
+        );
+        const core = yield* makePdfCore(module);
+        const pdf = readFixture("links.pdf");
+        const options = { pageIndexes: [0] };
+        const expected = yield* core.text(pdf, options);
+        const oldDocument = yield* core.openLazy(pdfCoreBytesSource(pdf));
+        expect(yield* oldDocument.text(options)).toStrictEqual(expected);
+
+        const failure = yield* Effect.flip(core.text(Uint8Array.of(0)));
+        expect(failure.code).toBe(PdfCoreErrorCodeValue.wasmExecutionFailed);
+        expect((yield* Effect.flip(oldDocument.text(options))).code).toBe(
+          PdfCoreErrorCodeValue.documentClosed,
+        );
+
+        const reads = yield* Effect.all(
+          [
+            core.text(pdf, options),
+            core
+              .openLazy(pdfCoreBytesSource(pdf))
+              .pipe(Effect.flatMap((document) => document.text(options))),
+          ],
+          { concurrency: 2 },
+        );
+        expect(reads).toStrictEqual([expected, expected]);
+      }),
+    ),
+  );
+
   it.effect("inspects page geometry, links and text of the corpus", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;

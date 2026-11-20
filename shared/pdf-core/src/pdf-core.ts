@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match, Ref, Schema, Semaphore } from "effect";
+import { Context, Effect, Layer, Match, Ref, Schema, Semaphore, SynchronizedRef } from "effect";
 import type { Scope } from "effect";
 
 import {
@@ -460,9 +460,7 @@ const lazyProfiles = {
   [PdfCoreOperationValue.pageImages]: 4,
 };
 
-export const makePdfCore = (
-  module: WebAssembly.Module,
-): Effect.Effect<PdfCoreService, PdfCoreError> =>
+const makeRuntime = (module: WebAssembly.Module) =>
   Effect.gen(function* () {
     const instance = yield* Effect.tryPromise({
       try: () => WebAssembly.instantiate(module, {}),
@@ -486,14 +484,43 @@ export const makePdfCore = (
       ),
     );
 
+    let retired = false;
+    const invoke = <A>(operation: PdfCoreOperation, call: () => A) =>
+      Effect.suspend(() =>
+        retired
+          ? Effect.fail(
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmExecutionFailed,
+                operation,
+                reason: "The PDF core WebAssembly instance was retired after a trap.",
+              }),
+            )
+          : Effect.try({
+              try: call,
+              catch: () => {
+                retired = true;
+                return new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.wasmExecutionFailed,
+                  operation,
+                  reason: "The PDF core WebAssembly operation trapped.",
+                });
+              },
+            }),
+      );
+    const release = (operation: PdfCoreOperation, call: () => void) =>
+      Effect.suspend(() => (retired ? Effect.void : invoke(operation, call).pipe(Effect.orDie)));
+
     const allocate = (
       operation: PdfCoreOperation,
       length: number,
     ): Effect.Effect<Allocation, PdfCoreError, Scope.Scope> =>
       Effect.acquireRelease(
-        Effect.suspend(() => {
-          const pointer = length > MAX_UINT32 ? 0 : core.pdf_core_alloc(length) >>> 0;
-          return pointer === 0
+        Effect.gen(function* () {
+          const pointer =
+            length > MAX_UINT32
+              ? 0
+              : yield* invoke(operation, () => core.pdf_core_alloc(length) >>> 0);
+          return yield* pointer === 0
             ? Effect.fail(
                 new PdfCoreError({
                   code: PdfCoreErrorCodeValue.limitExceeded,
@@ -504,7 +531,7 @@ export const makePdfCore = (
             : Effect.succeed({ pointer, length });
         }),
         (allocation) =>
-          Effect.sync(() => core.pdf_core_free(allocation.pointer, allocation.length)),
+          release(operation, () => core.pdf_core_free(allocation.pointer, allocation.length)),
       );
 
     const readBlock = <A>(
@@ -524,39 +551,10 @@ export const makePdfCore = (
           );
           new Uint8Array(core.memory.buffer, input.pointer, pdf.byteLength).set(pdf);
           new Uint32Array(core.memory.buffer, pages.pointer, pageIndexes.length).set(pageIndexes);
-          const result = yield* Effect.acquireRelease(
-            Effect.suspend(() => {
-              const pointer =
-                entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length) >>>
-                0;
-              if (pointer === 0) {
-                return Effect.fail(
-                  new PdfCoreError({
-                    code: PdfCoreErrorCodeValue.limitExceeded,
-                    operation,
-                    reason: "The PDF core could not allocate memory for the result.",
-                  }),
-                );
-              }
-              const memory = core.memory.buffer;
-              const length = new DataView(memory).getUint32(pointer, true);
-              return length < RESULT_HEADER_BYTES || pointer + length > memory.byteLength
-                ? Effect.fail(
-                    new PdfCoreError({
-                      code: PdfCoreErrorCodeValue.wasmLoadFailed,
-                      operation,
-                      reason: "The PDF core returned a malformed result block.",
-                    }),
-                  )
-                : Effect.succeed({ pointer, length });
-            }),
-            (block) => Effect.sync(() => core.pdf_core_free(block.pointer, block.length)),
+          const result = yield* resultBlock(operation, () =>
+            entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length),
           );
-          return yield* decode({
-            memory: core.memory.buffer,
-            pointer: result.pointer,
-            length: result.length,
-          });
+          return yield* decode(result);
         }),
       );
 
@@ -578,24 +576,22 @@ export const makePdfCore = (
       guard?: () => PdfCoreError | undefined,
     ): Effect.Effect<ResultBlock, PdfCoreError, Scope.Scope> =>
       Effect.acquireRelease(
-        Effect.suspend(() => {
+        Effect.gen(function* () {
           const blocked = guard?.();
           if (blocked !== undefined) {
-            return Effect.fail(blocked);
+            return yield* blocked;
           }
-          const pointer = call() >>> 0;
+          const pointer = (yield* invoke(operation, call)) >>> 0;
           if (pointer === 0) {
-            return Effect.fail(
-              new PdfCoreError({
-                code: PdfCoreErrorCodeValue.limitExceeded,
-                operation,
-                reason: "The PDF core could not allocate memory for the result.",
-              }),
-            );
+            return yield* new PdfCoreError({
+              code: PdfCoreErrorCodeValue.limitExceeded,
+              operation,
+              reason: "The PDF core could not allocate memory for the result.",
+            });
           }
           const memory = core.memory.buffer;
           const length = new DataView(memory).getUint32(pointer, true);
-          return length < RESULT_HEADER_BYTES || pointer + length > memory.byteLength
+          return yield* length < RESULT_HEADER_BYTES || pointer + length > memory.byteLength
             ? Effect.fail(
                 new PdfCoreError({
                   code: PdfCoreErrorCodeValue.wasmLoadFailed,
@@ -605,7 +601,7 @@ export const makePdfCore = (
               )
             : Effect.succeed({ pointer, length });
         }),
-        (block) => Effect.sync(() => core.pdf_core_free(block.pointer, block.length)),
+        (block) => release(operation, () => core.pdf_core_free(block.pointer, block.length)),
       ).pipe(
         Effect.map((block) => ({
           memory: core.memory.buffer,
@@ -1311,8 +1307,11 @@ export const makePdfCore = (
       }
       return yield* Effect.scoped(
         copyIn(PdfCoreOperationValue.revision, pdf).pipe(
-          Effect.map(
-            (input) => core.pdf_core_revision_complete(input.pointer, pdf.byteLength, end) === 1,
+          Effect.flatMap((input) =>
+            invoke(
+              PdfCoreOperationValue.revision,
+              () => core.pdf_core_revision_complete(input.pointer, pdf.byteLength, end) === 1,
+            ),
           ),
         ),
       );
@@ -1788,15 +1787,18 @@ export const makePdfCore = (
         strategy: "lazy",
       });
       const handle = yield* Effect.acquireRelease(
-        Effect.suspend(() => {
-          const opened =
-            core.pdf_core_lazy_open(
-              size,
-              tuning.probeBytes ?? 64 * 1024,
-              tuning.gapBytes ?? 32 * 1024,
-              maxRoundBytes,
-            ) >>> 0;
-          return opened === 0
+        Effect.gen(function* () {
+          const opened = yield* invoke(
+            operation,
+            () =>
+              core.pdf_core_lazy_open(
+                size,
+                tuning.probeBytes ?? 64 * 1024,
+                tuning.gapBytes ?? 32 * 1024,
+                maxRoundBytes,
+              ) >>> 0,
+          );
+          return yield* opened === 0
             ? Effect.fail(
                 new PdfCoreError({
                   code: PdfCoreErrorCodeValue.limitExceeded,
@@ -1810,11 +1812,11 @@ export const makePdfCore = (
           Ref.update(state, (current) => ({
             ...current,
             closed: true,
-          })).pipe(Effect.andThen(Effect.sync(() => core.pdf_core_lazy_close(opened)))),
+          })).pipe(Effect.andThen(release(operation, () => core.pdf_core_lazy_close(opened)))),
       );
 
       const closed = () =>
-        Ref.getUnsafe(state).closed
+        Ref.getUnsafe(state).closed || retired
           ? new PdfCoreError({ code: PdfCoreErrorCodeValue.documentClosed, operation })
           : undefined;
       const ensureOpen = Effect.suspend(() => {
@@ -1867,7 +1869,10 @@ export const makePdfCore = (
                   const bytes = yield* restore(fetchRange(offset, length));
                   const input = yield* copyIn(PdfCoreOperationValue.readRange, bytes);
                   yield* ensureOpen;
-                  if (core.pdf_core_lazy_feed(handle, offset, input.pointer, length) !== 1) {
+                  const accepted = yield* invoke(PdfCoreOperationValue.readRange, () =>
+                    core.pdf_core_lazy_feed(handle, offset, input.pointer, length),
+                  );
+                  if (accepted !== 1) {
                     return yield* Effect.die("The PDF core rejected its own planned byte range.");
                   }
                 }),
@@ -1936,7 +1941,11 @@ export const makePdfCore = (
             const ranges = [];
             let previousEnd = 0;
             let totalBytes = 0;
-            for (let cursor = RESULT_HEADER_BYTES + rangeStart; cursor < result.length; cursor += 8) {
+            for (
+              let cursor = RESULT_HEADER_BYTES + rangeStart;
+              cursor < result.length;
+              cursor += 8
+            ) {
               const offset = view.getUint32(cursor, true);
               const length = view.getUint32(cursor + 4, true);
               if (length === 0 || offset < previousEnd || offset + length > size) {
@@ -1996,7 +2005,9 @@ export const makePdfCore = (
                   Effect.gen(function* () {
                     yield* ensureOpen;
                     const fallback = next.status === 2;
-                    const pointer = fallback ? core.pdf_core_lazy_full_bytes(handle) >>> 0 : 0;
+                    const pointer = fallback
+                      ? yield* invoke(operation, () => core.pdf_core_lazy_full_bytes(handle) >>> 0)
+                      : 0;
                     if (fallback && pointer === 0) {
                       return yield* Effect.die("The PDF core did not retain its full input.");
                     }
@@ -2042,15 +2053,13 @@ export const makePdfCore = (
           runPageDiagnostics(read, options),
         pageImages: (options?: PdfCorePageImagesOptions) => runPageImages(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
-        stats: Ref.get(state).pipe(
-          Effect.map(({ closed: _closed, ...stats }) => stats),
-        ),
+        stats: Ref.get(state).pipe(Effect.map(({ closed: _closed, ...stats }) => stats)),
       };
     });
 
-    return {
+    const service: PdfCoreService = {
       openLazy,
-      wasmMemoryBytes: () => Effect.sync(() => core.memory.buffer.byteLength),
+      wasmMemoryBytes: () => Effect.sync(() => (retired ? 0 : core.memory.buffer.byteLength)),
       inspect,
       text: (pdf, options) => runText(full(pdf), options),
       textPages: (pdf, options) => runTextPages(full(pdf), options),
@@ -2067,6 +2076,47 @@ export const makePdfCore = (
       create,
       fontMetrics,
       pngSize,
+    };
+    return { service, isRetired: () => retired };
+  });
+
+export const makePdfCore = (
+  module: WebAssembly.Module,
+): Effect.Effect<PdfCoreService, PdfCoreError> =>
+  Effect.gen(function* () {
+    const active = yield* SynchronizedRef.make(yield* makeRuntime(module));
+    const runtime = Effect.suspend(() => {
+      const current = SynchronizedRef.getUnsafe(active);
+      return current.isRetired()
+        ? SynchronizedRef.modifyEffect(active, (latest) =>
+            (latest.isRetired() ? makeRuntime(module) : Effect.succeed(latest)).pipe(
+              Effect.map((ready) => [ready, ready]),
+            ),
+          )
+        : Effect.succeed(current);
+    });
+    const use = <A, R>(run: (service: PdfCoreService) => Effect.Effect<A, PdfCoreError, R>) =>
+      Effect.flatMap(runtime, ({ service }) => run(service));
+    return {
+      openLazy: (source, options) => use((core) => core.openLazy(source, options)),
+      wasmMemoryBytes: () =>
+        Effect.suspend(() => SynchronizedRef.getUnsafe(active).service.wasmMemoryBytes()),
+      inspect: (pdf, options) => use((core) => core.inspect(pdf, options)),
+      text: (pdf, options) => use((core) => core.text(pdf, options)),
+      textPages: (pdf, options) => use((core) => core.textPages(pdf, options)),
+      tables: (pdf, options) => use((core) => core.tables(pdf, options)),
+      pageDiagnostics: (pdf, options) => use((core) => core.pageDiagnostics(pdf, options)),
+      pageImages: (pdf, options) => use((core) => core.pageImages(pdf, options)),
+      renderPages: (pdf, options) => use((core) => core.renderPages(pdf, options)),
+      signatures: (pdf, analysis) => use((core) => core.signatures(pdf, analysis)),
+      revisionComplete: (pdf, end) => use((core) => core.revisionComplete(pdf, end)),
+      document: (pdf, options) => use((core) => core.document(pdf, options)),
+      edit: (pdf, operations, options) => use((core) => core.edit(pdf, operations, options)),
+      merge: (sources, options) => use((core) => core.merge(sources, options)),
+      deflate: (data) => use((core) => core.deflate(data)),
+      create: (options) => use((core) => core.create(options)),
+      fontMetrics: (baseFont) => use((core) => core.fontMetrics(baseFont)),
+      pngSize: (png) => use((core) => core.pngSize(png)),
     };
   });
 

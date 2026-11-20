@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.WASM_LOAD_FAILED",
+  "pdfCore.WASM_EXECUTION_FAILED",
   "pdfCore.INVALID_PDF",
   "pdfCore.ENCRYPTED_PDF",
   "pdfCore.LIMIT_EXCEEDED",
@@ -15,6 +16,7 @@ export type PdfCoreErrorCode = (typeof PdfCoreErrorCodeSchema)["Type"];
 
 export const PdfCoreErrorCodeValue = {
   wasmLoadFailed: "pdfCore.WASM_LOAD_FAILED",
+  wasmExecutionFailed: "pdfCore.WASM_EXECUTION_FAILED",
   invalidPdf: "pdfCore.INVALID_PDF",
   encryptedPdf: "pdfCore.ENCRYPTED_PDF",
   limitExceeded: "pdfCore.LIMIT_EXCEEDED",
@@ -36,6 +38,7 @@ export type PdfCoreErrorMessages = (typeof PdfCoreErrorMessagesSchema)["Type"];
 export const pdfCoreErrorMessages = {
   "en-US": {
     "pdfCore.WASM_LOAD_FAILED": "The PDF core WebAssembly module could not be loaded.",
+    "pdfCore.WASM_EXECUTION_FAILED": "The PDF core WebAssembly operation could not complete.",
     "pdfCore.INVALID_PDF": "Invalid PDF document.",
     "pdfCore.ENCRYPTED_PDF": "The operation could not process this encrypted PDF.",
     "pdfCore.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
@@ -47,6 +50,7 @@ export const pdfCoreErrorMessages = {
   },
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
+    "pdfCore.WASM_EXECUTION_FAILED": "A operação WebAssembly do núcleo PDF não pôde ser concluída.",
     "pdfCore.INVALID_PDF": "Documento PDF inválido.",
     "pdfCore.ENCRYPTED_PDF": "A operação não pôde processar este PDF criptografado.",
     "pdfCore.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",

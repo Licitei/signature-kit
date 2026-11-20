@@ -153,37 +153,40 @@ impl Sparse {
     }
 
     fn plan_ranges(&self, mut wanted: Vec<Range<usize>>, read_ahead: bool) -> Plan {
-        wanted.sort_unstable_by_key(|range| range.start);
-        let gap = self
-            .tuning
-            .gap
-            .min(self.tuning.round_bytes.checked_div(4).unwrap_or_default());
-        if read_ahead && gap != 0 {
-            let requests = self.ranges(&wanted, gap);
-            let cached = self
-                .segments
-                .iter()
-                .map(|segment| segment.bytes.len())
-                .sum::<usize>();
-            let budget = self.size.saturating_sub(1).min(
-                self.size
-                    .checked_div(2)
-                    .unwrap_or_default()
-                    .max(MIN_SELECTIVE_BUDGET),
-            );
-            let planned = requests
-                .iter()
-                .fold(cached, |sum, range| sum.saturating_add(range.len()));
-            if !requests.is_empty() && planned <= budget {
-                return Plan::Need(self.round(requests));
-            }
+        if read_ahead && let Some(plan) = self.prefetch(wanted.clone(), true) {
+            return plan;
         }
+        wanted.sort_unstable_by_key(|range| range.start);
         let requests = self.ranges(&wanted, 0);
         if requests.is_empty() {
             Plan::Fallback(FallbackReason::Stalled)
         } else {
             Plan::Need(self.round(requests))
         }
+    }
+
+    fn prefetch(&self, mut wanted: Vec<Range<usize>>, expand: bool) -> Option<Plan> {
+        let gap = self
+            .tuning
+            .gap
+            .min(self.tuning.round_bytes.checked_div(4).unwrap_or_default());
+        wanted.sort_unstable_by_key(|range| range.start);
+        let requests = self.ranges(&wanted, if expand { gap } else { 0 });
+        let cached = self
+            .segments
+            .iter()
+            .map(|segment| segment.bytes.len())
+            .sum::<usize>();
+        let budget = self.size.saturating_sub(1).min(
+            self.size
+                .checked_div(2)
+                .unwrap_or_default()
+                .max(MIN_SELECTIVE_BUDGET),
+        );
+        let planned = requests
+            .iter()
+            .fold(cached, |sum, range| sum.saturating_add(range.len()));
+        (!requests.is_empty() && planned <= budget).then(|| Plan::Need(self.round(requests)))
     }
 
     fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Vec<Range<usize>> {
@@ -520,7 +523,7 @@ impl Lazy {
                 if first && let Some(end) = self.hinted_end() {
                     let mut speculative = wanted.clone();
                     speculative.push(0..end);
-                    if let plan @ Plan::Need(_) = self.sparse.plan_ranges(speculative, false) {
+                    if let Some(plan) = self.sparse.prefetch(speculative, false) {
                         return Some(plan);
                     }
                 }
@@ -624,7 +627,7 @@ impl Lazy {
             if first && let Some(end) = self.hinted_end() {
                 let mut speculative = wanted.clone();
                 speculative.push(0..end);
-                if let plan @ Plan::Need(_) = self.sparse.plan_ranges(speculative, true) {
+                if let Some(plan) = self.sparse.prefetch(speculative, true) {
                     return plan;
                 }
             }
