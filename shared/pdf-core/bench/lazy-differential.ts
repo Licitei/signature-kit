@@ -8,7 +8,7 @@ import type { PdfCoreLazyStats, PdfCoreTextOptions } from "../dist/config.js";
 import { makePdfCore, pdfCoreBlobSource, pdfCoreBytesSource } from "../dist/pdf-core.js";
 import type { PdfCoreLazyDocument, PdfCoreRangeSource } from "../dist/pdf-core.js";
 import { createPdfCoreClient } from "../dist/promise.js";
-import type { PdfCorePromiseDocument } from "../dist/promise.js";
+import type { PdfCorePromiseDocument, PdfCorePromiseRangeSource } from "../dist/promise.js";
 
 type Reader = Pick<
   PdfCorePromiseDocument,
@@ -70,13 +70,15 @@ const digest = (value: unknown) =>
   );
 
 const outcome = (read: () => Promise<unknown>) =>
-  read().then(
-    (value) => ({ status: "ok", digest: digest(value) }),
-    (error: unknown) =>
-      isPdfCoreError(error)
-        ? { status: "error", code: error.code, operation: error.operation }
-        : { status: "defect", reason: String(error) },
-  );
+  Promise.resolve()
+    .then(read)
+    .then(
+      (value) => ({ status: "ok", digest: digest(value) }),
+      (error: unknown) =>
+        isPdfCoreError(error)
+          ? { status: "error", code: error.code, operation: error.operation }
+          : { status: "defect", reason: String(error) },
+    );
 
 const effectReader = (
   document: PdfCoreLazyDocument,
@@ -127,28 +129,33 @@ for (const [index, file] of files.entries()) {
     .then(async () => {
       const pdf = await readFile(file);
       const blob = new Blob([pdf]);
-      const core = await createPdfCoreClient(module);
-      const coreEffect = await Effect.runPromise(makePdfCore(module));
-      const full: Reader = {
-        text: (options) => core.text(pdf, options),
-        tables: (options) => core.tables(pdf, options),
-        textPages: (options) => core.textPages(pdf, options),
-        pageDiagnostics: (options) => core.pageDiagnostics(pdf, options),
-        pageImages: (options) => core.pageImages(pdf, options),
-        renderPages: (options) => core.renderPages(pdf, options),
+      const compareFull = async () => {
+        const core = await createPdfCoreClient(module);
+        const full: Reader = {
+          text: (options) => core.text(pdf, options),
+          tables: (options) => core.tables(pdf, options),
+          textPages: (options) => core.textPages(pdf, options),
+          pageDiagnostics: (options) => core.pageDiagnostics(pdf, options),
+          pageImages: (options) => core.pageImages(pdf, options),
+          renderPages: (options) => core.renderPages(pdf, options),
+        };
+        const pageCount = await core.inspect(pdf, { text: false, links: false }).then(
+          ({ pages }) => pages.length,
+          (error: unknown) => {
+            if (!isPdfCoreError(error)) throw error;
+            return 0;
+          },
+        );
+        const matrix = selections(pageCount, corpusIndex).map(calls);
+        const expected = new Map<string, Awaited<ReturnType<typeof outcome>>>();
+        for (const group of matrix) {
+          for (const call of group) expected.set(call.name, await outcome(() => call.run(full)));
+        }
+
+        return { pageCount, matrix, expected };
       };
-      const pageCount = await core.inspect(pdf, { text: false, links: false }).then(
-        ({ pages }) => pages.length,
-        (error: unknown) => {
-          if (!isPdfCoreError(error)) throw error;
-          return 0;
-        },
-      );
-      const matrix = selections(pageCount, corpusIndex).map(calls);
-      const expected = new Map<string, Awaited<ReturnType<typeof outcome>>>();
-      for (const group of matrix) {
-        for (const call of group) expected.set(call.name, await outcome(() => call.run(full)));
-      }
+      const { pageCount, matrix, expected } = await compareFull();
+      Bun.gc(true);
 
       const compare = async (reader: Reader, stats: () => Promise<PdfCoreLazyStats>) => {
         const rows = [];
@@ -206,7 +213,8 @@ for (const [index, file] of files.entries()) {
         Effect.runPromise(
           Effect.scoped(
             Effect.gen(function* () {
-              const document = yield* coreEffect.openLazy(source);
+              const core = yield* makePdfCore(module);
+              const document = yield* core.openLazy(source);
               const run = Effect.runPromiseWith(yield* Effect.context());
               return yield* Effect.promise(() =>
                 compare(effectReader(document, run), () => run(document.stats)),
@@ -214,25 +222,27 @@ for (const [index, file] of files.entries()) {
             }),
           ),
         );
+      const comparePromise = async (source: PdfCorePromiseRangeSource) => {
+        const core = await createPdfCoreClient(module);
+        await using document = await core.openLazy(source);
+        return await compare(document, document.stats);
+      };
+
       const effectBytes = await compareEffect(pdfCoreBytesSource(pdf));
+      Bun.gc(true);
       const effectBlob = await compareEffect(pdfCoreBlobSource(blob));
-      await using promiseBytes = await core.openLazy({
+      Bun.gc(true);
+      const promiseBytes = await comparePromise({
         size: pdf.length,
         read: (offset, length) => pdf.subarray(offset, offset + length),
       });
-      await using promiseBlob = await core.openLazy({
+      Bun.gc(true);
+      const promiseBlob = await comparePromise({
         size: blob.size,
         read: async (offset, length) =>
           new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer()),
       });
-      return {
-        pageCount,
-        size: pdf.length,
-        effectBytes,
-        effectBlob,
-        promiseBytes: await compare(promiseBytes, promiseBytes.stats),
-        promiseBlob: await compare(promiseBlob, promiseBlob.stats),
-      };
+      return { pageCount, size: pdf.length, effectBytes, effectBlob, promiseBytes, promiseBlob };
     })
     .then(
       (report) => report,
