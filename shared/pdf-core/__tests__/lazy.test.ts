@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Layer, Ref } from "effect";
+import { Deferred, Effect, Fiber, Layer, Ref } from "effect";
 
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import { pdfCoreFileLayer, pdfCoreFileSource } from "../dist/file.js";
@@ -222,6 +222,135 @@ describe("PdfCore byte-range documents", () => {
       }),
     ).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "matches page diagnostics, text, images, tables and rendering across selections and calls",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const core = yield* PdfCore;
+          const pdf = readFileSync(new URL("incremental-update.pdf", fixtures));
+          const { pages } = yield* core.inspect(pdf, { text: false, links: false });
+          const doc = yield* core.openLazy(pdfCoreBlobSource(new Blob([pdf])), {
+            probeBytes: 128,
+            gapBytes: 0,
+          });
+          for (const pageIndexes of [
+            [pages.length - 1],
+            undefined,
+            [0, pages.length - 1, 0],
+            [0],
+          ]) {
+            const options = pageIndexes === undefined ? {} : { pageIndexes };
+            const markdown = {
+              ...options,
+              format: "markdown",
+              dropRunningHeaders: true,
+            } satisfies Parameters<typeof doc.text>[0];
+            const actual = yield* Effect.all(
+              {
+                text: doc.text(markdown),
+                textPages: doc.textPages(markdown),
+                tables: doc.tables(options),
+                diagnostics: doc.pageDiagnostics(options),
+                images: doc.pageImages(options),
+                render: doc.renderPages(options),
+              },
+              { concurrency: "unbounded" },
+            );
+            expect(actual).toStrictEqual({
+              text: yield* core.text(pdf, markdown),
+              textPages: yield* core.textPages(pdf, markdown),
+              tables: yield* core.tables(pdf, options),
+              diagnostics: yield* core.pageDiagnostics(pdf, options),
+              images: yield* core.pageImages(pdf, options),
+              render: yield* core.renderPages(pdf, options),
+            });
+          }
+        }),
+      ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("returns the full-load error for corrupt and truncated PDFs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const pdf = readFileSync(new URL("links.pdf", fixtures));
+        for (const bytes of [pdf.subarray(0, 64), new TextEncoder().encode("%PDF-1.7\ninvalid")]) {
+          const doc = yield* core.openLazy(pdfCoreBytesSource(bytes));
+          const full = yield* Effect.flip(core.text(bytes));
+          const lazy = yield* Effect.flip(doc.text());
+          expect(lazy).toMatchObject({
+            code: full.code,
+            operation: full.operation,
+            reason: full.reason,
+          });
+          expect((yield* doc.stats).strategy).toBe("fallback");
+        }
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("releases interrupted reads and closes their document with the scope", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const pdf = readFileSync(new URL("links.pdf", fixtures));
+      const source = pdfCoreBytesSource(pdf);
+      const started = yield* Deferred.make<void>();
+      const released = yield* Ref.make(0);
+      const doc = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const document = yield* core.openLazy({
+            size: source.size,
+            read: () =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.ensuring(Ref.update(released, (count) => count + 1)),
+              ),
+          });
+          const fiber = yield* Effect.forkScoped(document.text());
+          yield* Deferred.await(started);
+          yield* Fiber.interrupt(fiber);
+          expect(yield* Ref.get(released)).toBeGreaterThan(0);
+          return document;
+        }),
+      );
+      expect((yield* Effect.flip(doc.text())).code).toBe(PdfCoreErrorCodeValue.documentClosed);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const healthy = yield* core.openLazy(source);
+          expect(yield* healthy.text()).toEqual(yield* core.text(pdf));
+        }),
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it("reports Promise source rejections as range read failures", async () => {
+    const core = await loadPdfCoreNode();
+    const pdf = readFileSync(new URL("links.pdf", fixtures));
+    await using doc = await core.openLazy({
+      size: pdf.length,
+      read: () => Promise.reject(new Error("unavailable")),
+    });
+    await expect(doc.text()).rejects.toMatchObject({ code: PdfCoreErrorCodeValue.rangeReadFailed });
+  });
+
+  it("reuses WASM memory across 1,000 Promise open and close cycles", async () => {
+    const core = await loadPdfCoreNode();
+    const pdf = readFileSync(new URL("links.pdf", fixtures));
+    const source = {
+      size: pdf.length,
+      read: (offset: number, length: number) => pdf.subarray(offset, offset + length),
+    };
+    const cycle = async () => {
+      await using doc = await core.openLazy(source);
+      await doc.textPages();
+    };
+    await cycle();
+    const warmBytes = await core.wasmMemoryBytes();
+    for (let index = 0; index < 1_000; index += 1) await cycle();
+    expect(await core.wasmMemoryBytes()).toBe(warmBytes);
+  }, 30_000);
 
   it("opens, caches, and disposes a Promise document", async () => {
     const core = await loadPdfCoreNode();

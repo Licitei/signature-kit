@@ -21,7 +21,8 @@ const labelIdx = args.indexOf("--label");
 const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "step") : "step";
 const quick: boolean = args.includes("--quick");
 
-const pdfDir = join(repo, ".cache/bench/pdfs");
+const pdfDir = resolve(process.env.PDF_CORPUS ?? join(repo, ".cache/bench/pdfs"));
+const distDir = resolve(process.env.PDF_CORE_BENCH_DIST ?? join(pkg, "dist"));
 const fixtureDir = join(pkg, "__tests__/fixtures");
 
 async function loadCore() {
@@ -29,8 +30,8 @@ async function loadCore() {
   const nodeUrl = pathToFileURL(
     join(repo, "node_modules/@effect/platform-node/dist/NodeServices.js"),
   ).href;
-  const coreUrl = pathToFileURL(join(pkg, "dist/pdf-core.js")).href;
-  const fileUrl = pathToFileURL(join(pkg, "dist/file.js")).href;
+  const coreUrl = pathToFileURL(join(distDir, "pdf-core.js")).href;
+  const fileUrl = pathToFileURL(join(distDir, "file.js")).href;
   const { Effect, Layer } = await import(effectUrl);
   const NodeServices = await import(nodeUrl);
   const { PdfCore } = await import(coreUrl);
