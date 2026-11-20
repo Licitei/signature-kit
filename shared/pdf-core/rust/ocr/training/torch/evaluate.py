@@ -6,6 +6,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import unicodedata
 
 import numpy as np
 import torch
@@ -88,11 +89,12 @@ def evaluate_native(args):
             start = time.perf_counter()
             observed = subprocess.check_output([args.native, "text", source], text=True)
             times.append(time.perf_counter() - start)
-            pairs.append((reference, record_text(observed)))
+            pairs.append((reference, unicodedata.normalize("NFC", observed).strip()))
     if not times:
         raise ValueError("empty evaluation dataset")
     raw = raw_metrics(pairs)
-    normalized = raw_metrics([(reference.lower(), observed.lower()) for reference, observed in pairs])
+    normalized = raw_metrics([(record_text(reference).lower(), record_text(observed).lower())
+                              for reference, observed in pairs])
     for result in (raw, normalized):
         result["cer"] = result["character_edits"] / result["characters"]
         result["wer"] = result["word_edits"] / result["words"]

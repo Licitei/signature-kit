@@ -12,6 +12,7 @@ export const checkedExtensions: Record<string, true> = {
 };
 
 export const skippedSegments: Record<string, true> = {
+  ".cache": true,
   ".next": true,
   dist: true,
   node_modules: true,

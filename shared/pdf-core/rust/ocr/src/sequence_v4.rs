@@ -2,6 +2,8 @@ use crate::model::coordinate;
 use crate::raster::{Bits, Gray};
 use crate::recognize::Word;
 use crate::segment::Line;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+use crate::sequence::wasm_dot;
 use crate::sequence::{Dot, LineWords, nonnegative_dot_kernel};
 
 pub(crate) const MAGIC: &[u8; 4] = b"OCR4";
@@ -441,11 +443,18 @@ fn relu(value: i32) -> i8 {
     i8::try_from(value.clamp(0, 127)).unwrap_or_default()
 }
 
-fn project(dot: Dot, input: &[i8], row: &[u8]) -> i32 {
+#[inline]
+fn project<const SIZE: usize>(dot: Dot, input: &[i8], row: &[u8; SIZE]) -> i32 {
     let Some(([low, high, shift], weights)) = row.split_first_chunk::<ROW_HEADER>() else {
         return 0;
     };
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
     let sum = dot(input, weights);
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let sum = {
+        let _fallback = dot;
+        wasm_dot(input, weights)
+    };
     let half = 1_i32.wrapping_shl(u32::from(shift.saturating_sub(1)));
     let rounded = if *shift == 0 {
         sum

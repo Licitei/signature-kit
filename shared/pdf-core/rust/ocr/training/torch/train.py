@@ -1,7 +1,9 @@
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
+import struct
 import subprocess
 import time
 
@@ -105,13 +107,30 @@ def train(args):
         raise ValueError("the training roster must contain distinct OCRL archive paths")
     if not 0 <= args.qat < args.epochs or args.epochs < 2:
         raise ValueError("reserve at least one epoch for fp32 training")
-    options = {key: value for key, value in vars(args).items() if isinstance(value, int)
-               and key != "resume"}
+    if args.batch_size <= 0 or args.steps < 0 or args.workers < 0 or args.learning_rate <= 0:
+        raise ValueError("invalid batch size, epoch length, workers, or learning rate")
+    if args.initial_run and args.clean:
+        raise ValueError("aligned warm start is only for a new recognizer")
+    options = {key: value for key, value in vars(args).items()
+               if isinstance(value, (int, float)) and key != "resume"}
     clean = [args.clean] if args.clean else []
     if args.real_dev.is_dir() and args.real_dev.name != "dev":
         raise ValueError("model selection requires the real development split")
-    digest = manifest([("clean", clean), ("shard", paths)])
-    log(args.output, event="indexing", shards=len(paths), manifest=digest)
+    training_data = manifest([("clean", clean), ("shard", paths)])
+    model = Recognizer()
+    parent = None
+    if args.initial_run:
+        table = (args.initial_run / "best.bin").read_bytes()
+        model.load_state_dict(torch.load(args.initial_run / "best.pt", map_location="cpu",
+                                         weights_only=True))
+        _, _, _, source, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
+        if model.table(source.hex(), commit.hex(), seed) != table:
+            raise ValueError("parent checkpoint and exported table differ")
+        parent = hashlib.sha256(table).hexdigest()
+        digest = hashlib.sha256(bytes.fromhex(training_data) + bytes.fromhex(parent)).hexdigest()
+    else:
+        digest = training_data
+    log(args.output, event="indexing", shards=len(paths), manifest=digest, parent=parent)
     lines = Archive(paths, training=True)
     warm = Archive(clean, training=True, align=True) if clean else None
     real = dataset(args.real_dev)
@@ -128,8 +147,8 @@ def train(args):
         ]),
         "options": options,
     }
-    model = Recognizer()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.003, weight_decay=0.01, fused=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01,
+                                  fused=True)
     ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.99))
     first_epoch = 0
     best = math.inf
@@ -137,7 +156,9 @@ def train(args):
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if args.resume:
         state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        if state["provenance"] != provenance:
+        previous = state["provenance"]
+        previous["options"].setdefault("learning_rate", 0.003)
+        if previous != provenance:
             raise ValueError("checkpoint data or training schedule changed")
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
@@ -169,7 +190,7 @@ def train(args):
                 continue
             inputs, lengths, targets, target_lengths, texts, _ = batch
             progress = min(1.0, (epoch + step / steps) / args.epochs)
-            rate = 0.003 * min(1.0, 0.2 + 20 * progress) * (0.1 + 0.9 *
+            rate = args.learning_rate * min(1.0, 0.2 + 20 * progress) * (0.1 + 0.9 *
                                                           (1 + math.cos(math.pi * progress)) / 2)
             optimizer.param_groups[0]["lr"] = rate
             optimizer.zero_grad(set_to_none=True)
@@ -221,10 +242,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--shards", type=Path, required=True)
     parser.add_argument("--clean", type=Path)
+    parser.add_argument("--initial-run", type=Path)
     parser.add_argument("--synthetic-val", type=Path, required=True)
     parser.add_argument("--real-dev", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=7291)
+    parser.add_argument("--learning-rate", type=float, default=0.003)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--qat", type=int, default=2)

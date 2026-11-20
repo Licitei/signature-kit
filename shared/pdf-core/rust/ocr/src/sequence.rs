@@ -547,7 +547,8 @@ fn scalar_dot(input: &[i8], weights: &[u8]) -> i32 {
     unsafe_code,
     reason = "full 16-byte records are valid unaligned wasm SIMD inputs"
 )]
-fn wasm_dot(input: &[i8], weights: &[u8]) -> i32 {
+#[inline]
+pub(crate) fn wasm_dot(input: &[i8], weights: &[u8]) -> i32 {
     use core::arch::wasm32::{
         i16x8_extmul_high_i8x16, i16x8_extmul_low_i8x16, i32x4_add, i32x4_extadd_pairwise_i16x8,
         i32x4_extract_lane, i32x4_splat, v128_load,
