@@ -2,13 +2,14 @@ use core::cell::RefCell;
 use core::iter;
 use core::mem;
 use core::ops::Range;
+use core::slice;
 use std::collections::HashSet;
 
 use crate::document::{
     Document, DocumentCache, Entry, MAX_SECTIONS, Page, STARTXREF_PROBE, Section, apply_entries,
     find_startxref, merge_section_trailer, object_bound, previous_section,
 };
-use crate::failure::{Failure, Outcome};
+use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::Limits;
 use crate::num::widen;
 use crate::object::{Dict, ObjRef, Object};
@@ -19,9 +20,40 @@ const MIN_PROBE: usize = 128;
 
 #[derive(Debug)]
 pub(crate) enum Plan {
-    Fallback,
+    Fallback(FallbackReason),
+    Full(FallbackReason, Vec<Range<usize>>),
     Need(Vec<Range<usize>>),
     Ready,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FallbackReason {
+    EmptyXref,
+    Encryption,
+    Header,
+    MissingStartxref,
+    ObjectRepair,
+    PageTree,
+    Stalled,
+    XrefChain,
+    XrefSection,
+}
+
+impl From<FallbackReason> for u32 {
+    #[inline]
+    fn from(reason: FallbackReason) -> Self {
+        match reason {
+            FallbackReason::Header => 1,
+            FallbackReason::MissingStartxref => 2,
+            FallbackReason::XrefChain => 3,
+            FallbackReason::XrefSection => 4,
+            FallbackReason::EmptyXref => 5,
+            FallbackReason::Encryption => 6,
+            FallbackReason::ObjectRepair => 7,
+            FallbackReason::PageTree => 8,
+            FallbackReason::Stalled => 9,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -126,20 +158,45 @@ impl Sparse {
             .tuning
             .gap
             .min(self.tuning.round_bytes.checked_div(4).unwrap_or_default());
-        if read_ahead
-            && gap != 0
-            && let Some(requests) = self.ranges(&wanted, gap)
-        {
-            return Plan::Need(requests);
+        if read_ahead && gap != 0 {
+            let requests = self.ranges(&wanted, gap);
+            let cached = self
+                .segments
+                .iter()
+                .map(|segment| segment.bytes.len())
+                .sum::<usize>();
+            let budget = self.size.saturating_sub(1).min(
+                self.size
+                    .checked_div(2)
+                    .unwrap_or_default()
+                    .max(MIN_SELECTIVE_BUDGET),
+            );
+            let planned = requests
+                .iter()
+                .fold(cached, |sum, range| sum.saturating_add(range.len()));
+            if !requests.is_empty() && planned <= budget {
+                return Plan::Need(self.round(requests));
+            }
         }
-        self.ranges(&wanted, 0).map_or(Plan::Fallback, Plan::Need)
+        let requests = self.ranges(&wanted, 0);
+        if requests.is_empty() {
+            Plan::Fallback(FallbackReason::Stalled)
+        } else {
+            Plan::Need(self.round(requests))
+        }
     }
 
-    fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Option<Vec<Range<usize>>> {
-        let mut requests = Vec::new();
+    fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Vec<Range<usize>> {
+        let mut windows = Vec::new();
         for range in wanted {
+            let start = range.start.saturating_sub(gap);
             let end = range.end.saturating_add(gap).min(self.size);
-            let mut start = range.start.saturating_sub(gap);
+            append_range(&mut windows, start..end, gap);
+        }
+        let mut requests = Vec::new();
+        for range in windows {
+            let mut start = range.start;
+            let end = range.end;
             let first = self
                 .segments
                 .partition_point(|segment| segment.end() <= start);
@@ -148,31 +205,22 @@ impl Sparse {
                     break;
                 }
                 if segment.start > start {
-                    append_range(&mut requests, start..segment.start, gap);
+                    requests.push(start..segment.start);
                 }
                 start = start.max(segment.end());
             }
             if start < end {
-                append_range(&mut requests, start..end, gap);
+                requests.push(start..end);
             }
         }
-        let cached = self
-            .segments
-            .iter()
-            .map(|segment| segment.bytes.len())
-            .sum::<usize>();
-        let budget = self.size.saturating_sub(usize::from(gap != 0)).min(
-            self.size
-                .checked_div(2)
-                .unwrap_or_default()
-                .max(MIN_SELECTIVE_BUDGET),
-        );
-        let planned = requests
-            .iter()
-            .fold(cached, |sum, range| sum.saturating_add(range.len()));
-        if requests.is_empty() || planned > budget {
-            return None;
-        }
+        requests
+    }
+
+    pub(crate) fn request(&self, start: usize, end: usize) {
+        self.missing.borrow_mut().push(start..end);
+    }
+
+    fn round(&self, mut requests: Vec<Range<usize>>) -> Vec<Range<usize>> {
         let mut remaining = self.tuning.round_bytes;
         for request in &mut requests {
             let length = request.len().min(remaining);
@@ -180,11 +228,7 @@ impl Sparse {
             remaining = remaining.saturating_sub(length);
         }
         requests.retain(|request| !request.is_empty());
-        Some(requests)
-    }
-
-    pub(crate) fn request(&self, start: usize, end: usize) {
-        self.missing.borrow_mut().push(start..end);
+        requests
     }
 
     fn window(&self, start: usize, end: usize) -> &[u8] {
@@ -278,6 +322,7 @@ struct Index {
 #[derive(Debug)]
 pub(crate) struct Lazy {
     cache: DocumentCache,
+    fallback: Option<FallbackReason>,
     frontier: Option<Frontier>,
     index: Index,
     indexed: bool,
@@ -310,6 +355,15 @@ impl Lazy {
         apply_entries(&mut self.index.table, section.entries, bound);
         self.next_section = previous_section(&section.trailer);
         merge_section_trailer(&mut self.index.trailer, section.trailer);
+    }
+
+    pub(crate) fn begin_fallback(&mut self, reason: FallbackReason) {
+        self.fallback = Some(reason);
+        self.cache = DocumentCache::new();
+        self.frontier = None;
+        self.index = Index::default();
+        self.sparse.offsets = Vec::new();
+        self.sparse.missing.get_mut().clear();
     }
 
     fn document(&self, limits: &Limits) -> Outcome<Document<'_>> {
@@ -358,6 +412,11 @@ impl Lazy {
         self.sparse.feed(offset, bytes)
     }
 
+    pub(crate) fn full_bytes(&self) -> Option<&[u8]> {
+        let _: FallbackReason = self.fallback?;
+        self.sparse.bytes(0..self.sparse.size)
+    }
+
     fn head_and_tail(&mut self, limits: &Limits) -> Option<Plan> {
         let sparse = &self.sparse;
         let probe = sparse.tuning.probe.min(
@@ -381,18 +440,22 @@ impl Lazy {
         }
         let head = sparse.window(0, head_end);
         if !head.starts_with(b"%PDF-") {
-            return Some(Plan::Fallback);
+            return Some(Plan::Fallback(FallbackReason::Header));
         }
+        let tail_floor = sparse.size.saturating_sub(STARTXREF_PROBE);
         let tail = sparse.window(tail_start, sparse.size);
         self.next_section = find_startxref(tail);
-        if self.next_section.is_none() && tail.len() < STARTXREF_PROBE.min(sparse.size) {
-            return Some(sparse.plan_ranges(
-                iter::once(sparse.size.saturating_sub(STARTXREF_PROBE)..sparse.size).collect(),
-                false,
-            ));
+        if self.next_section.is_none() && tail_floor < tail_start {
+            let tail_range = tail_floor..sparse.size;
+            let Some(expanded) = sparse.bytes(tail_range.clone()) else {
+                return Some(sparse.plan_ranges(iter::once(tail_range).collect(), false));
+            };
+            self.next_section = find_startxref(expanded);
         }
         self.linearized = linearized_first_page(head, sparse.size, limits);
-        self.next_section.is_none().then_some(Plan::Fallback)
+        self.next_section
+            .is_none()
+            .then_some(Plan::Fallback(FallbackReason::MissingStartxref))
     }
 
     fn hinted_end(&self) -> Option<usize> {
@@ -421,7 +484,7 @@ impl Lazy {
                 || self.index.visited.len() >= MAX_SECTIONS
                 || self.index.visited.contains(&offset)
             {
-                return Some(Plan::Fallback);
+                return Some(Plan::Fallback(FallbackReason::XrefChain));
             }
             let window = self.sparse.window(offset, size);
             let complete = offset.saturating_add(window.len()) == size;
@@ -434,7 +497,7 @@ impl Lazy {
                         && !keyword_at(window, start, b"xref")
                         && parse_object_header(window, start).is_none())
                 {
-                    return Some(Plan::Fallback);
+                    return Some(Plan::Fallback(FallbackReason::XrefSection));
                 }
                 let tail_bytes = size.saturating_sub(offset);
                 let current = if tail_bytes <= self.sparse.tuning.probe.saturating_mul(4) {
@@ -468,7 +531,7 @@ impl Lazy {
             self.accept_section(section, bound);
         }
         if self.index.table.is_empty() {
-            return Some(Plan::Fallback);
+            return Some(Plan::Fallback(FallbackReason::EmptyXref));
         }
         self.sparse.offsets.sort_unstable();
         self.sparse.offsets.dedup();
@@ -483,6 +546,7 @@ impl Lazy {
     pub(crate) fn new(size: usize, tuning: Tuning) -> Self {
         Self {
             cache: DocumentCache::new(),
+            fallback: None,
             frontier: None,
             index: Index::default(),
             indexed: false,
@@ -517,30 +581,43 @@ impl Lazy {
             self.cache = DocumentCache::new();
             self.render = render;
         }
-        if self.sparse.size > limits.max_pdf_bytes {
-            return Plan::Fallback;
-        }
         let first =
             indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
         if let Some(plan) = self.index(first, limits) {
             return plan;
         }
-        let result = self.document(limits).and_then(|document| {
-            if frontier.is_none() {
-                let pages = document.sparse_pages(indexes)?;
-                if self.sparse.misses() != 0 {
-                    return Ok(());
+        let result = self
+            .document(limits)
+            .map_err(|failure| {
+                if failure.code == FailureCode::EncryptedPdf {
+                    FallbackReason::Encryption
+                } else {
+                    FallbackReason::ObjectRepair
                 }
-                frontier = Some(Frontier::new(&document, indexes, pages, render)?);
-            }
-            if let Some(selection) = &mut frontier {
-                selection.advance(&document, &self.sparse)?;
-            }
-            if document.was_repaired() {
-                return Err(Failure::invalid("lazy document requires repair"));
-            }
-            Ok(())
-        });
+            })
+            .and_then(|document| {
+                if frontier.is_none() {
+                    let pages = document
+                        .sparse_pages(indexes)
+                        .map_err(|_failure| FallbackReason::PageTree)?;
+                    if self.sparse.misses() != 0 {
+                        return Ok(());
+                    }
+                    frontier = Some(
+                        Frontier::new(&document, indexes, pages, render)
+                            .map_err(|_failure| FallbackReason::ObjectRepair)?,
+                    );
+                }
+                if let Some(selection) = &mut frontier {
+                    selection
+                        .advance(&document, &self.sparse)
+                        .map_err(|_failure| FallbackReason::ObjectRepair)?;
+                }
+                if document.was_repaired() {
+                    return Err(FallbackReason::ObjectRepair);
+                }
+                Ok(())
+            });
         self.frontier = frontier;
         if self.sparse.misses() != 0 {
             let wanted = mem::take(self.sparse.missing.get_mut());
@@ -553,11 +630,30 @@ impl Lazy {
             }
             return self.sparse.plan_ranges(wanted, true);
         }
-        if result.is_ok() && self.frontier.is_some() {
-            Plan::Ready
-        } else {
-            Plan::Fallback
+        match result {
+            Ok(()) if self.frontier.is_some() => Plan::Ready,
+            Ok(()) => Plan::Fallback(FallbackReason::Stalled),
+            Err(reason) => Plan::Fallback(reason),
         }
+    }
+
+    pub(crate) fn plan_operation(
+        &mut self,
+        indexes: Option<&[u32]>,
+        render: bool,
+        limits: &Limits,
+    ) -> Plan {
+        if self.fallback.is_none() {
+            match self.plan(indexes, render, limits) {
+                Plan::Fallback(reason) => self.begin_fallback(reason),
+                plan @ (Plan::Full(..) | Plan::Need(_) | Plan::Ready) => return plan,
+            }
+        }
+        self.fallback.map_or(Plan::Ready, |reason| {
+            let wanted = 0..self.sparse.size;
+            let ranges = self.sparse.ranges(slice::from_ref(&wanted), 0);
+            Plan::Full(reason, self.sparse.round(ranges))
+        })
     }
 
     fn section_range(&self, offset: usize, length: usize) -> Range<usize> {

@@ -51,6 +51,7 @@ describe("PdfCore byte-range documents", () => {
               }
               if (name === "broken-xref.pdf") {
                 expect(stats.strategy).toBe("fallback");
+                expect(stats.fallbackReason).toBeDefined();
               }
               expect(yield* doc.text({ pageIndexes })).toStrictEqual(
                 yield* core.text(pdf, { pageIndexes }),
@@ -76,9 +77,15 @@ describe("PdfCore byte-range documents", () => {
             }
             const stats = yield* doc.stats;
             expect(stats.bytesRead).toBe(reads.reduce((sum, [, length]) => sum + length, 0));
-            expect(
-              reads.filter(([offset, length]) => offset === 0 && length === pdf.byteLength),
-            ).toHaveLength(stats.strategy === "fallback" ? 1 : 0);
+            expect(stats.bytesRead).toBeLessThanOrEqual(pdf.byteLength);
+            if (stats.strategy === "fallback") {
+              expect(stats.bytesRead).toBe(pdf.byteLength);
+            }
+            let previousEnd = 0;
+            for (const [offset, length] of reads.toSorted(([left], [right]) => left - right)) {
+              expect(offset).toBeGreaterThanOrEqual(previousEnd);
+              previousEnd = offset + length;
+            }
           }),
         ).pipe(Effect.provide(layer)),
       60_000,
@@ -112,6 +119,46 @@ describe("PdfCore byte-range documents", () => {
       const error = yield* Effect.flip(doc.text({ pageIndexes: [0] }));
       expect(error.code).toBe(PdfCoreErrorCodeValue.documentClosed);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads the gaps in bounded rounds when startxref is missing", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const fixture = readFileSync(new URL("links.pdf", fixtures));
+        const xrefAt = fixture.lastIndexOf("startxref");
+        expect(xrefAt).toBeGreaterThan(0);
+        const pdf = fixture.subarray(0, xrefAt);
+        const source = pdfCoreBytesSource(pdf);
+        const coverage = new Uint8Array(pdf.length);
+        const lazy = yield* core.openLazy(
+          {
+            size: source.size,
+            read: (offset, length) =>
+              Effect.gen(function* () {
+                expect(length).toBeLessThanOrEqual(128);
+                expect(coverage.subarray(offset, offset + length).every((count) => count === 0)).toBe(
+                  true,
+                );
+                coverage.fill(1, offset, offset + length);
+                return yield* source.read(offset, length);
+              }),
+          },
+          { probeBytes: 128, gapBytes: 0, maxRoundBytes: 128 },
+        );
+        const options = { pageIndexes: [0] };
+        expect(yield* lazy.text(options)).toStrictEqual(yield* core.text(pdf, options));
+        expect(yield* lazy.tables(options)).toStrictEqual(yield* core.tables(pdf, options));
+        const stats = yield* lazy.stats;
+        expect(stats).toMatchObject({
+          bytesRead: pdf.length,
+          strategy: "fallback",
+          fallbackReason: "missingStartxref",
+        });
+        expect(stats.rounds).toBe(Math.ceil(pdf.length / 128));
+        expect(coverage.every((count) => count === 1)).toBe(true);
+      }),
+    ).pipe(Effect.provide(layer)),
   );
 
   it.effect("starts both probes before either read finishes", () =>

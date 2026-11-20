@@ -18,7 +18,7 @@ use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
-use crate::lazy::{Lazy, Plan, Tuning};
+use crate::lazy::{FallbackReason, Lazy, Plan, Tuning};
 use crate::num::widen;
 use crate::page_image::{Absent, Encoding, extract_image};
 use crate::png;
@@ -1277,18 +1277,39 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_feed(
     })
 }
 
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_full_bytes(handle: u32) -> *const u8 {
+    LAZY_DOCUMENTS.with(|documents| {
+        documents
+            .borrow()
+            .iter()
+            .find(|(id, _)| *id == handle)
+            .and_then(|(_, document)| document.full_bytes())
+            .map_or(ptr::null(), <[u8]>::as_ptr)
+    })
+}
+
 fn encode_plan(plan: Plan) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(4);
-    match plan {
-        Plan::Ready => out.u32(0),
-        Plan::Fallback => out.u32(2),
+    let ranges = match plan {
+        Plan::Ready => {
+            out.u32(0);
+            Vec::new()
+        }
+        Plan::Fallback(_) => return Err(Failure::invalid("uninitialized lazy fallback")),
+        Plan::Full(reason, ranges) => {
+            out.u32(if ranges.is_empty() { 2 } else { 3 });
+            out.u32(reason.into());
+            ranges
+        }
         Plan::Need(ranges) => {
             out.u32(1);
-            for range in ranges {
-                out.u32(len32(range.start)?);
-                out.u32(len32(range.end.saturating_sub(range.start))?);
-            }
+            ranges
         }
+    };
+    for range in ranges {
+        out.u32(len32(range.start)?);
+        out.u32(len32(range.len())?);
     }
     out.done()
 }
@@ -1315,7 +1336,7 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_plan(
                 .map(|(_, document)| document)
                 .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
             let limits = lazy_limits(profile);
-            let plan = document.plan(
+            let plan = document.plan_operation(
                 (flags & FLAG_PAGE_INDEXES != 0).then_some(indexes),
                 profile == 2,
                 &limits,
@@ -1341,9 +1362,9 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
     scale: f64,
 ) -> *mut u8 {
     finish(LAZY_DOCUMENTS.with(|documents| {
-        let all = documents.borrow();
+        let mut all = documents.borrow_mut();
         let lazy = all
-            .iter()
+            .iter_mut()
             .find(|(id, _)| *id == handle)
             .map(|(_, document)| document)
             .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
@@ -1369,6 +1390,7 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
                 if lazy.needs_ranges() {
                     bytes_result(&1_u32.to_le_bytes())
                 } else {
+                    lazy.begin_fallback(FallbackReason::ObjectRepair);
                     bytes_result(&[])
                 }
             },

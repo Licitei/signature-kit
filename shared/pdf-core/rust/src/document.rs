@@ -2654,7 +2654,7 @@ mod tests {
         for _ in 0_i32..64_i32 {
             match lazy.plan(Some(&[0]), false, &Limits::default()) {
                 Plan::Ready => return Some(lazy),
-                Plan::Fallback => return None,
+                Plan::Fallback(_) | Plan::Full(_, _) => return None,
                 Plan::Need(ranges) => {
                     for range in ranges {
                         let offset = range.start;

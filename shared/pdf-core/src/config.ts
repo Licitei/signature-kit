@@ -434,6 +434,8 @@ const isLazyOpenFunction = (
   typeof value === "function" && value.length === 4;
 const isLazyCloseFunction = (value: unknown): value is (handle: number) => void =>
   typeof value === "function" && value.length === 1;
+const isLazyFullBytesFunction = (value: unknown): value is (handle: number) => number =>
+  typeof value === "function" && value.length === 1;
 const isLazyFeedFunction = (
   value: unknown,
 ): value is (handle: number, offset: number, pointer: number, length: number) => number =>
@@ -478,6 +480,9 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_lazy_open: Schema.declare(isLazyOpenFunction, { identifier: "pdf_core_lazy_open" }),
   pdf_core_lazy_close: Schema.declare(isLazyCloseFunction, { identifier: "pdf_core_lazy_close" }),
   pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
+  pdf_core_lazy_full_bytes: Schema.declare(isLazyFullBytesFunction, {
+    identifier: "pdf_core_lazy_full_bytes",
+  }),
   pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
   pdf_core_lazy_run: Schema.declare(isLazyRunFunction, { identifier: "pdf_core_lazy_run" }),
 });
@@ -498,10 +503,22 @@ export const PdfCoreLazyOptionsSchema = Schema.Struct({
   ),
 });
 export type PdfCoreLazyOptions = (typeof PdfCoreLazyOptionsSchema)["Type"];
+export const PdfCoreLazyFallbackReasonSchema = Schema.Literals([
+  "header",
+  "missingStartxref",
+  "xrefChain",
+  "xrefSection",
+  "emptyXref",
+  "encryption",
+  "objectRepair",
+  "pageTree",
+  "stalled",
+]);
 export const PdfCoreLazyStatsSchema = Schema.Struct({
   bytesRead: Schema.Int,
   rounds: Schema.Int,
   strategy: Schema.Literals(["lazy", "fallback"]),
+  fallbackReason: Schema.optional(PdfCoreLazyFallbackReasonSchema),
 });
 export type PdfCoreLazyStats = (typeof PdfCoreLazyStatsSchema)["Type"];
 

@@ -1,5 +1,5 @@
-import { readFile, readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Effect, Schema } from "effect";
 
@@ -94,12 +94,13 @@ const effectReader = (
 
 const { values } = parseArgs({
   options: {
+    checkpoint: { type: "string" },
     start: { type: "string", default: "0" },
     stride: { type: "string", default: "1" },
     limit: { type: "string" },
   },
 });
-const corpus = process.env.PDF_CORPUS ?? "/home/yorizel/Documents/bench-parsers";
+const corpus = resolve(process.env.PDF_CORPUS ?? "/home/yorizel/Documents/bench-parsers");
 const entries = await readdir(corpus, { withFileTypes: true, recursive: true });
 const paths = entries
   .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".pdf"))
@@ -114,16 +115,44 @@ if (![start, stride, limit].every(Number.isSafeInteger) || start < 0 || stride <
 const files = paths
   .filter((_, index) => index >= start && (index - start) % stride === 0)
   .slice(0, limit);
-const module = await WebAssembly.compile(
-  await readFile(new URL("../dist/pdf-core.wasm", import.meta.url)),
-);
-let compared = 0;
-let mismatches = 0;
-let flaggedReads = 0;
-let failures = 0;
+const wasm = await readFile(new URL("../dist/pdf-core.wasm", import.meta.url));
+const module = await WebAssembly.compile(wasm);
+const checkpoint = values.checkpoint;
+const completed = new Set<number>();
+if (checkpoint !== undefined) {
+  await mkdir(checkpoint, { recursive: true });
+  const manifest = join(checkpoint, "manifest.json");
+  const identity = JSON.stringify({
+    corpus,
+    paths: digest(files),
+    wasm: Bun.CryptoHasher.hash("sha256", wasm, "hex"),
+    script: Bun.CryptoHasher.hash("sha256", await Bun.file(import.meta.path).bytes(), "hex"),
+    start,
+    stride,
+  });
+  const exists = await Bun.file(manifest).exists();
+  if (exists && (await readFile(manifest, "utf8")) !== identity) {
+    throw new Error("Checkpoint inputs differ from the current benchmark.");
+  }
+  if (!exists) await writeFile(manifest, identity, { flag: "wx" });
+  for (const name of await readdir(checkpoint)) {
+    if (/^[0-9]+\.json$/.test(name)) completed.add(Number.parseInt(name, 10));
+  }
+}
+const summary = { compared: 0, mismatches: 0, flaggedReads: 0, failures: 0 };
 
 for (const [index, file] of files.entries()) {
   const corpusIndex = start + index * stride;
+  if (completed.has(corpusIndex) && checkpoint !== undefined) {
+    const previous = await readFile(join(checkpoint, `${corpusIndex}.json`), "utf8");
+    const counters = JSON.parse(previous).counters;
+    summary.compared += counters.compared;
+    summary.mismatches += counters.mismatches;
+    summary.flaggedReads += counters.flaggedReads;
+    summary.failures += counters.failures;
+    continue;
+  }
+  const counters = { compared: 0, mismatches: 0, flaggedReads: 0, failures: 0 };
   const path = relative(corpus, file);
   const result = await Promise.resolve()
     .then(async () => {
@@ -165,9 +194,9 @@ for (const [index, file] of files.entries()) {
           const execute = async (call: (typeof group)[number]) => {
             const actual = await outcome(() => call.run(reader));
             const full = expected.get(call.name);
-            compared += 1;
+            counters.compared += 1;
             if (actual.status === "defect" || JSON.stringify(actual) !== JSON.stringify(full)) {
-              mismatches += 1;
+              counters.mismatches += 1;
               return { call: call.name, actual, full };
             }
             return undefined;
@@ -187,7 +216,7 @@ for (const [index, file] of files.entries()) {
                 pageCount > 3 &&
                 (rows.at(-1)?.bytesRead ?? 0) > pdf.length * 0.75
               ) {
-                flaggedReads += 1;
+                counters.flaggedReads += 1;
                 Object.assign(rows.at(-1) ?? {}, { highRead: true });
               }
             }
@@ -206,6 +235,11 @@ for (const [index, file] of files.entries()) {
         }
         const single = pageCount > 0 ? matrix[0] : undefined;
         if (single !== undefined) await run(single, "concurrent", true);
+        const final = await stats();
+        if (final.bytesRead > pdf.length) {
+          counters.mismatches += 1;
+          rows.push({ bytesRead: final.bytesRead, size: pdf.length, exceededFileSize: true });
+        }
         return rows;
       };
 
@@ -247,11 +281,22 @@ for (const [index, file] of files.entries()) {
     .then(
       (report) => report,
       (error: unknown) => {
-        failures += 1;
+        counters.failures += 1;
         return { failure: String(error) };
       },
     );
-  console.log(JSON.stringify({ index: corpusIndex, path, ...result }));
+  const row = JSON.stringify({ index: corpusIndex, path, ...result, counters });
+  if (checkpoint !== undefined) {
+    const destination = join(checkpoint, `${corpusIndex}.json`);
+    const temporary = `${destination}.${process.pid}.tmp`;
+    await writeFile(temporary, row);
+    await rename(temporary, destination);
+  }
+  console.log(row);
+  summary.compared += counters.compared;
+  summary.mismatches += counters.mismatches;
+  summary.flaggedReads += counters.flaggedReads;
+  summary.failures += counters.failures;
   Bun.gc(true);
 }
 
@@ -259,18 +304,16 @@ console.log(
   JSON.stringify({
     discovered: paths.length,
     tested: files.length,
-    compared,
-    mismatches,
-    flaggedReads,
-    failures,
+    ...summary,
   }),
 );
-process.exitCode = mismatches + failures === 0 ? 0 : 1;
+process.exitCode = summary.mismatches + summary.failures === 0 ? 0 : 1;
 
 function delta(before: PdfCoreLazyStats, after: PdfCoreLazyStats) {
   return {
     bytesRead: after.bytesRead - before.bytesRead,
     rounds: after.rounds - before.rounds,
     strategy: after.strategy,
+    fallbackReason: after.fallbackReason,
   };
 }
