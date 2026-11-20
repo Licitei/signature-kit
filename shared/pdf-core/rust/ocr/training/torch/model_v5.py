@@ -17,7 +17,7 @@ ARCHITECTURES = {1: (8, 64, (1, 2, 4, 8)), 2: (16, 64, (1, 2, 4)), 3: (32, 32, (
 SLOPES = (0, -16, 16, -32, 32, -48, 48, -64, 64, -80, 80, -96, 96)
 
 
-def normalize(gray, *, geometry=False):
+def normalize(gray, *, geometry=False, robust=True):
     height, width = gray.shape
     samples = gray[::4, ::4].flatten()
     middle = samples.size // 2
@@ -44,6 +44,14 @@ def normalize(gray, *, geometry=False):
             source = np.arange(-pad, height + pad)[:, None] + shifts
             gray = np.where((source >= 0) & (source < height),
                             gray[source.clip(0, height - 1), np.arange(width)], paper)
+    if robust:
+        counts = (gray < cutoff).sum(axis=1)
+        peak = int(counts.max())
+        if peak:
+            rows = np.flatnonzero(counts >= (peak + 15) // 16)
+            upper, lower = int(rows[0]), int(rows[-1]) + 1
+            slack = min(4, (lower - upper) // 6)
+            gray = gray[max(0, upper - slack):lower + slack]
     return pack(gray, geometry=geometry, cutoff=cutoff, paper=paper)
 
 
@@ -98,9 +106,9 @@ class Recognizer(nn.Module):
         return layer(self.head, decoded, output_unit=LOGIT_UNIT, activate=False)
 
     @torch.no_grad()
-    def table(self, manifest, commit, seed):
+    def table(self, manifest, commit, seed, version=2):
         chunks = [
-            struct.pack("<4sHH32s20sQH", b"OCR5", 1, self.architecture, bytes.fromhex(manifest),
+            struct.pack("<4sHH32s20sQH", b"OCR5", version, self.architecture, bytes.fromhex(manifest),
                         bytes.fromhex(commit), seed, len(LABELS)),
             struct.pack(f"<{len(LABELS)}I", *map(ord, LABELS)),
         ]

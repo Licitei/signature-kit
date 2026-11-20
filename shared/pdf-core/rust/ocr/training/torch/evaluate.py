@@ -1,5 +1,6 @@
 import argparse
 from collections import Counter, defaultdict
+from functools import partial
 import hashlib
 import json
 from pathlib import Path
@@ -49,11 +50,12 @@ def crops(archive, directory):
 
 def fixture(args):
     table = args.table.read_bytes()
-    magic, _, architecture, manifest, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
-    normalize_line = normalize_v5 if magic == b"OCR5" else normalize
+    magic, version, architecture, manifest, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
+    normalize_line = partial(normalize_v5, robust=version >= 2) if magic == b"OCR5" else normalize
     model = (RecognizerV5(architecture) if magic == b"OCR5" else Recognizer()).eval()
     model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
-    if model.table(manifest.hex(), commit.hex(), seed) != table:
+    export = partial(model.table, version=version) if magic == b"OCR5" else model.table
+    if export(manifest.hex(), commit.hex(), seed) != table:
         raise ValueError("checkpoint and exported table differ")
     paths = sorted(args.archive.glob("*.pgm")) if args.archive.is_dir() else None
     cases = paths if paths is not None else list(records(args.archive))

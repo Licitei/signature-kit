@@ -1,4 +1,5 @@
 import argparse
+from functools import partial
 import hashlib
 import json
 import math
@@ -136,8 +137,9 @@ def train(args):
         table = (args.initial_run / "best.bin").read_bytes()
         model.load_state_dict(torch.load(args.initial_run / "best.pt", map_location="cpu",
                                          weights_only=True))
-        _, _, _, source, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
-        if model.table(source.hex(), commit.hex(), seed) != table:
+        magic, version, _, source, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
+        export = partial(model.table, version=version) if magic == b"OCR5" else model.table
+        if export(source.hex(), commit.hex(), seed) != table:
             raise ValueError("parent checkpoint and exported table differ")
         parent = hashlib.sha256(table).hexdigest()
         digest = hashlib.sha256(bytes.fromhex(training_data) + bytes.fromhex(parent)).hexdigest()

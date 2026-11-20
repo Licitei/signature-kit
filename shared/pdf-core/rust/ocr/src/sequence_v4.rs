@@ -68,22 +68,7 @@ pub(super) struct Bounds {
 }
 
 impl Bounds {
-    fn of<Pixel>(area: [usize; 4], cutoff: u8, pixel: &Pixel) -> Option<Self>
-    where
-        Pixel: Fn(usize, usize) -> u8,
-    {
-        let [x0, y0, x1, y1] = area;
-        let (mut left, mut top, mut right, mut bottom) = (x1, y1, x0, y0);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                if pixel(x, y) < cutoff {
-                    left = left.min(x);
-                    top = top.min(y);
-                    right = right.max(x.saturating_add(1));
-                    bottom = bottom.max(y.saturating_add(1));
-                }
-            }
-        }
+    pub(super) fn from_edges(left: usize, top: usize, right: usize, bottom: usize) -> Option<Self> {
         let width = right.checked_sub(left).filter(|&value| value != 0)?;
         let height = bottom.checked_sub(top).filter(|&value| value != 0)?;
         let scaled = width
@@ -103,6 +88,25 @@ impl Bounds {
             top,
             width,
         })
+    }
+
+    fn of<Pixel>(area: [usize; 4], cutoff: u8, pixel: &Pixel) -> Option<Self>
+    where
+        Pixel: Fn(usize, usize) -> u8,
+    {
+        let [x0, y0, x1, y1] = area;
+        let (mut left, mut top, mut right, mut bottom) = (x1, y1, x0, y0);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if pixel(x, y) < cutoff {
+                    left = left.min(x);
+                    top = top.min(y);
+                    right = right.max(x.saturating_add(1));
+                    bottom = bottom.max(y.saturating_add(1));
+                }
+            }
+        }
+        Self::from_edges(left, top, right, bottom)
     }
 
     pub(super) fn source_x(self, column: usize) -> usize {
@@ -410,8 +414,20 @@ pub(super) fn normalize<Pixel>(
 where
     Pixel: Fn(usize, usize) -> u8,
 {
+    pack(Bounds::of(area, cutoff, pixel), paper, pixel, frames)
+}
+
+pub(super) fn pack<Pixel>(
+    ink: Option<Bounds>,
+    paper: u8,
+    pixel: &Pixel,
+    frames: &mut Vec<[i8; INPUT]>,
+) -> Option<Bounds>
+where
+    Pixel: Fn(usize, usize) -> u8,
+{
     frames.clear();
-    let Some(bounds) = Bounds::of(area, cutoff, pixel) else {
+    let Some(bounds) = ink else {
         frames.push([0; INPUT]);
         return None;
     };

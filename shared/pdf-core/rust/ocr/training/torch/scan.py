@@ -15,7 +15,7 @@ class Scan:
         self.worker = None
 
     def __call__(self, image, rng, strength):
-        if rng.random() >= strength:
+        if rng.random() >= 0.875 * strength:
             return image
         profile = self.profiles[int(rng.integers(len(self.profiles)))]
         angle = profile["skewDegrees"] * rng.choice((-1, 1))

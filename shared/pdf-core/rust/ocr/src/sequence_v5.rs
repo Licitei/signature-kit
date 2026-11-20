@@ -11,7 +11,7 @@ use crate::sequence::{Dot, LineWords, nonnegative_dot_kernel, scalar_dot};
 use crate::sequence_beam::Decoder;
 use crate::sequence_v4::{
     Bounds, INPUT, MAX_CLASSES, MAX_FRAMES, ROW_HEADER, STRIDE, greedy, labels, layer_rows,
-    normalize, project, relu,
+    normalize, pack, project, relu,
 };
 
 pub(crate) const MAGIC: &[u8; 4] = b"OCR5";
@@ -51,6 +51,7 @@ pub(super) struct Sequence<'table> {
     down: Downsample<'table>,
     head: &'table [HeadRow],
     local: &'table [LocalRow],
+    robust: bool,
     stem: &'table [StemRow],
     up: &'table [MatrixRow],
 }
@@ -64,8 +65,16 @@ pub(super) struct Scratch {
     next_coarse: Vec<Activations>,
     points: Vec<(usize, usize)>,
     projection: Vec<u32>,
+    rows: Vec<InkRow>,
     scores: Box<[i32; MAX_CLASSES]>,
     shifts: Vec<i32>,
+}
+
+#[derive(Debug)]
+struct InkRow {
+    count: usize,
+    left: usize,
+    right: usize,
 }
 
 impl Default for Scratch {
@@ -78,6 +87,7 @@ impl Default for Scratch {
             intermediate: Vec::with_capacity(MAX_FRAMES),
             points: Vec::new(),
             projection: Vec::new(),
+            rows: Vec::new(),
             shifts: Vec::new(),
             scores: Box::new([0; MAX_CLASSES]),
         }
@@ -85,7 +95,13 @@ impl Default for Scratch {
 }
 
 impl Scratch {
-    fn normalize<Pixel>(&mut self, width: usize, height: usize, pixel: Pixel) -> Option<Bounds>
+    fn normalize<Pixel>(
+        &mut self,
+        width: usize,
+        height: usize,
+        robust: bool,
+        pixel: Pixel,
+    ) -> Option<Bounds>
     where
         Pixel: Fn(usize, usize) -> u8,
     {
@@ -150,11 +166,12 @@ impl Scratch {
             }
         }
         if slope == 0_i32 {
-            return normalize(
-                [0, 0, width, height],
+            return normalize_line(
+                [width, height],
                 cutoff,
                 paper,
                 &pixel,
+                robust.then_some(&mut self.rows),
                 &mut self.input,
             );
         }
@@ -174,11 +191,12 @@ impl Scratch {
                 })
                 .map_or(paper, |row| pixel(x, row))
         };
-        normalize(
-            [0, 0, width, height.saturating_add(pad.saturating_mul(2))],
+        normalize_line(
+            [width, height.saturating_add(pad.saturating_mul(2))],
             cutoff,
             paper,
             &aligned,
+            robust.then_some(&mut self.rows),
             &mut self.input,
         )
     }
@@ -190,7 +208,7 @@ impl<'table> Sequence<'table> {
     where
         Observe: FnMut(char),
     {
-        Self::input(scratch, image);
+        self.input(scratch, image);
         let language = model();
         let mut decoder = Decoder::default();
         decoder.reset();
@@ -213,9 +231,11 @@ impl<'table> Sequence<'table> {
         let header = table.strip_prefix(MAGIC)?;
         let (format, body) = header.split_first_chunk::<2>()?;
         let (architecture, metadata) = body.split_first_chunk::<2>()?;
-        if *format != [1, 0] {
-            return None;
-        }
+        let robust = match *format {
+            [1, 0] => false,
+            [2, 0] => true,
+            _ => return None,
+        };
         let (group, phase, dilations): (_, _, &[usize]) = match *architecture {
             [1, 0] => (8_usize, LOCAL, &[1, 2, 4, 8]),
             [2, 0] => (16_usize, LOCAL, &[1, 2, 4]),
@@ -260,13 +280,14 @@ impl<'table> Sequence<'table> {
             down: Downsample { data, group, phase },
             head,
             local,
+            robust,
             stem,
             up,
         })
     }
 
     pub(super) fn fixture(&self, image: &Gray, scratch: &mut Scratch) -> Vec<u8> {
-        Self::input(scratch, image);
+        self.input(scratch, image);
         let size = scratch.input.len().saturating_mul(INPUT);
         let mut result = u32::try_from(size)
             .unwrap_or_default()
@@ -286,10 +307,10 @@ impl<'table> Sequence<'table> {
         result
     }
 
-    fn input(scratch: &mut Scratch, image: &Gray) {
+    fn input(&self, scratch: &mut Scratch, image: &Gray) {
         let width = usize::try_from(image.width).unwrap_or_default();
         let height = usize::try_from(image.height).unwrap_or_default();
-        let _bounds = scratch.normalize(width, height, |x, y| {
+        let _bounds = scratch.normalize(width, height, self.robust, |x, y| {
             image
                 .pixels
                 .get(y.saturating_mul(width).saturating_add(x))
@@ -425,7 +446,7 @@ impl<'table> Sequence<'table> {
     ) where
         Observe: FnMut(char),
     {
-        Self::input(scratch, image);
+        self.input(scratch, image);
         greedy(
             self.classes,
             |step| self.logits(scratch, step),
@@ -451,7 +472,7 @@ impl<'table> Sequence<'table> {
                 top.saturating_add(u32::try_from(y).unwrap_or(u32::MAX)),
             )
         };
-        if let Some(bounds) = scratch.normalize(width, height, pixel) {
+        if let Some(bounds) = scratch.normalize(width, height, self.robust, pixel) {
             greedy(
                 self.classes,
                 |step| self.logits(scratch, step),
@@ -476,6 +497,72 @@ fn mix<const SIZE: usize>(dot: Dot, input: &[i8], weights: &[[u8; SIZE]], output
     }
 }
 
+fn normalize_line<Pixel>(
+    [width, height]: [usize; 2],
+    cutoff: u8,
+    paper: u8,
+    pixel: &Pixel,
+    stability: Option<&mut Vec<InkRow>>,
+    frames: &mut Vec<[i8; INPUT]>,
+) -> Option<Bounds>
+where
+    Pixel: Fn(usize, usize) -> u8,
+{
+    let Some(rows) = stability else {
+        return normalize([0, 0, width, height], cutoff, paper, pixel, frames);
+    };
+    rows.clear();
+    let mut peak = 0;
+    for yy in 0..height {
+        let mut row = InkRow {
+            count: 0,
+            left: width,
+            right: 0,
+        };
+        for xx in 0..width {
+            if pixel(xx, yy) < cutoff {
+                row.count = row.count.saturating_add(1);
+                row.left = row.left.min(xx);
+                row.right = xx.saturating_add(1);
+            }
+        }
+        peak = peak.max(row.count);
+        rows.push(row);
+    }
+    let bounds = if peak == 0 {
+        None
+    } else {
+        let floor = peak.div_ceil(16);
+        let start = rows
+            .iter()
+            .position(|row| row.count >= floor)
+            .unwrap_or_default();
+        let end = rows
+            .iter()
+            .rposition(|row| row.count >= floor)
+            .map_or(start, |row| row.saturating_add(1));
+        let slack = end.saturating_sub(start).saturating_div(6).min(4);
+        let upper = start.saturating_sub(slack);
+        let lower = end.saturating_add(slack).min(height);
+        let mut edges = (width, height, 0_usize, 0_usize);
+        for (yy, row) in rows
+            .iter()
+            .enumerate()
+            .skip(upper)
+            .take(lower.saturating_sub(upper))
+        {
+            if row.count != 0 {
+                edges.0 = edges.0.min(row.left);
+                edges.1 = edges.1.min(yy);
+                edges.2 = edges.2.max(row.right);
+                edges.3 = yy.saturating_add(1);
+            }
+        }
+        Bounds::from_edges(edges.0, edges.1, edges.2, edges.3)
+    };
+    pack(bounds, paper, pixel, frames)
+}
+
 fn skew_shift(x: usize, width: usize, slope: i32) -> i32 {
     let signed = i32::try_from(x)
         .unwrap_or(i32::MAX)
@@ -485,4 +572,35 @@ fn skew_shift(x: usize, width: usize, slope: i32) -> i32 {
     i32::try_from(magnitude)
         .unwrap_or_default()
         .saturating_mul(signed.signum())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scratch;
+
+    #[test]
+    fn supported_rows_exclude_isolated_padding_ink() {
+        let glyphs = |xx: usize, yy: usize| {
+            if (20..160).contains(&xx) && (24..43).contains(&yy) {
+                10
+            } else {
+                255
+            }
+        };
+        let noisy = |xx, yy| {
+            if matches!((xx, yy), (8, 3) | (111, 66) | (178, 10)) {
+                0
+            } else {
+                glyphs(xx, yy)
+            }
+        };
+        let mut clean = Scratch::default();
+        let mut filtered = Scratch::default();
+        let mut unfiltered = Scratch::default();
+        assert!(clean.normalize(180, 74, true, glyphs).is_some());
+        assert!(filtered.normalize(180, 74, true, noisy).is_some());
+        assert!(unfiltered.normalize(180, 74, false, noisy).is_some());
+        assert_eq!(clean.input, filtered.input);
+        assert_ne!(clean.input, unfiltered.input);
+    }
 }

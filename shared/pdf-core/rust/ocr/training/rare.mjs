@@ -31,17 +31,17 @@ function fontMetrics(font) {
     "glyf",
   ].map((name) => tables.get(name));
   if (
-    !cmap ||
+    cmap === undefined ||
     cmap.length < 4 ||
-    !head ||
+    head === undefined ||
     head.length < 54 ||
-    !hhea ||
+    hhea === undefined ||
     hhea.length < 36 ||
-    !hmtx ||
-    !loca ||
-    !maxp ||
+    hmtx === undefined ||
+    loca === undefined ||
+    maxp === undefined ||
     maxp.length < 6 ||
-    !glyf
+    glyf === undefined
   )
     return;
   const units = head.readUInt16BE(18);
@@ -49,8 +49,8 @@ function fontMetrics(font) {
   const metrics = hhea.readUInt16BE(34);
   const long = head.readInt16BE(50) === 1;
   if (
-    !units ||
-    !metrics ||
+    units === 0 ||
+    metrics === 0 ||
     4 * metrics > hmtx.length ||
     (glyphs + 1) * (long ? 4 : 2) > loca.length
   )
@@ -145,7 +145,7 @@ async function qpdf(args) {
 async function fontsFromCorpus(root, excluded, alphabet) {
   const candidates = [];
   for await (const key of documents(root)) {
-    if (!excluded.has(key) && sha(key).readUInt32BE() % 100 < 80) candidates.push(key);
+    if (excluded.has(key) === false && sha(key).readUInt32BE() % 100 < 80) candidates.push(key);
   }
   candidates.sort((left, right) => sha(left).readUInt32BE(4) - sha(right).readUInt32BE(4));
   const seen = new Set();
@@ -154,7 +154,7 @@ async function fontsFromCorpus(root, excluded, alphabet) {
     if (fonts.length >= 48) break;
     const path = join(root, key);
     const dictionary = await qpdf(["--json", "--json-key=qpdf", path]);
-    if (!dictionary) continue;
+    if (dictionary === undefined) continue;
     const refs = new Set(
       Object.values(JSON.parse(dictionary.toString()).qpdf[1]).flatMap((item) => {
         const value = item.value?.["/FontFile2"];
@@ -167,16 +167,19 @@ async function fontsFromCorpus(root, excluded, alphabet) {
         "--filtered-stream-data",
         path,
       ]);
-      if (!font) continue;
+      if (font === undefined) continue;
       const digest = sha(font).toString("hex");
       if (seen.has(digest)) continue;
       seen.add(digest);
       const glyph = fontMetrics(font);
-      if (glyph && [..." zaé0"].filter((char) => glyph(char)).length >= 3) {
+      if (
+        glyph !== undefined &&
+        Array.from(" zaé0").filter((char) => glyph(char) !== undefined).length >= 3
+      ) {
         const coverage = new Map(
           [...alphabet].flatMap((char) => {
             const metric = glyph(char);
-            return metric ? [[char, metric]] : [];
+            return metric === undefined ? [] : [[char, metric]];
           }),
         );
         if (coverage.has(" ") && coverage.size >= 40) fonts.push({ font, coverage, key, digest });
@@ -205,7 +208,11 @@ async function sentenceCandidates(shards, alphabet) {
         .replace(/\s+/gu, " ")
         .trim();
       const chars = new Set(text);
-      if (text.length < 8 || text.length > 105 || [...chars].some((char) => !alphabet.has(char)))
+      if (
+        text.length < 8 ||
+        text.length > 105 ||
+        [...chars].some((char) => alphabet.has(char) === false)
+      )
         continue;
       for (const char of chars) counts.set(char, (counts.get(char) ?? 0) + 1);
       candidates.set(text, chars);
@@ -364,5 +371,11 @@ for (const [index, samples] of lines.entries()) {
 }
 await writeFile(join(output, "shards.txt"), shards.join("\n") + "\n");
 console.log(
-  JSON.stringify({ lines: count, fonts: shards.length, coverage: [...covered].sort().join("") }),
+  JSON.stringify({
+    lines: count,
+    fonts: shards.length,
+    coverage: [...covered]
+      .sort((left, right) => (left < right ? -1 : Number(left !== right)))
+      .join(""),
+  }),
 );
