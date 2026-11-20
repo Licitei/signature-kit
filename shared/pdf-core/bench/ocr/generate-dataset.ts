@@ -69,7 +69,10 @@ if (
   !Number.isSafeInteger(partitions) ||
   partitions < 1 ||
   partition >= partitions ||
-  (!trainingShards && (partitions !== 1 || values["lines-per-page"] !== undefined || values["exclude-training"] !== undefined)) ||
+  (!trainingShards &&
+    (partitions !== 1 ||
+      values["lines-per-page"] !== undefined ||
+      values["exclude-training"] !== undefined)) ||
   !Number.isSafeInteger(linesPerPage) ||
   linesPerPage < 1 ||
   !["all", "train", "val", "test"].includes(selectedSplit ?? "") ||
@@ -84,8 +87,10 @@ if (
 const pdfRoot = resolve(source);
 const output = resolve(values.output);
 const root = (await stat(pdfRoot)).isDirectory() ? pdfRoot : resolve(pdfRoot, "..");
-const excluded = new Set(values["exclude-training"] === undefined ? [] :
-  (await Bun.file(values["exclude-training"]).text()).split(/\r?\n/u).filter(Boolean),
+const excluded = new Set(
+  values["exclude-training"] === undefined
+    ? []
+    : (await Bun.file(values["exclude-training"]).text()).split(/\r?\n/u).filter(Boolean),
 );
 const labeler = labelSource === "pdf-core" ? await import("./glyph-labels") : undefined;
 const pdfCore =
@@ -377,7 +382,17 @@ for await (const file of pdfFiles(pdfRoot)) {
   documents += 1;
   const directory = join(output, split);
   const shardId = createHash("sha256")
-    .update(JSON.stringify({ key, seed, dpi, maxPages, preset, linesPerPage, ...(preset === "clean" ? { rasterVersion: 2 } : {}) }))
+    .update(
+      JSON.stringify({
+        key,
+        seed,
+        dpi,
+        maxPages,
+        preset,
+        linesPerPage,
+        ...(preset === "clean" ? { rasterVersion: 2 } : {}),
+      }),
+    )
     .digest("hex");
   const target = join(directory, `${shardId}.ocrl`);
   if (trainingShards && (await Bun.file(target).exists()) === true) {

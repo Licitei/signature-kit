@@ -1,5 +1,5 @@
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +14,7 @@ import torch
 
 from data import pgm, raster, record_text, records
 from model import LOGIT_UNIT, Recognizer, normalize
+from model_v5 import Recognizer as RecognizerV5, normalize as normalize_v5
 from train import raw_metrics
 
 
@@ -22,8 +23,8 @@ def packet(gray, table):
     return struct.pack("<III", width, height, len(table)) + table + gray.tobytes()
 
 
-def prepare_fixture(gray, model):
-    normalized = normalize(gray)
+def prepare_fixture(gray, model, normalize_line):
+    normalized = normalize_line(gray)
     features = torch.from_numpy(normalized.T.astype(np.float32))[None, ...]
     with torch.inference_mode():
         logits = model(features, torch.tensor([len(normalized)]), "int8")
@@ -47,26 +48,31 @@ def crops(archive, directory):
 
 
 def fixture(args):
-    model = Recognizer().eval()
-    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     table = args.table.read_bytes()
-    table_header = struct.unpack_from("<4sHH32s20sQH", table)
-    _, _, _, manifest, commit, seed, _ = table_header
+    magic, _, architecture, manifest, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
+    normalize_line = normalize_v5 if magic == b"OCR5" else normalize
+    model = (RecognizerV5(architecture) if magic == b"OCR5" else Recognizer()).eval()
+    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
     if model.table(manifest.hex(), commit.hex(), seed) != table:
         raise ValueError("checkpoint and exported table differ")
-    cases = list(records(args.archive))
+    paths = sorted(args.archive.glob("*.pgm")) if args.archive.is_dir() else None
+    cases = paths if paths is not None else list(records(args.archive))
     if len(cases) < 128:
         raise ValueError("parity requires at least 128 source lines")
-    with tempfile.TemporaryDirectory(prefix="ocr-v4-fixtures-") as temporary, args.archive.open("rb") as file:
+    with tempfile.TemporaryDirectory(prefix="ocr-fixtures-") as temporary:
         directory = Path(temporary)
         digest = hashlib.sha256()
         for index in range(128):
             line = cases[index * len(cases) // 128]
-            file.seek(line.offset)
-            gray = raster(file, line)
+            if paths is not None:
+                gray = pgm(line)
+            else:
+                with args.archive.open("rb") as file:
+                    file.seek(line.offset)
+                    gray = raster(file, line)
             source = directory / f"{index:03}.packet"
             source.write_bytes(packet(gray, table))
-            expected = prepare_fixture(gray, model)
+            expected = prepare_fixture(gray, model, normalize_line)
             actual = subprocess.check_output([args.native, "fixture", source])
             if expected != actual:
                 difference = next((i for i, pair in enumerate(zip(expected, actual)) if pair[0] != pair[1]), None)
@@ -82,13 +88,23 @@ def evaluate_native(args):
     pairs = []
     times = []
     table = args.table.read_bytes()
-    with tempfile.TemporaryDirectory(prefix="ocr-v4-evaluate-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="ocr-evaluate-") as temporary:
         source = Path(temporary) / "line.packet"
         for label in sorted(args.dataset.glob("*.json")):
-            reference = record_text(json.loads(label.read_text())["text"])
-            source.write_bytes(packet(pgm(label.with_suffix(".pgm")), table))
+            metadata = json.loads(label.read_text())
+            reference = unicodedata.normalize("NFC", metadata["text"])
+            image = label.with_suffix(".pgm")
+            if not args.pages:
+                source.write_bytes(packet(pgm(image), table))
             start = time.perf_counter()
-            observed = subprocess.check_output([args.native, "text", source], text=True)
+            if args.pages:
+                predicted = subprocess.check_output([
+                    args.native, image, "--dpi", str(metadata["dpi"]), "--ctc-model", args.table,
+                ], text=True)
+                observed = json.loads(predicted)["text"]
+            else:
+                reference = record_text(reference)
+                observed = subprocess.check_output([args.native, "text", source], text=True)
             times.append(time.perf_counter() - start)
             pairs.append((reference, unicodedata.normalize("NFC", observed).strip()))
     report(pairs, sum(times))
@@ -97,13 +113,22 @@ def evaluate_native(args):
 def report(pairs, seconds):
     if not pairs:
         raise ValueError("empty evaluation dataset")
-    raw = raw_metrics(pairs)
-    normalized = raw_metrics([(record_text(reference).lower(), record_text(observed).lower())
-                              for reference, observed in pairs])
-    for result in (raw, normalized):
-        result["cer"] = result["character_edits"] / result["characters"]
-        result["wer"] = result["word_edits"] / result["words"]
-    print(json.dumps(dict(raw=raw, normalized=normalized, wall_ms_per_line=seconds * 1000 / len(pairs))))
+    def metrics(samples):
+        result = raw_metrics(samples)
+        hits = 0
+        total = 0
+        for reference, predicted in samples:
+            expected, actual = Counter(reference.split()), Counter(predicted.split())
+            hits += (expected & actual).total()
+            total += expected.total() + actual.total()
+        result["cer"] = result["character_edits"] / max(1, result["characters"])
+        result["wer"] = result["word_edits"] / max(1, result["words"])
+        result["bag_f1"] = 2 * hits / max(1, total)
+        return result
+
+    normalized = [(record_text(ref).lower(), record_text(guess).lower()) for ref, guess in pairs]
+    print(json.dumps(dict(raw=metrics(pairs), normalized=metrics(normalized),
+                          wall_ms_per_image=seconds * 1000 / len(pairs))))
 
 
 def evaluate_tesseract(args):
@@ -113,7 +138,7 @@ def evaluate_tesseract(args):
         groups[data["dpi"]].append((label.with_suffix(".pgm").name, record_text(data["text"])))
     pairs = []
     seconds = 0.0
-    with tempfile.TemporaryDirectory(prefix="ocr-v4-tesseract-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="ocr-tesseract-") as temporary:
         images = Path(temporary) / "images.txt"
         for dpi, entries in sorted(groups.items()):
             images.write_text("".join(f"/dataset/{path}\n" for path, _ in entries))
@@ -149,6 +174,7 @@ if __name__ == "__main__":
     native = commands.add_parser("native")
     for option in ("table", "dataset", "native"):
         native.add_argument(option, type=Path)
+    native.add_argument("--pages", action="store_true")
     baseline = commands.add_parser("tesseract")
     baseline.add_argument("model", choices=("standard", "fast"))
     baseline.add_argument("dataset", type=Path)

@@ -6,8 +6,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from model import (
-    ACTIVATION_UNIT, HEIGHT, INK_HEIGHT, LABELS, LOGIT_UNIT, MAX_FRAMES,
-    PADDING, STRIDE, integer_layer, normalize as pack, quantize,
+    ACTIVATION_UNIT, HEIGHT, LABELS, LOGIT_UNIT, STRIDE, integer_layer,
+    normalize as pack, quantize,
 )
 
 
@@ -19,9 +19,9 @@ SLOPES = (0, -16, 16, -32, 32, -48, 48, -64, 64, -80, 80, -96, 96)
 
 def normalize(gray, *, geometry=False):
     height, width = gray.shape
-    paper = int(np.partition(gray[::4, ::4].flatten(), gray[::4, ::4].size // 2)[
-        gray[::4, ::4].size // 2
-    ])
+    samples = gray[::4, ::4].flatten()
+    middle = samples.size // 2
+    paper = int(np.partition(samples, middle)[middle])
     cutoff = max(72, min(196, paper - 43))
     if width >= 80:
         y, x = np.nonzero(gray[:, 1::4] < cutoff)

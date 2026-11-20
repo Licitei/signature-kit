@@ -705,40 +705,40 @@ async function extractCorpus(wasmPath, root, destination) {
 }
 
 if (import.meta.main) {
-const [command, ...args] = process.argv.slice(2);
-if (command === "bootstrap" && args.length === 5) {
-  await bootstrap(...args);
-} else if (command === "import" && args.length >= 2) {
-  const [directory, output, ...flags] = args;
-  const limitFlag = flags.find((flag) => flag.startsWith("--limit="));
-  const limit = limitFlag === undefined ? Number.MAX_SAFE_INTEGER : Number(limitFlag.slice(8));
-  if (
-    !Number.isSafeInteger(limit) ||
-    limit < 1 ||
-    flags.some((flag) => flag !== "--jpeg" && flag !== "--text-only-lines" && flag !== limitFlag)
-  ) {
-    fail("Expected --jpeg, --text-only-lines or --limit=<positive integer>");
+  const [command, ...args] = process.argv.slice(2);
+  if (command === "bootstrap" && args.length === 5) {
+    await bootstrap(...args);
+  } else if (command === "import" && args.length >= 2) {
+    const [directory, output, ...flags] = args;
+    const limitFlag = flags.find((flag) => flag.startsWith("--limit="));
+    const limit = limitFlag === undefined ? Number.MAX_SAFE_INTEGER : Number(limitFlag.slice(8));
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      flags.some((flag) => flag !== "--jpeg" && flag !== "--text-only-lines" && flag !== limitFlag)
+    ) {
+      fail("Expected --jpeg, --text-only-lines or --limit=<positive integer>");
+    }
+    await importDataset(
+      directory,
+      output,
+      flags.includes("--jpeg"),
+      limit,
+      flags.includes("--text-only-lines"),
+    );
+  } else if (command === "scans" && args.length === 3) {
+    await importScans(...args);
+  } else if (command === "corpus" && args.length === 3) {
+    await extractCorpus(...args);
+  } else {
+    console.error(
+      "Usage: bun generate.mjs bootstrap <pdf-core.wasm> <out-dir> <train-font-dir> <val-font-dir> <test-font-dir>",
+    );
+    console.error(
+      "       bun generate.mjs import <dataset-split-dir> <output.ocrt> [--jpeg] [--limit=N] [--text-only-lines]",
+    );
+    console.error("       bun generate.mjs scans <fixture-dir> <manifest.json> <output.ocrt>");
+    console.error("       bun generate.mjs corpus <pdf-core.wasm> <native-pdf-root> <corpus.txt>");
+    process.exitCode = 2;
   }
-  await importDataset(
-    directory,
-    output,
-    flags.includes("--jpeg"),
-    limit,
-    flags.includes("--text-only-lines"),
-  );
-} else if (command === "scans" && args.length === 3) {
-  await importScans(...args);
-} else if (command === "corpus" && args.length === 3) {
-  await extractCorpus(...args);
-} else {
-  console.error(
-    "Usage: bun generate.mjs bootstrap <pdf-core.wasm> <out-dir> <train-font-dir> <val-font-dir> <test-font-dir>",
-  );
-  console.error(
-    "       bun generate.mjs import <dataset-split-dir> <output.ocrt> [--jpeg] [--limit=N] [--text-only-lines]",
-  );
-  console.error("       bun generate.mjs scans <fixture-dir> <manifest.json> <output.ocrt>");
-  console.error("       bun generate.mjs corpus <pdf-core.wasm> <native-pdf-root> <corpus.txt>");
-  process.exitCode = 2;
-}
 }

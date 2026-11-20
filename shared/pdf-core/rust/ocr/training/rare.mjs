@@ -21,19 +21,41 @@ function fontMetrics(font) {
     if (offset + length > font.length) return;
     tables.set(font.toString("ascii", entry, entry + 4), font.subarray(offset, offset + length));
   }
-  const [cmap, head, hhea, hmtx, loca, maxp, glyf] =
-    ["cmap", "head", "hhea", "hmtx", "loca", "maxp", "glyf"].map((name) => tables.get(name));
+  const [cmap, head, hhea, hmtx, loca, maxp, glyf] = [
+    "cmap",
+    "head",
+    "hhea",
+    "hmtx",
+    "loca",
+    "maxp",
+    "glyf",
+  ].map((name) => tables.get(name));
   if (
-    cmap?.length < 4 || !cmap || head?.length < 54 || !head || hhea?.length < 36 || !hhea ||
-    !hmtx || !loca || maxp?.length < 6 || !maxp || !glyf
-  ) return;
+    !cmap ||
+    cmap.length < 4 ||
+    !head ||
+    head.length < 54 ||
+    !hhea ||
+    hhea.length < 36 ||
+    !hmtx ||
+    !loca ||
+    !maxp ||
+    maxp.length < 6 ||
+    !glyf
+  )
+    return;
   const units = head.readUInt16BE(18);
   const glyphs = maxp.readUInt16BE(4);
   const metrics = hhea.readUInt16BE(34);
   const long = head.readInt16BE(50) === 1;
-  if (!units || !metrics || 4 * metrics > hmtx.length || (glyphs + 1) * (long ? 4 : 2) > loca.length)
+  if (
+    !units ||
+    !metrics ||
+    4 * metrics > hmtx.length ||
+    (glyphs + 1) * (long ? 4 : 2) > loca.length
+  )
     return;
-  const offset = (gid) => long ? loca.readUInt32BE(4 * gid) : 2 * loca.readUInt16BE(2 * gid);
+  const offset = (gid) => (long ? loca.readUInt32BE(4 * gid) : 2 * loca.readUInt16BE(2 * gid));
   const mapping = new Map();
   const cmaps = cmap.readUInt16BE(2);
   if (4 + 8 * cmaps > cmap.length) return;
@@ -43,8 +65,10 @@ function fontMetrics(font) {
     const platform = cmap.readUInt16BE(entry);
     const encoding = cmap.readUInt16BE(entry + 2);
     const start = cmap.readUInt32BE(entry + 4);
-    if ((platform === 0 || (platform === 3 && [1, 10].includes(encoding))) &&
-        start + 2 <= cmap.length)
+    if (
+      (platform === 0 || (platform === 3 && [1, 10].includes(encoding))) &&
+      start + 2 <= cmap.length
+    )
       subtables.push(cmap.subarray(start));
   }
   return (char) => {
@@ -55,7 +79,7 @@ function fontMetrics(font) {
       if (gid <= 0 || gid >= glyphs) continue;
       const position = offset(gid);
       if (char !== " " && (position >= offset(gid + 1) || position >= glyf.length)) continue;
-      const width = Math.round(hmtx.readUInt16BE(4 * Math.min(gid, metrics - 1)) * 1000 / units);
+      const width = Math.round((hmtx.readUInt16BE(4 * Math.min(gid, metrics - 1)) * 1000) / units);
       const result = { gid, width };
       mapping.set(char, result);
       return result;
@@ -108,10 +132,12 @@ function glyphId(data, code) {
 
 async function qpdf(args) {
   const process = Bun.spawn(["qpdf", "--warning-exit-0", ...args], {
-    stdout: "pipe", stderr: "inherit",
+    stdout: "pipe",
+    stderr: "inherit",
   });
   const [bytes, status] = await Promise.all([
-    new Response(process.stdout).arrayBuffer(), process.exited,
+    new Response(process.stdout).arrayBuffer(),
+    process.exited,
   ]);
   return status === 0 ? Buffer.from(bytes) : undefined;
 }
@@ -129,23 +155,30 @@ async function fontsFromCorpus(root, excluded, alphabet) {
     const path = join(root, key);
     const dictionary = await qpdf(["--json", "--json-key=qpdf", path]);
     if (!dictionary) continue;
-    const refs = new Set(Object.values(JSON.parse(dictionary.toString()).qpdf[1]).flatMap((item) => {
-      const value = item.value?.["/FontFile2"];
-      return typeof value === "string" && /^\d+ \d+ R$/u.test(value) ? [value] : [];
-    }));
+    const refs = new Set(
+      Object.values(JSON.parse(dictionary.toString()).qpdf[1]).flatMap((item) => {
+        const value = item.value?.["/FontFile2"];
+        return typeof value === "string" && /^\d+ \d+ R$/u.test(value) ? [value] : [];
+      }),
+    );
     for (const ref of refs) {
-      const font = await qpdf([`--show-object=${ref.split(" ").slice(0, 2).join(",")}`,
-        "--filtered-stream-data", path]);
+      const font = await qpdf([
+        `--show-object=${ref.split(" ").slice(0, 2).join(",")}`,
+        "--filtered-stream-data",
+        path,
+      ]);
       if (!font) continue;
       const digest = sha(font).toString("hex");
       if (seen.has(digest)) continue;
       seen.add(digest);
       const glyph = fontMetrics(font);
       if (glyph && [..." zaé0"].filter((char) => glyph(char)).length >= 3) {
-        const coverage = new Map([...alphabet].flatMap((char) => {
-          const metric = glyph(char);
-          return metric ? [[char, metric]] : [];
-        }));
+        const coverage = new Map(
+          [...alphabet].flatMap((char) => {
+            const metric = glyph(char);
+            return metric ? [[char, metric]] : [];
+          }),
+        );
         if (coverage.has(" ") && coverage.size >= 40) fonts.push({ font, coverage, key, digest });
       }
     }
@@ -167,7 +200,10 @@ async function sentenceCandidates(shards, alphabet) {
       offset = start + length;
       assert(offset <= input.size && length > 0 && pixels > 0, "Corrupt OCRL source");
       if (length > 160 || length < 8 || mix(start) % 13 !== 0) continue;
-      const text = (await input.slice(start, offset).text()).normalize("NFC").replace(/\s+/gu, " ").trim();
+      const text = (await input.slice(start, offset).text())
+        .normalize("NFC")
+        .replace(/\s+/gu, " ")
+        .trim();
       const chars = new Set(text);
       if (text.length < 8 || text.length > 105 || [...chars].some((char) => !alphabet.has(char)))
         continue;
@@ -175,10 +211,16 @@ async function sentenceCandidates(shards, alphabet) {
       candidates.set(text, chars);
     }
   }
-  return [...candidates].map(([text, chars]) => ({
-    text, chars, rate: Math.min(...[...chars].map((char) => counts.get(char))),
-  })).sort((left, right) => left.rate - right.rate ||
-    sha(left.text).readUInt32BE() - sha(right.text).readUInt32BE());
+  return [...candidates]
+    .map(([text, chars]) => ({
+      text,
+      chars,
+      rate: Math.min(...[...chars].map((char) => counts.get(char))),
+    }))
+    .sort(
+      (left, right) =>
+        left.rate - right.rate || sha(left.text).readUInt32BE() - sha(right.text).readUInt32BE(),
+    );
 }
 
 async function renderSheet(pdf, ocr, font, lines) {
@@ -191,7 +233,7 @@ async function renderSheet(pdf, ocr, font, lines) {
     const codes = [...text].map((char) => {
       const { gid, width } = font.coverage.get(char);
       widths.set(gid, width);
-      advance += width * size / 1000;
+      advance += (width * size) / 1000;
       return gid.toString(16).padStart(4, "0");
     });
     width = Math.max(width, Math.ceil(advance + 24));
@@ -218,8 +260,9 @@ async function renderSheet(pdf, ocr, font, lines) {
   new Uint8Array(ocr.memory.buffer, ptr, payload.length).set(payload);
   const output = ocr.pdf_core_ocr_rasterize(ptr, payload.length, 1000);
   assert(output, "OCR rasterizer rejected glyph sheet");
-  storage.defer(() => ocr.pdf_core_ocr_raster_free(output, pixels.length + 8));
   const view = new DataView(ocr.memory.buffer, output);
+  const length = view.getUint32(0, true) * view.getUint32(4, true) + 8;
+  storage.defer(() => ocr.pdf_core_ocr_raster_free(output, length));
   assert.equal(view.getUint32(0, true), width);
   assert.equal(view.getUint32(4, true), height);
   const pixels = new Uint8Array(ocr.memory.buffer, output + 8, width * height);
@@ -240,17 +283,26 @@ async function renderSheet(pdf, ocr, font, lines) {
       }
     }
     assert(minimumX < maximumX && minimumY < maximumY, "Embedded font produced a blank line");
-    return cleanLine({ width, height, pixels }, [minimumX, minimumY, maximumX, maximumY],
-      encoder.encode(text));
+    return cleanLine(
+      { width, height, pixels },
+      [minimumX, minimumY, maximumX, maximumY],
+      encoder.encode(text),
+    );
   });
 }
 
 const [corePath, ocrPath, corpus, roster, excludes, output, countArg] = process.argv.slice(2);
 const count = Number(countArg);
-assert(Number.isSafeInteger(count) && count > 0,
-  "Usage: bun rare.mjs PDF_WASM OCR_WASM CORPUS TRAIN_ROSTER EXCLUDED_PATHS OUTPUT COUNT");
-const alphabet = new Set((await readFile(join(import.meta.dir, "torch/charset.txt"), "utf8"))
-  .trim().split(/\s+/u).map((code) => String.fromCodePoint(Number.parseInt(code, 16))));
+assert(
+  Number.isSafeInteger(count) && count > 0,
+  "Usage: bun rare.mjs PDF_WASM OCR_WASM CORPUS TRAIN_ROSTER EXCLUDED_PATHS OUTPUT COUNT",
+);
+const alphabet = new Set(
+  (await readFile(join(import.meta.dir, "torch/charset.txt"), "utf8"))
+    .trim()
+    .split(/\s+/u)
+    .map((code) => String.fromCodePoint(Number.parseInt(code, 16))),
+);
 const excluded = new Set((await readFile(excludes, "utf8")).trim().split(/\r?\n/u));
 const roots = (await readFile(roster, "utf8")).trim().split(/\r?\n/u);
 const [fonts, sentences, pdf, ocrWasm] = await Promise.all([
@@ -287,21 +339,30 @@ for (const [index, samples] of lines.entries()) {
   const path = resolve(output, `rare-${index.toString().padStart(3, "0")}.ocrl`);
   const partial = path + ".partial";
   const writer = Bun.file(partial).writer();
-  try {
-    writer.write(trainingLineHeader);
-    for (let i = 0; i < samples.length; i += 24) {
-      for (const record of await renderSheet(pdf, ocrWasm, fonts[index], samples.slice(i, i + 24)))
-        writer.write(record);
-    }
-    await writer.end();
-    await rename(partial, path);
-    shards.push(path);
-  } finally {
-    await writer.end();
+  let closed = false;
+  await using cleanup = new AsyncDisposableStack();
+  cleanup.defer(async () => {
+    if (!closed) await writer.end();
     await rm(partial, { force: true });
+  });
+  writer.write(trainingLineHeader);
+  for (let i = 0; i < samples.length; i += 24) {
+    for (const record of await renderSheet(pdf, ocrWasm, fonts[index], samples.slice(i, i + 24)))
+      writer.write(record);
   }
-  console.log(JSON.stringify({ source: fonts[index].key, sha256: fonts[index].digest,
-    lines: samples.length }));
+  await writer.end();
+  closed = true;
+  await rename(partial, path);
+  shards.push(path);
+  console.log(
+    JSON.stringify({
+      source: fonts[index].key,
+      sha256: fonts[index].digest,
+      lines: samples.length,
+    }),
+  );
 }
 await writeFile(join(output, "shards.txt"), shards.join("\n") + "\n");
-console.log(JSON.stringify({ lines: count, fonts: shards.length, coverage: [...covered].sort().join("") }));
+console.log(
+  JSON.stringify({ lines: count, fonts: shards.length, coverage: [...covered].sort().join("") }),
+);
