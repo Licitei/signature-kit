@@ -712,7 +712,7 @@ fn references(dict: &Dict, refs: &mut Vec<ObjRef>) {
     let annotation = object_type == Some(b"Annot")
         || dict.get(b"Subtype").and_then(Object::as_name) == Some(b"Widget");
     for (key, value) in &dict.entries {
-        if annotation && matches!(key.as_slice(), b"Parent" | b"P") {
+        if annotation && matches!(key.as_slice(), b"Parent" | b"P" | b"V") {
             continue;
         }
         if key == b"XObject"

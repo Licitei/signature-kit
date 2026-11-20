@@ -19,6 +19,19 @@ const paths = [
   "encryption/signed.pdf",
 ].sort((left, right) => left.localeCompare(right));
 
+const pdfObjects = (objects: ReadonlyArray<string>) => {
+  let pdf = "%PDF-1.7\n";
+  const offsets = objects.map((object, index) => {
+    const offset = pdf.length;
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset.toString().padStart(10, "0");
+  });
+  const xref = pdf.length;
+  const size = objects.length + 1;
+  pdf += `xref\n0 ${size}\n0000000000 65535 f \n${offsets.map((offset) => `${offset} 00000 n \n`).join("")}trailer\n<< /Root 1 0 R /Size ${size} >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+};
+
 describe("PdfCore byte-range documents", () => {
   for (const name of paths) {
     it.effect(
@@ -214,15 +227,7 @@ describe("PdfCore byte-range documents", () => {
           stream(form, "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Selected) Tj ET"),
           stream(form, " ".repeat(256 * 1024)),
         ];
-        let pdf = "%PDF-1.7\n";
-        const offsets = objects.map((object, index) => {
-          const offset = pdf.length;
-          pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
-          return offset.toString().padStart(10, "0");
-        });
-        const xref = pdf.length;
-        pdf += `xref\n0 8\n0000000000 65535 f \n${offsets.map((offset) => `${offset} 00000 n \n`).join("")}trailer\n<< /Root 1 0 R /Size 8 >>\nstartxref\n${xref}\n%%EOF\n`;
-        const bytes = new TextEncoder().encode(pdf);
+        const bytes = pdfObjects(objects);
         const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), { gapBytes: 0 });
         const options = { pageIndexes: [0] };
         const result = yield* doc.text(options);
@@ -232,6 +237,36 @@ describe("PdfCore byte-range documents", () => {
         expect(stats.strategy).toBe("lazy");
         expect(stats.rounds).toBe(2);
         expect(stats.bytesRead).toBeLessThan(bytes.byteLength / 2);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("omits the signature payload when extracting or rendering a signed page", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const content = "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Signed page) Tj ET";
+        const appearance = "0 0 20 10 re f";
+        const pdf = pdfObjects([
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
+          `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+          "<< /Type /Annot /Subtype /Widget /FT /Sig /V 6 0 R /Rect [50 50 70 60] /AP << /N 7 0 R >> >>",
+          `<< /Type /Sig /Contents <${"00".repeat(256 * 1024)}> >>`,
+          `<< /Type /XObject /Subtype /Form /BBox [0 0 20 10] /Length ${appearance.length} >>\nstream\n${appearance}\nendstream`,
+        ]);
+        const document = yield* core.openLazy(pdfCoreBytesSource(pdf), { gapBytes: 0 });
+        const options = { pageIndexes: [0] };
+        const text = yield* document.text(options);
+        expect(text).toStrictEqual(yield* core.text(pdf, options));
+        expect(text.join(" ")).toContain("Signed page");
+        expect(yield* document.renderPages(options)).toStrictEqual(
+          yield* core.renderPages(pdf, options),
+        );
+        const stats = yield* document.stats;
+        expect(stats.strategy).toBe("lazy");
+        expect(stats.bytesRead).toBeLessThan(pdf.byteLength / 2);
       }),
     ).pipe(Effect.provide(layer)),
   );
