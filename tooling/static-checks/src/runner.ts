@@ -89,7 +89,7 @@ export const runDeclarativeChecks = (
   let failed = runWorkspaceLayerChecks(rootDirectory);
   for (const configuredRoot of selectedRoots) {
     const root = resolve(rootDirectory, configuredRoot);
-    for (const file of walk(root)) {
+    for (const file of walk(root, rootDirectory)) {
       const source = readFileSync(file, "utf8");
       if (runFileDeclarativeChecks(file, source, rootDirectory)) {
         failed = true;

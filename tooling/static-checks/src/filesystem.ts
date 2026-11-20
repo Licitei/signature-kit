@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import {
   checkedExtensions,
   packageToolingPathPattern,
@@ -21,26 +21,16 @@ export const shouldSkip = (path: string): boolean => {
   );
 };
 
-export function* walk(root: string): Generator<string> {
-  const rootStats = statSync(root);
-  if (rootStats.isFile()) {
-    if (!shouldSkip(root) && hasCheckedExtension(root)) {
-      yield root;
-    }
-    return;
-  }
+export function* walk(root: string, workspace: string): Generator<string> {
+  const displayPath = relative(workspace, root).replaceAll("\\", "/");
+  if (shouldSkip(displayPath)) return;
 
-  for (const entry of readdirSync(root)) {
-    const path = join(root, entry);
-    const normalized = path.replaceAll("\\", "/");
-
-    if (shouldSkip(normalized)) continue;
-
-    const stats = statSync(normalized);
-    if (stats.isDirectory()) {
-      yield* walk(path);
-    } else if (stats.isFile() && hasCheckedExtension(normalized)) {
-      yield normalized;
+  const stats = statSync(root);
+  if (stats.isFile() && hasCheckedExtension(displayPath)) {
+    yield root;
+  } else if (stats.isDirectory()) {
+    for (const entry of readdirSync(root)) {
+      yield* walk(join(root, entry), workspace);
     }
   }
 }

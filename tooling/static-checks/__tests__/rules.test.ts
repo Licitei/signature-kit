@@ -763,6 +763,11 @@ export const ExampleProvider = () =>
       "/*\nthrow new Error('comment');\nimport '@signature-kit/unused';\n*/\nexport const value = true;\n",
     );
     expect(runDeclarativeChecks(root, [file])).toBe(false);
+    const cache = join(root, "core/example/.cache/venv");
+    await mkdir(cache, { recursive: true });
+    await writeFile(join(cache, "dependency.js"), "throw new Error('external dependency');");
+    expect(runDeclarativeChecks(root, ["core"])).toBe(false);
+
     const badFile = join(root, "core/example/src/bad.ts");
     await writeFile(badFile, "throw\nnew SignatureKitError({ code: 'invalid' });\n");
     expect(runDeclarativeChecks(root, [badFile])).toBe(true);
