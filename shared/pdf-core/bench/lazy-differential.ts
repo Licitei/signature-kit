@@ -3,7 +3,7 @@ import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Effect, Schema } from "effect";
 
-import { PdfCoreError } from "../dist/config.js";
+import { PdfCoreError, PdfCoreErrorCodeValue } from "../dist/config.js";
 import type { PdfCoreLazyStats, PdfCoreTextOptions } from "../dist/config.js";
 import { makePdfCore, pdfCoreBlobSource, pdfCoreBytesSource } from "../dist/pdf-core.js";
 import type { PdfCoreLazyDocument, PdfCoreRangeSource } from "../dist/pdf-core.js";
@@ -75,7 +75,7 @@ const outcome = (read: () => Promise<unknown>) =>
     .then(
       (value) => ({ status: "ok", digest: digest(value) }),
       (error: unknown) =>
-        isPdfCoreError(error)
+        isPdfCoreError(error) && error.code !== PdfCoreErrorCodeValue.wasmExecutionFailed
           ? { status: "error", code: error.code, operation: error.operation }
           : { status: "defect", reason: String(error) },
     );
@@ -119,23 +119,38 @@ const wasm = await readFile(new URL("../dist/pdf-core.wasm", import.meta.url));
 const module = await WebAssembly.compile(wasm);
 const checkpoint = values.checkpoint;
 const completed = new Set<number>();
+const countersSchema = Schema.Struct({
+  compared: Schema.Int,
+  mismatches: Schema.Int,
+  flaggedReads: Schema.Int,
+  failures: Schema.Int,
+});
+const readCounters = Schema.decodeUnknownPromise(Schema.Struct({ counters: countersSchema }));
 if (checkpoint !== undefined) {
   await mkdir(checkpoint, { recursive: true });
   const manifest = join(checkpoint, "manifest.json");
+  const existing = await readdir(checkpoint);
   const identity = JSON.stringify({
     corpus,
     paths: digest(files),
     wasm: Bun.CryptoHasher.hash("sha256", wasm, "hex"),
-    script: Bun.CryptoHasher.hash("sha256", await Bun.file(import.meta.path).bytes(), "hex"),
+    script: Bun.CryptoHasher.hash("sha256", await readFile(import.meta.path), "hex"),
+    client: digest(
+      await Promise.all(
+        ["pdf-core.js", "config.js", "promise.js"].map((name) =>
+          readFile(new URL(`../dist/${name}`, import.meta.url)),
+        ),
+      ),
+    ),
     start,
     stride,
   });
-  const exists = await Bun.file(manifest).exists();
+  const exists = existing.includes("manifest.json");
   if (exists && (await readFile(manifest, "utf8")) !== identity) {
     throw new Error("Checkpoint inputs differ from the current benchmark.");
   }
   if (!exists) await writeFile(manifest, identity, { flag: "wx" });
-  for (const name of await readdir(checkpoint)) {
+  for (const name of existing) {
     if (/^[0-9]+\.json$/.test(name)) completed.add(Number.parseInt(name, 10));
   }
 }
@@ -145,7 +160,7 @@ for (const [index, file] of files.entries()) {
   const corpusIndex = start + index * stride;
   if (completed.has(corpusIndex) && checkpoint !== undefined) {
     const previous = await readFile(join(checkpoint, `${corpusIndex}.json`), "utf8");
-    const counters = JSON.parse(previous).counters;
+    const { counters } = await readCounters(JSON.parse(previous));
     summary.compared += counters.compared;
     summary.mismatches += counters.mismatches;
     summary.flaggedReads += counters.flaggedReads;

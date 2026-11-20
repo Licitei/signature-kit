@@ -539,7 +539,7 @@ impl Default for PendingRun {
     }
 }
 
-struct Interpreter<'doc, 'data> {
+struct Interpreter<'doc, 'data, const TRACK: bool> {
     active: Vec<ObjRef>,
     actual: Option<String>,
     actual_emitted: bool,
@@ -673,7 +673,7 @@ pub(crate) struct Session {
     skipped: HashSet<ObjRef>,
 }
 
-impl Interpreter<'_, '_> {
+impl<const TRACK: bool> Interpreter<'_, '_, TRACK> {
     fn apply_ext_gstate(
         &mut self,
         operands: &[Operand<'_>],
@@ -698,7 +698,7 @@ impl Interpreter<'_, '_> {
         let Some(gs) = resolved.as_dict() else {
             return;
         };
-        if self.scan.is_some() {
+        if TRACK && self.scan.is_some() {
             for (alpha_key, slot) in [b"ca", b"CA"]
                 .into_iter()
                 .zip(self.scan_state.transparent.iter_mut())
@@ -708,7 +708,7 @@ impl Interpreter<'_, '_> {
                 }
             }
         }
-        if !self.scan.as_ref().is_some_and(|scan| scan.images_only())
+        if !(TRACK && self.scan.as_ref().is_some_and(|scan| scan.images_only()))
             && let Some(Object::Array(items)) = gs.get(b"Font")
         {
             let name = items
@@ -820,7 +820,7 @@ impl Interpreter<'_, '_> {
         };
         let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name);
         if subtype != Some(b"Form") {
-            if let Some(scan) = self.scan.as_deref_mut() {
+            if TRACK && let Some(scan) = self.scan.as_deref_mut() {
                 if subtype == Some(b"Image")
                     && !self.scan_state.transparent[0]
                     && let Some(coverage) = scan.image(state.ctm, self.scan_state.clip)?
@@ -846,7 +846,9 @@ impl Interpreter<'_, '_> {
                 Ok(data) => {
                     let shared_data: Rc<[u8]> = data.into();
                     if let Some(known) = reference {
-                        if self.scan.is_none() && scan_shows(&shared_data) == Shows::Nothing {
+                        if (!TRACK || self.scan.is_none())
+                            && scan_shows(&shared_data) == Shows::Nothing
+                        {
                             let _: bool = self.skipped.insert(known);
                         } else {
                             self.forms.insert(known, &shared_data, self.generation);
@@ -863,8 +865,8 @@ impl Interpreter<'_, '_> {
         let mut inner_state = state.clone();
         inner_state.ctm = multiply(&form_matrix, &state.ctm);
         let outer_clip = self.clip;
-        let outer_scan = self.scan.is_some().then_some(self.scan_state);
-        if (self.capture.structure || self.scan.is_some())
+        let outer_scan = (TRACK && self.scan.is_some()).then_some(self.scan_state);
+        if (self.capture.structure || TRACK && self.scan.is_some())
             && let Some(bounds) = stream
                 .dict
                 .get(b"BBox")
@@ -1176,7 +1178,9 @@ impl Interpreter<'_, '_> {
         marked: &mut Vec<bool>,
         max_stack: usize,
     ) {
-        if !self.capture.structure && self.scan.as_ref().is_none_or(|scan| scan.images_only()) {
+        if !self.capture.structure
+            && (!TRACK || self.scan.as_ref().is_none_or(|scan| scan.images_only()))
+        {
             return;
         }
         match code {
@@ -1500,7 +1504,7 @@ impl Interpreter<'_, '_> {
         matrices: &mut TextMatrices,
         depth: usize,
     ) -> Outcome<()> {
-        if self.scan.is_some() {
+        if TRACK && self.scan.is_some() {
             self.interpret::<true>(data, scope, state, matrices, depth)
         } else {
             self.interpret::<false>(data, scope, state, matrices, depth)
@@ -1952,11 +1956,11 @@ pub(crate) fn extract_content(
     capture: Capture,
     session: &mut Session,
 ) -> Outcome<PageContent> {
-    scan_page(document, page, limits, capture, session, None)
+    extract_page::<{ cfg!(target_arch = "wasm32") }>(document, page, limits, capture, session, None)
 }
 
 #[inline(never)]
-pub(crate) fn scan_page(
+fn extract_page<const TRACK: bool>(
     document: &Document<'_>,
     page: &Page,
     limits: &Limits,
@@ -1974,7 +1978,7 @@ pub(crate) fn scan_page(
     if session.fonts.len() > MAX_CACHED_FONTS {
         session.fonts.retain(|_, (_, used)| *used == previous);
     }
-    let mut interpreter = Interpreter {
+    let mut interpreter = Interpreter::<TRACK> {
         document,
         limits,
         fonts: mem::take(&mut session.fonts),
@@ -2024,6 +2028,17 @@ pub(crate) fn scan_page(
         text: interpreter.text,
         rulings: interpreter.rulings,
     })
+}
+
+pub(crate) fn scan_page(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    capture: Capture,
+    session: &mut Session,
+    scan: Option<&mut PageScan>,
+) -> Outcome<PageContent> {
+    extract_page::<true>(document, page, limits, capture, session, scan)
 }
 
 #[cfg(test)]
