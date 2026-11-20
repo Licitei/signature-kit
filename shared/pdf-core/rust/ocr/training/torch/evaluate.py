@@ -85,6 +85,8 @@ def fixture(args):
 
 
 def evaluate_native(args):
+    if args.pages and args.beam:
+        raise ValueError("beam comparison is only available for line crops")
     pairs = []
     times = []
     table = args.table.read_bytes()
@@ -104,7 +106,8 @@ def evaluate_native(args):
                 observed = json.loads(predicted)["text"]
             else:
                 reference = record_text(reference)
-                observed = subprocess.check_output([args.native, "text", source], text=True)
+                mode = "text-beam" if args.beam else "text"
+                observed = subprocess.check_output([args.native, mode, source], text=True)
             times.append(time.perf_counter() - start)
             pairs.append((reference, unicodedata.normalize("NFC", observed).strip()))
     report(pairs, sum(times))
@@ -175,6 +178,7 @@ if __name__ == "__main__":
     for option in ("table", "dataset", "native"):
         native.add_argument(option, type=Path)
     native.add_argument("--pages", action="store_true")
+    native.add_argument("--beam", action="store_true")
     baseline = commands.add_parser("tesseract")
     baseline.add_argument("model", choices=("standard", "fast"))
     baseline.add_argument("dataset", type=Path)

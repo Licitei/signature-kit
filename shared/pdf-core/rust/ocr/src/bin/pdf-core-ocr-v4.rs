@@ -20,12 +20,20 @@ fn run() -> io::Result<()> {
     let mode = args.next();
     let path = args
         .next()
-        .ok_or_else(|| io::Error::other("expected an OCR v4 probe packet"))?;
+        .ok_or_else(|| io::Error::other("expected an OCR sequence probe packet"))?;
     let bytes = fs::read(path)?;
-    let mut probe =
-        Probe::decode(&bytes).ok_or_else(|| io::Error::other("invalid OCR v4 probe packet"))?;
+    let mut probe = Probe::decode(&bytes)
+        .ok_or_else(|| io::Error::other("invalid OCR sequence probe packet"))?;
     match mode.as_deref() {
         Some("fixture") => io::stdout().lock().write_all(&probe.fixture()),
+        #[cfg(all(feature = "ctc-v5", feature = "ctc-beam"))]
+        Some("text-beam") => {
+            let mut text = String::new();
+            if !probe.beam(|character| text.push(character)) {
+                return Err(io::Error::other("beam probe requires an OCR5 table"));
+            }
+            io::stdout().lock().write_all(text.as_bytes())
+        }
         Some("text") => {
             let mut text = String::new();
             probe.transcript(|character| text.push(character));
@@ -51,7 +59,9 @@ fn run() -> io::Result<()> {
             let mean = start.elapsed().as_secs_f64() * 1000.0 / f64::from(repeats);
             writeln!(io::stdout().lock(), "{mean:.6} ms/line, repeats={repeats}")
         }
-        _ => Err(io::Error::other("expected fixture, text or bench")),
+        _ => Err(io::Error::other(
+            "expected fixture, text, text-beam or bench",
+        )),
     }
 }
 

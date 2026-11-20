@@ -152,6 +152,19 @@ enum ProbeModel<'input> {
 }
 
 impl<'input> Probe<'input> {
+    #[cfg(all(feature = "ctc-v5", feature = "ctc-beam"))]
+    #[inline]
+    pub fn beam<Observe>(&mut self, observe: Observe) -> bool
+    where
+        Observe: FnMut(char),
+    {
+        if let ProbeModel::V5(model, scratch) = &mut self.model {
+            model.beam(&self.image, scratch, observe);
+            return true;
+        }
+        false
+    }
+
     #[inline]
     #[must_use]
     pub fn decode(packet: &'input [u8]) -> Option<Self> {

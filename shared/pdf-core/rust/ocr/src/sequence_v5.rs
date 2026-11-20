@@ -1,10 +1,14 @@
 use core::mem;
 
 use crate::model::coordinate;
+#[cfg(feature = "ctc-beam")]
+use crate::model::model;
 use crate::raster::Gray;
 use crate::recognize::Word;
 use crate::segment::Line;
 use crate::sequence::{Dot, LineWords, nonnegative_dot_kernel, scalar_dot};
+#[cfg(feature = "ctc-beam")]
+use crate::sequence_beam::Decoder;
 use crate::sequence_v4::{
     Bounds, INPUT, MAX_CLASSES, MAX_FRAMES, ROW_HEADER, STRIDE, greedy, labels, layer_rows,
     normalize, project, relu,
@@ -122,13 +126,18 @@ impl Scratch {
                 let mut score = 0;
                 for candidate in SLOPES {
                     self.projection.fill(0);
-                    for &(x, y) in &self.points {
-                        let row = y.saturating_add(pad).saturating_add_signed(
+                    for column in self.points.chunk_by(|left, right| left.0 == right.0) {
+                        let Some(&(x, _)) = column.first() else {
+                            continue;
+                        };
+                        let shift =
                             isize::try_from(skew_shift(x, width, candidate).saturating_neg())
-                                .unwrap_or_default(),
-                        );
-                        if let Some(count) = self.projection.get_mut(row) {
-                            *count = count.saturating_add(1);
+                                .unwrap_or_default();
+                        for &(_, y) in column {
+                            let row = y.saturating_add(pad).saturating_add_signed(shift);
+                            if let Some(count) = self.projection.get_mut(row) {
+                                *count = count.saturating_add(1);
+                            }
                         }
                     }
                     let energy = self.projection.iter().fold(0_u64, |sum, &count| {
@@ -176,6 +185,30 @@ impl Scratch {
 }
 
 impl<'table> Sequence<'table> {
+    #[cfg(feature = "ctc-beam")]
+    pub(super) fn beam<Observe>(&self, image: &Gray, scratch: &mut Scratch, mut observe: Observe)
+    where
+        Observe: FnMut(char),
+    {
+        Self::input(scratch, image);
+        let language = model();
+        let mut decoder = Decoder::default();
+        decoder.reset();
+        self.logits(scratch, |scores| {
+            let candidates = self
+                .classes
+                .iter()
+                .zip(scores)
+                .filter_map(|(code, &score)| {
+                    let symbol = char::from_u32(u32::from_le_bytes(*code))?;
+                    let magnitude = coordinate(score.unsigned_abs()) / 256.0;
+                    Some((symbol, if score < 0_i32 { -magnitude } else { magnitude }))
+                });
+            decoder.step(0, candidates, language.as_ref());
+        });
+        decoder.finish(|_, label, _| observe(label));
+    }
+
     pub(super) fn decode(table: &'table [u8]) -> Option<Self> {
         let header = table.strip_prefix(MAGIC)?;
         let (format, body) = header.split_first_chunk::<2>()?;

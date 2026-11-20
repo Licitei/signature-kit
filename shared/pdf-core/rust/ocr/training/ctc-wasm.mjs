@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parsePgm } from "../../../bench/ocr/degradation.ts";
+import { scorePage, summarizeScores } from "../../../bench/ocr/metrics.ts";
 
 async function loadWasm(path) {
   const { instance } = await WebAssembly.instantiate(await readFile(path));
@@ -54,6 +55,7 @@ const [scalar, simd, model, files] = await Promise.all([
 const pages = files.filter((name) => name.endsWith(".pgm")).sort();
 assert.ok(pages.length > 0, "No held-out pages");
 const timings = { scalar: 0, simd: 0 };
+const scores = [];
 let outputs = 0;
 for (const name of pages) {
   const pgm = await readFile(join(cases, name));
@@ -62,6 +64,7 @@ for (const name of pages) {
   const left = recognize(scalar, input);
   const right = recognize(simd, input);
   assert.equal(left.text, right.text, `Scalar and SIMD differ on ${name}`);
+  scores.push(scorePage({ text: label.text }, { text: right.text, words: [] }));
   outputs += right.text.length;
   timings.scalar += left.elapsed;
   timings.simd += right.elapsed;
@@ -98,6 +101,7 @@ console.log(
   JSON.stringify({
     pages: pages.length,
     identicalOutput: true,
+    metrics: summarizeScores(scores),
     characters: outputs,
     scalarMsPerPage: timings.scalar / pages.length,
     simdMsPerPage: timings.simd / pages.length,

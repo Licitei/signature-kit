@@ -1,5 +1,7 @@
 # CPU training for OCR v4
 
+[V5 training and evaluation](V5.md) uses the grayscale multirate recognizer.
+
 OCR v4 is an experimental recognizer. Build the optional OCR crate with
 `ctc-v4` and pass an OCR4 table to the existing native
 `pdf-core-ocr IMAGE --ctc-model TABLE` CLI. The same table can be passed to
@@ -28,8 +30,7 @@ The returned word strings and boxes are owned results.
 ## Install
 
 Run from the workspace root on the shared host. Model fitting uses CPU-only
-PyTorch in a gitignored venv. The optional rendering packages come from PyPI.
-The Rust workspace keeps empty dependency tables.
+PyTorch in a gitignored venv. The Rust workspace keeps empty dependency tables.
 
 ```sh
 mkdir -p .cache/t shared/pdf-core/.cache/train-v4
@@ -46,7 +47,6 @@ py="$PWD/$c/venv/bin/python"
 "$r" --cpu 2 --mem 4G uv venv --python 3.13.16 "$c/venv"
 "$r" --cpu 2 --mem 4G uv pip install --python "$py" \
   --index https://download.pytorch.org/whl/cpu -r "$t/requirements.txt"
-"$r" --cpu 2 --mem 4G uv pip install --python "$py" -r "$t/requirements-render.txt"
 ```
 
 ## Collect training data
@@ -61,21 +61,9 @@ The 71,003 PDF pages came from the corpus renderer using the document fonts.
 The optional clean warm start uses the existing
 [OCRT font bootstrap](../README.md#training-and-evaluation).
 
-Use a local manifest of font paths (one TTF or OTF per line) to render
-additional distinct OCRL samples from training-only text. The command
-prioritizes text containing rare characters and matches each sentence against
-the font cmap. It never renders a text/font/size tuple twice. The output
-directory and all its shards belong in the ignored cache. This example uses
-the installed Liberation faces for additional training font variation.
-
-```sh
-train=/absolute/path/to/the/audited/training/cache
-find /usr/share/fonts/liberation -maxdepth 1 -name '*.ttf' | sort > "$out/fonts.txt"
-"$r" --cpu 2 --mem 4G "$py" "$t/synthesize.py" \
-  --shards "$train/full-corpus/fit-shards.txt" --fonts "$out/fonts.txt" \
-  --count 32768 --output "$out/rare-lines"
-cat "$train/full-corpus/fit-shards.txt" "$out/rare-lines/shards.txt" > "$out/combined.txt"
-```
+The [corpus-font supplement](V5.md#generate-the-rare-character-supplement)
+writes OCRL shards that can also be used by the v4 trainer. Its glyph outlines
+come from embedded fonts in training PDFs.
 
 The OCRL images already contain simulated scan effects. DataLoader applies
 seeded horizontal blur, exposure, sensor noise and occasional thresholding
@@ -234,8 +222,9 @@ tap-major order. All scalars use little endian.
 The header identifies architecture 1, seed 7291, training commit
 `81d0b7f8592cf43b6a46c5d4be094482d2117cdc`, and manifest
 `2cdc427f5bf24aacb2df1366190ef72974709728a9f7fcecbfb5b54a3e58229d`.
-This table uses the rare-text continuation. With folders defined above,
-the measured continuation was:
+This historical table used a rare-text continuation rendered with the
+local Liberation setup, which has since been removed. Given those historical
+OCRL shards, the measured continuation was:
 
 ```sh
 python3 - "$train/full-corpus/fit-shards.txt" "$out/rare-lines/shards.txt" "$out/rare-mix.txt" <<'PY'

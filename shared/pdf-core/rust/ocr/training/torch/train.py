@@ -199,7 +199,10 @@ def train(args):
     for epoch in range(first_epoch, args.epochs):
         start = time.perf_counter()
         mode = "qat" if epoch >= args.epochs - args.qat else "float"
-        curriculum = min(1, (epoch if scan is not None else epoch + 1) / 3)
+        if scan is None:
+            curriculum = min(1, (epoch + 1) / 3)
+        else:
+            curriculum = 1 if args.initial_run else min(1, epoch / 3)
         line_batches = batches(lines, args.batch_size, args.seed, curriculum, args.steps, epoch,
                                args.supplement_fraction)
         loader = DataLoader(lines, batch_sampler=line_batches, collate_fn=collate,

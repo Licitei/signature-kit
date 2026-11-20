@@ -336,6 +336,48 @@ mod tests {
 
     use super::{estimate, offset, orient, straighten, to_i32};
 
+    #[cfg(feature = "ctc-v5")]
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions compare the grayscale coordinates with fallible binary transforms"
+    )]
+    fn grayscale_coordinates_follow_segmentation() -> Result<(), RasterError> {
+        use crate::raster::Gray;
+
+        use super::{Transform, shear};
+
+        let width = 140_u32;
+        let height = 46_u32;
+        let mut page = Bits::new(width, height)?;
+        let mut pixels = Vec::new();
+        for yy in 0..height {
+            for xx in 0..width {
+                let ink = (xx.wrapping_mul(7).wrapping_add(yy) & 15) < 5;
+                page.set(xx, yy, ink);
+                pixels.push(if ink { 55 } else { 255 });
+            }
+        }
+        let gray = Gray::new(width, height, pixels)?;
+        for turns in 0..4_u8 {
+            for slope in [-96_i32, 0_i32, 96_i32] {
+                let transform = Transform {
+                    height,
+                    quarter_turns: turns,
+                    slope,
+                    width,
+                };
+                let aligned = shear(&orient(&page, turns)?, slope)?;
+                for yy in 0..aligned.height {
+                    for xx in 0..aligned.width {
+                        assert_eq!(transform.gray(&gray, xx, yy) == 55, aligned.get(xx, yy));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
