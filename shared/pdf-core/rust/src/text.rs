@@ -1078,14 +1078,21 @@ impl Interpreter<'_, '_> {
                     self.marked_content(code, &operands, &mut marked, max_stack);
                 }
                 _ => {
-                    if !self.state_operator(code, &operands, scope, state, matrices)
+                    if !self.state_operator::<SCAN>(code, &operands, scope, state, matrices)
                         && !self.path_operator(code, &operands, state, &mut path)
                     {
                         let shown = ShowContext {
                             operands: &operands,
                             depth,
                         };
-                        self.show_operator(code, shown, scope, state, matrices, &mut scratch)?;
+                        self.show_operator::<SCAN>(
+                            code,
+                            shown,
+                            scope,
+                            state,
+                            matrices,
+                            &mut scratch,
+                        )?;
                     }
                 }
             }
@@ -1514,18 +1521,23 @@ impl Interpreter<'_, '_> {
         state.font = self.lookup_font(scope, name_next);
     }
 
-    fn show(&mut self, state: &GState, matrices: &mut TextMatrices, bytes: &[u8]) -> Outcome<()> {
+    fn show<const SCAN: bool>(
+        &mut self,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        bytes: &[u8],
+    ) -> Outcome<()> {
         let Some(entry) = state.font.clone() else {
-            if let Some(scan) = self.scan.as_deref_mut() {
+            if SCAN && let Some(scan) = self.scan.as_deref_mut() {
                 scan.missing_font(bytes, self.scan_state.paints_text());
             }
             return Ok(());
         };
         let placement = Placement::new(&entry, state, &matrices.tm);
-        self.show_with(&entry, &placement, state, matrices, bytes)
+        self.show_with::<SCAN>(&entry, &placement, state, matrices, bytes)
     }
 
-    fn show_array(
+    fn show_array<const SCAN: bool>(
         &mut self,
         state: &GState,
         matrices: &mut TextMatrices,
@@ -1542,9 +1554,9 @@ impl Interpreter<'_, '_> {
         for item in items {
             if let Some(bytes) = item.string(scratch) {
                 if let Some((entry, placement)) = &prepared {
-                    self.show_with(entry, placement, state, matrices, bytes)?;
+                    self.show_with::<SCAN>(entry, placement, state, matrices, bytes)?;
                 } else {
-                    self.show(state, matrices, bytes)?;
+                    self.show::<SCAN>(state, matrices, bytes)?;
                 }
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1_000.0_f64 * state.size;
@@ -1558,7 +1570,7 @@ impl Interpreter<'_, '_> {
         Ok(())
     }
 
-    fn show_operator(
+    fn show_operator<const SCAN: bool>(
         &mut self,
         code: u32,
         shown: ShowContext<'_, '_>,
@@ -1568,20 +1580,20 @@ impl Interpreter<'_, '_> {
         scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
         let ShowContext { operands, depth } = shown;
-        if code != OP_DO && self.scan.as_ref().is_some_and(|scan| scan.images_only()) {
+        if SCAN && code != OP_DO && self.scan.as_ref().is_some_and(|scan| scan.images_only()) {
             return Ok(());
         }
         match code {
             OP_TJ => {
                 if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
-                    self.show(state, matrices, bytes)?;
+                    self.show::<SCAN>(state, matrices, bytes)?;
                 }
             }
             OP_QUOTE => {
                 self.repositioned = true;
                 matrices.line_move(0.0, -state.leading);
                 if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
-                    self.show(state, matrices, bytes)?;
+                    self.show::<SCAN>(state, matrices, bytes)?;
                 }
             }
             OP_DQUOTE => {
@@ -1597,12 +1609,12 @@ impl Interpreter<'_, '_> {
                 }
                 matrices.line_move(0.0, -state.leading);
                 if let Some(bytes) = operands.last().and_then(|last| last.string(scratch)) {
-                    self.show(state, matrices, bytes)?;
+                    self.show::<SCAN>(state, matrices, bytes)?;
                 }
             }
             OP_TJ_ARRAY => {
                 if let Some(Operand::Array(items)) = operands.last() {
-                    self.show_array(state, matrices, items, scratch)?;
+                    self.show_array::<SCAN>(state, matrices, items, scratch)?;
                 }
             }
             OP_DO => {
@@ -1615,7 +1627,7 @@ impl Interpreter<'_, '_> {
         Ok(())
     }
 
-    fn show_with(
+    fn show_with<const SCAN: bool>(
         &mut self,
         entry: &FontEntry,
         placement: &Placement,
@@ -1628,17 +1640,13 @@ impl Interpreter<'_, '_> {
         glyphs.clear();
         decoded.clear();
         entry.font.decode(bytes, &mut glyphs, &mut decoded);
-        let result = if self.scan.is_some() {
-            self.place::<true>(entry, placement, state, matrices, &glyphs, &decoded)
-        } else {
-            self.place::<false>(entry, placement, state, matrices, &glyphs, &decoded)
-        };
+        let result = self.place::<SCAN>(entry, placement, state, matrices, &glyphs, &decoded);
         self.glyphs = glyphs;
         self.decoded = decoded;
         result
     }
 
-    fn state_operator(
+    fn state_operator<const SCAN: bool>(
         &mut self,
         code: u32,
         operands: &[Operand<'_>],
@@ -1646,7 +1654,8 @@ impl Interpreter<'_, '_> {
         state: &mut GState,
         matrices: &mut TextMatrices,
     ) -> bool {
-        if !matches!(code, OP_CM | OP_GS)
+        if SCAN
+            && !matches!(code, OP_CM | OP_GS)
             && self.scan.as_ref().is_some_and(|scan| scan.images_only())
         {
             return false;
@@ -1690,7 +1699,7 @@ impl Interpreter<'_, '_> {
             OP_TR => {
                 if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.stroked_fill = (value - 2.0).abs() < 0.5_f64;
-                    if self.scan.is_some() {
+                    if SCAN {
                         self.scan_state.render_mode = u8::try_from(f64_to_i64(value))
                             .ok()
                             .filter(|mode| *mode <= 7)
