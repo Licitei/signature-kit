@@ -1826,7 +1826,17 @@ export const makePdfCore = (
 
       const fetchRange = Effect.fn(function* (offset: number, length: number) {
         yield* ensureOpen;
-        const bytes = yield* source.read(offset, length);
+        const bytes = yield* source.read(offset, length).pipe(
+          Effect.mapError((error) =>
+            error.code === PdfCoreErrorCodeValue.rangeReadFailed
+              ? error
+              : new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.rangeReadFailed,
+                  operation: PdfCoreOperationValue.readRange,
+                  reason: `The PDF source could not read ${length} bytes at offset ${offset}.`,
+                }),
+          ),
+        );
         yield* Ref.update(state, (current) => ({
           ...current,
           bytesRead: current.bytesRead + bytes.byteLength,

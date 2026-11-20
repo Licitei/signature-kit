@@ -4,7 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Ref } from "effect";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
+import { PdfCoreError, PdfCoreErrorCodeValue, PdfCoreOperationValue } from "../dist/config.js";
 import { pdfCoreFileLayer, pdfCoreFileSource } from "../dist/file.js";
 import { loadPdfCoreNode } from "../dist/node.js";
 import { PdfCore, pdfCoreBlobSource, pdfCoreBytesSource } from "../dist/pdf-core.js";
@@ -323,6 +323,41 @@ describe("PdfCore byte-range documents", () => {
         }),
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("classifies a failed Effect source read and retries on the same document", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const pdf = readFileSync(new URL("links.pdf", fixtures));
+        const source = pdfCoreBytesSource(pdf);
+        const available = yield* Ref.make(false);
+        const doc = yield* core.openLazy({
+          size: source.size,
+          read: (offset, length) =>
+            Ref.get(available).pipe(
+              Effect.flatMap((ready) =>
+                ready
+                  ? source.read(offset, length)
+                  : Effect.fail(
+                      new PdfCoreError({
+                        code: PdfCoreErrorCodeValue.limitExceeded,
+                        operation: PdfCoreOperationValue.readRange,
+                        reason: "The source exhausted its read quota.",
+                      }),
+                    ),
+              ),
+            ),
+        });
+        const error = yield* Effect.flip(doc.text());
+        expect(error).toMatchObject({
+          code: PdfCoreErrorCodeValue.rangeReadFailed,
+          operation: PdfCoreOperationValue.readRange,
+        });
+        yield* Ref.set(available, true);
+        expect(yield* doc.text()).toEqual(yield* core.text(pdf));
+      }),
+    ).pipe(Effect.provide(layer)),
   );
 
   it("reports Promise source rejections as range read failures", async () => {
