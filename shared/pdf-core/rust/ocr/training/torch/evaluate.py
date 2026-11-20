@@ -53,7 +53,11 @@ def fixture(args):
     magic, version, architecture, manifest, commit, seed, _ = struct.unpack_from("<4sHH32s20sQH", table)
     normalize_line = partial(normalize_v5, robust=version >= 2) if magic == b"OCR5" else normalize
     model = (RecognizerV5(architecture) if magic == b"OCR5" else Recognizer()).eval()
-    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True))
+    state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    if "ema" in state:
+        state = {key.removeprefix("module."): value for key, value in state["ema"].items()
+                 if key.startswith("module.")}
+    model.load_state_dict(state)
     export = partial(model.table, version=version) if magic == b"OCR5" else model.table
     if export(manifest.hex(), commit.hex(), seed) != table:
         raise ValueError("checkpoint and exported table differ")
