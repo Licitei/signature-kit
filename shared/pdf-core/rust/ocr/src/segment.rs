@@ -1,6 +1,6 @@
 use core::mem;
 
-use crate::clean::TableGrid;
+use crate::clean::{Rule, TableGrid};
 use crate::raster::{Bits, ink_runs};
 
 type Box = [u32; 4];
@@ -99,10 +99,9 @@ impl TextLine {
         let tolerance = (typical >> 1).saturating_add(1);
         if bottom.saturating_sub(top) < typical.div_ceil(2) {
             bottom.saturating_add(tolerance) >= line_top
-                && bottom <= self.baseline
-                && top < self.baseline
+                && bottom <= self.baseline.saturating_add(typical.div_ceil(3))
         } else {
-            bottom.abs_diff(self.baseline) <= tolerance
+            bottom.abs_diff(self.baseline) <= tolerance && top < self.baseline && line_top < bottom
         }
     }
 }
@@ -287,7 +286,7 @@ fn words(letters: &[Box], typical: u32) -> Vec<WordBox> {
 fn line_groups(boxes: &mut [Box], typical: u32, block: u32, allow_single_glyph: bool) -> Vec<Line> {
     boxes.sort_unstable_by_key(|&[left, top, _, bottom]| (top, bottom, left));
     let mut groups = Vec::<TextLine>::new();
-    let (main, small): (Vec<_>, Vec<_>) = boxes
+    let (main, mut small): (Vec<_>, Vec<_>) = boxes
         .iter()
         .copied()
         .partition(|&[_, top, _, bottom]| bottom.saturating_sub(top) >= typical.div_ceil(2));
@@ -310,9 +309,10 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32, allow_single_glyph: 
         }
     }
     groups.sort_unstable_by_key(|entry| entry.baseline);
+    small.sort_unstable_by_key(|&[left, top, _, _]| (left, top));
     for bbox in small {
         let [left, _, right, bottom] = bbox;
-        let lower = bottom.saturating_sub(typical.div_ceil(2));
+        let lower = bottom.saturating_sub(typical.div_ceil(3));
         let upper = bottom.saturating_add(typical.saturating_mul(2));
         let first = groups.partition_point(|entry| entry.baseline < lower);
         let last = groups.partition_point(|entry| entry.baseline <= upper);
@@ -325,7 +325,13 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32, allow_single_glyph: 
                         && right.saturating_add(typical.div_ceil(3)) >= start
                         && entry.matches(bbox, typical)
                 })
-                .min_by_key(|entry| bottom.abs_diff(entry.baseline))
+                .min_by_key(|entry| {
+                    let [_, top, _, line_bottom] = entry.bbox;
+                    let gap = top
+                        .saturating_sub(bottom)
+                        .max(bottom.saturating_sub(line_bottom));
+                    (gap, bottom.abs_diff(entry.baseline))
+                })
         });
         if let Some(line) = nearest {
             line.add(bbox, typical);
@@ -357,19 +363,17 @@ fn line_groups(boxes: &mut [Box], typical: u32, block: u32, allow_single_glyph: 
         .collect()
 }
 
-fn column_overlap(first: &[Box], second: &[Box]) -> u32 {
-    let extent = |boxes: &[Box]| {
-        boxes
-            .iter()
-            .fold((u32::MAX, 0_u32), |(min, max), &[_, top, _, bottom]| {
-                (min.min(top), max.max(bottom))
-            })
-    };
-    let (first_top, first_bottom) = extent(first);
-    let (second_top, second_bottom) = extent(second);
-    first_bottom
+fn has_column_gutter(first: &[Box], second: &[Box], typical: u32) -> bool {
+    let extent = |boxes: &[Box]| boxes.iter().copied().reduce(union).unwrap_or_default();
+    let [first_left, first_top, first_right, first_bottom] = extent(first);
+    let [second_left, second_top, second_right, second_bottom] = extent(second);
+    let overlap = first_bottom
         .min(second_bottom)
-        .saturating_sub(first_top.max(second_top))
+        .saturating_sub(first_top.max(second_top));
+    let minimum_width = typical.saturating_mul(3);
+    overlap >= typical.saturating_mul(3)
+        && first_right.saturating_sub(first_left) >= minimum_width
+        && second_right.saturating_sub(second_left) >= minimum_width
 }
 
 fn whitespace_cut(
@@ -398,9 +402,7 @@ fn whitespace_cut(
             && (horizontal
                 || boxes
                     .split_at_checked(index)
-                    .is_some_and(|(first, second)| {
-                        column_overlap(first, second) >= typical.saturating_mul(2)
-                    }))
+                    .is_some_and(|(first, second)| has_column_gutter(first, second, typical)))
         {
             best_gap = gap;
             cut = Some(index);
@@ -421,8 +423,8 @@ fn partition(
         return;
     }
     if depth < 16 {
-        let cut = whitespace_cut(boxes, false, typical.saturating_mul(3), typical)
-            .or_else(|| whitespace_cut(boxes, true, typical.saturating_mul(2), typical));
+        let cut = whitespace_cut(boxes, true, typical.saturating_mul(2), typical)
+            .or_else(|| whitespace_cut(boxes, false, typical.saturating_mul(3), typical));
         if let Some(index) = cut
             && let Some((first, second)) = boxes.split_at_mut_checked(index)
         {
@@ -474,13 +476,61 @@ fn table_lines(boxes: &mut Vec<Box>, grids: &[TableGrid], typical: u32) -> Vec<(
     tables
 }
 
+fn split_at_rules(lines: Vec<Line>, rules: &[Rule]) -> Vec<Line> {
+    let vertical = rules
+        .iter()
+        .copied()
+        .filter(|rule| !rule.horizontal)
+        .collect::<Vec<_>>();
+    if vertical.is_empty() {
+        return lines;
+    }
+    let mut output = Vec::with_capacity(lines.len());
+    for line in lines {
+        let [left, top, right, bottom] = line.bbox;
+        let first = vertical.partition_point(|rule| rule.position <= left);
+        let end = vertical.partition_point(|rule| rule.position < right);
+        let candidates = vertical.get(first..end).unwrap_or_default();
+        let mut parts = line.words.chunk_by(|previous, next| {
+            let [_, _, word_end, _] = previous.bbox;
+            let [word_start, _, _, _] = next.bbox;
+            !candidates.iter().any(|rule| {
+                word_end <= rule.position
+                    && rule.position < word_start
+                    && rule.start <= top
+                    && rule.end >= bottom
+            })
+        });
+        let first_part = parts.next();
+        if first_part.is_none_or(|part| part.len() == line.words.len()) {
+            output.push(line);
+            continue;
+        }
+        for words in first_part.into_iter().chain(parts) {
+            if let Some(bbox) = words.iter().map(|word| word.bbox).reduce(union) {
+                output.push(Line {
+                    bbox,
+                    words: words.to_vec(),
+                    ..line
+                });
+            }
+        }
+    }
+    output
+}
+
 #[inline]
 #[must_use]
 pub fn segment(page: &Bits, dpi: f32) -> PageLayout {
-    segment_with_tables(page, dpi, &[])
+    segment_with_tables(page, dpi, &[], &[])
 }
 
-pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) -> PageLayout {
+pub(crate) fn segment_with_tables(
+    page: &Bits,
+    dpi: f32,
+    grids: &[TableGrid],
+    rules: &[Rule],
+) -> PageLayout {
     let labels = components(page);
     let minimum_scale = dpi * 0.045;
     let mut heights: Vec<_> = labels
@@ -537,6 +587,7 @@ pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) ->
     let mut lines = Vec::new();
     let mut next_block = 0_u32;
     partition(&mut boxes, typical, 0, &mut next_block, &mut lines);
+    lines = split_at_rules(lines, rules);
     for (top, mut table) in tables {
         let insertion = lines
             .iter()
@@ -558,7 +609,7 @@ pub(crate) fn segment_with_tables(page: &Bits, dpi: f32, grids: &[TableGrid]) ->
 mod tests {
     use crate::raster::{Bits, RasterError};
 
-    use crate::clean::TableGrid;
+    use crate::clean::{Rule, TableGrid};
 
     use super::{WordBox, segment, segment_with_tables};
 
@@ -582,8 +633,42 @@ mod tests {
             }
         }
         let result = segment(&page, 300.0);
-        let heights: Vec<_> = result.lines.into_iter().map(|line| line.x_height).collect();
-        assert_eq!(heights, [26.0, 26.0, 26.0]);
+        let geometry: Vec<_> = result
+            .lines
+            .into_iter()
+            .map(|line| (line.bbox, line.x_height))
+            .collect();
+        assert_eq!(
+            geometry,
+            [
+                ([35, 35, 548, 61], 26.0),
+                ([35, 100, 548, 126], 26.0),
+                ([35, 165, 548, 191], 26.0)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions check extracted line bounds from a fallible raster fixture"
+    )]
+    fn includes_detached_marks_on_both_sides_of_the_baseline() -> Result<(), RasterError> {
+        let mut page = Bits::new(240, 100)?;
+        for yy in 30..50 {
+            for left in [30_u32, 48, 66] {
+                page.set_run(yy, left, left.saturating_add(10), true);
+            }
+        }
+        page.set_run(25, 33, 37, true);
+        page.set_run(53, 69, 73, true);
+        let boxes: Vec<_> = segment(&page, 300.0)
+            .lines
+            .into_iter()
+            .map(|line| line.bbox)
+            .collect();
+        assert_eq!(boxes, [[30, 25, 76, 54]]);
         Ok(())
     }
 
@@ -671,6 +756,36 @@ mod tests {
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
+        reason = "assertions report order from a fallible raster fixture"
+    )]
+    fn reads_the_title_before_a_hanging_clause_number() -> Result<(), RasterError> {
+        let mut page = Bits::new(360, 140)?;
+        for (top, starts) in [
+            (15_u32, [150_u32, 162, 174, 186, 198]),
+            (70, [15, 27, 101, 113, 125]),
+            (98, [101, 113, 125, 137, 149]),
+        ] {
+            for yy in top..top.saturating_add(15) {
+                for left in starts {
+                    page.set_run(yy, left, left.saturating_add(8), true);
+                }
+            }
+        }
+        let boxes: Vec<_> = segment(&page, 300.0)
+            .lines
+            .into_iter()
+            .map(|line| line.bbox)
+            .collect();
+        assert_eq!(
+            boxes,
+            [[150, 15, 206, 30], [15, 70, 133, 85], [101, 98, 157, 113]]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
         reason = "assertions report mismatches and raster setup is fallible"
     )]
     fn table_cells_keep_rows_in_reading_order() -> Result<(), RasterError> {
@@ -689,7 +804,7 @@ mod tests {
             columns: vec![10, 240, 470],
             rows: vec![10, 80, 160],
         };
-        let layout = segment_with_tables(&page, 300.0, &[grid]);
+        let layout = segment_with_tables(&page, 300.0, &[grid], &[]);
         let boxes: Vec<_> = layout.lines.iter().map(|line| line.bbox).collect();
         assert_eq!(
             boxes,
@@ -700,6 +815,30 @@ mod tests {
                 [280, 100, 312, 115]
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions report layout from a fallible raster fixture"
+    )]
+    fn splits_a_line_at_a_vertical_rule_without_a_complete_grid() -> Result<(), RasterError> {
+        let mut page = Bits::new(240, 150)?;
+        for yy in 30..50 {
+            for left in [30_u32, 42, 54, 85, 97, 109] {
+                page.set_run(yy, left, left.saturating_add(8), true);
+            }
+        }
+        let rule = Rule {
+            end: 100,
+            horizontal: false,
+            position: 75,
+            start: 20,
+        };
+        let result = segment_with_tables(&page, 300.0, &[], &[rule]);
+        let boxes: Vec<_> = result.lines.into_iter().map(|line| line.bbox).collect();
+        assert_eq!(boxes, [[30, 30, 62, 50], [85, 30, 117, 50]]);
         Ok(())
     }
 }

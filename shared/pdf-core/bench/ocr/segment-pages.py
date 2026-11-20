@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 from hashlib import sha256
 from itertools import combinations
 import json
+from math import radians, tan
 import os
 from pathlib import Path
 from statistics import median
@@ -112,6 +113,17 @@ xargs -r -n3 -P "$1" sh -ec '
                     "-v", f"{output}:/output", image, "sh", "-ec", script, "sh", str(jobs)], check=True)
 
 
+def rectified_crop(image, box, slope, margin):
+    left, top, right, bottom = box
+    left, top = max(0, left - margin), top - margin
+    right, bottom = min(image.width, right + margin), bottom + margin
+    return image.transform(
+        (right - left, bottom - top), Image.Transform.AFFINE,
+        (1, 0, left, slope, 1, top + (left - image.width // 2) * slope),
+        resample=Image.Resampling.BILINEAR, fillcolor=255,
+    )
+
+
 def page_reference(tsv):
     lines = defaultdict(list)
     for row in tsv.splitlines()[1:]:
@@ -167,9 +179,17 @@ def run(args, scratch):
             names = []
             if not args.geometry_only:
                 with Image.open(path) as image:
-                    for i, box in enumerate(lines):
+                    turns = layout["quarterTurns"] if args.rectify else 0
+                    if turns:
+                        rotation = {1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180,
+                                    3: Image.Transpose.ROTATE_90}
+                        image = image.transpose(rotation[turns])
+                    slope = tan(radians(layout["skewDegrees"]))
+                    for i, line in enumerate(layout["lines"]):
                         name = f"line-{page_index}-{i}"
-                        crop = ImageOps.expand(image.crop(box), border=max(3, round(dpi / 30)), fill=255)
+                        crop = (rectified_crop(image, line["box"], slope, max(1, round(dpi / 150))) if args.rectify
+                                else image.crop(line["sourceBox"]))
+                        crop = ImageOps.expand(crop, border=max(3, round(dpi / 30)), fill=255)
                         (scratch / f"{name}.pgm").write_bytes(pgm(crop))
                         names.append(name)
                         tasks.append((f"{name}.pgm", dpi, 7))
@@ -204,7 +224,7 @@ def run(args, scratch):
         if annotated:
             row["referenceGeometry"] = geometry(annotated, lines)
         rows.append(row)
-    return {"tesseractImage": image_id, "pages": rows}
+    return {"tesseractImage": image_id, "rectifiedCrops": args.rectify, "pages": rows}
 
 
 def summarize(report):
@@ -228,6 +248,7 @@ def main():
     parser.add_argument("--split", choices=("all", "dev", "test"), default="all")
     parser.add_argument("--reviewed-pages", action="store_true")
     parser.add_argument("--geometry-only", action="store_true")
+    parser.add_argument("--rectify", action="store_true")
     parser.add_argument("--only", action="append")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=3)

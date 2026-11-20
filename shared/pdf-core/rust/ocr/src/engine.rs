@@ -5,7 +5,7 @@ use crate::deskew::{Transform, straighten};
 use crate::postprocess::correct;
 use crate::raster::{Bits, Gray, RasterError};
 use crate::recognize::{Word as RecognizedWord, recognize_line};
-use crate::segment::{Line, PageLayout, segment, segment_with_tables};
+use crate::segment::{Line, PageLayout, segment_with_tables};
 #[cfg(feature = "ctc-probe")]
 use crate::sequence::{Scratch, Sequence};
 
@@ -66,6 +66,12 @@ pub enum Stage {
 }
 
 impl PreparedPage {
+    #[inline]
+    #[must_use]
+    pub const fn quarter_turns(&self) -> u8 {
+        self.transform.quarter_turns
+    }
+
     #[inline]
     #[must_use]
     pub fn recognize(&self) -> PageResult {
@@ -149,18 +155,14 @@ pub fn prepare_page<Observe>(
 where
     Observe: FnMut(Stage),
 {
-    let page = binarize(gray)?;
+    let page = binarize(gray, dpi >= 150.0)?;
     stage_complete(Stage::Binarize);
     let (mut cleaned, transform) = straighten(page, options.detect_orientation)?;
     stage_complete(Stage::Deskew);
     let rules = clean(&mut cleaned, dpi);
     stage_complete(Stage::Clean);
     let tables = grids(&rules);
-    let layout = if tables.is_empty() {
-        segment(&cleaned, dpi)
-    } else {
-        segment_with_tables(&cleaned, dpi, &tables)
-    };
+    let layout = segment_with_tables(&cleaned, dpi, &tables, &rules);
     stage_complete(Stage::Segment);
     Ok(PreparedPage {
         layout,

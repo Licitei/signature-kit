@@ -57,7 +57,7 @@ pub(crate) fn read(
                     format!("invalid OCRL raster: {cause:?}"),
                 )
             })?;
-        let page = binarize(&gray).map_err(|cause| {
+        let page = binarize(&gray, false).map_err(|cause| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("could not binarize OCRL raster: {cause:?}"),

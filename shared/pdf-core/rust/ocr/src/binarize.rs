@@ -26,14 +26,17 @@ impl Tone {
         self.lightest = self.lightest.max(value);
     }
 
-    const fn threshold(self) -> u8 {
+    const fn threshold(self, dark_strokes: bool) -> u8 {
         let contrast = self.lightest.saturating_sub(self.darkest);
         if contrast < 22 {
             return self.darkest.saturating_sub(12);
         }
-        self.lightest
-            .saturating_sub(contrast.div_ceil(3))
-            .saturating_sub(4)
+        let margin = if dark_strokes {
+            contrast.div_ceil(2)
+        } else {
+            contrast.div_ceil(3)
+        };
+        self.lightest.saturating_sub(margin).saturating_sub(4)
     }
 }
 
@@ -111,7 +114,7 @@ fn tile_bits(pixels: &[u8], threshold: u8) -> u32 {
     clippy::arithmetic_side_effects,
     reason = "the validated pixel count bounds tile addressing"
 )]
-fn thresholds(gray: &Gray, width: usize, height: usize) -> Vec<u8> {
+fn thresholds(gray: &Gray, width: usize, height: usize, dark_strokes: bool) -> Vec<u8> {
     let columns = width.div_ceil(TILE);
     let rows = height.div_ceil(TILE);
     let mut tiles = vec![Tone::empty(); columns * rows];
@@ -141,7 +144,7 @@ fn thresholds(gray: &Gray, width: usize, height: usize) -> Vec<u8> {
             if let Some(local) = tiles.get(yy * columns + xx) {
                 tone.lightest = local.lightest.max(tone.lightest.saturating_sub(100));
             }
-            output.push(tone.threshold());
+            output.push(tone.threshold(dark_strokes));
         }
     }
     output
@@ -160,7 +163,7 @@ fn pack(row: &[u8], thresholds: &[u8]) -> u64 {
     word
 }
 
-pub(crate) fn binarize(gray: &Gray) -> Result<Bits, RasterError> {
+pub(crate) fn binarize(gray: &Gray, dark_strokes: bool) -> Result<Bits, RasterError> {
     if pixel_count(gray.width, gray.height)? != gray.pixels.len() {
         return Err(RasterError::Length);
     }
@@ -168,7 +171,7 @@ pub(crate) fn binarize(gray: &Gray) -> Result<Bits, RasterError> {
     let width = usize::try_from(gray.width).map_err(|_cause| RasterError::Dimensions)?;
     let height = usize::try_from(gray.height).map_err(|_cause| RasterError::Dimensions)?;
     let columns = width.div_ceil(TILE);
-    let cutoffs = thresholds(gray, width, height);
+    let cutoffs = thresholds(gray, width, height, dark_strokes);
     for (yy, (row, words)) in gray
         .pixels
         .chunks_exact(width)
@@ -214,12 +217,12 @@ mod tests {
             })
             .collect();
         let gray = Gray::new(128, 8, pixels)?;
-        let page = binarize(&gray)?;
+        let page = binarize(&gray, true)?;
         assert!(!page.get(24, 0));
         assert!(page.get(24, 3));
         assert!(!page.get(121, 3));
         assert!(page.get(90, 4));
-        let bilevel = binarize(&Gray::new(2, 1, vec![0, 255])?)?;
+        let bilevel = binarize(&Gray::new(2, 1, vec![0, 255])?, true)?;
         assert_eq!(bilevel.words, [1]);
         Ok(())
     }

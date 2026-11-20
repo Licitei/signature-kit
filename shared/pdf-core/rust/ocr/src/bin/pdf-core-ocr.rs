@@ -130,10 +130,11 @@ fn write_recognition(output: &mut dyn Write, result: &PageResult) -> io::Result<
 fn write_layout(output: &mut dyn Write, result: &PreparedPage) -> io::Result<()> {
     write!(
         output,
-        "{{\"width\":{},\"height\":{},\"skewDegrees\":{},\"lines\":[",
+        "{{\"width\":{},\"height\":{},\"skewDegrees\":{},\"quarterTurns\":{},\"lines\":[",
         result.page.width,
         result.page.height,
-        result.skew_degrees()
+        result.skew_degrees(),
+        result.quarter_turns()
     )?;
     for (index, line) in result.layout.lines.iter().enumerate() {
         if index != 0 {
