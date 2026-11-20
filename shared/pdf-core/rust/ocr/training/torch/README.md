@@ -8,12 +8,12 @@ wasm page probe. The model uses the segmenter's line crops and projects word
 boxes back to original image coordinates. The published OCR build loads the
 glyph model. The main PDF module has no OCR runtime dependency.
 
-The network has a 32-row normalized input with four source columns per frame.
+The network has a 32-row normalized input with four normalized columns per frame.
 A dense projection produces 64 channels. Three grouped temporal convolutions
 have four groups, three taps, dilations 1/3/9, a channel shuffle and clipped
 ReLU. The CTC head scores 195 classes, including blank. The receptive field is
-27 frames. At 29,888 multiply-accumulates per frame, a 1,510 × 46 crop typically
-costs roughly six to seven million multiply-accumulates, depending on its ink bounds.
+27 frames. The network executes 29,888 multiply-accumulates per frame. The timed
+1,510 × 46 crop produced 235 frames, or 7,023,680 multiply-accumulates.
 
 Weights use per-output-channel power-of-two scales and signed int8 bytes.
 Input pixels are mapped to integer ink values 0–127. The hidden unit is 32
@@ -141,7 +141,7 @@ location. The optimized wasm command matches the flags in the package build.
       -o "$out/v4-$mode-opt.wasm"
   done
 )
-model="$out/expanded"
+model="$out/rare-fine-tune"
 native="$rust/target/release/pdf-core-ocr-v4"
 "$r" --cpu 2 --mem 4G "$py" "$t/evaluate.py" fixture \
   "$model/best.pt" "$model/best.bin" "$train/bootstrap/val-degraded.ocrt" \
@@ -151,8 +151,8 @@ native="$rust/target/release/pdf-core-ocr-v4"
   "$corpus/editais-extra/digitalizados" "$out/real-lines"
 "$r" --cpu 1 --mem 3G "$py" "$t/evaluate.py" packet "$model/best.bin" \
   "$out/real-lines/dev/17d23ec36e25-p002-l008.pgm" "$out/timing.packet"
-"$r" --cpu 1 --mem 3G taskset -c 5 "$native" bench "$out/timing.packet" 300
-"$r" --cpu 1 --mem 3G taskset -c 5 bun "$t/wasm.mjs" bench \
+"$r" --cpu 1 --mem 3G taskset -c 6 "$native" bench "$out/timing.packet" 300
+"$r" --cpu 1 --mem 3G taskset -c 6 bun "$t/wasm.mjs" bench \
   "$out/v4-scalar-opt.wasm" "$out/v4-simd-opt.wasm" "$out/timing.packet" 300
 ```
 
@@ -188,21 +188,29 @@ for jpg in "$out"/calibrated-{lines,pages}/test/*.jpg; do
 done
 "$r" --cpu 2 --mem 4G bun "$b/prepare-real.ts" \
   "$corpus/editais-extra/digitalizados" "$out/real-pages"
-"$r" --cpu 1 --mem 3G taskset -c 5 "$py" "$t/evaluate.py" native \
-  "$model/best.bin" "$out/real-lines/test" "$native"
 for dataset in real-lines/test clean-lines/test calibrated-lines/test; do
+  "$r" --cpu 1 --mem 3G taskset -c 8 "$py" "$t/evaluate.py" native \
+    "$model/best.bin" "$out/$dataset" "$native"
   for variant in standard fast; do
     "$r" --cpu 2 --mem 4G taskset -c 7 "$py" "$t/evaluate.py" tesseract "$variant" \
       "$out/$dataset" --cpu 7
   done
 done
-for dataset in real-lines/test clean-lines/test calibrated-lines/test real-pages clean-pages/test calibrated-pages/test; do
-  psm=7
-  case "$dataset" in *pages*) psm=3 ;; esac
-  OCR_BENCH_CTC_MODEL="$model/best.bin" "$r" --cpu 2 --mem 4G taskset -c 5 \
+"$r" --cpu 1 --mem 2G docker run --rm --network none signature-kit-ocr-bench:5.3.0 \
+  cat /usr/bin/time > "$out/gnu-time"
+chmod u+x "$out/gnu-time"
+export OCR_BENCH_TIME="$out/gnu-time"
+for dataset in real-pages clean-pages/test calibrated-pages/test real-lines/test; do
+  psm=3
+  case "$dataset" in real-lines/test) psm=7 ;; esac
+  OCR_BENCH_CTC_MODEL="$model/best.bin" "$r" --cpu 2 --mem 4G taskset -c 8 \
     bun "$b/run.ts" --dataset "$out/$dataset" --engines ours-native --psm "$psm"
-  "$r" --cpu 2 --mem 4G taskset -c 5 bun "$b/run.ts" --dataset "$out/$dataset" \
-    --engines ours-native,tesseract-lstm,tesseract-fast --psm "$psm"
+  "$r" --cpu 2 --mem 4G taskset -c 8 bun "$b/run.ts" --dataset "$out/$dataset" \
+    --engines ours-native --psm "$psm"
+done
+for dataset in real-pages clean-pages/test calibrated-pages/test; do
+  "$r" --cpu 2 --mem 4G taskset -c 9 bun "$b/run.ts" --dataset "$out/$dataset" \
+    --engines tesseract-lstm,tesseract-fast --psm 3
 done
 ```
 
@@ -218,3 +226,134 @@ code points with blank first. Weights follow in stem, three temporal
 layers and head order. Each row contains the i16 bias, u8 right shift
 and the fixed-width int8 weights. Grouped temporal rows are stored in
 tap-major order. All scalars use little endian.
+
+## Measured v4 checkpoint
+
+[sequence-v4.bin](../../data/sequence-v4.bin) is 32,091 bytes, with SHA-256
+`ad9c5ebebabcc4f9cbbad1466b214a91c12caca8d2c387acc80acd00249bf8c1`.
+The header identifies architecture 1, seed 7291, training commit
+`81d0b7f8592cf43b6a46c5d4be094482d2117cdc`, and manifest
+`2cdc427f5bf24aacb2df1366190ef72974709728a9f7fcecbfb5b54a3e58229d`.
+This table uses the rare-text continuation. With folders defined above,
+the measured continuation was:
+
+```sh
+python3 - "$train/full-corpus/fit-shards.txt" "$out/rare-lines/shards.txt" "$out/rare-mix.txt" <<'PY'
+from pathlib import Path
+from random import Random
+import sys
+
+corpus, supplement, mixed = map(Path, sys.argv[1:])
+shards = sorted(Random(7301).sample(corpus.read_text().splitlines(), 145))
+mixed.write_text("\n".join(shards) + "\n" + supplement.read_text())
+PY
+"$r" --cpu 12 --mem 16G "$py" -u "$t/train.py" \
+  --shards "$out/rare-mix.txt" --initial-run "$out/expanded" \
+  --synthetic-val "$train/bootstrap/val-degraded.ocrt" \
+  --real-dev "$train/reviewed-dev.ocrt" --output "$out/rare-fine-tune" \
+  --epochs 3 --steps 900 --qat 1 --learning-rate 0.0007
+model="$out/rare-fine-tune"
+```
+
+The original run started at `6b99311`. It resumed at the saved eighth
+epoch after the launcher was interrupted. It recorded 830,690 CTC line
+visits over the 12 completed epochs, including three QAT epochs, plus the
+12 alignment warm-up epochs. The continuation drew from 60,091 eligible
+records and recorded 85,099 CTC visits. The 32,768 extra renders were
+generated with the 12 installed Liberation faces. The v3 shard archive
+was capped at 12 lines per page. This experiment used roughly 0.85 million
+eligible line images across the two pools. Visits include repeats after
+shuffled rosters wrap.
+
+| Run and epoch | Mode | CTC loss | Real dev CER | Synthetic val CER |
+| ------------- | ---- | -------: | -----------: | ----------------: |
+| Expanded 1    | FP32 |   2.4550 |       38.72% |            45.93% |
+| Expanded 6    | FP32 |   1.1486 |       24.58% |            34.24% |
+| Expanded 9    | FP32 |   1.0476 |       23.94% |            33.60% |
+| Expanded 12   | QAT  |   1.0081 |       23.07% |            33.54% |
+| Rare-text 1   | FP32 |   0.7356 |       25.13% |            26.45% |
+| Rare-text 2   | FP32 |   0.6762 |       24.78% |            25.75% |
+| Rare-text 3   | QAT  |   0.6842 |       24.65% |            25.38% |
+
+Selection used the mean of the 186 real development and 192 synthetic
+validation CERs, 25.02% for the continuation versus 28.30% for expanded.
+The real development inputs in this comparison were binary OCRT crops.
+In a separate grayscale development run with the round-1 pipeline and
+the epoch-8 table, the existing beam plus lexicon improved CER from 27.20%
+to 26.22%, with mean per-crop CLI time rising from 7.51 to 53.12 ms.
+The v4 runtime uses greedy decoding.
+
+### Matched line crops
+
+The direct gray8 v4 probe and both Tesseract 5.3.0 models saw the same pixels.
+The Tesseract scores used the batch CLI above. The calibrated group used
+306 decoded JPEGs and 70 lossless PGM crops. The normalized scores collapse
+whitespace and lowercase while retaining diacritics and punctuation.
+
+| Cohort           | Engine         | Raw CER | Raw WER | Norm CER | Norm WER |
+| ---------------- | -------------- | ------: | ------: | -------: | -------: |
+| Real test (431)  | v4             |  18.36% |  48.54% |   17.21% |   47.40% |
+|                  | Tesseract LSTM |   0.96% |   5.06% |    0.91% |    4.87% |
+|                  | Tesseract fast |   0.91% |   4.29% |    0.89% |    4.22% |
+| Clean (376)      | v4             |  10.33% |  32.68% |   10.06% |   32.35% |
+|                  | Tesseract LSTM |   0.38% |   1.86% |    0.38% |    1.83% |
+|                  | Tesseract fast |   0.37% |   1.78% |    0.37% |    1.78% |
+| Calibrated (376) | v4             |  82.49% |  94.20% |   81.49% |   93.85% |
+|                  | Tesseract LSTM |   2.43% |   5.02% |    2.39% |    4.94% |
+|                  | Tesseract fast |   2.40% |   5.29% |    2.38% |    5.21% |
+
+On the real test crops, the entire v4 native page pipeline scored 39.15% raw
+CER and 72.71% raw WER. The glyph pipeline scored 44.93%
+and 83.28% on those inputs. Tesseract PSM is a harness setting. The native
+pipeline uses its own page preparation and segmentation on the single-line
+inputs. The direct probe skips page deskew and adaptive thresholding.
+
+### Pages and runtime
+
+The native CLI used pipeline-v2 round 2 (`ddca535`) for both SignatureKit
+recognizers. Page CER and mean milliseconds are measured over per-image
+medians of three CLI trials. Tesseract used PSM 3 and the benchmark image
+`sha256:4930dd205f0507c4c353a3465a4da49f8705e3a1fa33af216ae60ed026653653`.
+
+| Engine         | Real (20), CER / ms | Clean (8), CER / ms | Calibrated (8), CER / ms |
+| -------------- | ------------------: | ------------------: | -----------------------: |
+| Glyph          |      62.51% / 60.27 |      13.24% / 76.29 |           25.63% / 90.57 |
+| v4             |      43.92% / 47.45 |     10.77% / 100.08 |           17.74% / 93.12 |
+| Tesseract LSTM |   11.15% / 2,523.82 |    4.00% / 5,910.75 |         4.51% / 5,022.37 |
+| Tesseract fast |   14.05% / 1,709.48 |    4.03% / 3,268.68 |         4.49% / 3,397.17 |
+
+V4 improved raw whole-page CER. The normalized word multiset F1 fell
+from 40.10% to 38.95% on real pages, from 70.75% to 67.37% on clean pages,
+and from 55.62% to 51.62% on calibrated pages. Clean normalized WER rose
+from 33.65% to 35.97%. The published artifact therefore keeps the glyph
+default. The accuracy gap suggests improving normalized input robustness
+and training on uncapped, calibrated OCRL data before another release
+evaluation.
+
+The pinned 1,510 × 46 development crop used 300 repetitions on logical CPU 6.
+It took 1.892 ms native, 5.773 ms wasm scalar, and 2.086 ms wasm SIMD per line.
+PyTorch, Rust native, and both wasm variants matched every normalized byte
+and logit in the 128-line parity run. The fixture results hashed to
+`c70750a3fb19745cf771a2694cdd2e046faa48ed1ac04dd9feb60812734e3f2b`.
+
+On CPU 9 the page probe returned identical scalar and SIMD transcripts on
+all 36 pages. The scalar/SIMD means were 138.67/64.04 ms on real pages,
+312.99/143.62 ms on clean pages, and 306.23/139.95 ms on calibrated pages.
+Run it separately from the Tesseract process benchmark:
+
+```sh
+for dataset in real-pages clean-pages/test calibrated-pages/test; do
+  "$r" --cpu 2 --mem 4G taskset -c 9 bun "$rust/ocr/training/ctc-wasm.mjs" \
+    "$out/v4-scalar-opt.wasm" "$out/v4-simd-opt.wasm" \
+    "$model/best.bin" "$out/$dataset" none
+done
+```
+
+These page probe times include preparation and recognition inside wasm.
+Separate Tesseract CLI trials include process startup and load the model for
+each input. The benchmark passes were timed in different shared-host windows.
+The optimized experimental wasm probes were 253,612 bytes scalar and
+263,929 bytes SIMD. The SIMD probe plus its separate table was 296,020 bytes.
+The shipped glyph OCR wasm was 237,810 bytes. The main PDF wasm was
+1,155,988 bytes before and after, with SHA-256
+`220869496257eae3419cbbc84eb2e4edf32b8447b49a7f04014e4f60d4228b19`.

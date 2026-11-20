@@ -18,6 +18,11 @@ The pdf-core WASM does not load the model. The OCR engine calls this Rust API
 through its existing page recognition function. Recognition adds no C ABI
 exports.
 
+## Experimental CTC v4
+
+See [CPU PyTorch training and the v4 benchmarks](torch/README.md) for the
+opt-in int8 line recognizer, its checkpoint, and reproducible comparisons.
+
 ## Experimental CTC v3
 
 Build the native recognizer and trainer from the repository root.
