@@ -67,29 +67,33 @@ for (const name of pages) {
   timings.simd += right.elapsed;
 }
 
-const directory = await mkdtemp(join(tmpdir(), "ocr-tesseract-pages-"));
-const [result] = await Promise.allSettled([
-  (async () => {
-    const list = join(directory, "pages.txt");
-    await writeFile(list, `${pages.map((page) => resolve(cases, page)).join("\n")}\n`);
-    const clock = performance.now();
-    const process = Bun.spawn([tess, list, "stdout", "-l", "por", "--oem", "1", "--psm", psm], {
-      stdout: "ignore",
-      stderr: "inherit",
-      env: { ...globalThis.process.env, OMP_THREAD_LIMIT: "1" },
-    });
-    const status = await process.exited;
-    assert.equal(status, 0, "Tesseract failed");
-    return performance.now() - clock;
-  })(),
-]);
-await rm(directory, { recursive: true });
-if (result.status === "rejected") {
-  console.error(result.reason);
-  process.exit(1);
+async function measureTesseract() {
+  if (tess === "none") return undefined;
+  const directory = await mkdtemp(join(tmpdir(), "ocr-tesseract-pages-"));
+  const [result] = await Promise.allSettled([
+    (async () => {
+      const list = join(directory, "pages.txt");
+      await writeFile(list, `${pages.map((page) => resolve(cases, page)).join("\n")}\n`);
+      const clock = performance.now();
+      const process = Bun.spawn([tess, list, "stdout", "-l", "por", "--oem", "1", "--psm", psm], {
+        stdout: "ignore",
+        stderr: "inherit",
+        env: { ...globalThis.process.env, OMP_THREAD_LIMIT: "1" },
+      });
+      const status = await process.exited;
+      assert.equal(status, 0, "Tesseract failed");
+      return performance.now() - clock;
+    })(),
+  ]);
+  await rm(directory, { recursive: true });
+  if (result.status === "rejected") {
+    console.error(result.reason);
+    process.exit(1);
+  }
+  return result.value;
 }
-const tessElapsed = result.value;
 
+const tessElapsed = await measureTesseract();
 console.log(
   JSON.stringify({
     pages: pages.length,
@@ -97,7 +101,7 @@ console.log(
     characters: outputs,
     scalarMsPerPage: timings.scalar / pages.length,
     simdMsPerPage: timings.simd / pages.length,
-    tesseractMsPerPage: tessElapsed / pages.length,
-    speedup: tessElapsed / timings.simd,
+    tesseractMsPerPage: tessElapsed === undefined ? undefined : tessElapsed / pages.length,
+    speedup: tessElapsed === undefined ? undefined : tessElapsed / timings.simd,
   }),
 );

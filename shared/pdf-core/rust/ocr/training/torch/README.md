@@ -43,7 +43,7 @@ b=shared/pdf-core/bench/ocr
 corpus=/home/yorizel/Documents/bench-parsers
 py="$PWD/$c/venv/bin/python"
 
-"$r" --cpu 2 --mem 4G uv venv --python 3.13 "$c/venv"
+"$r" --cpu 2 --mem 4G uv venv --python 3.13.16 "$c/venv"
 "$r" --cpu 2 --mem 4G uv pip install --python "$py" \
   --index https://download.pytorch.org/whl/cpu -r "$t/requirements.txt"
 "$r" --cpu 2 --mem 4G uv pip install --python "$py" -r "$t/requirements-render.txt"
@@ -182,12 +182,20 @@ for preset in clean calibrated; do
   done
 done
 for jpg in "$out"/calibrated-{lines,pages}/test/*.jpg; do
-  "$r" --cpu 1 --mem 3G magick "$jpg" -colorspace Gray -depth 8 "${jpg%.jpg}.pgm"
+  decoded="${jpg%.jpg}.decoded.pgm"
+  "$r" --cpu 1 --mem 3G magick "$jpg" -colorspace Gray -depth 8 "$decoded"
+  mv "$decoded" "${jpg%.jpg}.pgm"
 done
 "$r" --cpu 2 --mem 4G bun "$b/prepare-real.ts" \
   "$corpus/editais-extra/digitalizados" "$out/real-pages"
 "$r" --cpu 1 --mem 3G taskset -c 5 "$py" "$t/evaluate.py" native \
   "$model/best.bin" "$out/real-lines/test" "$native"
+for dataset in real-lines/test clean-lines/test calibrated-lines/test; do
+  for variant in standard fast; do
+    "$r" --cpu 2 --mem 4G taskset -c 7 "$py" "$t/evaluate.py" tesseract "$variant" \
+      "$out/$dataset" --cpu 7
+  done
+done
 for dataset in real-lines/test clean-lines/test calibrated-lines/test real-pages clean-pages/test calibrated-pages/test; do
   psm=7
   case "$dataset" in *pages*) psm=3 ;; esac
@@ -197,6 +205,11 @@ for dataset in real-lines/test clean-lines/test calibrated-lines/test real-pages
     --engines ours-native,tesseract-lstm,tesseract-fast --psm "$psm"
 done
 ```
+
+The batched Tesseract line evaluator groups by reference DPI and uses PSM 7.
+Its time includes one Docker startup per DPI group. The full-page harness
+reports per-image process time and uses PSM 3. Keep those timing methods
+separate when comparing engines.
 
 The OCR4 table begins with `OCR4`, a u16 format version, a u16 architecture
 ID, a 32-byte SHA-256 training-data manifest, a 20-byte Git SHA-1 commit,
