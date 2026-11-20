@@ -80,10 +80,12 @@ def manifest(files):
 
 
 class Archive:
-    def __init__(self, paths, training=False, align=False):
+    def __init__(self, paths, training=False, align=False, normalize_line=normalize, scan=None):
+        self.scan = scan
         self.paths = paths
         self.training = training
         self.align = align
+        self.normalize = normalize_line
         self.samples = []
         self.files = OrderedDict()
         self.rejected = 0
@@ -116,12 +118,13 @@ class Archive:
         file.seek(line.offset)
         image = raster(file, line)
         if strength:
-            image = augment(image, np.random.default_rng(seed), strength)
+            transform = self.scan if self.scan is not None else augment
+            image = transform(image, np.random.default_rng(seed), strength)
         if self.align:
-            frames, geometry = normalize(image, geometry=True)
+            frames, geometry = self.normalize(image, geometry=True)
             alignment = aligned_targets(line, frames, geometry)
         else:
-            frames = normalize(image)
+            frames = self.normalize(image)
             alignment = None
         target = [CLASS[char] for char in line.text] if self.training else []
         if self.training and len(target) + sum(a == b for a, b in zip(target, target[1:])) > len(frames):
@@ -159,7 +162,8 @@ def aligned_targets(line, frames, geometry):
 
 
 class Crops:
-    def __init__(self, directory):
+    def __init__(self, directory, normalize_line):
+        self.normalize = normalize_line
         self.paths = sorted(directory.glob("*.json"))
 
     def __len__(self):
@@ -169,7 +173,7 @@ class Crops:
         index, _, _ = request
         path = self.paths[index]
         label = json.loads(path.read_text())
-        return normalize(pgm(path.with_suffix(".pgm"))), [], record_text(label["text"]), None
+        return self.normalize(pgm(path.with_suffix(".pgm"))), [], record_text(label["text"]), None
 
 
 def pgm(path):
@@ -250,5 +254,6 @@ def collate(samples):
     )
 
 
-def dataset(path):
-    return Crops(path) if path.is_dir() else Archive([path])
+def dataset(path, normalize_line=normalize):
+    return (Crops(path, normalize_line) if path.is_dir() else
+            Archive([path], normalize_line=normalize_line))

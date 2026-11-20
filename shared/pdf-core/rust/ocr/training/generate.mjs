@@ -107,7 +107,7 @@ const testText = [
   "É OBRIGATÓRIA A EMISSÃO DE NOTA FISCAL ELETRÔNICA",
 ];
 
-function stream(dictionary, data) {
+export function stream(dictionary, data) {
   return new Blob([
     bytes(`<< ${dictionary} /Length ${data.length} >>\nstream\n`),
     data,
@@ -133,6 +133,10 @@ async function fontSheet(font, openType) {
     stream(openType === true ? "/Subtype /OpenType" : `/Length1 ${font.length}`, font),
     stream("", bytes(`BT /F 60 Tf\n${content}\nET`)),
   ];
+  return buildPdf(objects);
+}
+
+export async function buildPdf(objects) {
   const parts = [bytes("%PDF-1.7\n")];
   const xref = ["0000000000 65535 f \n"];
   let offset = parts[0].length;
@@ -157,7 +161,7 @@ function fail(message) {
   process.exit(1);
 }
 
-function runPdf(wasm, pdf, operation) {
+export function runPdf(wasm, pdf, operation) {
   const {
     exports: { memory, pdf_core_alloc, pdf_core_free },
   } = wasm;
@@ -672,7 +676,7 @@ async function importScans(fixtureDir, manifest, output) {
   console.log(`imported ${samples.length} manually transcribed scan lines`);
 }
 
-async function* documents(root, directory = "") {
+export async function* documents(root, directory = "") {
   const entries = await readdir(join(root, directory), { withFileTypes: true });
   entries.sort((left, right) => (left.name < right.name ? -1 : Number(left.name !== right.name)));
   for (const entry of entries) {
@@ -700,6 +704,7 @@ async function extractCorpus(wasmPath, root, destination) {
   console.log(`extracted ${pages.length} pdf-core pages from training documents`);
 }
 
+if (import.meta.main) {
 const [command, ...args] = process.argv.slice(2);
 if (command === "bootstrap" && args.length === 5) {
   await bootstrap(...args);
@@ -735,4 +740,5 @@ if (command === "bootstrap" && args.length === 5) {
   console.error("       bun generate.mjs scans <fixture-dir> <manifest.json> <output.ocrt>");
   console.error("       bun generate.mjs corpus <pdf-core.wasm> <native-pdf-root> <corpus.txt>");
   process.exitCode = 2;
+}
 }

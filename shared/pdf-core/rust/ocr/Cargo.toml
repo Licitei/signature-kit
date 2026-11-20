@@ -26,6 +26,7 @@ ctc-beam = ["ctc-probe"]
 ctc-wide = []
 ctc-v3 = []
 ctc-v4 = ["ctc-probe"]
+ctc-v5 = ["ctc-v4"]
 ocr-lexicon = []
 synth = []
 

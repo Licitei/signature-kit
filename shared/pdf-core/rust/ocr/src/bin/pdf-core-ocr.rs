@@ -205,7 +205,7 @@ fn run() -> Result<(), String> {
         let result = if let Some(path) = args.sequence {
             let table = fs::read(&path).map_err(|cause| format!("{}: {cause}", path.display()))?;
             prepared
-                .recognize_sequence(&table)
+                .recognize_sequence_with_gray(&table, &gray)
                 .ok_or_else(|| String::from("Invalid CTC table for this build"))?
         } else {
             prepared.recognize()

@@ -5,6 +5,8 @@ use crate::segment::Line;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 use crate::sequence::wasm_dot;
 use crate::sequence::{Dot, LineWords, nonnegative_dot_kernel};
+#[cfg(feature = "ctc-v5")]
+use crate::sequence_v5;
 
 pub(crate) const MAGIC: &[u8; 4] = b"OCR4";
 const FORMAT: u16 = 1;
@@ -12,15 +14,15 @@ const ARCHITECTURE: u16 = 1;
 const INNER_HEIGHT: usize = 26;
 const PADDING: usize = 3;
 const HEIGHT: usize = 32;
-const STRIDE: usize = 4;
-const INPUT: usize = HEIGHT.saturating_mul(STRIDE);
-const MAX_FRAMES: usize = 1024;
+pub(super) const STRIDE: usize = 4;
+pub(super) const INPUT: usize = HEIGHT.saturating_mul(STRIDE);
+pub(super) const MAX_FRAMES: usize = 1024;
 const CHANNELS: usize = 64;
 const GROUP_WIDTH: usize = 16;
 const GROUPS: usize = CHANNELS.saturating_div(GROUP_WIDTH);
 const WINDOW: usize = 3_usize.saturating_mul(GROUP_WIDTH);
-const MAX_CLASSES: usize = 512;
-const ROW_HEADER: usize = 3;
+pub(super) const MAX_CLASSES: usize = 512;
+pub(super) const ROW_HEADER: usize = 3;
 
 type StemRow = [u8; INPUT.saturating_add(ROW_HEADER)];
 type TemporalRow = [u8; WINDOW.saturating_add(ROW_HEADER)];
@@ -40,7 +42,7 @@ pub(crate) struct Sequence<'model> {
 pub(crate) struct Scratch {
     first: Vec<Activation>,
     input: Vec<[i8; INPUT]>,
-    logits: [i32; MAX_CLASSES],
+    logits: Box<[i32; MAX_CLASSES]>,
     second: Vec<Activation>,
 }
 
@@ -51,13 +53,13 @@ impl Default for Scratch {
             input: Vec::with_capacity(MAX_FRAMES),
             first: Vec::with_capacity(MAX_FRAMES),
             second: Vec::with_capacity(MAX_FRAMES),
-            logits: [0; MAX_CLASSES],
+            logits: Box::new([0; MAX_CLASSES]),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Bounds {
+pub(super) struct Bounds {
     height: usize,
     left: usize,
     scaled: usize,
@@ -66,7 +68,7 @@ struct Bounds {
 }
 
 impl Bounds {
-    fn of<Pixel>(area: [usize; 4], pixel: &Pixel) -> Option<Self>
+    fn of<Pixel>(area: [usize; 4], cutoff: u8, pixel: &Pixel) -> Option<Self>
     where
         Pixel: Fn(usize, usize) -> u8,
     {
@@ -74,7 +76,7 @@ impl Bounds {
         let (mut left, mut top, mut right, mut bottom) = (x1, y1, x0, y0);
         for y in y0..y1 {
             for x in x0..x1 {
-                if pixel(x, y) < 128 {
+                if pixel(x, y) < cutoff {
                     left = left.min(x);
                     top = top.min(y);
                     right = right.max(x.saturating_add(1));
@@ -103,7 +105,7 @@ impl Bounds {
         })
     }
 
-    fn source_x(self, column: usize) -> usize {
+    pub(super) fn source_x(self, column: usize) -> usize {
         let inner = column
             .saturating_sub(PADDING)
             .min(self.scaled.saturating_sub(1));
@@ -126,6 +128,8 @@ impl Scratch {
         };
         let _bounds = normalize(
             [0, 0, width, height.min(rows.len())],
+            128,
+            u8::MAX,
             &pixel,
             &mut self.input,
         );
@@ -137,8 +141,14 @@ impl Scratch {
 #[derive(Debug)]
 pub struct Probe<'input> {
     image: Gray,
-    model: Sequence<'input>,
-    scratch: Scratch,
+    model: ProbeModel<'input>,
+}
+
+#[derive(Debug)]
+enum ProbeModel<'input> {
+    V4(Sequence<'input>, Scratch),
+    #[cfg(feature = "ctc-v5")]
+    V5(Box<sequence_v5::Sequence<'input>>, sequence_v5::Scratch),
 }
 
 impl<'input> Probe<'input> {
@@ -151,24 +161,35 @@ impl<'input> Probe<'input> {
         };
         let (table, pixels) =
             payload.split_at_checked(usize::try_from(u32::from_le_bytes(*table_length)).ok()?)?;
-        let model = Sequence::decode(table)?;
+        #[cfg(feature = "ctc-v5")]
+        let model = if table.starts_with(sequence_v5::MAGIC) {
+            ProbeModel::V5(
+                Box::new(sequence_v5::Sequence::decode(table)?),
+                sequence_v5::Scratch::default(),
+            )
+        } else {
+            ProbeModel::V4(Sequence::decode(table)?, Scratch::default())
+        };
+        #[cfg(not(feature = "ctc-v5"))]
+        let model = ProbeModel::V4(Sequence::decode(table)?, Scratch::default());
         let image = Gray::new(
             u32::from_le_bytes(*width),
             u32::from_le_bytes(*height),
             pixels.to_vec(),
         )
         .ok()?;
-        Some(Self {
-            image,
-            model,
-            scratch: Scratch::default(),
-        })
+        Some(Self { image, model })
     }
 
     #[inline]
     #[must_use]
     pub fn fixture(&mut self) -> Vec<u8> {
-        let normalized = self.scratch.normalize_gray(&self.image);
+        let (model, scratch) = match &mut self.model {
+            ProbeModel::V4(model, scratch) => (model, scratch),
+            #[cfg(feature = "ctc-v5")]
+            ProbeModel::V5(model, scratch) => return model.fixture(&self.image, scratch),
+        };
+        let normalized = scratch.normalize_gray(&self.image);
         let size = normalized.len().saturating_mul(INPUT);
         let mut result = Vec::new();
         result.extend(u32::try_from(size).unwrap_or_default().to_le_bytes());
@@ -179,7 +200,7 @@ impl<'input> Probe<'input> {
                 .copied()
                 .flat_map(i8::to_le_bytes),
         );
-        self.model.logits(&mut self.scratch, |scores| {
+        model.logits(scratch, |scores| {
             result.extend(scores.iter().flat_map(|score| score.to_le_bytes()));
         });
         result
@@ -190,8 +211,11 @@ impl<'input> Probe<'input> {
     where
         Observe: FnMut(char),
     {
-        self.model
-            .decode_gray(&self.image, &mut self.scratch, observe);
+        match &mut self.model {
+            ProbeModel::V4(model, scratch) => model.decode_gray(&self.image, scratch, observe),
+            #[cfg(feature = "ctc-v5")]
+            ProbeModel::V5(model, scratch) => model.transcript(&self.image, scratch, observe),
+        }
     }
 }
 
@@ -210,24 +234,7 @@ impl<'model> Sequence<'model> {
         if !(2..=MAX_CLASSES).contains(&count) {
             return None;
         }
-        let (labels, parameters) = payload.split_at_checked(count.checked_mul(4)?)?;
-        let (classes, []) = labels.as_chunks::<4>() else {
-            return None;
-        };
-        if classes.first() != Some(&[0; 4])
-            || !classes.iter().skip(1).all(|raw| {
-                char::from_u32(u32::from_le_bytes(*raw))
-                    .is_some_and(|char| char != '\0' && !char.is_control())
-            })
-            || !classes.windows(2).all(|pair| {
-                let [left, right] = pair else {
-                    return false;
-                };
-                u32::from_le_bytes(*left) < u32::from_le_bytes(*right)
-            })
-        {
-            return None;
-        }
+        let (classes, parameters) = labels(payload, count)?;
         let (stem, after_stem) = layer_rows(parameters, CHANNELS)?;
         let (first, after_first) = layer_rows(after_stem, CHANNELS)?;
         let (second, after_second) = layer_rows(after_first, CHANNELS)?;
@@ -256,35 +263,7 @@ impl<'model> Sequence<'model> {
     where
         Observe: FnMut(usize, char, u32),
     {
-        let mut frame = 0_usize;
-        let mut selected = (0_usize, 0_usize, 0_u32);
-        let mut flush = |(class, position, margin)| {
-            if class != 0
-                && let Some(label) = self.classes.get(class)
-                && let Some(character) = char::from_u32(u32::from_le_bytes(*label))
-            {
-                emit(position, character, margin);
-            }
-        };
-        self.logits(scratch, |scores| {
-            let (mut best, mut second, mut class) = (i32::MIN, i32::MIN, 0);
-            for (index, &score) in scores.iter().enumerate() {
-                if score > best {
-                    (best, second, class) = (score, best, index);
-                } else {
-                    second = second.max(score);
-                }
-            }
-            let margin = best.abs_diff(second);
-            if class != selected.0 {
-                flush(selected);
-                selected = (class, frame, margin);
-            } else if margin > selected.2 {
-                selected = (class, frame, margin);
-            }
-            frame = frame.saturating_add(1);
-        });
-        flush(selected);
+        greedy(self.classes, |step| self.logits(scratch, step), &mut emit);
     }
 
     fn logits<Observe>(&self, scratch: &mut Scratch, mut observe: Observe)
@@ -328,7 +307,7 @@ impl<'model> Sequence<'model> {
                 u8::MAX
             }
         };
-        if let Some(bounds) = normalize(area, &pixel, &mut scratch.input) {
+        if let Some(bounds) = normalize(area, 128, u8::MAX, &pixel, &mut scratch.input) {
             self.greedy(scratch, |frame, character, margin| {
                 let col = frame
                     .saturating_mul(STRIDE)
@@ -342,6 +321,63 @@ impl<'model> Sequence<'model> {
     }
 }
 
+pub(super) fn labels(payload: &[u8], count: usize) -> Option<(&[[u8; 4]], &[u8])> {
+    let (labels, parameters) = payload.split_at_checked(count.checked_mul(4)?)?;
+    let (classes, []) = labels.as_chunks::<4>() else {
+        return None;
+    };
+    if classes.first() != Some(&[0; 4])
+        || !classes.iter().skip(1).all(|raw| {
+            char::from_u32(u32::from_le_bytes(*raw))
+                .is_some_and(|char| char != '\0' && !char.is_control())
+        })
+        || !classes.windows(2).all(|pair| {
+            let [left, right] = pair else {
+                return false;
+            };
+            u32::from_le_bytes(*left) < u32::from_le_bytes(*right)
+        })
+    {
+        return None;
+    }
+    Some((classes, parameters))
+}
+
+pub(super) fn greedy<Forward, Observe>(classes: &[[u8; 4]], forward: Forward, mut emit: Observe)
+where
+    Forward: FnOnce(&mut dyn FnMut(&[i32])),
+    Observe: FnMut(usize, char, u32),
+{
+    let mut frame = 0_usize;
+    let mut selected = (0_usize, 0_usize, 0_u32);
+    let mut flush = |(class, position, margin)| {
+        if class != 0
+            && let Some(label) = classes.get(class)
+            && let Some(character) = char::from_u32(u32::from_le_bytes(*label))
+        {
+            emit(position, character, margin);
+        }
+    };
+    forward(&mut |scores| {
+        let (mut best, mut second, mut class) = (i32::MIN, i32::MIN, 0);
+        for (index, &score) in scores.iter().enumerate() {
+            if score > best {
+                (best, second, class) = (score, best, index);
+            } else {
+                second = second.max(score);
+            }
+        }
+        let margin = best.abs_diff(second);
+        if class != selected.0 {
+            flush(selected);
+            selected = (class, frame, margin);
+        } else if margin > selected.2 {
+            selected = (class, frame, margin);
+        }
+        frame = frame.saturating_add(1);
+    });
+    flush(selected);
+}
 fn center(index: usize, src: usize, dst: usize) -> usize {
     index
         .saturating_mul(2)
@@ -351,8 +387,10 @@ fn center(index: usize, src: usize, dst: usize) -> usize {
         .unwrap_or_default()
 }
 
-fn normalize<Pixel>(
+pub(super) fn normalize<Pixel>(
     area: [usize; 4],
+    cutoff: u8,
+    paper: u8,
     pixel: &Pixel,
     frames: &mut Vec<[i8; INPUT]>,
 ) -> Option<Bounds>
@@ -360,7 +398,7 @@ where
     Pixel: Fn(usize, usize) -> u8,
 {
     frames.clear();
-    let Some(bounds) = Bounds::of(area, pixel) else {
+    let Some(bounds) = Bounds::of(area, cutoff, pixel) else {
         frames.push([0; INPUT]);
         return None;
     };
@@ -383,14 +421,17 @@ where
             let source_y = bounds
                 .top
                 .saturating_add(center(y, bounds.height, INNER_HEIGHT));
-            let intensity = u8::MAX.saturating_sub(pixel(source_x, source_y)) >> 1_u8;
+            let intensity = paper.saturating_sub(pixel(source_x, source_y)) >> 1_u8;
             *output = i8::from_le_bytes([intensity]);
         }
     }
     Some(bounds)
 }
 
-fn layer_rows<const SIZE: usize>(bytes: &[u8], count: usize) -> Option<(&[[u8; SIZE]], &[u8])> {
+pub(super) fn layer_rows<const SIZE: usize>(
+    bytes: &[u8],
+    count: usize,
+) -> Option<(&[[u8; SIZE]], &[u8])> {
     let (rows, tail) = bytes.split_at_checked(count.checked_mul(SIZE)?)?;
     let (records, []) = rows.as_chunks::<SIZE>() else {
         return None;
@@ -439,12 +480,12 @@ fn temporal(
     }
 }
 
-fn relu(value: i32) -> i8 {
+pub(super) fn relu(value: i32) -> i8 {
     i8::try_from(value.clamp(0, 127)).unwrap_or_default()
 }
 
 #[inline]
-fn project<const SIZE: usize>(dot: Dot, input: &[i8], row: &[u8; SIZE]) -> i32 {
+pub(super) fn project(dot: Dot, input: &[i8], row: &[u8]) -> i32 {
     let Some(([low, high, shift], weights)) = row.split_first_chunk::<ROW_HEADER>() else {
         return 0;
     };

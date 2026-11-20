@@ -532,7 +532,7 @@ pub(crate) fn nonnegative_dot_kernel() -> Dot {
     dot_kernel()
 }
 
-fn scalar_dot(input: &[i8], weights: &[u8]) -> i32 {
+pub(super) fn scalar_dot(input: &[i8], weights: &[u8]) -> i32 {
     input
         .iter()
         .zip(weights)

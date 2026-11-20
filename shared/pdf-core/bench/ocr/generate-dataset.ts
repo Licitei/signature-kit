@@ -14,7 +14,7 @@ import {
 } from "./degradation";
 import type { Box, Raster } from "./degradation";
 import type { Glyph } from "./glyph-labels";
-import { augment, mix, trainingLineHeader } from "./training-raster";
+import { augment, cleanLine, mix, trainingLineHeader } from "./training-raster";
 type Word = Glyph & { line: number; glyphs?: Glyph[] };
 
 const { values, positionals } = parseArgs({
@@ -29,6 +29,7 @@ const { values, positionals } = parseArgs({
     split: { type: "string", default: "all" },
     partition: { type: "string", default: "0/1" },
     "lines-per-page": { type: "string" },
+    "exclude-training": { type: "string" },
     "max-docs": { type: "string" },
     "max-pages": { type: "string" },
   },
@@ -68,14 +69,14 @@ if (
   !Number.isSafeInteger(partitions) ||
   partitions < 1 ||
   partition >= partitions ||
-  (!trainingShards && (partitions !== 1 || values["lines-per-page"] !== undefined)) ||
+  (!trainingShards && (partitions !== 1 || values["lines-per-page"] !== undefined || values["exclude-training"] !== undefined)) ||
   !Number.isSafeInteger(linesPerPage) ||
   linesPerPage < 1 ||
   !["all", "train", "val", "test"].includes(selectedSplit ?? "") ||
   ![maxDocs, maxPages].every((count) => Number.isSafeInteger(count) && count >= 1)
 ) {
   console.error(
-    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines|training-shards] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N] [--partition INDEX/COUNT] [--lines-per-page N]",
+    "Usage: bun generate-dataset.ts <PDF or directory> [--output DIR] [--dpi 150|200|300|calibrated] [--mode pages|lines|training-shards] [--preset clean|scan|photocopy|jpeg|fax|calibrated] [--seed SEED] [--labels pdf-core|poppler] [--split all|train|val|test] [--max-docs N] [--max-pages N] [--partition INDEX/COUNT] [--lines-per-page N] [--exclude-training PATHS]",
   );
   process.exit(2);
 }
@@ -83,6 +84,9 @@ if (
 const pdfRoot = resolve(source);
 const output = resolve(values.output);
 const root = (await stat(pdfRoot)).isDirectory() ? pdfRoot : resolve(pdfRoot, "..");
+const excluded = new Set(values["exclude-training"] === undefined ? [] :
+  (await Bun.file(values["exclude-training"]).text()).split(/\r?\n/u).filter(Boolean),
+);
 const labeler = labelSource === "pdf-core" ? await import("./glyph-labels") : undefined;
 const pdfCore =
   labeler === undefined
@@ -311,16 +315,17 @@ async function streamTrainingDocument(
           .normalize("NFC")
           .trim();
         if (left >= right || top >= bottom || text.length === 0) continue;
+        const bounds: Box = [
+          Math.max(0, left - 2),
+          Math.max(0, top - 1),
+          Math.min(raster.width, right + 2),
+          Math.min(raster.height, bottom + 1),
+        ];
+        const label = encoder.encode(text);
         writer.write(
-          augment(
-            raster,
-            Math.max(0, left - 2),
-            Math.max(0, top - 1),
-            Math.min(raster.width, right + 2),
-            Math.min(raster.height, bottom + 1),
-            encoder.encode(text),
-            mix(seed ^ mix(page) ^ mix(line)),
-          ),
+          preset === "clean"
+            ? cleanLine(raster, bounds, label)
+            : augment(raster, ...bounds, label, mix(seed ^ mix(page) ^ mix(line))),
         );
         samples += 1;
         words += items.length;
@@ -356,6 +361,7 @@ if (trainingShards) await mkdir(join(output, "train"), { recursive: true });
 
 for await (const file of pdfFiles(pdfRoot)) {
   const key = relative(root, file).split(sep).join("/");
+  if (excluded.has(key)) continue;
   const digest = createHash("sha256").update(key).digest("hex");
   const profile = preset === "calibrated" ? scanProfile(seed, key) : undefined;
   const dpi = values.dpi === "calibrated" ? (profile?.dpi ?? requestedDpi) : requestedDpi;
@@ -371,7 +377,7 @@ for await (const file of pdfFiles(pdfRoot)) {
   documents += 1;
   const directory = join(output, split);
   const shardId = createHash("sha256")
-    .update(JSON.stringify({ key, seed, dpi, maxPages, preset, linesPerPage }))
+    .update(JSON.stringify({ key, seed, dpi, maxPages, preset, linesPerPage, ...(preset === "clean" ? { rasterVersion: 2 } : {}) }))
     .digest("hex");
   const target = join(directory, `${shardId}.ocrl`);
   if (trainingShards && (await Bun.file(target).exists()) === true) {

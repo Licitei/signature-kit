@@ -35,7 +35,7 @@ fn recognize(input: &[u8]) -> Option<Box<[u8]>> {
     let (model, pixels) = bytes.split_at_checked(table_length)?;
     let gray = Gray::new(width, height, pixels.to_vec()).ok()?;
     let prepared = prepare_page(&gray, dpi, &Options::default(), |_| ()).ok()?;
-    let text = prepared.recognize_sequence(model)?.text;
+    let text = prepared.recognize_sequence_with_gray(model, &gray)?.text;
     let length = u32::try_from(text.len().saturating_add(4)).ok()?;
     let mut output = Vec::with_capacity(usize::try_from(length).ok()?);
     output.extend(length.to_le_bytes());

@@ -30,6 +30,8 @@ mod sequence_probe;
 mod sequence_training;
 #[cfg(feature = "ctc-v4")]
 pub mod sequence_v4;
+#[cfg(feature = "ctc-v5")]
+mod sequence_v5;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod training;
 

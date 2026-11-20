@@ -1,4 +1,4 @@
-import type { Raster } from "./degradation";
+import type { Box, Raster } from "./degradation";
 
 export const trainingLineHeader = "OCRL\x01\x00\x00\x00";
 const background = 255;
@@ -11,6 +11,32 @@ export function mix(value: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+export function cleanLine(raster: Raster, [left, top, right, bottom]: Box, label: Uint8Array) {
+  const sourceWidth = right - left;
+  const sourceHeight = bottom - top;
+  const innerHeight = Math.min(32, sourceHeight);
+  const innerWidth = Math.min(4088, Math.max(1, Math.round(sourceWidth * innerHeight / sourceHeight)));
+  const width = innerWidth + 8;
+  const height = innerHeight + 8;
+  const record = new Uint8Array(8 + width * height + label.length);
+  const header = new DataView(record.buffer, 0, 8);
+  header.setUint16(0, width, true);
+  header.setUint16(2, height, true);
+  header.setUint32(4, label.length, true);
+  record.fill(background, 8, 8 + width * height);
+  record.set(label, 8 + width * height);
+  const columns = Int32Array.from({ length: innerWidth }, (_, x) =>
+    left + Math.floor((x + 0.5) * sourceWidth / innerWidth),
+  );
+  for (let y = 0; y < innerHeight; y += 1) {
+    const row = raster.width * (top + Math.floor((y + 0.5) * sourceHeight / innerHeight));
+    const start = 8 + (y + 4) * width + 4;
+    for (const [x, source] of columns.entries())
+      record[start + x] = raster.pixels[row + source] ?? background;
+  }
+  return record;
 }
 
 export function augment(

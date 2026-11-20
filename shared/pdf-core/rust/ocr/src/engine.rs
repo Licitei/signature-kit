@@ -10,6 +10,8 @@ use crate::segment::{Line, PageLayout, segment_with_tables};
 use crate::sequence::{Scratch, Sequence};
 #[cfg(feature = "ctc-v4")]
 use crate::sequence_v4;
+#[cfg(feature = "ctc-v5")]
+use crate::sequence_v5;
 
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -95,6 +97,32 @@ impl PreparedPage {
         let sequence = Sequence::decode(table)?;
         let mut scratch = Scratch::for_page(self.page.width);
         Some(self.recognize_with(|page, line| sequence.words(page, line, &mut scratch)))
+    }
+
+    #[cfg(feature = "ctc-probe")]
+    #[inline]
+    #[must_use]
+    pub fn recognize_sequence_with_gray(
+        &self,
+        table: &[u8],
+        #[cfg_attr(
+            not(feature = "ctc-v5"),
+            expect(unused_variables, reason = "OCR5 is the grayscale recognizer")
+        )]
+        gray: &Gray,
+    ) -> Option<PageResult> {
+        #[cfg(feature = "ctc-v5")]
+        if table.starts_with(sequence_v5::MAGIC) {
+            if gray.width != self.transform.width || gray.height != self.transform.height {
+                return None;
+            }
+            let sequence = sequence_v5::Sequence::decode(table)?;
+            let mut scratch = sequence_v5::Scratch::default();
+            return Some(self.recognize_with(|_, line| {
+                sequence.words(line, &mut scratch, |x, y| self.transform.gray(gray, x, y))
+            }));
+        }
+        self.recognize_sequence(table)
     }
 
     fn recognize_with<Recognize>(&self, mut recognize: Recognize) -> PageResult

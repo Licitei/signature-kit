@@ -1,3 +1,5 @@
+#[cfg(feature = "ctc-v5")]
+use crate::raster::Gray;
 use crate::raster::{Bits, RasterError, ink_counts, ink_runs};
 
 const MARGIN: usize = 128;
@@ -15,6 +17,39 @@ pub(crate) struct Transform {
 }
 
 impl Transform {
+    #[cfg(feature = "ctc-v5")]
+    pub(crate) fn gray(self, image: &Gray, x: u32, y: u32) -> u8 {
+        let sideways = matches!(self.quarter_turns, 1 | 3);
+        let (width, height) = if sideways {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        };
+        let Ok(shifted) = u32::try_from(to_i32(y).saturating_add(offset(x, width, self.slope)))
+        else {
+            return 255;
+        };
+        if x >= width || shifted >= height {
+            return 255;
+        }
+        let last_x = self.width.saturating_sub(1);
+        let last_y = self.height.saturating_sub(1);
+        let (source_x, source_y) = match self.quarter_turns {
+            1 => (shifted, last_y.saturating_sub(x)),
+            2 => (last_x.saturating_sub(x), last_y.saturating_sub(shifted)),
+            3 => (last_x.saturating_sub(shifted), x),
+            _ => (x, shifted),
+        };
+        let index = source_y
+            .checked_mul(image.width)
+            .and_then(|row| row.checked_add(source_x));
+        index
+            .and_then(|value| usize::try_from(value).ok())
+            .and_then(|value| image.pixels.get(value))
+            .copied()
+            .unwrap_or(255)
+    }
+
     pub(crate) fn source(self, bbox: Bounds) -> Bounds {
         let [start, top, end, bottom] = bbox;
         let (mut left, mut upper, mut right, mut lower) = (self.width, self.height, 0, 0);

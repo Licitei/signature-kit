@@ -13,7 +13,9 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DataLoader
 
 from data import Archive, batches, collate, dataset, manifest
-from model import LABELS, Recognizer, transcript
+from model import LABELS, Recognizer, normalize, transcript
+from model_v5 import Recognizer as RecognizerV5, normalize as normalize_v5
+from scan import Scan
 
 
 def edits(reference, prediction):
@@ -95,7 +97,7 @@ def warm_start(model, ema, warm, args):
 
 
 def train(args):
-    torch.set_num_threads(12)
+    torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     torch.manual_seed(args.seed)
     args.output.mkdir(parents=True, exist_ok=True)
@@ -112,12 +114,19 @@ def train(args):
     if args.initial_run and args.clean:
         raise ValueError("aligned warm start is only for a new recognizer")
     options = {key: value for key, value in vars(args).items()
-               if isinstance(value, (int, float)) and key != "resume"}
+               if isinstance(value, (int, float)) and key not in ("resume", "threads")}
+    if args.architecture and not args.scan_binary:
+        raise ValueError("OCR5 training requires the native --scan-binary")
+    scan = Scan(args.scan_binary) if args.scan_binary else None
     clean = [args.clean] if args.clean else []
     if args.real_dev.is_dir() and args.real_dev.name != "dev":
         raise ValueError("model selection requires the real development split")
-    training_data = manifest([("clean", clean), ("shard", paths)])
-    model = Recognizer()
+    sources = [("clean", clean), ("shard", paths)]
+    if scan is not None:
+        sources.extend([("profile", [scan.profile_path]), ("degradation", [args.scan_binary])])
+    training_data = manifest(sources)
+    model = RecognizerV5(args.architecture) if args.architecture else Recognizer()
+    normalize_line = normalize_v5 if args.architecture else normalize
     parent = None
     if args.initial_run:
         table = (args.initial_run / "best.bin").read_bytes()
@@ -130,11 +139,12 @@ def train(args):
         digest = hashlib.sha256(bytes.fromhex(training_data) + bytes.fromhex(parent)).hexdigest()
     else:
         digest = training_data
-    log(args.output, event="indexing", shards=len(paths), manifest=digest, parent=parent)
-    lines = Archive(paths, training=True)
-    warm = Archive(clean, training=True, align=True) if clean else None
-    real = dataset(args.real_dev)
-    synthetic = dataset(args.synthetic_val)
+    log(args.output, event="indexing", shards=len(paths), manifest=digest, parent=parent,
+        architecture=args.architecture, parameters=sum(p.numel() for p in model.parameters()))
+    lines = Archive(paths, training=True, normalize_line=normalize_line, scan=scan)
+    warm = Archive(clean, training=True, align=True, normalize_line=normalize_line) if clean else None
+    real = dataset(args.real_dev, normalize_line)
+    synthetic = dataset(args.synthetic_val, normalize_line)
     if len(real) != 186 or not len(synthetic) or not len(lines) or (warm is not None and not len(warm)):
         raise ValueError("training requires 186 real dev lines and nonempty synthetic datasets")
     provenance = {
@@ -158,6 +168,7 @@ def train(args):
         state = torch.load(checkpoint, map_location="cpu", weights_only=True)
         previous = state["provenance"]
         previous["options"].setdefault("learning_rate", 0.003)
+        previous["options"].setdefault("architecture", 0)
         if previous != provenance:
             raise ValueError("checkpoint data or training schedule changed")
         model.load_state_dict(state["model"])
@@ -178,7 +189,7 @@ def train(args):
     for epoch in range(first_epoch, args.epochs):
         start = time.perf_counter()
         mode = "qat" if epoch >= args.epochs - args.qat else "float"
-        curriculum = min(1, (epoch + 1) / 3)
+        curriculum = min(1, (epoch if scan is not None else epoch + 1) / 3)
         line_batches = batches(lines, args.batch_size, args.seed, curriculum, args.steps, epoch)
         loader = DataLoader(lines, batch_sampler=line_batches, collate_fn=collate,
                             num_workers=args.workers)
@@ -246,12 +257,15 @@ if __name__ == "__main__":
     parser.add_argument("--synthetic-val", type=Path, required=True)
     parser.add_argument("--real-dev", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--architecture", type=int, choices=(0, 1, 2), default=0)
     parser.add_argument("--seed", type=int, default=7291)
     parser.add_argument("--learning-rate", type=float, default=0.003)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--qat", type=int, default=2)
     parser.add_argument("--warm-epochs", type=int, default=12)
+    parser.add_argument("--threads", type=int, default=12)
+    parser.add_argument("--scan-binary", type=Path)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--patience", type=int, default=3)

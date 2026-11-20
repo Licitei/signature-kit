@@ -23,8 +23,8 @@ LABELS = ("\0",) + tuple(
 CLASS = {char: index for index, char in enumerate(LABELS)}
 
 
-def normalize(gray, *, geometry=False):
-    ink = gray < 128
+def normalize(gray, *, geometry=False, cutoff=128, paper=255):
+    ink = gray < cutoff
     rows = np.flatnonzero(ink.any(axis=1))
     cols = np.flatnonzero(ink.any(axis=0))
     if not rows.size:
@@ -40,7 +40,7 @@ def normalize(gray, *, geometry=False):
     x = (2 * np.arange(scaled) + 1) * width // (2 * scaled)
     y = (2 * np.arange(INK_HEIGHT) + 1) * height // (2 * INK_HEIGHT)
     columns[PADDING:PADDING + scaled, PADDING:PADDING + INK_HEIGHT] = (
-        (255 - source[y[:, None], x[None, :]].T) >> 1
+        np.maximum(0, paper - source[y[:, None], x[None, :]].T.astype(np.int16)) >> 1
     )
     normalized = columns.reshape(frames, HEIGHT * STRIDE)
     return (normalized, (int(cols[0]), width, scaled)) if geometry else normalized
