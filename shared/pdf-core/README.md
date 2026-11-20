@@ -232,25 +232,29 @@ The Promise client also accepts readers returning a plain `Uint8Array`. Call `cl
 
 Both clients accept a second argument with range tuning. The defaults are `probeBytes: 65536` for each end of the file, `gapBytes: 32768` for read-ahead and coalescing, and `maxRoundBytes: 2097152` for a batch of selective reads. Small files use smaller probes. Set `gapBytes: 0` to fetch the required ranges without read-ahead. The core uses valid linearization hints to prefetch the first page section and checks the cross-reference chain before using the bytes.
 
-`text`, `tables`, and `renderPages` accept their regular option objects. Indexes are zero-based and retain their original values in results. Omitting `pageIndexes` requests every page. The retained ranges can serve later calls on the same document. If the cross-reference data or requested objects require repair, or caching the planned ranges would exceed the selective-read budget (half the file size, with a 2 MiB minimum and the file size as an upper bound), the reader is called once for `(0, size)` and those bytes are cached for subsequent calls. Stats count all fetched bytes and request rounds, including the fallback fetch, so `bytesRead` can exceed the file size on fallback. `strategy` reports `"lazy"` or `"fallback"`. `pdfCore.RANGE_READ_FAILED` means the source read failed or returned the wrong byte count. `pdfCore.DOCUMENT_CLOSED` means the document's scope has closed. `pdfCore.LIMIT_EXCEEDED` covers sources over 512 MiB, exhausted Wasm handles or allocations, and the usual extraction limits. Invalid tuning reports `pdfCore.INVALID_OPTIONS`. Use `core.wasmMemoryBytes()` for the instance's current linear-memory capacity, which is also its high-water capacity.
+The lazy document methods accept the same options as their full-load counterparts. Indexes are zero-based and retain their original values in results. Omitting `pageIndexes` requests every page. The retained ranges can serve later calls on the same document. If the cross-reference data or requested objects require repair, or caching the planned ranges would exceed the selective-read budget (half the file size, with a 2 MiB minimum and the file size as an upper bound), the reader is called once for `(0, size)` and those bytes are cached for subsequent calls. Stats count all fetched bytes and request rounds, including the fallback fetch, so `bytesRead` can exceed the file size on fallback. `strategy` reports `"lazy"` or `"fallback"`. `pdfCore.RANGE_READ_FAILED` means the source read failed or returned the wrong byte count. `pdfCore.DOCUMENT_CLOSED` means the document's scope has closed. `pdfCore.LIMIT_EXCEEDED` covers sources over 512 MiB, exhausted Wasm handles or allocations, and the usual extraction limits. Invalid tuning reports `pdfCore.INVALID_OPTIONS`. Use `core.wasmMemoryBytes()` for the instance's current linear-memory capacity, which is also its high-water capacity.
 
 After building the repository, run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
 
-## OCR during extraction
+Run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy-differential.ts` for recursive parity checks against full-load extraction. The JSON lines include each call's byte and round deltas, the total for each concurrent batch, and any mismatches. Single-page calls that read more than 75% of a file over 2 MiB with at least four pages are flagged. Use `--start`, `--stride`, and `--limit` to partition the input list.
 
-Pass `ocr.recognize` to `text`, `textPages` or `tables` on either a full PDF or a lazy document. The default `auto` policy visits selected pages with a weak or absent text layer. `always` visits every selected page and `never` disables recognition. Set `concurrency` from 1 to 8. The default is 2.
+## Find pages that need caller-side OCR
 
-The callback receives the page index, original text-layer classification, crop box and rotation, plus the image bytes, dimensions, media type and DPI. Return a `kind: "words"` result with the same image dimensions and word boxes measured from its top-left corner. The lower and right edges of a word box are exclusive. Positioned words replace the page's previous text layer and go through the same layout, Markdown and table extraction used for native text.
+`textPages(pdf, options)` returns `{ pageIndex, text, textLayer }` for each selected page. It accepts the same options as `text`, including `format: "markdown"` and `dropRunningHeaders`. Use `pageDiagnostics` when you also need glyph counts and raster coverage. The classification is `usable`, `weak`, or `none`.
 
-A `kind: "text"` result uses the provided text verbatim. Markdown extraction uses the provided `markdown`, falling back to `text`. These pages retain their position and act as boundaries for cross-page paragraph joining. Table extraction needs positioned words.
+Use the page indexes with a weak or absent text layer to request images:
 
-`textPages` reports each page's `source` and original `textLayer`. For recognized words it also reports the mean of the confidences supplied by the recognizer, when available. Tables rebuilt from positioned words have `source: "ocr"`.
+```ts
+const pages = await client.textPages(pdf, { format: "markdown" });
+const pageIndexes = pages
+  .filter((page) => page.textLayer !== "usable")
+  .map((page) => page.pageIndex);
+const images = await client.pageImages(pdf, { pageIndexes });
+```
 
-Each selected page first uses its dominant image from `pageImages`, with JPEG passed through and other supported rasters encoded as PNG. The request includes the placement matrix in PDF user space, the page rotation, and any JPEG decoding metadata. Positioned OCR boxes use the supplied image's original pixel coordinates. The layout engine applies page rotation after the placement maps those coordinates into PDF user space.
+Forward the resulting image bytes to your OCR implementation. `pageImages` passes through dominant JPEGs and can return PNG or raw grayscale for other supported raster formats. Image records include pixel dimensions, placement in PDF user space, rotation and DPI. For a `kind: "none"` result, request that page with `renderPages` and rasterize its display list with `renderDisplayListImage` from `@signature-kit/pdf-core/canvas` in a browser.
 
-If no image is available, supply `ocr.render` to rasterize the page display list. Browser Effect callers can pass `renderOcrPage` from `@signature-kit/pdf-core/canvas`. A custom renderer returns the encoded image and a six-number matrix mapping its bottom-left unit square into PDF user space. Without a renderer, an OCR-selected page with no usable image fails with `pdfCore.PAGE_IMAGE_UNAVAILABLE`.
-
-The Effect methods retain the callback's error and service requirements. Promise clients accept an async recognizer and pass an `AbortSignal` as its second argument. A rejected Promise becomes `pdfCore.OCR_FAILED` with the corresponding page index.
+The same methods are available on a lazy document. Pass only the options when calling a method on an open document.
 
 ## Wasm ABI
 
@@ -276,7 +280,7 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
 | `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = return 8-bit grayscale rasters (`pdf_core_page_images`), bit 7 = table output (`pdf_core_extract_ocr`).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = return 8-bit grayscale rasters (`pdf_core_page_images`).
 
 ### Lazy handle and plan
 
@@ -327,12 +331,6 @@ The 16-byte header holds `magic` (`0x47444450`), `version` (`2`), page count and
 ### Page images payload (version 1)
 
 The header contains magic (`0x4D494450`, "PDIM"), version (`1`), page count, and padding as little-endian `u32` values. Each record starts with the page index and a tag, both `u32`. Tags `0`–`3` end the record and report no dominant image, unsupported filter, decode failure, and masked JPEG, respectively. Tags `4`, `5`, and `6` identify PNG, JPEG, and raw grayscale. These carry six more `u32` values for width, height, rotation, CMYK flag, byte length, and JPEG `/Decode` value count. Nine `f64` values follow for horizontal DPI, vertical DPI, coverage, and the six placement coefficients. Then come the JPEG `/Decode` values as `f64`, followed by the image bytes and padding to 8 bytes.
-
-### OCR extraction payload
-
-`pdf_core_extract_ocr(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, ocr_ptr, ocr_len)` returns a text block, or a tables block when flags bit 7 is set. Selection, Markdown and running-header flags work as in text extraction. `pdf_core_lazy_run_ocr(handle, profile, flags, ocr_ptr, ocr_len)` uses the planned page selection, with profile 0 for text and 1 for tables.
-
-The payload is little-endian and unaligned. It contains records in strictly increasing page-index order. Each record starts with the page index and kind (two `u32` values). Kind 0 contains a byte string with the resolved verbatim text. Kind 1 contains a `u32` word count followed by word records. Each word contains its PDF rectangle (four `f64`), baseline direction (two `f64`), font size (`f64`) and text. Byte strings use a `u32` UTF-8 byte count followed by the bytes.
 
 ### Signatures payload (version 2)
 

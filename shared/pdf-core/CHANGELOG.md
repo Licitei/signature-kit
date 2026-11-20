@@ -1,8 +1,8 @@
 ## Unreleased
 
-### Recognize scanned pages with caller-provided OCR
+### Identify pages with weak or absent text layers
 
-`pageDiagnostics` classifies each selected page's text layer, and `pageImages` returns dominant scan images with their placement and DPI. The full-load and lazy Effect and Promise clients accept an OCR callback for text, Markdown, and tables. Positioned results use the native layout pipeline, and `textPages` reports whether each result came from native text or OCR.
+`textPages` returns native text or Markdown with each page's text-layer classification. `pageDiagnostics` includes glyph counts and raster coverage. Use `pageImages` to retrieve dominant images with placement and DPI for caller-side recognition. Effect and Promise clients support these methods with full-load and lazy inputs.
 
 ### Read selected pages from a byte-range source
 

@@ -182,30 +182,16 @@ describe("PdfCore.pageImages", () => {
       { probeBytes: 512, gapBytes: 0 },
     );
     expect(await doc.pageImages(options)).toEqual(results);
-    expect(
-      await doc.text({
-        pageIndexes: [0, 1],
-        ocr: {
-          render: () => Promise.reject("The dominant JPEG must bypass rendering"),
-          recognize: async (request) => {
-            expect(request).toMatchObject({
-              pageIndex: 1,
-              rotate: 90,
-              placement: [0, 100, -100, 0, 100, 0],
-              jpegDecode: [1, 0],
-              image: { mediaType: "image/jpeg", dpiX: 0.72, dpiY: 0.72 },
-            });
-            expect(request.image.bytes).toEqual(Uint8Array.from(jpeg));
-            return {
-              kind: "words",
-              width: 2,
-              height: 2,
-              words: [{ text: "Scan", box: [0, 0, 2, 1] }],
-            };
-          },
-        },
-      }),
-    ).toEqual(["Native text", "Scan"]);
+    const textOptions = { pageIndexes: [1, 0, 1], format: "markdown" } satisfies Parameters<
+      typeof doc.textPages
+    >[0];
+    const pages = await doc.textPages(textOptions);
+    expect(pages).toEqual(await core.textPages(pdf, textOptions));
+    expect(pages.map(({ pageIndex, textLayer }) => [pageIndex, textLayer])).toEqual([
+      [1, "none"],
+      [0, "usable"],
+    ]);
+    expect(pages.map(({ text }) => text)).toEqual(await core.text(pdf, textOptions));
     expect(await doc.stats()).toMatchObject({ strategy: "lazy" });
     expect((await doc.stats()).bytesRead).toBeLessThan(pdf.length / 4);
   });
@@ -241,17 +227,6 @@ describe("PdfCore.pageImages", () => {
         return expect.fail("Expected both PNG and gray raster results");
       }
       expect(png.mediaType).toBe("image/png");
-      expect(
-        await core.text(pdf, {
-          ocr: {
-            recognize: async ({ image }) => {
-              expect(image.mediaType).toBe("image/png");
-              expect(image.bytes).toEqual(png.bytes);
-              return { kind: "text", text: "Recognized" };
-            },
-          },
-        }),
-      ).toEqual(["Recognized"]);
       expect(gray.mediaType).toBe("application/octet-stream");
       expect(Array.from(gray.bytes)).toEqual(expected);
       expect(await core.pngSize(png.bytes)).toMatchObject({ width: 2, height: 1 });

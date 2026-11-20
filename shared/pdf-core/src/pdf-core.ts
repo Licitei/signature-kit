@@ -69,13 +69,8 @@ import type {
   PdfCoreText,
   PdfCoreTextOptions,
   PdfCoreTextPages,
-  PdfCoreOcrOptions,
-  PdfCoreOcrRequest,
   PdfCoreWinAnsiFont,
 } from "./config.js";
-
-import { recognizePages } from "./ocr.js";
-import type { OcrPage } from "./ocr.js";
 
 export type PdfCoreRangeSource = {
   readonly size: number;
@@ -83,15 +78,11 @@ export type PdfCoreRangeSource = {
 };
 
 export type PdfCoreLazyDocument = {
-  readonly text: <E = never, R = never>(
-    options?: PdfCoreTextOptions<E, R>,
-  ) => Effect.Effect<PdfCoreText, PdfCoreError | E, R>;
-  readonly textPages: <E = never, R = never>(
-    options?: PdfCoreTextOptions<E, R>,
-  ) => Effect.Effect<PdfCoreTextPages, PdfCoreError | E, R>;
-  readonly tables: <E = never, R = never>(
-    options?: PdfCoreTablesOptions<E, R>,
-  ) => Effect.Effect<PdfCoreTables, PdfCoreError | E, R>;
+  readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
+  readonly textPages: (
+    options?: PdfCoreTextOptions,
+  ) => Effect.Effect<PdfCoreTextPages, PdfCoreError>;
+  readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
   readonly pageDiagnostics: (
     options?: PdfCorePageDiagnosticsOptions,
   ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
@@ -133,18 +124,18 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options: PdfCoreInspectOptions,
   ) => Effect.Effect<PdfCoreInspection, PdfCoreError>;
-  readonly text: <E = never, R = never>(
+  readonly text: (
     pdf: Uint8Array,
-    options?: PdfCoreTextOptions<E, R>,
-  ) => Effect.Effect<PdfCoreText, PdfCoreError | E, R>;
-  readonly textPages: <E = never, R = never>(
+    options?: PdfCoreTextOptions,
+  ) => Effect.Effect<PdfCoreText, PdfCoreError>;
+  readonly textPages: (
     pdf: Uint8Array,
-    options?: PdfCoreTextOptions<E, R>,
-  ) => Effect.Effect<PdfCoreTextPages, PdfCoreError | E, R>;
-  readonly tables: <E = never, R = never>(
+    options?: PdfCoreTextOptions,
+  ) => Effect.Effect<PdfCoreTextPages, PdfCoreError>;
+  readonly tables: (
     pdf: Uint8Array,
-    options?: PdfCoreTablesOptions<E, R>,
-  ) => Effect.Effect<PdfCoreTables, PdfCoreError | E, R>;
+    options?: PdfCoreTablesOptions,
+  ) => Effect.Effect<PdfCoreTables, PdfCoreError>;
   readonly pageDiagnostics: (
     pdf: Uint8Array,
     options?: PdfCorePageDiagnosticsOptions,
@@ -194,7 +185,6 @@ const FLAG_GRAY_IMAGE = 64;
 const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
 const FLAG_RUNS = 32;
-const FLAG_OCR_TABLES = 128;
 const STATUS_OK = 0;
 const STATUS_LIMIT_EXCEEDED = 3;
 const MAGIC = 0x4346_4450;
@@ -459,7 +449,6 @@ type BlockReader = <A>(
   pageIndexes: ReadonlyArray<number>,
   decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
   scale?: number,
-  ocr?: Uint8Array,
 ) => Effect.Effect<A, PdfCoreError>;
 
 const lazyProfiles = {
@@ -524,7 +513,6 @@ export const makePdfCore = (
       flags: number,
       pageIndexes: ReadonlyArray<number>,
       decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
-      ocr?: Uint8Array,
     ): Effect.Effect<A, PdfCoreError> =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -535,29 +523,11 @@ export const makePdfCore = (
           );
           new Uint8Array(core.memory.buffer, input.pointer, pdf.byteLength).set(pdf);
           new Uint32Array(core.memory.buffer, pages.pointer, pageIndexes.length).set(pageIndexes);
-          const extract = core.pdf_core_extract_ocr;
-          if (ocr !== undefined && extract === undefined) {
-            return yield* new PdfCoreError({
-              code: PdfCoreErrorCodeValue.wasmLoadFailed,
-              operation,
-              reason: "The PDF core WebAssembly module does not support OCR extraction.",
-            });
-          }
-          const payload = ocr === undefined ? undefined : yield* copyIn(operation, ocr);
           const result = yield* Effect.acquireRelease(
             Effect.suspend(() => {
               const pointer =
-                (payload === undefined || extract === undefined
-                  ? entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length)
-                  : extract(
-                      input.pointer,
-                      pdf.byteLength,
-                      flags | (operation === PdfCoreOperationValue.tables ? FLAG_OCR_TABLES : 0),
-                      pages.pointer,
-                      pageIndexes.length,
-                      payload.pointer,
-                      payload.length,
-                    )) >>> 0;
+                entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length) >>>
+                0;
               if (pointer === 0) {
                 return Effect.fail(
                   new PdfCoreError({
@@ -917,7 +887,7 @@ export const makePdfCore = (
       return options;
     });
 
-    const readText = (read: BlockReader, options: PdfCoreTextOptions, ocr?: Uint8Array) => {
+    const readText = (read: BlockReader, options: PdfCoreTextOptions) => {
       const pageIndexes = options.pageIndexes ?? [];
       const flags =
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
@@ -929,8 +899,6 @@ export const makePdfCore = (
         flags,
         pageIndexes,
         decodeTextBlock,
-        undefined,
-        ocr,
       );
     };
 
@@ -1010,9 +978,9 @@ export const makePdfCore = (
         );
       });
 
-    const runTables = Effect.fn(function* <E, R>(
+    const runTables = Effect.fn(function* (
       read: BlockReader,
-      rawOptions: PdfCoreTablesOptions<E, R> = {},
+      rawOptions: PdfCoreTablesOptions = {},
     ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreTablesOptionsSchema)(
         rawOptions,
@@ -1029,29 +997,13 @@ export const makePdfCore = (
       );
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      const ocr = rawOptions.ocr;
-      const recognized =
-        ocr === undefined || ocr?.policy === "never"
-          ? []
-          : yield* readOcrDetails(read, options.pageIndexes).pipe(
-              Effect.flatMap((pages) =>
-                runOcr(read, PdfCoreOperationValue.tables, ocr, pages, false),
-              ),
-            );
-      const tables = yield* read(
+      return yield* read(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
         flags,
         pageIndexes,
         decodeTablesBlock,
-        undefined,
-        encodeOcr(recognized),
       );
-      if (recognized.length === 0) return tables;
-      const replaced = new Set(recognized.map(({ pageIndex }) => pageIndex));
-      return tables.map((table) =>
-        replaced.has(table.pageIndex) ? { ...table, source: "ocr" } : table,
-      ) satisfies PdfCoreTables;
     });
 
     const invalidOptions =
@@ -1776,92 +1728,18 @@ export const makePdfCore = (
       );
     });
 
-    const readOcrDetails = (read: BlockReader, pageIndexes: ReadonlyArray<number> | undefined) =>
-      runPageDiagnostics(read, { pageIndexes }).pipe(
-        Effect.map((pages) =>
-          pages.map(({ pageIndex, pageBox, rotate, textLayer }) => ({
-            pageIndex,
-            pageBox,
-            rotate,
-            textLayer,
-          })),
-        ),
-      );
-
-    const encodeOcr = (pages: ReadonlyArray<OcrPage>): Uint8Array | undefined => {
-      if (pages.length === 0) return undefined;
-      const writer = payloadWriter();
-      for (const { pageIndex, content } of [...pages].sort(
-        (left, right) => left.pageIndex - right.pageIndex,
-      )) {
-        writer.u32(pageIndex);
-        if ("text" in content) {
-          writer.u32(0);
-          writer.text(content.text);
-          continue;
-        }
-        writer.u32(1);
-        writer.u32(content.words.length);
-        for (const word of content.words) {
-          writer.floats(word.geometry);
-          writer.text(word.text);
-        }
-      }
-      return writer.finish();
-    };
-
-    const runOcr = <E, R>(
-      read: BlockReader,
-      operation: PdfCoreOperation,
-      options: PdfCoreOcrOptions<E, R> | undefined,
-      pages: ReadonlyArray<Omit<PdfCoreOcrRequest, "image">>,
-      markdown: boolean,
-    ) =>
-      recognizePages(
-        operation,
-        options,
-        pages,
-        (pageIndex) =>
-          runPageImages(read, { pageIndexes: [pageIndex] }).pipe(
-            Effect.map(([page]) => (page?.kind === "image" ? page : undefined)),
-          ),
-        (pageIndex) =>
-          runRenderPages(read, { pageIndexes: [pageIndex] }).pipe(Effect.map(([page]) => page)),
-        markdown,
-      );
-
-    const runText = Effect.fn(function* <E, R>(
-      read: BlockReader,
-      rawOptions: PdfCoreTextOptions<E, R> = {},
-    ) {
+    const runText = Effect.fn(function* (read: BlockReader, rawOptions: PdfCoreTextOptions = {}) {
       const options = yield* textOptions(rawOptions);
-      const ocr = rawOptions.ocr;
-      if (ocr === undefined || ocr?.policy === "never") return yield* readText(read, options);
-      const pages = yield* readOcrDetails(read, options.pageIndexes);
-      const recognized = yield* runOcr(
-        read,
-        PdfCoreOperationValue.text,
-        ocr,
-        pages,
-        options.format === "markdown",
-      );
-      return yield* readText(read, options, encodeOcr(recognized));
+      return yield* readText(read, options);
     });
 
-    const runTextPages = Effect.fn(function* <E, R>(
+    const runTextPages = Effect.fn(function* (
       read: BlockReader,
-      rawOptions: PdfCoreTextOptions<E, R> = {},
-    ): Effect.fn.Return<PdfCoreTextPages, PdfCoreError | E, R> {
+      rawOptions: PdfCoreTextOptions = {},
+    ): Effect.fn.Return<PdfCoreTextPages, PdfCoreError> {
       const options = yield* textOptions(rawOptions);
-      const pages = yield* readOcrDetails(read, options.pageIndexes);
-      const recognized = yield* runOcr(
-        read,
-        PdfCoreOperationValue.text,
-        rawOptions.ocr,
-        pages,
-        options.format === "markdown",
-      );
-      const text = yield* readText(read, options, encodeOcr(recognized));
+      const text = yield* readText(read, options);
+      const pages = yield* runPageDiagnostics(read, { pageIndexes: options.pageIndexes });
       if (text.length !== pages.length) {
         return yield* new PdfCoreError({
           code: PdfCoreErrorCodeValue.wasmLoadFailed,
@@ -1869,23 +1747,17 @@ export const makePdfCore = (
           reason: "Page diagnostics and extracted text have different page counts.",
         });
       }
-      const replaced = new Map(recognized.map((page) => [page.pageIndex, page]));
-      return pages.map(({ pageIndex, textLayer }, index) => {
-        const page = replaced.get(pageIndex);
-        return {
-          pageIndex,
-          text: text[index] ?? "",
-          textLayer,
-          source: page === undefined ? "native" : "ocr",
-          ...(page?.confidence === undefined ? {} : { confidence: page.confidence }),
-        };
-      });
+      return pages.map(({ pageIndex, textLayer }, index) => ({
+        pageIndex,
+        text: text[index] ?? "",
+        textLayer,
+      }));
     });
 
     const full =
       (pdf: Uint8Array): BlockReader =>
-      (operation, entry, flags, indexes, decode, _scale, ocr) =>
-        readBlock(operation, entry, pdf, flags, indexes, decode, ocr);
+      (operation, entry, flags, indexes, decode) =>
+        readBlock(operation, entry, pdf, flags, indexes, decode);
 
     const openLazy = Effect.fn(function* (
       source: PdfCoreRangeSource,
@@ -2071,7 +1943,7 @@ export const makePdfCore = (
         );
       });
 
-      const read: BlockReader = (operation, entry, flags, indexes, decode, requestedScale, ocr) =>
+      const read: BlockReader = (operation, entry, flags, indexes, decode, requestedScale) =>
         lock.withPermits(1)(
           Effect.scoped(
             Effect.gen(function* () {
@@ -2093,15 +1965,6 @@ export const makePdfCore = (
                 indexes.length * Uint32Array.BYTES_PER_ELEMENT,
               );
               new Uint32Array(core.memory.buffer, pages.pointer, indexes.length).set(indexes);
-              const extract = core.pdf_core_lazy_run_ocr;
-              if (ocr !== undefined && extract === undefined) {
-                return yield* new PdfCoreError({
-                  code: PdfCoreErrorCodeValue.wasmLoadFailed,
-                  operation,
-                  reason: "The PDF core WebAssembly module does not support lazy OCR extraction.",
-                });
-              }
-              const payload = ocr === undefined ? undefined : yield* copyIn(operation, ocr);
               while (Ref.getUnsafe(state).strategy === "lazy") {
                 const next = yield* plan(operation, profile, flags, pages);
                 if (next.status === 1) {
@@ -2114,10 +1977,7 @@ export const makePdfCore = (
                       yield* ensureOpen;
                       const result = yield* resultBlock(
                         operation,
-                        () =>
-                          payload === undefined || extract === undefined
-                            ? core.pdf_core_lazy_run(handle, profile, flags, scale)
-                            : extract(handle, profile, flags, payload.pointer, payload.length),
+                        () => core.pdf_core_lazy_run(handle, profile, flags, scale),
                         closed,
                       );
                       const view = new DataView(result.memory, result.pointer, result.length);
@@ -2156,15 +2016,15 @@ export const makePdfCore = (
                 current.closed ? current : { ...current, fallback: bytes },
               );
               yield* ensureOpen;
-              return yield* full(bytes)(operation, entry, flags, indexes, decode, scale, ocr);
+              return yield* full(bytes)(operation, entry, flags, indexes, decode, scale);
             }),
           ),
         );
 
       return {
-        text: <E, R>(options?: PdfCoreTextOptions<E, R>) => runText(read, options),
-        textPages: <E, R>(options?: PdfCoreTextOptions<E, R>) => runTextPages(read, options),
-        tables: <E, R>(options?: PdfCoreTablesOptions<E, R>) => runTables(read, options),
+        text: (options?: PdfCoreTextOptions) => runText(read, options),
+        textPages: (options?: PdfCoreTextOptions) => runTextPages(read, options),
+        tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
         pageDiagnostics: (options?: PdfCorePageDiagnosticsOptions) =>
           runPageDiagnostics(read, options),
         pageImages: (options?: PdfCorePageImagesOptions) => runPageImages(read, options),

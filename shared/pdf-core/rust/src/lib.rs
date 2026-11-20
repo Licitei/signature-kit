@@ -26,7 +26,6 @@ mod lazy;
 mod markdown;
 mod num;
 mod object;
-mod ocr;
 mod page_image;
 mod pdf_cipher;
 mod pdf_hash;

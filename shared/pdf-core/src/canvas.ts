@@ -9,7 +9,7 @@ import {
   PdfCorePaintOptionsSchema,
   PdfCoreSchemaNameValue,
 } from "./config.js";
-import type { PdfCoreDisplayList, PdfCoreOcrRaster, PdfCorePaintOptions } from "./config.js";
+import type { PdfCoreDisplayList, PdfCorePaintOptions } from "./config.js";
 
 export type PdfCoreCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 export type PdfCoreImageSource = ImageBitmap | OffscreenCanvas;
@@ -966,40 +966,3 @@ export const renderDisplayListImage = (
       image,
     };
   }).pipe(Effect.scoped);
-
-export const renderOcrPage = Effect.fn(function* (
-  list: PdfCoreDisplayList,
-): Effect.fn.Return<PdfCoreOcrRaster, PdfCoreError> {
-  const scale = fitScale(list, list.scale);
-  const { width, height, image } = yield* renderDisplayListImage(list, { scale });
-  const { transform } = displayListViewport(list, scale);
-  const inverse = invert(transform);
-  if (inverse === undefined) {
-    return yield* new PdfCoreError({
-      code: PdfCoreErrorCodeValue.paintFailed,
-      operation: PdfCoreOperationValue.paint,
-      pageIndex: list.pageIndex,
-      reason: "The page viewport has no inverse transform.",
-    });
-  }
-  const [a, b, c, d, e, f] = inverse;
-  const bytes = yield* Effect.tryPromise({
-    try: async () => new Uint8Array(await image.arrayBuffer()),
-    catch: () =>
-      new PdfCoreError({
-        code: PdfCoreErrorCodeValue.paintFailed,
-        operation: PdfCoreOperationValue.paint,
-        pageIndex: list.pageIndex,
-        reason: "The rendered OCR image could not be read.",
-      }),
-  });
-  return {
-    mediaType: PDF_CORE_DEFAULT_PAGE_IMAGE_TYPE,
-    bytes,
-    width,
-    height,
-    dpiX: scale * 72,
-    dpiY: scale * 72,
-    placement: [a * width, b * width, -c * height, -d * height, e + c * height, f + d * height],
-  };
-});
