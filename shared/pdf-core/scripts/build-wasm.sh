@@ -17,7 +17,7 @@ else
   exit 1
 fi
 
-cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST"
+CARGO_PROFILE_RELEASE_OPT_LEVEL=2 cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST"
 mkdir -p "$OUT_DIR"
 "$WASM_OPT" -O3 \
   --enable-bulk-memory \

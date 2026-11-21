@@ -16,6 +16,7 @@ const payloadSections: Record<string, string> = {
   VERSION: "Payload",
   TEXT_VERSION: "Text payload",
   TABLES_VERSION: "Tables payload",
+  DIAGNOSTICS_VERSION: "Page diagnostics payload",
   SIGNATURES_VERSION: "Signatures payload",
   DOCUMENT_VERSION: "Document payload",
   METRICS_VERSION: "Font metrics payload",

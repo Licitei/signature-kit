@@ -65,6 +65,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.inspect",
   "pdfCore.text",
   "pdfCore.tables",
+  "pdfCore.pageDiagnostics",
   "pdfCore.render",
   "pdfCore.paint",
   "pdfCore.signatures",
@@ -85,6 +86,7 @@ export const PdfCoreOperationValue = {
   inspect: "pdfCore.inspect",
   text: "pdfCore.text",
   tables: "pdfCore.tables",
+  pageDiagnostics: "pdfCore.pageDiagnostics",
   render: "pdfCore.render",
   paint: "pdfCore.paint",
   signatures: "pdfCore.signatures",
@@ -107,6 +109,8 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreText",
   "PdfCoreTablesOptions",
   "PdfCoreTables",
+  "PdfCorePageDiagnosticsOptions",
+  "PdfCorePageDiagnostics",
   "PdfCoreRenderOptions",
   "PdfCoreDisplayLists",
   "PdfCorePaintOptions",
@@ -130,6 +134,8 @@ export const PdfCoreSchemaNameValue = {
   text: "PdfCoreText",
   tablesOptions: "PdfCoreTablesOptions",
   tables: "PdfCoreTables",
+  pageDiagnosticsOptions: "PdfCorePageDiagnosticsOptions",
+  pageDiagnostics: "PdfCorePageDiagnostics",
   renderOptions: "PdfCoreRenderOptions",
   displayLists: "PdfCoreDisplayLists",
   paintOptions: "PdfCorePaintOptions",
@@ -178,13 +184,36 @@ export const PdfCoreTextOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
   format: Schema.optional(PdfCoreTextFormatSchema),
   dropRunningHeaders: Schema.optional(Schema.Boolean),
+  mergeAcrossPages: Schema.optional(Schema.Boolean),
 });
 export type PdfCoreTextOptions = (typeof PdfCoreTextOptionsSchema)["Type"];
 
 export const PdfCoreTablesOptionsSchema = Schema.Struct({
+  dropRunningHeaders: Schema.optional(Schema.Boolean),
+  mergeAcrossPages: Schema.optional(Schema.Boolean),
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
 });
 export type PdfCoreTablesOptions = (typeof PdfCoreTablesOptionsSchema)["Type"];
+
+export const PdfCorePageDiagnosticsOptionsSchema = Schema.Struct({
+  pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
+});
+export type PdfCorePageDiagnosticsOptions = (typeof PdfCorePageDiagnosticsOptionsSchema)["Type"];
+
+export const PdfCoreTextLayerSchema = Schema.Literals(["none", "usable", "weak"]);
+export type PdfCoreTextLayer = (typeof PdfCoreTextLayerSchema)["Type"];
+
+export const PdfCorePageDiagnosticsSchema = Schema.Array(
+  Schema.Struct({
+    pageIndex: pageIndexSchema,
+    textLayer: PdfCoreTextLayerSchema,
+    glyphs: pageIndexSchema,
+    usableChars: pageIndexSchema,
+    unmapped: pageIndexSchema,
+    imageCount: pageIndexSchema,
+  }),
+);
+export type PdfCorePageDiagnostics = (typeof PdfCorePageDiagnosticsSchema)["Type"];
 
 export const PDF_CORE_DEFAULT_RENDER_SCALE = 150 / 72;
 const renderScaleSchema = Schema.Finite.check(
@@ -221,6 +250,7 @@ export const PdfCoreBoxSchema = Schema.Tuple([
 export type PdfCoreBox = (typeof PdfCoreBoxSchema)["Type"];
 
 export const PdfCoreCellSchema = Schema.Struct({
+  pageIndex: Schema.optional(pageIndexSchema),
   row: pageIndexSchema,
   col: pageIndexSchema,
   rowSpan: pageIndexSchema,
@@ -231,6 +261,7 @@ export const PdfCoreCellSchema = Schema.Struct({
 export type PdfCoreCell = (typeof PdfCoreCellSchema)["Type"];
 
 export const PdfCoreTableSchema = Schema.Struct({
+  pages: Schema.optional(Schema.Array(pageIndexSchema)),
   pageIndex: pageIndexSchema,
   bbox: PdfCoreBoxSchema,
   rows: pageIndexSchema,
@@ -341,6 +372,10 @@ const isLazyOpenFunction = (
   typeof value === "function" && value.length === 4;
 const isLazyCloseFunction = (value: unknown): value is (handle: number) => void =>
   typeof value === "function" && value.length === 1;
+const isLazyFullBytesFunction = (value: unknown): value is (handle: number) => number =>
+  typeof value === "function" && value.length === 1;
+const isLazyTrimFunction = (value: unknown): value is (handle: number, limit: number) => number =>
+  typeof value === "function" && value.length === 2;
 const isLazyFeedFunction = (
   value: unknown,
 ): value is (handle: number, offset: number, pointer: number, length: number) => number =>
@@ -366,6 +401,9 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_inspect: Schema.declare(isInspectFunction, { identifier: "pdf_core_inspect" }),
   pdf_core_text: Schema.declare(isTextFunction, { identifier: "pdf_core_text" }),
   pdf_core_tables: Schema.declare(isTextFunction, { identifier: "pdf_core_tables" }),
+  pdf_core_page_diagnostics: Schema.declare(isTextFunction, {
+    identifier: "pdf_core_page_diagnostics",
+  }),
   pdf_core_render: Schema.declare(isRenderFunction, { identifier: "pdf_core_render" }),
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {
@@ -380,9 +418,13 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_png_size: Schema.declare(isBufferFunction, { identifier: "pdf_core_png_size" }),
   pdf_core_lazy_open: Schema.declare(isLazyOpenFunction, { identifier: "pdf_core_lazy_open" }),
   pdf_core_lazy_close: Schema.declare(isLazyCloseFunction, { identifier: "pdf_core_lazy_close" }),
+  pdf_core_lazy_full_bytes: Schema.declare(isLazyFullBytesFunction, {
+    identifier: "pdf_core_lazy_full_bytes",
+  }),
   pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
   pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
   pdf_core_lazy_run: Schema.declare(isLazyRunFunction, { identifier: "pdf_core_lazy_run" }),
+  pdf_core_lazy_trim: Schema.declare(isLazyTrimFunction, { identifier: "pdf_core_lazy_trim" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 
@@ -390,6 +432,11 @@ const byteOffsetSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum
 
 export const PDF_CORE_MAX_LAZY_BYTES = 512 * 1024 * 1024;
 export const PdfCoreLazyOptionsSchema = Schema.Struct({
+  allowFullRead: Schema.optional(Schema.Boolean),
+  maxCachedBytes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: PDF_CORE_MAX_LAZY_BYTES })),
+  ),
+  pageLimit: Schema.optional(pageIndexSchema),
   probeBytes: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 1024 * 1024 })),
   ),
@@ -403,6 +450,7 @@ export const PdfCoreLazyOptionsSchema = Schema.Struct({
 export type PdfCoreLazyOptions = (typeof PdfCoreLazyOptionsSchema)["Type"];
 export const PdfCoreLazyStatsSchema = Schema.Struct({
   bytesRead: Schema.Int,
+  cachedBytes: Schema.Int,
   rounds: Schema.Int,
   strategy: Schema.Literals(["lazy", "fallback"]),
 });

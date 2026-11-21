@@ -1186,6 +1186,7 @@ fn standard_font(name: &[u8]) -> Outcome<Object> {
 )]
 mod tests {
     use super::*;
+    use crate::document::PageRequest;
     use crate::layout::{TextOptions, document_text, text_limits};
     use crate::object::Resolver;
     use crate::revision::{Analysis, analyze};
@@ -1255,11 +1256,12 @@ mod tests {
     fn page_text(pdf: &[u8]) -> Vec<String> {
         document_text(
             pdf,
-            None,
+            PageRequest::Indexes(None),
             &text_limits(),
             TextOptions {
                 drop_running: false,
                 markdown: false,
+                merge_across_pages: false,
             },
         )
         .unwrap()

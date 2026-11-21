@@ -4,7 +4,7 @@ use crate::display::{
     OP_LINE_CAP, OP_LINE_JOIN, OP_LINE_WIDTH, OP_MITER, OP_RESTORE, OP_SAVE, OP_SHADE, OP_STROKE,
     OP_STROKE_GRADIENT, OP_TEXT_CLIP, PathData,
 };
-use crate::document::{Document, Page, pick_pages, select_pages};
+use crate::document::{Document, Page, PageRequest, pick_pages};
 use crate::failure::{Failure, Outcome};
 use crate::filters;
 use crate::font::{Font, Glyph};
@@ -379,7 +379,7 @@ struct PageTarget<'run, 'data> {
 
 struct PageSelection<'pages> {
     operator_limit: usize,
-    page_indexes: Option<&'pages [u32]>,
+    page_indexes: PageRequest<&'pages [u32]>,
     scale: f64,
 }
 
@@ -1498,8 +1498,7 @@ impl Renderer<'_, '_> {
                         .last()
                         .and_then(|operand| operand.string(&mut scratch))
                     {
-                        let owned = bytes.to_vec();
-                        self.show(&owned, frame, state, &mut text, depth, visible)?;
+                        self.show(bytes, frame, state, &mut text, depth, visible)?;
                     }
                 }
                 b"'" | b"\"" => {
@@ -1521,52 +1520,37 @@ impl Renderer<'_, '_> {
                         .last()
                         .and_then(|operand| operand.string(&mut scratch))
                     {
-                        let owned = bytes.to_vec();
-                        self.show(&owned, frame, state, &mut text, depth, visible)?;
+                        self.show(bytes, frame, state, &mut text, depth, visible)?;
                     }
                 }
                 b"TJ" => {
                     if let Some(Operand::Array(items)) = operands.last() {
-                        let parts: Vec<Result<Vec<u8>, f64>> = items
-                            .iter()
-                            .filter_map(|item| {
-                                item.as_number().map(Err).or_else(|| {
-                                    let mut buffer = Vec::new();
-                                    item.string(&mut buffer).map(|bytes| Ok(bytes.to_vec()))
-                                })
-                            })
-                            .collect();
-                        for part in parts {
-                            match part {
-                                Ok(bytes) => {
-                                    self.show(&bytes, frame, state, &mut text, depth, visible)?;
-                                }
-                                Err(adjust) => {
-                                    let vertical = state
-                                        .font
-                                        .as_ref()
-                                        .is_some_and(|font| font.font.is_vertical());
-                                    let amount = -adjust / 1_000.0_f64 * state.font_size;
-                                    text.matrix = if vertical {
-                                        translate(0.0, amount, &text.matrix)
-                                    } else {
-                                        translate(amount * state.scale, 0.0, &text.matrix)
-                                    };
-                                }
+                        for item in items {
+                            if let Some(adjust) = item.as_number() {
+                                let vertical = state
+                                    .font
+                                    .as_ref()
+                                    .is_some_and(|font| font.font.is_vertical());
+                                let amount = -adjust / 1_000.0_f64 * state.font_size;
+                                text.matrix = if vertical {
+                                    translate(0.0, amount, &text.matrix)
+                                } else {
+                                    translate(amount * state.scale, 0.0, &text.matrix)
+                                };
+                            } else if let Some(bytes) = item.string(&mut scratch) {
+                                self.show(bytes, frame, state, &mut text, depth, visible)?;
                             }
                         }
                     }
                 }
                 b"Do" => {
                     if visible && let Some(name) = operands.last().and_then(Operand::as_name) {
-                        let owned = name.to_vec();
-                        self.xobject(&owned, frame, state, depth)?;
+                        self.xobject(name, frame, state, depth)?;
                     }
                 }
                 b"sh" => {
                     if visible && let Some(name) = operands.last().and_then(Operand::as_name) {
-                        let owned = name.to_vec();
-                        self.shade(&owned, frame, state);
+                        self.shade(name, frame, state);
                     }
                 }
                 b"EI" => {
@@ -2152,7 +2136,7 @@ fn tile_color(data: &[u8]) -> [u8; 3] {
 
 pub(crate) fn render_pages(
     bytes: &[u8],
-    page_indexes: Option<&[u32]>,
+    page_indexes: PageRequest<&[u32]>,
     scale: f64,
     limits: &Limits,
 ) -> Outcome<Vec<RenderedPage>> {
@@ -2183,7 +2167,7 @@ fn render_document(
     }
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
-    let selected = select_pages(pages.len(), selection.page_indexes)?;
+    let selected = selection.page_indexes.select(pages.len())?;
     render_selected(
         &document,
         &pick_pages(&pages, selected),
@@ -2207,7 +2191,7 @@ pub(crate) fn opened_render(
         selected,
         &PageSelection {
             operator_limit: MAX_OPERATORS,
-            page_indexes: None,
+            page_indexes: PageRequest::Indexes(None),
             scale,
         },
         limits,
@@ -2462,7 +2446,7 @@ mod tests {
     }
 
     fn render_one(bytes: &[u8], limits: &Limits) -> Vec<Op> {
-        let pages = render_pages(bytes, None, 2.0, limits).unwrap();
+        let pages = render_pages(bytes, PageRequest::Indexes(None), 2.0, limits).unwrap();
         assert_eq!(pages.len(), 1);
         decode(&pages[0].list)
     }
@@ -2572,7 +2556,7 @@ mod tests {
                 "q 20 0 0 10 10 10 cm BI /W 2 /H 1 /CS /RGB /BPC 8 /F /AHx ID ff000000ff00> EI Q",
                 &[],
             ),
-            None,
+            PageRequest::Indexes(None),
             1.0,
             &Limits::default(),
         )
@@ -2721,13 +2705,23 @@ mod tests {
         );
         assert!(balanced(&truncated));
         assert!(!truncated.contains(&Op::Fill(RULE_NONZERO)));
-        let _invalid =
-            render_pages(b"%PDF-1.7 garbage", None, 1.0, &Limits::default()).unwrap_err();
-        let _scale =
-            render_pages(&page_pdf("<< >>", "", &[]), None, 0.0, &Limits::default()).unwrap_err();
+        let _invalid = render_pages(
+            b"%PDF-1.7 garbage",
+            PageRequest::Indexes(None),
+            1.0,
+            &Limits::default(),
+        )
+        .unwrap_err();
+        let _scale = render_pages(
+            &page_pdf("<< >>", "", &[]),
+            PageRequest::Indexes(None),
+            0.0,
+            &Limits::default(),
+        )
+        .unwrap_err();
         let _range = render_pages(
             &page_pdf("<< >>", "", &[]),
-            Some(&[3]),
+            PageRequest::Indexes(Some(&[3])),
             1.0,
             &Limits::default(),
         )
@@ -2737,7 +2731,8 @@ mod tests {
     #[test]
     fn page_view_intersects_crop_and_media_boxes() {
         let bytes = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
-        let pages = render_pages(bytes, None, 1.0, &Limits::default()).unwrap();
+        let pages =
+            render_pages(bytes, PageRequest::Indexes(None), 1.0, &Limits::default()).unwrap();
         assert_eq!(pages.len(), 2);
         for rendered in &pages {
             let [x0, y0, x1, y1] = rendered.view;
@@ -2775,7 +2770,7 @@ mod tests {
                 "q /G0 gs 1 0 0 rg 8 0 0 1 0 0 cm BI /W 8 /H 1 /IM true /F /AHx ID 0F> EI Q",
                 &[],
             ),
-            None,
+            PageRequest::Indexes(None),
             1.0,
             &Limits::default(),
         )
@@ -2906,7 +2901,7 @@ mod tests {
             &bytes,
             &PageSelection {
                 operator_limit: limit,
-                page_indexes: None,
+                page_indexes: PageRequest::Indexes(None),
                 scale: 1.0,
             },
             &Limits::default(),
@@ -2950,7 +2945,7 @@ mod tests {
             &bytes,
             &PageSelection {
                 operator_limit: MAX_OPERATORS,
-                page_indexes: None,
+                page_indexes: PageRequest::Indexes(None),
                 scale: 1.0,
             },
             &Limits::default(),

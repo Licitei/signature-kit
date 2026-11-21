@@ -88,6 +88,10 @@ const tables = yield * core.tables(pdf, { pageIndexes: [0] });
 
 `bbox` values are in page user space like `inspect` rects; `row`/`col` follow the visible reading orientation (top to bottom, left to right) even on rotated pages. Merged cells appear once with `rowSpan`/`colSpan` greater than 1.
 
+Pass `mergeAcrossPages: true` to `tables` or to `text` with `format: "markdown"` to join matching tables across consecutive selected pages. Matching uses page-edge placement, column alignment and evidence from the header or body rows. Repeated table headers are removed. In a ruled table, complementary cells can be joined when both row fragments are shorter than nearby whole rows. The matcher uses geometry and row content, so visually indistinguishable tables can still be ambiguous. Enabling the option runs reading-order layout on all selected pages, including in `tables`.
+
+Merged tables include zero-based `pages` in reading order. Standalone tables omit `pages`. The table `pageIndex` and `bbox` describe the first fragment. In merged tables, each cell includes its source `pageIndex` so its `bbox` remains page-local. Markdown renders the merged table in the first page's string and keeps one output string per selected page. Running headers and page numbers are skipped when matching tables, unless `dropRunningHeaders: false` is set in either API.
+
 Marked-content `/ActualText` replaces the glyph text of its span, glyphs fully outside a Form XObject `/BBox` are skipped, and text render modes 4-7 (clip) still extract text, in `text`, `markdown` and `tables`.
 
 `inspect` returns `pages` (`mediaBox`, `cropBox`, `rotate`), `links` (`pageIndex`, `uri`, `rect`), and `text` pages. Each text page carries `rects` (a `Float64Array` of `[x0, y0, x1, y1, fontSize]` per item), `text` (all item texts joined), `offsets` (a `Uint32Array` of `items + 1` UTF-16 code unit offsets into `text`, so item `n` is `text.slice(offsets[n], offsets[n + 1])`), and `styles` (a `Uint8Array` with one byte per item: bit 0 bold, bit 1 italic).
@@ -187,8 +191,8 @@ const firstPageMarkdown = (pdf: Blob) =>
   Effect.scoped(
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const doc = yield* core.openLazy(pdfCoreBlobSource(pdf));
-      const pages = yield* doc.text({ pageIndexes: [0], format: "markdown" });
+      const doc = yield* core.openLazy(pdfCoreBlobSource(pdf), { pageLimit: 1 });
+      const pages = yield* doc.text({ format: "markdown" });
       return { pages, stats: yield* doc.stats };
     }),
   );
@@ -209,9 +213,46 @@ const stats = await doc.stats();
 
 The Promise client also accepts readers returning a plain `Uint8Array`. Call `close()` if you manage its lifetime without `await using`. The caller owns any underlying resource passed to the Promise reader.
 
-Both clients accept a second argument with range tuning. The defaults are `probeBytes: 65536` for each end of the file, `gapBytes: 32768` for read-ahead and coalescing, and `maxRoundBytes: 2097152` for a batch of selective reads. Small files use smaller probes. Set `gapBytes: 0` to fetch the required ranges without read-ahead. The core uses valid linearization hints to prefetch the first page section and checks the cross-reference chain before using the bytes.
+Both clients accept `pageLimit` and range tuning in the second argument. `pageLimit` reads the first N pages, up to the document length. Zero selects no pages. An explicit `pageIndexes` list on `text`, `tables` or `renderPages` overrides the limit, so `doc.text({ pageIndexes: [7] })` parses only page 8. Omit both settings to process every page. The defaults are `probeBytes: 65536` for each end of the file, `gapBytes: 32768` for read-ahead and coalescing, and `maxRoundBytes: 2097152` for a batch of selective reads. Small files use smaller probes. Set `gapBytes: 0` to fetch the required ranges without read-ahead. The core uses valid linearization hints to prefetch the first page section and checks the cross-reference chain before using the bytes.
 
-`text`, `tables`, and `renderPages` accept their regular option objects. Indexes are zero-based and retain their original values in results. Omitting `pageIndexes` requests every page. The retained ranges can serve later calls on the same document. If the cross-reference data or requested objects require repair, or caching the planned ranges would exceed the selective-read budget (half the file size, with a 2 MiB minimum and the file size as an upper bound), the reader is called once for `(0, size)` and those bytes are cached for subsequent calls. Stats count all fetched bytes and request rounds, including the fallback fetch, so `bytesRead` can exceed the file size on fallback. `strategy` reports `"lazy"` or `"fallback"`. `pdfCore.RANGE_READ_FAILED` means the source read failed or returned the wrong byte count. `pdfCore.DOCUMENT_CLOSED` means the document's scope has closed. `pdfCore.LIMIT_EXCEEDED` covers sources over 512 MiB, exhausted Wasm handles or allocations, and the usual extraction limits. Invalid tuning reports `pdfCore.INVALID_OPTIONS`. Use `core.wasmMemoryBytes()` for the instance's current linear-memory capacity, which is also its high-water capacity.
+Page indexes are zero-based and retain their original values in results. For selected pages, the reader stops walking the page tree when it reaches the last requested page. It fetches page content and dependencies only for the selection. The retained ranges can serve later calls on the same document. When the cross-reference data or requested objects require repair, the core fetches only the missing bytes in batches bounded by `maxRoundBytes` and reuses the complete input on later calls. Set `allowFullRead: false` to return `pdfCore.UNSUPPORTED_FEATURE` when the file requires full recovery.
+
+`maxCachedBytes` controls how many source bytes remain in the selective cache between operations. The default is 2 MiB. When the cache exceeds that limit, the core releases page ranges and parsed objects while retaining the cross-reference index and a small prefix of the file. Set it to zero to release page ranges after each operation. The limit applies between operations because a selected page may itself need larger streams. Fully recovered input stays cached until the handle closes.
+
+Stats include cumulative `bytesRead`, request `rounds`, and retained source `cachedBytes` after each operation. `strategy` reports `"lazy"` or `"fallback"`. `pdfCore.RANGE_READ_FAILED` means the source read failed or returned the wrong byte count. `pdfCore.DOCUMENT_CLOSED` means the document's scope has closed. `pdfCore.LIMIT_EXCEEDED` covers sources over 512 MiB, exhausted Wasm handles or allocations, and the usual extraction limits. Invalid tuning reports `pdfCore.INVALID_OPTIONS`. Use `core.wasmMemoryBytes()` for the instance's current linear-memory capacity, which is also its high-water capacity.
+
+### Choose pages for external OCR
+
+`pageDiagnostics()` reports the native text layer on each selected page. `usable` means the parser found readable native text. `weak` flags uncertain extraction, such as a short stamp over a full-page scan or glyphs with missing mappings. `none` means no native text was found and includes blank pages. The result includes the original zero-based `pageIndex` and counts for glyphs, usable characters, unmapped glyphs and images. Diagnostics are heuristic and preserve the caller's decision about when to use OCR.
+
+The Effect and Promise clients expose diagnostics on both full PDFs and lazy documents. On a lazy document, the same `pageLimit` and `pageIndexes` rules apply. Render only the candidate pages for your OCR pipeline:
+
+```ts
+await using doc = await core.openLazy(source, { pageLimit: 8 });
+const diagnostics = await doc.pageDiagnostics();
+const pageIndexes = diagnostics
+  .filter((page) => page.textLayer === "weak" || (page.textLayer === "none" && page.imageCount > 0))
+  .map((page) => page.pageIndex);
+const pagesForOcr = await doc.renderPages({ pageIndexes });
+```
+
+### Build an OCR-only PDF
+
+If your OCR service accepts a PDF and you have the original bytes, pass the diagnosed page indices to the existing page copier. It preserves page order and copies the page content and resources without rendering images. Keep `sourcePageIndexes` alongside the new PDF to map each OCR page back to its source. This policy includes blank pages and pages whose text is drawn as vectors. If you only want image-only and weak pages, use the filter from the previous example. For a range source without the original bytes in memory, use the per-page rendering flow above.
+
+```ts
+const diagnostics = await core.pageDiagnostics(pdf);
+const sourcePageIndexes = diagnostics
+  .filter((page) => page.textLayer !== "usable")
+  .map((page) => page.pageIndex);
+
+if (sourcePageIndexes.length > 0) {
+  const ocrPdf = await core.merge([{ pdf, pageIndexes: sourcePageIndexes }], {
+    dropWidgets: true,
+  });
+  await submitForOcr(ocrPdf, sourcePageIndexes);
+}
+```
 
 After building the repository, run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
 
@@ -226,6 +267,7 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_inspect(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                          | Returns a result block, or `0` when out of memory.                                                               |
 | `pdf_core_text(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                             | Returns a text result block, or `0` when out of memory.                                                          |
 | `pdf_core_tables(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                           | Returns a tables result block, or `0` when out of memory.                                                        |
+| `pdf_core_page_diagnostics(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                 | Returns native text layer diagnostics for the selected pages.                                                    |
 | `pdf_core_render(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, scale: f64) -> result_ptr`               | Returns a render result block, or `0` when out of memory. `scale` is device pixels per point, `0 < scale <= 64`. |
 | `pdf_core_signatures(pdf_ptr, pdf_len, mode) -> result_ptr`                                              | Signature analysis; `mode` `0` scan, `1` dictionaries, `2` verification.                                         |
 | `pdf_core_revision_complete(pdf_ptr, pdf_len, end) -> u32`                                               | `1` when the first `end` bytes are a complete revision, else `0`.                                                |
@@ -237,19 +279,21 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_font_metrics(name_ptr, name_len) -> result_ptr`                                                | Standard-14 font metrics; see the font metrics payload.                                                          |
 | `pdf_core_png_size(png_ptr, png_len) -> result_ptr`                                                      | Decoded PNG `width` and `height` as two little-endian `u32` values.                                              |
 
-`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text`), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`).
+`flags`: bit 0 = extract text, bit 1 = extract links, bit 2 = `pages_ptr` holds `pages_len` little-endian `u32` page indexes (otherwise every page), bit 3 = markdown output (`pdf_core_text`), bit 4 = drop running headers and footers (`pdf_core_text` and table continuation matching), bit 5 = split text items at repositioning and style changes (`pdf_core_inspect`), bit 6 = merge continuations across pages (`pdf_core_tables` and Markdown `pdf_core_text`), bit 7 = the explicit selection holds one page limit, bit 8 = force recovery in `pdf_core_lazy_plan`.
 
 ### Lazy handle and plan
 
-| Export                                                                           | Contract                                                                                                                                                                                                                                                                                    |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pdf_core_lazy_open(size, probe_bytes, gap_bytes, max_round_bytes) -> handle`    | Registers a document of `size` bytes and returns a nonzero handle, or `0` if the file size or handle space exceeds a limit.                                                                                                                                                                 |
-| `pdf_core_lazy_feed(handle, offset, ptr, len) -> u32`                            | Copies `len` bytes from the caller's buffer at file offset `offset`. Returns `1` when accepted or `0` on an invalid handle or range.                                                                                                                                                        |
-| `pdf_core_lazy_plan(handle, flags, pages_ptr, pages_len, profile) -> result_ptr` | Uses flag bit 2 for explicit page selection. The success payload starts with a `u32` plan state.                                                                                                                                                                                            |
-| `pdf_core_lazy_run(handle, profile, flags, scale: f64) -> result_ptr`            | Runs the last ready plan, with the same profile and the standard text or render flags. Returns the existing text, tables, or render payload. An empty successful payload requests full load. A single `u32` of value `1` asks the caller to plan more ranges before retrying the operation. |
-| `pdf_core_lazy_close(handle)`                                                    | Releases the handle and all its cached bytes. Closing an unknown handle is harmless.                                                                                                                                                                                                        |
+| Export                                                                           | Contract                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pdf_core_lazy_open(size, probe_bytes, gap_bytes, max_round_bytes) -> handle`    | Registers a document of `size` bytes and returns a nonzero handle, or `0` if the file size or handle space exceeds a limit.                                                                                                                                                                                                       |
+| `pdf_core_lazy_feed(handle, offset, ptr, len) -> u32`                            | Copies `len` bytes from the caller's buffer at file offset `offset`. Returns `1` when accepted or `0` on an invalid handle or range.                                                                                                                                                                                              |
+| `pdf_core_lazy_plan(handle, flags, pages_ptr, pages_len, profile) -> result_ptr` | Uses bits 2 and 7 for page selection and bit 8 to enter recovery. The success payload starts with a `u32` plan state.                                                                                                                                                                                                             |
+| `pdf_core_lazy_run(handle, profile, flags, scale: f64) -> result_ptr`            | Runs the last ready plan, with the same profile and the standard text, tables, or render flags. Returns the text, tables, render, or page diagnostics payload. An empty successful payload requests recovery with plan flag bit 8. A single `u32` of value `1` asks the caller to plan more ranges before retrying the operation. |
+| `pdf_core_lazy_full_bytes(handle) -> ptr`                                        | Borrows the complete recovered input from the handle. Returns zero until recovery finishes. The pointer is valid until the handle closes.                                                                                                                                                                                         |
+| `pdf_core_lazy_trim(handle, limit) -> usize`                                     | Applies the selective cache byte limit and reports the remaining source bytes.                                                                                                                                                                                                                                                    |
+| `pdf_core_lazy_close(handle)`                                                    | Releases the handle and all its cached bytes. Closing an unknown handle is harmless.                                                                                                                                                                                                                                              |
 
-The profiles are `0` for text, `1` for tables, and `2` for rendering. Plan states are `0` ready, `1` need ranges, and `2` fallback. In state `1`, the remaining payload is a sequence of little-endian `u32 offset, u32 length` pairs in file order. Feed each pair and call plan again with the same arguments. A plan or run result pointer of `0` indicates allocation failure.
+The profiles are `0` for text, `1` for tables, `2` for rendering, and `3` for page diagnostics. Plan states are `0` ready, `1` need ranges, `2` complete recovered input, and `3` need recovery ranges. In states `1` and `3`, the remaining payload is a sequence of little-endian `u32 offset, u32 length` pairs in file order. Feed each pair and call plan again with the same arguments. A plan or run result pointer of `0` indicates allocation failure.
 
 ### Result block
 
@@ -275,11 +319,15 @@ Text — `text_page_count` pages back to back. Each page: header of 16 bytes (`p
 
 ### Text payload (version 1)
 
-`pdf_core_text` uses the same result block and status codes. `flags` bits 2 (page indexes), 3 (markdown) and 4 (drop running headers) apply. The payload is little-endian and 8-byte aligned: `magic` (`0x58544450`, "PDTX"), `version` (`1`), `page_count`, `text_len` — all `u32`; then `page_count + 1` `u32` offsets into the blob, padded to 8; then the UTF-8 blob of `text_len` bytes, padded to 8. Page `n` is `blob[offsets[n]..offsets[n + 1]]`.
+`pdf_core_text` uses the same result block and status codes. `flags` bits 2 (page indexes), 3 (markdown), 4 (drop running headers) and 6 (merge tables in Markdown) apply. The payload is little-endian and 8-byte aligned: `magic` (`0x58544450`, "PDTX"), `version` (`1`), `page_count`, `text_len` — all `u32`; then `page_count + 1` `u32` offsets into the blob, padded to 8; then the UTF-8 blob of `text_len` bytes, padded to 8. Page `n` is `blob[offsets[n]..offsets[n + 1]]`.
 
-### Tables payload (version 1)
+### Page diagnostics payload (version 1)
 
-`pdf_core_tables` uses the same result block and status codes; only `flags` bit 2 applies. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`1`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 48-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`) and `bbox` (4 × `f64`) — followed by its cells in row-major order, 56 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob). The UTF-8 text blob follows the last record and is padded to 8.
+The 16-byte header contains four little-endian `u32` values `magic` (`0x47444450`, "PDDG"), `version` (`1`), page count, and padding. Each 24-byte record holds six `u32` values in this order: page index, text layer (`0` none, `1` usable, `2` weak), glyph count, usable character count, unmapped glyph count, and image count.
+
+### Tables payload (version 2)
+
+`pdf_core_tables` uses the same result block and status codes. `flags` bits 2 (page indexes), 4 (ignore running headers) and 6 (merge tables) apply. The payload is little-endian and 8-byte aligned. Header of 16 bytes, all `u32`: `magic` (`0x42544450`, "PDTB"), `version` (`2`), `table_count`, `cell_count`. Then `table_count` tables back to back, each a 56-byte record — `page_index`, `rows`, `cols`, `cell_count` (all `u32`), `bbox` (4 × `f64`), `last_page_index` (`u32`, inclusive) and 4 bytes of padding — followed by its cells in row-major order, 64 bytes each: `row`, `col`, `row_span`, `col_span` (all `u32`), `bbox` (4 × `f64`), `text_offset`, `text_len` (`u32`, relative to the text blob), `page_index` (`u32`), and 4 bytes of padding. The UTF-8 text blob follows the last record and is padded to 8.
 
 ### Signatures payload (version 2)
 

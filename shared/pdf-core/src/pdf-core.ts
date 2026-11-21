@@ -20,6 +20,8 @@ import {
   PdfCoreOperationValue,
   PDF_CORE_MAX_LAZY_BYTES,
   PdfCoreLazyOptionsSchema,
+  PdfCorePageDiagnosticsOptionsSchema,
+  PdfCorePageDiagnosticsSchema,
   PdfCoreRangeSizeSchema,
   PdfCoreRenderOptionsSchema,
   PdfCoreSchemaNameValue,
@@ -29,6 +31,7 @@ import {
   PdfCoreSignatureSlotFailureSchema,
   PdfCoreTablesOptionsSchema,
   PdfCoreTablesSchema,
+  PdfCoreTextLayerSchema,
   PdfCoreTextOptionsSchema,
   PdfCoreTextSchema,
   PdfCoreWinAnsiFontSchema,
@@ -51,6 +54,8 @@ import type {
   PdfCoreMergeSources,
   PdfCoreObjectRef,
   PdfCoreOperation,
+  PdfCorePageDiagnostics,
+  PdfCorePageDiagnosticsOptions,
   PdfCorePngSize,
   PdfCoreRenderOptions,
   PdfCoreSchemaName,
@@ -71,6 +76,9 @@ export type PdfCoreRangeSource = {
 export type PdfCoreLazyDocument = {
   readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
   readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
+  readonly pageDiagnostics: (
+    options?: PdfCorePageDiagnosticsOptions,
+  ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
   readonly renderPages: (
     options?: PdfCoreRenderOptions,
   ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
@@ -114,6 +122,10 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options?: PdfCoreTablesOptions,
   ) => Effect.Effect<PdfCoreTables, PdfCoreError>;
+  readonly pageDiagnostics: (
+    pdf: Uint8Array,
+    options?: PdfCorePageDiagnosticsOptions,
+  ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
   readonly signatures: (
     pdf: Uint8Array,
     analysis: PdfCoreSignatureAnalysis,
@@ -153,8 +165,12 @@ const FLAG_LINKS = 2;
 const FLAG_PAGE_INDEXES = 4;
 const FLAG_MARKDOWN = 8;
 const FLAG_DROP_RUNNING = 16;
+const FLAG_MERGE_TABLES = 64;
+const FLAG_PAGE_LIMIT = 128;
+const FLAG_LAZY_RECOVER = 256;
 const FLAG_RUNS = 32;
 const STATUS_OK = 0;
+const STATUS_INVALID_PDF = 1;
 const STATUS_LIMIT_EXCEEDED = 3;
 const MAGIC = 0x4346_4450;
 const VERSION = 3;
@@ -162,10 +178,13 @@ const TEXT_MAGIC = 0x5854_4450;
 const TEXT_VERSION = 1;
 const TEXT_HEADER_BYTES = 16;
 const TABLES_MAGIC = 0x4254_4450;
-const TABLES_VERSION = 1;
+const TABLES_VERSION = 2;
 const TABLES_HEADER_BYTES = 16;
-const TABLE_RECORD_BYTES = 48;
-const CELL_RECORD_BYTES = 56;
+const TABLE_RECORD_BYTES = 56;
+const CELL_RECORD_BYTES = 64;
+const DIAGNOSTICS_MAGIC = 0x4744_4450;
+const DIAGNOSTICS_VERSION = 1;
+const DIAGNOSTICS_RECORD_BYTES = 24;
 const RENDER_MAGIC = 0x4c52_4450;
 const RENDER_VERSION = 1;
 const RENDER_HEADER_BYTES = 16;
@@ -407,6 +426,7 @@ const lazyProfiles = {
   [PdfCoreOperationValue.text]: 0,
   [PdfCoreOperationValue.tables]: 1,
   [PdfCoreOperationValue.render]: 2,
+  [PdfCoreOperationValue.pageDiagnostics]: 3,
 };
 
 export const makePdfCore = (
@@ -838,7 +858,8 @@ export const makePdfCore = (
       const flags =
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
         (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
-        (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
+        (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING) |
+        (options.mergeAcrossPages === true ? FLAG_MERGE_TABLES : 0);
       return yield* read(
         PdfCoreOperationValue.text,
         core.pdf_core_text,
@@ -882,10 +903,20 @@ export const makePdfCore = (
         let cursor = base + TABLES_HEADER_BYTES;
         for (let index = 0; index < tableCount; index += 1) {
           const cellsInTable = view.getUint32(cursor + 12, true);
+          const pageIndex = view.getUint32(cursor, true);
+          const lastPageIndex = view.getUint32(cursor + 48, true);
+          const pages =
+            lastPageIndex > pageIndex
+              ? Array.from(
+                  { length: lastPageIndex - pageIndex + 1 },
+                  (_, offset) => pageIndex + offset,
+                )
+              : undefined;
           const cells = [];
           let cellAt = cursor + TABLE_RECORD_BYTES;
           for (let cell = 0; cell < cellsInTable; cell += 1) {
             cells.push({
+              ...(pages === undefined ? {} : { pageIndex: view.getUint32(cellAt + 56, true) }),
               row: view.getUint32(cellAt, true),
               col: view.getUint32(cellAt + 4, true),
               rowSpan: view.getUint32(cellAt + 8, true),
@@ -902,7 +933,8 @@ export const makePdfCore = (
             cellAt += CELL_RECORD_BYTES;
           }
           tables.push({
-            pageIndex: view.getUint32(cursor, true),
+            pageIndex,
+            ...(pages === undefined ? {} : { pages }),
             rows: view.getUint32(cursor + 4, true),
             cols: view.getUint32(cursor + 8, true),
             bbox: box(cursor + 16),
@@ -942,7 +974,10 @@ export const makePdfCore = (
         ),
       );
       const pageIndexes = options.pageIndexes ?? [];
-      const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
+      const flags =
+        (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
+        (options.mergeAcrossPages === true ? FLAG_MERGE_TABLES : 0) |
+        (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
       return yield* read(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
@@ -1475,6 +1510,67 @@ export const makePdfCore = (
           );
         });
 
+    const runPageDiagnostics = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCorePageDiagnosticsOptions = {},
+    ) {
+      const operation = PdfCoreOperationValue.pageDiagnostics;
+      const options = yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsOptionsSchema)(
+        rawOptions,
+      ).pipe(
+        Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.pageDiagnosticsOptions)),
+      );
+      return yield* read(
+        operation,
+        core.pdf_core_page_diagnostics,
+        options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES,
+        options.pageIndexes ?? [],
+        (block) =>
+          Effect.gen(function* () {
+            const view = new DataView(block.memory, block.pointer, block.length);
+            if (view.getUint32(4, true) !== STATUS_OK) {
+              return yield* failStatus(operation, block);
+            }
+            const base = RESULT_HEADER_BYTES;
+            const records = base + 16;
+            const count = block.length >= records ? view.getUint32(base + 8, true) : 0;
+            if (
+              block.length !== records + count * DIAGNOSTICS_RECORD_BYTES ||
+              view.getUint32(base, true) !== DIAGNOSTICS_MAGIC ||
+              view.getUint32(base + 4, true) !== DIAGNOSTICS_VERSION
+            ) {
+              return yield* new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                operation,
+                reason: "The PDF core returned an unsupported page diagnostics payload.",
+              });
+            }
+            const pages = Array.from({ length: count }, (_, index) => {
+              const at = records + index * DIAGNOSTICS_RECORD_BYTES;
+              return {
+                pageIndex: view.getUint32(at, true),
+                textLayer: PdfCoreTextLayerSchema.literals[view.getUint32(at + 4, true)],
+                glyphs: view.getUint32(at + 8, true),
+                usableChars: view.getUint32(at + 12, true),
+                unmapped: view.getUint32(at + 16, true),
+                imageCount: view.getUint32(at + 20, true),
+              };
+            });
+            return yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsSchema)(pages).pipe(
+              Effect.mapError(
+                (issue) =>
+                  new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                    operation,
+                    schemaName: PdfCoreSchemaNameValue.pageDiagnostics,
+                    issueMessage: String(issue),
+                  }),
+              ),
+            );
+          }),
+      );
+    });
+
     const runRenderPages = Effect.fn(function* (
       read: BlockReader,
       rawOptions: PdfCoreRenderOptions = {},
@@ -1530,14 +1626,13 @@ export const makePdfCore = (
         });
       }
       const maxRoundBytes = tuning.maxRoundBytes ?? 2 * 1024 * 1024;
+      const maxCachedBytes = tuning.maxCachedBytes ?? 2 * 1024 * 1024;
       const lock = yield* Semaphore.make(1);
-      type LazyState = PdfCoreLazyStats & {
-        readonly closed: boolean;
-        readonly fallback?: Uint8Array;
-      };
+      type LazyState = PdfCoreLazyStats & { readonly closed: boolean };
       const state = yield* Ref.make<LazyState>({
         closed: false,
         bytesRead: 0,
+        cachedBytes: 0,
         rounds: 0,
         strategy: "lazy",
       });
@@ -1561,10 +1656,9 @@ export const makePdfCore = (
             : Effect.succeed(opened);
         }),
         (opened) =>
-          Ref.update(state, ({ closed: _closed, fallback: _fallback, ...stats }) => ({
-            ...stats,
-            closed: true,
-          })).pipe(Effect.andThen(Effect.sync(() => core.pdf_core_lazy_close(opened)))),
+          Ref.update(state, (current) => ({ ...current, closed: true, cachedBytes: 0 })).pipe(
+            Effect.andThen(Effect.sync(() => core.pdf_core_lazy_close(opened))),
+          ),
       );
 
       const closed = () =>
@@ -1602,32 +1696,22 @@ export const makePdfCore = (
         ranges: ReadonlyArray<{ offset: number; length: number }>,
       ) {
         yield* startRound;
-        const batch = yield* Effect.forEach(
+        yield* Effect.forEach(
           ranges,
-          ({ offset, length }) => fetchRange(offset, length),
-          { concurrency: 4 },
-        );
-        const length = batch.reduce((sum, bytes) => sum + bytes.byteLength, 0);
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const input = yield* allocate(PdfCoreOperationValue.readRange, length);
-            const blocked = closed();
-            if (blocked !== undefined) {
-              return yield* blocked;
-            }
-            let pointer = input.pointer;
-            for (const [index, range] of ranges.entries()) {
-              const bytes = batch[index];
-              if (bytes === undefined) {
-                return yield* Effect.die("Missing bytes in the lazy PDF range batch.");
-              }
-              new Uint8Array(core.memory.buffer, pointer, bytes.byteLength).set(bytes);
-              if (core.pdf_core_lazy_feed(handle, range.offset, pointer, bytes.byteLength) !== 1) {
-                return yield* Effect.die("The PDF core rejected its own planned byte range.");
-              }
-              pointer += bytes.byteLength;
-            }
-          }),
+          ({ offset, length }) =>
+            Effect.scoped(
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const bytes = yield* restore(fetchRange(offset, length));
+                  const input = yield* copyIn(PdfCoreOperationValue.readRange, bytes);
+                  yield* ensureOpen;
+                  if (core.pdf_core_lazy_feed(handle, offset, input.pointer, length) !== 1) {
+                    return yield* Effect.die("The PDF core rejected its own planned byte range.");
+                  }
+                }),
+              ),
+            ),
+          { concurrency: 4, discard: true },
         );
       });
 
@@ -1658,7 +1742,7 @@ export const makePdfCore = (
             );
             const view = new DataView(result.memory, result.pointer, result.length);
             const resultStatus = view.getUint32(4, true);
-            if (resultStatus === STATUS_LIMIT_EXCEEDED) {
+            if (resultStatus === STATUS_INVALID_PDF || resultStatus === STATUS_LIMIT_EXCEEDED) {
               return yield* failStatus(operation, result);
             }
             if (resultStatus !== STATUS_OK) {
@@ -1669,7 +1753,7 @@ export const makePdfCore = (
             if ((status === 0 || status === 2) && payload === 4) {
               return { status, ranges: [] };
             }
-            if (status !== 1 || payload < 12 || (payload - 4) % 8 !== 0) {
+            if ((status !== 1 && status !== 3) || payload < 12 || (payload - 4) % 8 !== 0) {
               return yield* Effect.die("The PDF core returned an invalid lazy plan.");
             }
             const ranges = [];
@@ -1695,6 +1779,16 @@ export const makePdfCore = (
         );
       });
 
+      const trim = Effect.suspend(() => {
+        if (Ref.getUnsafe(state).closed) {
+          return Effect.void;
+        }
+        const cachedBytes = core.pdf_core_lazy_trim(handle, maxCachedBytes) >>> 0;
+        return Ref.update(state, (current) =>
+          current.closed ? current : { ...current, cachedBytes },
+        );
+      });
+
       const read: BlockReader = (operation, entry, flags, indexes, decode, scale = 1) =>
         lock.withPermits(1)(
           Effect.scoped(
@@ -1702,6 +1796,7 @@ export const makePdfCore = (
               const profile =
                 operation === PdfCoreOperationValue.text ||
                 operation === PdfCoreOperationValue.tables ||
+                operation === PdfCoreOperationValue.pageDiagnostics ||
                 operation === PdfCoreOperationValue.render
                   ? lazyProfiles[operation]
                   : undefined;
@@ -1709,74 +1804,83 @@ export const makePdfCore = (
                 return yield* Effect.die("Invalid lazy PDF operation.");
               }
               yield* ensureOpen;
+              const limit = (flags & FLAG_PAGE_INDEXES) === 0 ? tuning.pageLimit : undefined;
+              const selection = limit === undefined ? indexes : [limit];
+              const readFlags =
+                limit === undefined ? flags : flags | FLAG_PAGE_INDEXES | FLAG_PAGE_LIMIT;
               const pages = yield* allocate(
                 operation,
-                indexes.length * Uint32Array.BYTES_PER_ELEMENT,
+                selection.length * Uint32Array.BYTES_PER_ELEMENT,
               );
-              new Uint32Array(core.memory.buffer, pages.pointer, indexes.length).set(indexes);
-              while (Ref.getUnsafe(state).strategy === "lazy") {
-                const next = yield* plan(operation, profile, flags, pages);
-                if (next.status === 1) {
+              new Uint32Array(core.memory.buffer, pages.pointer, selection.length).set(selection);
+              let recovery = 0;
+              while (true) {
+                const next = yield* plan(operation, profile, readFlags | recovery, pages);
+                const fallback = next.status === 2 || next.status === 3;
+                if (fallback && tuning.allowFullRead === false) {
+                  return yield* new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.unsupportedFeature,
+                    operation,
+                    reason:
+                      "This PDF requires full-file recovery, which is disabled for this source.",
+                  });
+                }
+                if (fallback && Ref.getUnsafe(state).strategy !== "fallback") {
+                  yield* Ref.update(state, (current): LazyState => ({
+                    ...current,
+                    strategy: "fallback",
+                  }));
+                }
+                if (next.status === 1 || next.status === 3) {
                   yield* supply(next.ranges);
                   continue;
                 }
-                if (next.status === 0) {
-                  const decoded = yield* Effect.scoped(
-                    Effect.gen(function* () {
-                      yield* ensureOpen;
-                      const result = yield* resultBlock(
-                        operation,
-                        () => core.pdf_core_lazy_run(handle, profile, flags, scale),
-                        closed,
-                      );
-                      const view = new DataView(result.memory, result.pointer, result.length);
-                      if (view.getUint32(4, true) === STATUS_OK) {
-                        if (result.length === RESULT_HEADER_BYTES) {
-                          return { fallback: true };
-                        }
-                        if (result.length === RESULT_HEADER_BYTES + 4) {
-                          if (view.getUint32(RESULT_HEADER_BYTES, true) !== 1) {
-                            return yield* Effect.die(
-                              "The PDF core returned an invalid lazy retry.",
-                            );
-                          }
-                          return { retry: true };
-                        }
+                const decoded = yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    yield* ensureOpen;
+                    const pointer = fallback ? core.pdf_core_lazy_full_bytes(handle) >>> 0 : 0;
+                    if (fallback && pointer === 0) {
+                      return yield* Effect.die("The PDF core did not retain its recovered input.");
+                    }
+                    const result = yield* resultBlock(
+                      operation,
+                      () =>
+                        fallback
+                          ? entry(pointer, size, readFlags, pages.pointer, selection.length)
+                          : core.pdf_core_lazy_run(handle, profile, readFlags, scale),
+                      closed,
+                    );
+                    const view = new DataView(result.memory, result.pointer, result.length);
+                    if (!fallback && view.getUint32(4, true) === STATUS_OK) {
+                      if (result.length === RESULT_HEADER_BYTES) {
+                        return { recovery: FLAG_LAZY_RECOVER };
                       }
-                      return { value: yield* decode(result) };
-                    }),
-                  );
-                  if ("value" in decoded) {
-                    return decoded.value;
-                  }
-                  if ("retry" in decoded) {
-                    continue;
-                  }
+                      if (result.length === RESULT_HEADER_BYTES + 4) {
+                        if (view.getUint32(RESULT_HEADER_BYTES, true) !== 1) {
+                          return yield* Effect.die("The PDF core returned an invalid lazy retry.");
+                        }
+                        return { recovery: 0 };
+                      }
+                    }
+                    return { value: yield* decode(result) };
+                  }),
+                );
+                if ("value" in decoded) {
+                  return decoded.value;
                 }
-                yield* Ref.update(state, (current): LazyState => ({
-                  ...current,
-                  strategy: "fallback",
-                }));
-                core.pdf_core_lazy_close(handle);
+                recovery = decoded.recovery;
               }
-              const cached = (yield* Ref.get(state)).fallback;
-              const bytes = cached ?? (yield* startRound.pipe(Effect.andThen(fetchRange(0, size))));
-              yield* Ref.update(state, (current) =>
-                current.closed ? current : { ...current, fallback: bytes },
-              );
-              yield* ensureOpen;
-              return yield* full(bytes)(operation, entry, flags, indexes, decode);
             }),
-          ),
+          ).pipe(Effect.ensuring(trim)),
         );
 
       return {
         text: (options?: PdfCoreTextOptions) => runText(read, options),
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
+        pageDiagnostics: (options?: PdfCorePageDiagnosticsOptions) =>
+          runPageDiagnostics(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
-        stats: Ref.get(state).pipe(
-          Effect.map(({ bytesRead, rounds, strategy }) => ({ bytesRead, rounds, strategy })),
-        ),
+        stats: Ref.get(state).pipe(Effect.map(({ closed: _closed, ...stats }) => stats)),
       };
     });
 
@@ -1786,6 +1890,7 @@ export const makePdfCore = (
       inspect,
       text: (pdf, options) => runText(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),
+      pageDiagnostics: (pdf, options) => runPageDiagnostics(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,
       revisionComplete,

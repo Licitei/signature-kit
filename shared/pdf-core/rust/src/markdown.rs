@@ -1,6 +1,7 @@
 use crate::inspection::LinkInfo;
 use crate::layout::Band;
 use crate::num::fold_string;
+use crate::table::{Table, render_markdown};
 
 const WORD_GAP: f64 = 0.12;
 const SPACE_EM: f64 = 0.28;
@@ -117,7 +118,7 @@ pub(crate) struct MdLine {
 pub(crate) enum MdItem {
     Break,
     Line(MdLine),
-    Table { band: Band, text: String, top: f64 },
+    Table { band: Band, index: usize, top: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,7 +145,7 @@ enum Kind {
         tight: bool,
     },
     Paragraph,
-    Table,
+    Table(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -167,8 +168,19 @@ impl MdBlock {
         &self.plain
     }
 
+    pub(crate) const fn table_index(&self) -> Option<usize> {
+        if let Kind::Table(index) = self.kind {
+            return Some(index);
+        }
+        None
+    }
+
     pub(crate) const fn top(&self) -> f64 {
         self.top
+    }
+
+    pub(crate) fn update_table(&mut self, table: &Table) {
+        self.plain = render_markdown(table);
     }
 }
 
@@ -1306,7 +1318,11 @@ fn prepare(item: &MdItem, metrics: Metrics) -> Option<Prepared<'_>> {
     })
 }
 
-pub(crate) fn page_blocks(items: &[MdItem], metrics: Metrics) -> Vec<MdBlock> {
+pub(crate) fn page_blocks(
+    items: &[MdItem],
+    tables: Option<&[Table]>,
+    metrics: Metrics,
+) -> Vec<MdBlock> {
     let body = metrics.body;
     let prepared: Vec<Option<Prepared<'_>>> =
         items.iter().map(|item| prepare(item, metrics)).collect();
@@ -1316,15 +1332,23 @@ pub(crate) fn page_blocks(items: &[MdItem], metrics: Metrics) -> Vec<MdBlock> {
     let mut current: Option<(Para, usize)> = None;
     for (index, (item, line)) in items.iter().zip(&prepared).enumerate() {
         let Some(line_next) = line else {
-            if let MdItem::Table { text, band, top } = item {
+            if let MdItem::Table {
+                index: table_index,
+                band,
+                top,
+            } = item
+            {
                 if let Some((para, _)) = current.take() {
                     finish(para, body, &mut list, &mut out);
                 }
                 list.open = false;
                 out.push(MdBlock {
-                    kind: Kind::Table,
+                    kind: Kind::Table(*table_index),
                     spans: Vec::new(),
-                    plain: text.clone(),
+                    plain: tables
+                        .and_then(|all| all.get(*table_index))
+                        .map(render_markdown)
+                        .unwrap_or_default(),
                     band: *band,
                     lines: 0,
                     size: 0.0,
@@ -1644,7 +1668,7 @@ fn escaped_start(rendered: String) -> String {
 
 fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
     match &block.kind {
-        Kind::Table => out.push_str(&block.plain),
+        Kind::Table(_) => out.push_str(&block.plain),
         Kind::Heading(level) => {
             out.push_str(&"#".repeat(*level));
             out.push(' ');
@@ -1723,7 +1747,7 @@ mod tests {
     }
 
     fn render(items: &[MdItem]) -> String {
-        render_page(&page_blocks(items, document_metrics([items])), &[])
+        render_page(&page_blocks(items, None, document_metrics([items])), &[])
     }
 
     fn joined(left: &str, right: &str) -> (String, String) {

@@ -11,7 +11,8 @@ use core::ptr;
 use core::slice;
 
 use crate::deflate::zlib_compress;
-use crate::document;
+use crate::diagnostics::{self, PageDiagnostics, TextLayer};
+use crate::document::{self, PageRequest};
 use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
@@ -35,16 +36,21 @@ const FLAG_LINKS: u32 = 2;
 const FLAG_PAGE_INDEXES: u32 = 4;
 const FLAG_MARKDOWN: u32 = 8;
 const FLAG_DROP_RUNNING: u32 = 16;
+const FLAG_MERGE_TABLES: u32 = 64;
+const FLAG_PAGE_LIMIT: u32 = 128;
+const FLAG_LAZY_RECOVER: u32 = 256;
 const FLAG_RUNS: u32 = 32;
 const STATUS_OK: u32 = 0;
 const TEXT_MAGIC: u32 = 0x5854_4450;
 const TEXT_VERSION: u32 = 1;
 const TEXT_HEADER_LEN: usize = 16;
 const TABLES_MAGIC: u32 = 0x4254_4450;
-const TABLES_VERSION: u32 = 1;
+const TABLES_VERSION: u32 = 2;
 const TABLES_HEADER_LEN: usize = 16;
-const TABLE_RECORD_LEN: usize = 48;
-const CELL_RECORD_LEN: usize = 56;
+const TABLE_RECORD_LEN: usize = 56;
+const CELL_RECORD_LEN: usize = 64;
+const DIAGNOSTICS_MAGIC: u32 = 0x4744_4450;
+const DIAGNOSTICS_VERSION: u32 = 1;
 const RENDER_MAGIC: u32 = 0x4C52_4450;
 const RENDER_VERSION: u32 = 1;
 const RENDER_HEADER_LEN: usize = 16;
@@ -256,6 +262,16 @@ impl Request<'_> {
     }
 }
 
+fn page_request(flags: u32, indexes: Option<&[u32]>) -> Outcome<PageRequest<&[u32]>> {
+    if flags & FLAG_PAGE_LIMIT != 0 {
+        if let Some([count]) = indexes {
+            return Ok(PageRequest::First(widen(*count)));
+        }
+        return Err(Failure::invalid("expected one page limit"));
+    }
+    Ok(PageRequest::Indexes(indexes))
+}
+
 fn block_layout(len: usize) -> Option<Layout> {
     Layout::from_size_align(len.max(1), ALIGNMENT).ok()
 }
@@ -397,6 +413,27 @@ fn encode_text(pages: &[String]) -> Outcome<Writer> {
     out.done()
 }
 
+fn encode_diagnostics(pages: &[PageDiagnostics]) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(16);
+    out.u32(DIAGNOSTICS_MAGIC);
+    out.u32(DIAGNOSTICS_VERSION);
+    out.u32(len32(pages.len())?);
+    out.u32(0);
+    for page in pages {
+        out.u32(page.page_index);
+        out.u32(match page.text_layer {
+            TextLayer::None => 0,
+            TextLayer::Usable => 1,
+            TextLayer::Weak => 2,
+        });
+        out.u32(page.glyphs);
+        out.u32(page.usable_chars);
+        out.u32(page.unmapped);
+        out.u32(page.image_count);
+    }
+    out.done()
+}
+
 fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
     let table_count = len32(tables.len())?;
     let mut cell_count: usize = 0;
@@ -436,6 +473,8 @@ fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
         out.u32(table.cols);
         out.u32(len32(table.cells.len())?);
         out.boxed(&table.bbox);
+        out.u32(table.last_page_index);
+        out.u32(0);
         for cell in &table.cells {
             out.u32(cell.row);
             out.u32(cell.col);
@@ -444,6 +483,8 @@ fn encode_tables(tables: &[Table]) -> Outcome<Writer> {
             out.boxed(&cell.bbox);
             out.u32(cursor);
             out.u32(len32(cell.text.len())?);
+            out.u32(cell.page_index);
+            out.u32(0);
             cursor = cursor
                 .checked_add(len32(cell.text.len())?)
                 .ok_or_else(|| Failure::limit("table text exceeds the size limit"))?;
@@ -590,10 +631,11 @@ pub(crate) unsafe extern "C" fn pdf_core_text(
         let options = TextOptions {
             markdown: inner_request.has(FLAG_MARKDOWN),
             drop_running: inner_request.has(FLAG_DROP_RUNNING),
+            merge_across_pages: inner_request.has(FLAG_MERGE_TABLES),
         };
         let pages = layout::document_text(
             inner_request.pdf,
-            inner_request.pages,
+            page_request(inner_request.flags, inner_request.pages)?,
             &layout::text_limits(),
             options,
         )?;
@@ -617,10 +659,35 @@ pub(crate) unsafe extern "C" fn pdf_core_tables(
     finish(request.and_then(|inner_request| {
         let tables = layout::document_tables(
             inner_request.pdf,
-            inner_request.pages,
+            page_request(inner_request.flags, inner_request.pages)?,
             &layout::text_limits(),
+            inner_request.has(FLAG_MERGE_TABLES),
+            inner_request.has(FLAG_DROP_RUNNING),
         )?;
         encode_tables(&tables)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` and `pages_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_page_diagnostics(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    flags: u32,
+    pages_ptr: *const u32,
+    pages_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { Request::from_raw(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) };
+    finish(request.and_then(|inner_request| {
+        let pages = diagnostics::document_diagnostics(
+            inner_request.pdf,
+            page_request(inner_request.flags, inner_request.pages)?,
+            &layout::text_limits(),
+        )?;
+        encode_diagnostics(&pages)
     }))
 }
 
@@ -1020,7 +1087,7 @@ pub(crate) unsafe extern "C" fn pdf_core_render(
     finish(request.and_then(|inner_request| {
         let pages = render::render_pages(
             inner_request.pdf,
-            inner_request.pages,
+            page_request(inner_request.flags, inner_request.pages)?,
             scale,
             &Limits::default(),
         )?;
@@ -1101,18 +1168,48 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_feed(
     })
 }
 
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_full_bytes(handle: u32) -> *const u8 {
+    LAZY_DOCUMENTS.with(|documents| {
+        let all = documents.borrow();
+        all.iter()
+            .find(|(id, _)| *id == handle)
+            .and_then(|(_, document)| document.full_bytes())
+            .map_or(ptr::null(), <[u8]>::as_ptr)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_trim(handle: u32, limit: usize) -> usize {
+    LAZY_DOCUMENTS.with(|documents| {
+        let mut all = documents.borrow_mut();
+        all.iter_mut()
+            .find(|(id, _)| *id == handle)
+            .map_or(0, |(_, document)| document.trim(limit))
+    })
+}
+
 fn encode_plan(plan: Plan) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(4);
-    match plan {
-        Plan::Ready => out.u32(0),
-        Plan::Fallback => out.u32(2),
+    let ranges = match plan {
+        Plan::Ready => {
+            out.u32(0);
+            Vec::new()
+        }
         Plan::Need(ranges) => {
             out.u32(1);
-            for range in ranges {
-                out.u32(len32(range.start)?);
-                out.u32(len32(range.end.saturating_sub(range.start))?);
-            }
+            ranges
         }
+        Plan::Full(ranges) => {
+            out.u32(if ranges.is_empty() { 2 } else { 3 });
+            ranges
+        }
+        Plan::Failed(failure) => return Err(failure),
+        Plan::Fallback => return Err(Failure::invalid("lazy recovery was not planned")),
+    };
+    for range in ranges {
+        out.u32(len32(range.start)?);
+        out.u32(len32(range.end.saturating_sub(range.start))?);
     }
     out.done()
 }
@@ -1139,10 +1236,11 @@ pub(crate) unsafe extern "C" fn pdf_core_lazy_plan(
                 .map(|(_, document)| document)
                 .ok_or_else(|| Failure::invalid("invalid lazy handle"))?;
             let limits = lazy_limits(profile);
-            let plan = document.plan(
-                (flags & FLAG_PAGE_INDEXES != 0).then_some(indexes),
+            let plan = document.plan_with_recovery(
+                page_request(flags, (flags & FLAG_PAGE_INDEXES != 0).then_some(indexes))?,
                 profile == 2,
                 &limits,
+                flags & FLAG_LAZY_RECOVER != 0,
             );
             encode_plan(plan)
         })
@@ -1180,10 +1278,18 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
                 TextOptions {
                     markdown: flags & FLAG_MARKDOWN != 0,
                     drop_running: flags & FLAG_DROP_RUNNING != 0,
+                    merge_across_pages: flags & FLAG_MERGE_TABLES != 0,
                 },
             )?),
-            1 => encode_tables(&layout::opened_tables(document, pages, &limits)?),
+            1 => encode_tables(&layout::opened_tables(
+                document,
+                pages,
+                &limits,
+                flags & FLAG_MERGE_TABLES != 0,
+                flags & FLAG_DROP_RUNNING != 0,
+            )?),
             2 => encode_render(&render::opened_render(document, pages, scale, &limits)?),
+            3 => encode_diagnostics(&diagnostics::opened_diagnostics(document, pages, &limits)?),
             _ => Err(Failure::invalid("invalid lazy profile")),
         })?;
         payload.map_or_else(
