@@ -879,10 +879,7 @@ fn flatten_page(document: &Document<'_>, page: &Page, drop_widgets: bool) -> Out
         dict.insert(b"Rotate", Object::Integer(i64::from(page.info.rotate)));
     }
     if dict.get(b"Resources").is_none() {
-        let resources = page
-            .resources_ref
-            .map_or_else(|| Object::Dict(page.resources.clone()), Object::Ref);
-        dict.insert(b"Resources", resources);
+        dict.insert(b"Resources", page.resources_for_write());
     }
     if drop_widgets && let Some(annots) = dict.get(b"Annots").cloned() {
         let resolved = document.follow(&annots)?;

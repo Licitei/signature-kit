@@ -4,7 +4,7 @@ use crate::display::{
     OP_LINE_CAP, OP_LINE_JOIN, OP_LINE_WIDTH, OP_MITER, OP_RESTORE, OP_SAVE, OP_SHADE, OP_STROKE,
     OP_STROKE_GRADIENT, OP_TEXT_CLIP, PathData,
 };
-use crate::document::{Document, Page, PageRequest, pick_pages};
+use crate::document::{Document, Page, PageRequest, borrow_pages};
 use crate::failure::{Failure, Outcome};
 use crate::filters;
 use crate::font::{Font, Glyph};
@@ -2166,15 +2166,8 @@ fn render_document(
         return Err(Failure::invalid("render scale out of range"));
     }
     let document = Document::open(bytes, limits)?;
-    let pages = document.pages()?;
-    let selected = selection.page_indexes.select(pages.len())?;
-    render_selected(
-        &document,
-        &pick_pages(&pages, selected),
-        selection,
-        limits,
-        session,
-    )
+    let pages = document.selected_page_entries(selection.page_indexes)?;
+    render_selected(&document, &borrow_pages(&pages), selection, limits, session)
 }
 
 pub(crate) fn opened_render(
@@ -2234,7 +2227,7 @@ fn render_selected(
 
 fn render_page(target: &PageTarget<'_, '_>, session: &mut RenderSession) -> Outcome<DisplayList> {
     let data = target.document.content(target.page).unwrap_or_default();
-    let resources = Rc::new(Object::Dict(target.page.resources.clone()));
+    let resources = Rc::clone(&target.page.resources);
     let frame = Frame {
         base: IDENTITY,
         resources,

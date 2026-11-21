@@ -1,135 +1,104 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/docs\":\n    type: patch\n---\n\n## takumi-pdf generation for signature anchors\n\nAdds `takumi-pdf` 0.20.0 for PDF generation in the docs registry and pdf-core regression corpus. The shadcn `pdf-signature-anchor` registry item now ships invisible text (`{{signature}}`) and URI link (`https://signature.invalid/anchor`) markers for `findPdfTextAnchors`. Committed fixture `takumi-declaration.pdf` with golden anchor metadata exercises multi-page Portuguese copy, Liberation fonts, and paginated footers. Generation benchmarks compare takumi-pdf vs react-pdf under `shared/pdf-core/bench/`. `@react-pdf/renderer` is removed from `apps/docs`; react-pdf preview (`signature-pdf-viewer`) is unchanged.\n"
-    filename: pdf-generation-takumi.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf\":\n    type: patch\n---\n\n## Verify signatures encoded with indefinite-length BER\n\nSignature `/Contents` encoded as indefinite-length BER (`30 80 …`), as produced by common ICP-Brasil signing tools, no longer fail with `cms.DECODE_ERROR`. The signature length is now measured by walking the BER structure up to its end-of-contents octets instead of trimming trailing zero bytes, which used to strip those octets. Non-zero bytes after the signature still fail closed.\n"
-    filename: pdf-ber-signatures.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/pdf\":\n    type: minor\n---\n\n## Page rendering in the in-house core\n\n`PdfCore.renderPages(pdf, { pageIndexes, scale })` renders pages into compact display lists (a new `pdf_core_render` wasm export), and the new browser module `@signature-kit/pdf-core/canvas` paints them with Canvas 2D: `renderDisplayListImage` returns a PNG `Blob` per page (JPEG or WebP on request, oversized pages clamped to the canvas limits), `paintDisplayList` returns an `Effect` that draws into any 2D context and fails with a typed error on malformed display lists, and `prepareDisplayListImages` decodes the page images into a scoped map whose bitmaps are closed with the scope. The renderer covers paths, clipping, line styles, every PDF colour space (tint transforms included), Form XObjects, raster images (Rust-decoded samples with soft masks, mattes and colour keys, browser-decoded JPEG, Rust-decoded CCITT Group 3/4), axial and radial shadings, shading patterns, embedded TrueType, CFF, OpenType and Type 1 glyph outlines, Type 3 fonts, standard-font text runs, and annotation appearance streams. Optional content (OFF groups, OCMDs, `BDC /OC`, XObject and annotation `/OC`) is honoured, `/Interpolate` decides image smoothing so upscaled 1-bit images stay crisp, and clip render modes with standard fonts clip to glyph boxes. JPX and JBIG2 images draw a grey placeholder; mesh shadings, tiling patterns and soft masks are approximated. Glyph outlines, Type 3 glyphs and Form XObjects run under per-glyph and per-page work budgets, and decoded forms, Type 3 glyph programs and colour spaces are cached per document. Large images are downsampled to the render scale inside the core. New error code `pdfCore.PAINT_FAILED` (en-US/pt-BR messages included).\n\n## LiteParse removed\n\n`@signature-kit/pdf/liteparse-browser` is replaced by `@signature-kit/pdf/render-browser`. `renderPdfPagesBrowser(pdf, { pageIndexes?, scale? })` now requires the `PdfPageRenderer` service instead of `LiteParseWorkerFactory`: `pdfPageRendererWorkerLayer({ timeoutMillis? }, create?)` renders in a dedicated Web Worker with a per-request time limit (default 30 s) that terminates and replaces a stuck worker and fails with the new `pdf.RENDER_TIMEOUT` code, and `pdfPageRendererLayer` renders on the current thread from `PdfCore`. It renders through the in-house core and returns `{ pageIndex, width, height, image }` with a PNG `Blob` instead of `{ pageNum, imageBytes }`. `liteParseWorkerBrowserLayer`, `LiteParseWorkerFactory` and the LiteParse worker protocol are gone (`PdfRenderRequests` and `pdfPageRendererHandlersLayer` serve the new worker), and `@llamaindex/liteparse-wasm` is no longer a dependency. `PdfHandwriting` and `pdfHandwritingBrowserLayer` move to the same subpath. Render failures use the new `pdf.page.render` operation.\n"
-    filename: pdf-core-render.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/pdf\":\n    type: minor\n  \"@signature-kit/iti\":\n    type: minor\n---\n\n## PDF writing and signature analysis in the in-house core\n\n`@signature-kit/pdf-core` now writes PDFs. `PdfCore.edit(pdf, operations, options)` applies typed edit operations (set or add objects and streams, dictionary and array edits, flag ORs, page content with `q`/`Q` wrapping, page resources, image XObjects with soft masks, standard-14 fonts, signature dictionaries with `/ByteRange` and `/Contents` placeholders, catalog repair) and serializes the result either as an incremental update that leaves the original bytes untouched (classic table or xref stream, chained with `/Prev`) or as a full rewrite with renumbered objects and optional object streams. `PdfCore.merge` copies selected pages from several documents, `PdfCore.document` describes pages, annotations, signature slots, and the next free signature field name, and `PdfCore.deflate` exposes the new in-house zlib encoder. Invalid edit requests fail with `pdfCore.INVALID_OPTIONS`.\n\n`PdfCore.signatures(pdf, analysis)` and `PdfCore.revisionComplete(pdf, end)` port the signature and revision analysis that `@signature-kit/pdf` previously ran on pdf-lib's parser internals: signature dictionaries with exact `/ByteRange` and `/Contents` offsets, per-revision indirect stream lengths, classic, xref-stream, and hybrid cross-reference sections, object streams (signature dictionaries are never packed into one), AcroForm reachability, and the same fail-closed limits (128 revisions, 1,024 signature dictionaries, 200,000 traversal steps). The wasm module exports six new functions; the ABI is documented in the README.\n\n## PDF signing and verification run on the in-house core\n\n`@signature-kit/pdf` no longer parses signatures or writes signature placeholders with pdf-lib. `signPdf` appends the signature dictionary, widget, AcroForm field, and `/SigFlags` as an incremental update, so the source bytes and every earlier signature stay valid; documents whose cross-reference chain fails the same completeness check the verifier applies are rewritten instead, and already signed documents always fail closed rather than being rewritten. Linearized documents, whose first-page cross-reference section points forward with `/Prev`, are accepted by both the writer and the verifier, so they are signed incrementally too.\n\nThe requirement `PdfCore` is added to `signPdf`, `verifyPdf`, `verifyPdfSignatures`, `mergePdfs`, `removePdfLinkAnchors`, `stampPdfVisibleSignature`, `stampPdfRubric`, `stampPdfRubricOnPages` (when `forIncrementalUpdate` is omitted), `signPdfSignatureField`, `signPdfSignatureBatch`, and `preparePdfSigningBatch`, and to the `@signature-kit/pdf/byte-range` helpers. `hasPdfByteRange` and `hasPdfSignatureDictionary` are now Effects. Provide `pdfCoreBrowserLayer` in the browser or `pdfCoreFileLayer` on Node and Bun; the PDF worker provides it inside the worker.\n\n## ITI conformance\n\n`validatePdfConformance` and `validatePdfWithIti` require `PdfCore` because they read signatures and revisions through `@signature-kit/pdf/byte-range`.\n"
-    filename: pdf-core-writer.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/pdf\":\n    type: minor\n  \"@signature-kit/iti\":\n    type: minor\n---\n\n## Declare the ETSI SubFilter for ICP-Brasil PAdES\n\nSigning with `policy: \"pades-icp-brasil\"` now writes `/SubFilter /ETSI.CAdES.detached`. Local AD-RB validation accepts `ETSI.CAdES.detached` and `PBAD.PAdES` and rejects older signatures with `adbe.pkcs7.detached`. Generic CMS signing still writes `adbe.pkcs7.detached`.\n\nSignature dictionary reports and extracted PDF signatures now expose the optional `subFilter` name in place of `usesEtsiCadesDetached`.\n"
-    filename: pdf-icp-brasil-subfilter.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/pdf\":\n    type: minor\n  \"@signature-kit/iti\":\n    type: patch\n---\n\n## PNG images, blank documents, font metrics, and link URIs in the in-house core\n\n`@signature-kit/pdf-core` gains what stamping needs to stop depending on pdf-lib. The `png` edit operation decodes a PNG (every color type and bit depth, Adam7 interlacing, palette and `tRNS` transparency) into an 8-bit image XObject with an `/SMask` when any pixel is not opaque; input is bounded to 16 MiB, 16 Mi pixels, and 64 MiB of decoded scanlines. `PdfCore.create({ pages })` writes a new document with blank pages, and `PdfCore.fontMetrics(baseFont)` returns the WinAnsi Unicode mapping and advance widths of the twelve WinAnsi standard-14 fonts. `PdfCore.document` now reports the `uri` of link annotations with a URI action (document payload version 2). `PdfCore.pngSize(png)` runs the same bounded decoder and returns the image `width` and `height`; the decoder rejects animated PNG chunks, bytes after `IEND`, and image data that inflates beyond its scanlines. The `addResource` edit operation now fails with `pdfCore.INVALID_OPTIONS` when the page already binds the name to a different object instead of overwriting it. The wasm module exports three new functions, `pdf_core_create`, `pdf_core_font_metrics`, and `pdf_core_png_size`.\n\n## `@signature-kit/pdf` no longer uses pdf-lib\n\n`@cantoo/pdf-lib` is no longer a dependency. Visible signatures, structured badges, QR codes, initials and line rubrics, PNG images, footer links, stamp previews, and illustrative documents are drawn as content streams appended through `PdfCore.edit`, with the same geometry as before; signed PDFs are always updated incrementally, unsigned ones incrementally unless their cross-reference chain needs a rewrite. Text is measured with the Helvetica metrics from `PdfCore.fontMetrics` and drawn with WinAnsi encoding (Latin-1 plus €, typographic quotes, and dashes); text with characters outside WinAnsi fails with `pdf.STAMP_FAILED`, as it did before. Every stamp names its fonts and images after the document's next object number, so a later stamp on the same page never repaints an earlier, possibly signed, appearance. Rounded badge corners and lock icons are drawn as cubic curves converted exactly from their quadratic outlines (pdf-lib drew them with the `v` operator, which bulges the corners slightly). PNG input is validated by the core decoder; stamping no longer inflates PNG data in JavaScript. Failures reported by the core keep their reason, and core limit failures surface as `pdf.LIMIT_EXCEEDED`. Badge layout no longer adds kerning to measured widths that were drawn without it, so badge text and footer separators sit where they are drawn. `mergePdfs` uses `PdfCore.merge`, and `removePdfLinkAnchors` removes the matching annotations from `/Annots`.\n\nBreaking changes:\n\n- `PdfCore` is now required by `stampPdfVisibleSignatures`, `createPdfStampPreview`, `createIllustrativePdf`, `loadPdfSignatureDocument`, `createPdfSignatureTemplateFromBytes`, and `createPdfSignatureBuilderStateFromBytes`.\n- `layoutPdfSignatureBadge(badge, container, regularFont, boldFont)` takes `PdfStandardFont` metrics; load them with the new `loadPdfStandardFont(\"Helvetica\")` from `@signature-kit/pdf/stamp`.\n- The pdf-lib `PDFPage` helpers `visiblePdfPageSize`, `pdfCoordinateTupleFromTopLeftRect`, and `topLeftRectFromPdfCoordinateTuple` are removed; use `visiblePdfPageSizeFromGeometry`, `pdfCoordinateTupleFromPdfPageGeometry`, and `topLeftRectFromPdfPageGeometry` with the `cropBox` and `rotate` of a `PdfCore.document` page.\n- `isSafePdfStampPng` now requires `PdfCore`.\n- `PdfWorker.preview` is typed as `(input) => Effect<Uint8Array, PdfError>` instead of the type of `createPdfStampPreview`.\n\n## ITI conformance tests\n\nThe `@signature-kit/iti` tests build and tamper with PDFs through `PdfCore` and no longer depend on pdf-lib. The local conformance suites run over both classic cross-reference tables and object-stream PDFs with cross-reference streams.\n"
-    filename: pdf-lib-removal.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf\":\n    type: minor\n---\n\n## PDF page copying and encrypted document errors\n\nUse `mergePdfs(pdfs, { signedSources: \"flatten\" })` to create an unsigned preview from signed PDFs. It removes signature widgets and form metadata while retaining stamps drawn into the page content. Merge still rejects signed sources by default.\n\nUse `extractPdfPages(pdf, pageIndexes)` to copy a non-empty selection of zero-based pages into a new PDF.\n\nPDF preparation, stamping, text-anchor search, and page copying now expose `pdf.ENCRYPTED_PDF` for encrypted inputs, with English and Brazilian Portuguese messages.\n"
-    filename: pdf-page-copy-and-encryption.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf\":\n    type: minor\n  \"@signature-kit/react\":\n    type: patch\n---\n\n## Text anchors run on the in-house WASM core\n\n`findPdfTextAnchors`, `prepareAndSignPdf`, and `preparePdfVisualPreview` now read page geometry, text items, and link annotations through `@signature-kit/pdf-core` instead of LiteParse. There is no per-document worker and no 5 s cap, and text and digit anchors also work in Node and Bun.\n\nThe requirement `LiteParseWorkerFactory` becomes `PdfCore`: provide `pdfCoreBrowserLayer` in the browser or `pdfCoreFileLayer` on Node/Bun. Calls that pass `pages` and `textBoxes` with only `text`/`digits` matchers still need no service. `parsePdfTextBoxesBrowser` and the LiteParse text-result schemas are removed.\n\n`findPdfTextAnchors` reports documents that exceed a pdf-core processing limit as the new `pdf.LIMIT_EXCEEDED` error code (en-US/pt-BR messages included) instead of `pdf.INVALID_PDF`.\n"
-    filename: pdf-text-anchors-core.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: patch\n---\n\n## Repair missing PDF catalog types during edits\n\nWhen an edit writes the document catalog, the PDF core adds a missing `/Type /Catalog` in the same revision. Signing includes the repaired catalog in the bytes covered by the signature.\n"
-    filename: pdf-catalog-repair.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n---\n\n## Read PDFs with an empty opening password\n\nPdfCore can inspect, extract text and tables, describe, render, and merge Standard Security PDFs that open with an empty user password. It supports RC4 revisions 2–4, AES-128 revision 4, and AES-256 revisions 5–6. Merge and full edits produce an unencrypted PDF. The automatic edit mode rewrites encrypted inputs, including when preparing a first signature. An explicit incremental edit or an input requiring a nonempty user password fails with `pdfCore.ENCRYPTED_PDF`.\n"
-    filename: pdf-core-empty-user-password.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n---\n\n## Inspect text runs with bold and italic styles\n\n`PdfCore.inspect` accepts `runs: true`: text items then also end where the bold/italic style changes, or where the text is repositioned more than 0.2 em past the last visible glyph, so report columns (`17/06/2026 15:39:26` and `MENSAGEM PREGOEIRO`) and bold labels come back as separate items with their own `x`. A piece drawn within that distance (a `™` from another font) stays in the same item, and `TJ` kerning never splits one. Every text page now carries `styles`, a `Uint8Array` with one byte per item (bit 0 bold, bit 1 italic), resolved from the embedded font program, the font name (also for non-embedded Standard 14 fonts such as `Helvetica-Bold`), the font descriptor, and fill-and-stroke rendering. Without `runs` an item can mix styles (its bits cover only the style shared by all its glyphs) and the weight of embedded TrueType fonts is not read, so read `styles` with `runs: true`. The inspect payload is version 3 (style bytes after the offsets) and the ABI adds flag bit 5.\n"
-    filename: pdf-core-inspect-runs.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n---\n\n## Promise client for apps without Effect\n\n`loadPdfCoreNode()` (`@signature-kit/pdf-core/node`) and `loadPdfCoreBrowser()` (`@signature-kit/pdf-core/promise`) load the WebAssembly module and return the `PdfCore` operations as Promises that reject with the `PdfCoreError`, so an app can use the engine without installing or importing `effect`. `createPdfCoreClient(module)` builds the same client from a compiled module, and `pdfCoreBrowserModule` exposes the browser module loader behind `pdfCoreBrowserLayer`.\n"
-    filename: pdf-core-promise-client.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: patch\n---\n\n## Smaller pdf-core WebAssembly module\n\nThe release wasm module (reader, writer and renderer) is about 13% smaller: 1,249,882 → 1,087,037 bytes raw, 434 KB → 423 KB gzip, 335 KB → 328 KB brotli. Size wins come from Binaryen `wasm-opt -O3` in the build (pinned `binaryen` 130), CFF standard-string zlib packing, Standard 14 width-row dedupe, AGL codepoints as `u16`, dropping production `format!` / Debug format strings, Latin-1 case folding instead of Unicode `to_lowercase`, and collapsing stable-sort monomorphizations. Glyph/AGL hot tables stay as plain static data so text extraction stays within noise of the baseline. The wasm budget test is 1072 KiB.\n"
-    filename: pdf-core-wasm-size.md
-    v: 0.0.0
-  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n---\n\n## In-house WASM PDF core\n\nNew `@signature-kit/pdf-core` package: a zero-dependency Rust/WebAssembly PDF engine with page geometry, link annotations, and positioned text inspection. It exposes a `PdfCore` Effect service with browser and file-system layers and typed `PdfCoreError` failures.\n\n### Tables, markdown and running headers\n\n`PdfCore.tables(pdf, { pageIndexes })` returns structured tables per page: ruled grids from the content-stream path operators (CTM applied, collinear segments merged, clipping-only paths and page-sized frames ignored) and borderless tables from column alignment, with row/column indexes, merged-cell spans, boxes and cell text. `PdfCore.text` gains `format: \"markdown\"` (paragraph grouping on the plain-text reading order, hyphenation and page-break joins, headings from size, emphasis and numbering depth, bold/italic from the embedded font tables, nested lists that keep numbered and legal markers, link overlays, and GFM tables) and `dropRunningHeaders` (default `true`: headers and footers repeated on at least half of the pages are dropped; a line that is identical on every page keeps one copy on its first page). Ruled tables are now laid out cell by cell, which keeps headings below a table out of its last cell. Text extraction also honours marked-content `/ActualText`, clips glyphs outside a Form XObject `/BBox`, and keeps extracting text under clip render modes 4-7. `pdf_core_tables` is a new wasm export; `pdf_core_text` accepts the new `markdown` and `drop running headers` flags.\n\n### Limits and performance\n\n`inspect` now uses the same extraction limits as `text` and `tables`, so large documents (hundreds of pages, more than 100 000 text items) inspect instead of failing, and page limit violations in `text`/`tables` surface as `pdfCore.LIMIT_EXCEEDED` instead of silently empty pages. Inspect text `offsets` are UTF-16 code unit offsets into `text` (inspect payload version 2). Extraction is faster on long lines, repeated Form XObjects, Identity-H fonts and multi-page inspection, and overlapping ToUnicode/CMap/width ranges resolve to the latest definition.\n\n### Markdown fidelity and speed\n\nMarkdown no longer drops text from borderless tables: a wrap line under a bold row that spans two columns ends the table instead of being discarded, and zero-width segments map to their column. With `dropRunningHeaders`, markdown also drops blocks that repeat at the same position among the first or last three blocks of at least max(3, pages / 20) pages (headers and footers outside the top and bottom bands, signature stamps), keeping the first occurrence. URLs broken across lines are rejoined without a space and keep their link, `?`/`&` ending a URL no longer ends a paragraph, trailing `. , ; )` move out of link text, and unspaced markers such as `c)Informar` or `10.10.Os` are recognised as list items and clauses. Plain text output is unchanged. Text extraction is about 20% faster natively and 30% faster in WebAssembly (no libm `mul_add`/`hypot`/`powi` calls, allocation-free inflate Huffman tables, per-TJ placement invariants, and a prefix-only inflate for the embedded-font style probe).\n"
-    filename: pdf-core.md
+  - content: "---\npackages:\n  \"@signature-kit/certificates\":\n    type: patch\n  \"@signature-kit/http\":\n    type: patch\n  \"@signature-kit/i18n\":\n    type: patch\n  \"@signature-kit/signatures\":\n    type: patch\n  \"@signature-kit/asn1\":\n    type: patch\n  \"@signature-kit/cms\":\n    type: patch\n  \"@signature-kit/crypto\":\n    type: patch\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/a1\":\n    type: patch\n  \"@signature-kit/assinafy\":\n    type: patch\n  \"@signature-kit/clicksign\":\n    type: patch\n  \"@signature-kit/documenso\":\n    type: patch\n  \"@signature-kit/docuseal\":\n    type: patch\n  \"@signature-kit/zapsign\":\n    type: patch\n  \"@signature-kit/pdf\":\n    type: patch\n  \"@signature-kit/react\":\n    type: patch\n  \"@signature-kit/xml\":\n    type: patch\n  \"@signature-kit/iti\":\n    type: patch\n---\n\n## Faster selected-page and Markdown PDF extraction\n\nThe PDF core opens selected pages without materializing the whole page tree, defers unused XObjects, and accepts complete streams before the next cross-reference offset. Markdown rendering reuses buffers and the number parser uses bounded accumulation for common operands. Page resources share the resolved dictionary across readers, and the JavaScript bindings share result-block validation and disposal.\n\nThe pdf-core README documents the procurement corpus results, evidence audit, Wasm size, and an isolated benchmark against LiteParse and PDF Inspector. This release also refreshes all public SignatureKit packages.\n"
+    filename: pdf-extraction-performance.md
     v: 0.0.0
 core:packages:
   - id: npm:signature-kit
     updated: false
-  - changelogIds:
-      - pdf-generation-takumi.md
-    id: npm:@signature-kit/docs
+  - id: npm:@signature-kit/docs
     updated: true
-  - id: npm:@signature-kit/certificates
-    updated: false
   - id: npm:@signature-kit/signing-domain
     updated: false
-  - id: npm:@signature-kit/http
-    updated: false
-  - id: npm:@signature-kit/i18n
-    updated: false
-  - id: npm:@signature-kit/signatures
-    updated: false
   - changelogIds:
-      - pdf-ber-signatures.md
-      - pdf-core-render.md
-      - pdf-core-writer.md
-      - pdf-icp-brasil-subfilter.md
-      - pdf-lib-removal.md
-      - pdf-page-copy-and-encryption.md
-      - pdf-text-anchors-core.md
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/certificates
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/i18n
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/http
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/signatures
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/react
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
     id: npm:@signature-kit/pdf
     updated: true
   - changelogIds:
-      - pdf-text-anchors-core.md
-    id: npm:@signature-kit/react
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/xml
     updated: true
-  - id: npm:@signature-kit/xml
-    updated: false
-  - id: npm:@signature-kit/asn1
-    updated: false
-  - id: npm:@signature-kit/cms
-    updated: false
-  - id: npm:@signature-kit/crypto
-    updated: false
   - changelogIds:
-      - pdf-catalog-repair.md
-      - pdf-core-empty-user-password.md
-      - pdf-core-inspect-runs.md
-      - pdf-core-promise-client.md
-      - pdf-core-render.md
-      - pdf-core-wasm-size.md
-      - pdf-core-writer.md
-      - pdf-core.md
-      - pdf-generation-takumi.md
-      - pdf-icp-brasil-subfilter.md
-      - pdf-lib-removal.md
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/asn1
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/cms
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/crypto
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
     id: npm:@signature-kit/pdf-core
     updated: true
-  - id: npm:@signature-kit/a1
-    updated: false
-  - id: npm:@signature-kit/assinafy
-    updated: false
-  - id: npm:@signature-kit/documenso
-    updated: false
-  - id: npm:@signature-kit/clicksign
-    updated: false
-  - id: npm:@signature-kit/docuseal
-    updated: false
-  - id: npm:@signature-kit/zapsign
-    updated: false
-  - id: npm:@tooling/integration-tests
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/a1
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/assinafy
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/clicksign
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/documenso
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/docuseal
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/zapsign
+    updated: true
+  - changelogIds:
+      - pdf-extraction-performance.md
+    id: npm:@signature-kit/iti
     updated: true
   - id: npm:@tooling/oxc
     updated: false
+  - id: npm:@tooling/integration-tests
+    updated: true
   - id: npm:@tooling/static-checks
     updated: false
   - id: npm:@tooling/typescript
     updated: false
-  - changelogIds:
-      - pdf-core-writer.md
-      - pdf-icp-brasil-subfilter.md
-      - pdf-lib-removal.md
-    id: npm:@signature-kit/iti
-    updated: true
 npm:packages:
   - id: npm:signature-kit
   - id: npm:@signature-kit/docs
-  - id: npm:@signature-kit/certificates
   - id: npm:@signature-kit/signing-domain
-  - id: npm:@signature-kit/http
+  - id: npm:@signature-kit/certificates
   - id: npm:@signature-kit/i18n
+  - id: npm:@signature-kit/http
   - id: npm:@signature-kit/signatures
-  - id: npm:@signature-kit/pdf
   - id: npm:@signature-kit/react
+  - id: npm:@signature-kit/pdf
   - id: npm:@signature-kit/xml
   - id: npm:@signature-kit/asn1
   - id: npm:@signature-kit/cms
@@ -137,12 +106,12 @@ npm:packages:
   - id: npm:@signature-kit/pdf-core
   - id: npm:@signature-kit/a1
   - id: npm:@signature-kit/assinafy
-  - id: npm:@signature-kit/documenso
   - id: npm:@signature-kit/clicksign
+  - id: npm:@signature-kit/documenso
   - id: npm:@signature-kit/docuseal
   - id: npm:@signature-kit/zapsign
-  - id: npm:@tooling/integration-tests
+  - id: npm:@signature-kit/iti
   - id: npm:@tooling/oxc
+  - id: npm:@tooling/integration-tests
   - id: npm:@tooling/static-checks
   - id: npm:@tooling/typescript
-  - id: npm:@signature-kit/iti

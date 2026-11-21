@@ -486,46 +486,16 @@ export const makePdfCore = (
     ): Effect.Effect<A, PdfCoreError> =>
       Effect.scoped(
         Effect.gen(function* () {
-          const input = yield* allocate(operation, pdf.byteLength);
+          const input = yield* copyIn(operation, pdf);
           const pages = yield* allocate(
             operation,
             pageIndexes.length * Uint32Array.BYTES_PER_ELEMENT,
           );
-          new Uint8Array(core.memory.buffer, input.pointer, pdf.byteLength).set(pdf);
           new Uint32Array(core.memory.buffer, pages.pointer, pageIndexes.length).set(pageIndexes);
-          const result = yield* Effect.acquireRelease(
-            Effect.suspend(() => {
-              const pointer =
-                entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length) >>>
-                0;
-              if (pointer === 0) {
-                return Effect.fail(
-                  new PdfCoreError({
-                    code: PdfCoreErrorCodeValue.limitExceeded,
-                    operation,
-                    reason: "The PDF core could not allocate memory for the result.",
-                  }),
-                );
-              }
-              const memory = core.memory.buffer;
-              const length = new DataView(memory).getUint32(pointer, true);
-              return length < RESULT_HEADER_BYTES || pointer + length > memory.byteLength
-                ? Effect.fail(
-                    new PdfCoreError({
-                      code: PdfCoreErrorCodeValue.wasmLoadFailed,
-                      operation,
-                      reason: "The PDF core returned a malformed result block.",
-                    }),
-                  )
-                : Effect.succeed({ pointer, length });
-            }),
-            (block) => Effect.sync(() => core.pdf_core_free(block.pointer, block.length)),
+          const result = yield* resultBlock(operation, () =>
+            entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length),
           );
-          return yield* decode({
-            memory: core.memory.buffer,
-            pointer: result.pointer,
-            length: result.length,
-          });
+          return yield* decode(result);
         }),
       );
 
@@ -563,7 +533,10 @@ export const makePdfCore = (
             );
           }
           const memory = core.memory.buffer;
-          const length = new DataView(memory).getUint32(pointer, true);
+          const length =
+            pointer + RESULT_HEADER_BYTES <= memory.byteLength
+              ? new DataView(memory).getUint32(pointer, true)
+              : 0;
           return length < RESULT_HEADER_BYTES || pointer + length > memory.byteLength
             ? Effect.fail(
                 new PdfCoreError({

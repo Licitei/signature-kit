@@ -256,6 +256,77 @@ if (sourcePageIndexes.length > 0) {
 
 After building the repository, run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
 
+## Extraction benchmarks
+
+The benchmark exercises text and Markdown extraction with all input bytes already in memory. OCR is disabled. Timings exclude file reads and engine initialization. The numbers describe these inputs and runtimes.
+
+### Reproduce the comparison
+
+Build the checkout with `bun run build`. The [benchmark runner](https://github.com/Licitei/signature-kit/tree/main/shared/pdf-core/bench/comparison) uses an isolated lockfile for the comparison engines. The example uses Bun 1.4.5 on Linux x64.
+
+```sh
+export SIGNATURE_KIT_ROOT="$PWD"
+bench_dir=$(mktemp -d)
+cp shared/pdf-core/bench/comparison/{package.json,bun.lock,run.ts} "$bench_dir/"
+(
+  cd "$bench_dir"
+  bun install --frozen-lockfile
+  bun run run.ts
+) > pdf-parser-benchmark.jsonl
+```
+
+By default this runs the repository fixtures. Set `PDF_CORPUS` to an absolute directory containing `pdfs/` and optionally `gabarito/` to run your own procurement corpus. Use `PDF_BENCH_TRIALS` to set the number of timed calls per file, engine, and workload. Run one benchmark at a time on a quiet host. The runner warms each engine once per file and rotates engine order. Every engine receives the same bytes and page selection, with OCR disabled. The output includes all timings, output hashes, empty results, failures, evidence counts, and retained Wasm memory. Compare latencies and evidence on the common successful, nonempty cohort, and report excluded files separately.
+
+The procurement corpus behind the results below is maintained separately from the repository. The committed fixtures provide an immediately runnable comparison using the same engine versions.
+
+### Public procurement PDFs
+
+Thirty Brazilian public-procurement documents with selectable text, totaling 5,435 pages. Individual files range from 15 to 697 pages.
+
+| Engine                                                                      | First-page Markdown p50 / p90 | Whole-document Markdown p50 / p90 | Whole-document ms/page |  Evidence found | Whole-document failures |
+| --------------------------------------------------------------------------- | ----------------------------: | --------------------------------: | ---------------------: | --------------: | ----------------------: |
+| SignatureKit pdf-core (Wasm)                                                |               5.07 / 18.15 ms |                 71.92 ms / 1.54 s |                   2.42 | 248/251 (98.8%) |                    0/30 |
+| [LiteParse 2.20.0](https://github.com/run-llama/liteparse) (native PDFium)  |              22.69 / 56.23 ms |                382.55 ms / 9.75 s |                  13.41 | 229/251 (91.2%) |                    0/30 |
+| [PDF Inspector 1.27.0](https://github.com/firecrawl/pdf-inspector) (native) |           379.84 ms / 13.82 s |                    1.55 / 19.80 s |                  34.68 | 211/251 (84.1%) |                    1/30 |
+| PDF Inspector 1.27.0 (Wasm)                                                 |            208.96 ms / 3.69 s |                    2.25 / 33.32 s |                  49.26 | 211/251 (84.1%) |                    1/30 |
+
+The same Bun 1.4.5 process ran the public parser APIs in rotating order. The first file warmed up each engine. Each file contributes one timed call per workload. Timings and evidence use the 29 successful, nonempty files common to all engines for each workload. The native Inspector returned an empty first page for the 626-page file. Both Inspector builds reported a parse error on the 559-page whole-document run. The Inspector's native first-page API computes document-wide font statistics, which contributes to the cost of selecting one page.
+
+The corpus answer key supplies literal evidence for questions such as opening date, contract value and deadlines. The evaluator searches for contiguous normalized evidence in the whole-document Markdown after stripping case, accents, punctuation and whitespace. This measures recovery of those snippets in order. Table geometry, visual layout, and accuracy on scanned PDFs are outside the score. Among the 96 first-page snippets, pdf-core recovered 94, LiteParse 86, and each Inspector build 83.
+
+#### Evidence audit
+
+Across all 30 documents, the original raw Markdown evaluator found 257 of 260 evidence snippets. A separate audit found all 260 after checking the raw Markdown and its rendered text and correcting one reference against the source PDF. The two email-related snippets were contiguous in the rendered text because it omits link destinations. The 633-page IFMA document shows the opening time once, while the reference snippet repeated `09h`. The audit preserves the original Markdown output and reports the original benchmark score in the comparison table.
+
+With a local file-backed range source, pdf-core's first-page Markdown p50 was **5.02 ms** and p90 was **8.73 ms** on the common first-page cohort. It read **46.85%** of file bytes at p50 in **3 rounds** and completed all 30 files without falling back to a full-file recovery. Network round-trip time is outside these measurements.
+
+#### Selected-page traversal
+
+A separate run isolates a subsequent change that stops the full-input page-tree walk after the requested pages. With the PDF already in memory, pass `pageIndexes: [0]` to `text` with `format: "markdown"`. Across all 30 files, the first-page median fell from **4.82 ms to 3.31 ms** and p90 from **11.80 ms to 6.49 ms** versus `67c61c3`. The final build's slowest first page took **11.83 ms**. Whole-document Markdown took **74.29 ms** at p50, **1.34 s** at p90, and **2.08 s** on the slowest file.
+
+Each build warmed up once per file and workload. First-page results use seven timed calls per file, interleaved between builds. Whole-document results use one timed call per file after warm-up. All 60 first-page and whole-document outputs matched the baseline byte for byte.
+
+#### Markdown rendering
+
+A separate paired run compared whole-document Markdown before and after removing temporary renderer allocations. Each of the 30 procurement PDFs warmed up both builds and contributed five timed calls per build in alternating order. The median paired latency improved **2.35%**. The candidate was faster on 26 of 30 files. Across the corpus, p50 moved from 67.49 to 66.61 ms, p90 from 1.519 to 1.524 s, and the slowest file from 2.282 to 2.118 s. Output hashes matched on all 30 files. The optimized Wasm was 1,144,819 bytes.
+
+A follow-up profile of two large procurement PDFs found number parsing among the largest hot paths. The parser now uses bounded accumulation for the first 19 integer digits and the first 18 fractional digits, with the existing checked path for longer integers. In a separate paired run over the same 30 files, the number parser improved median paired latency by **2.03%**, and p90 moved from **1.329 s to 1.268 s**. All 30 whole-document outputs matched the prior build byte for byte. The optimized Wasm was 1,144,864 bytes.
+
+### Repository fixtures
+
+Sixteen PDFs from [the fixture directory](./__tests__/fixtures) run in Bun 1.4.5. Each engine gets one unmeasured warm-up per file and workload, followed by seven timed calls in rotating engine order. The table reports the median of the per-file medians.
+
+| Engine                                                                      | First-page Markdown | Whole-document Markdown | Whole-document text |
+| --------------------------------------------------------------------------- | ------------------: | ----------------------: | ------------------: |
+| SignatureKit pdf-core (Wasm)                                                |             1.21 ms |                 0.90 ms |             0.71 ms |
+| [LiteParse 2.20.0](https://github.com/run-llama/liteparse) (native PDFium)  |             3.34 ms |                 3.54 ms |             2.86 ms |
+| [PDF Inspector 1.27.0](https://github.com/firecrawl/pdf-inspector) (native) |             1.99 ms |                 1.70 ms |             0.51 ms |
+| PDF Inspector 1.27.0 (Wasm)                                                 |             3.58 ms |                 2.82 ms |             2.23 ms |
+
+All four engines returned nonempty output for every fixture. On six [hand-written Markdown fixtures](./__tests__/fixtures), the mean word-overlap F1 was 100% for pdf-core, 97.8% for LiteParse, and 90.1% for both PDF Inspector builds. The order of all words matched in 6/6, 3/6, and 1/6 fixtures, respectively. Word overlap ignores formatting and order. These fixtures are maintained by SignatureKit and measure regression against its target output.
+
+The pdf-core Wasm binary was 1,144,864 bytes. The PDF Inspector Wasm binary was 6,003,685 bytes. After the full run, their retained linear memory was 1.94 MiB and 6.31 MiB, respectively. The native variants are timed as Node addons and have different memory accounting.
+
 ## Wasm ABI
 
 The module exports `memory` and the functions below. The caller owns input and result buffers and releases them with `pdf_core_free`. Each Wasm instance owns its lazy handles until `pdf_core_lazy_close`.
@@ -392,7 +463,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The module must stay under 1104 KiB.
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1144 KiB.
 
 ## License
 

@@ -1819,7 +1819,7 @@ fn extract_page(
     };
     let mut scope = Scope::new(
         interpreter.next_scope(),
-        Rc::new(Object::Dict(page.resources.clone())),
+        Rc::clone(&page.resources),
         page.resources_ref,
     );
     let mut state = GState::initial();

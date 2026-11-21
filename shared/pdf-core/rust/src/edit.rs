@@ -482,14 +482,7 @@ impl Store<'_, '_> {
                 .pages
                 .as_ref()
                 .and_then(|pages| pages.get(widen(index)))
-                .map_or_else(
-                    || Object::Dict(Dict::default()),
-                    |found| {
-                        found
-                            .resources_ref
-                            .map_or_else(|| Object::Dict(found.resources.clone()), Object::Ref)
-                    },
-                );
+                .map_or_else(|| Object::Dict(Dict::default()), Page::resources_for_write);
             dict_of(self.object_mut(page)?)?.insert(b"Resources", inherited);
         }
         let target = Target {
@@ -1585,6 +1578,8 @@ mod tests {
         assert!(
             pages[1]
                 .resources
+                .as_dict()
+                .unwrap()
                 .get(b"Font")
                 .and_then(Object::as_dict)
                 .unwrap()
@@ -1627,6 +1622,8 @@ mod tests {
         assert_eq!(
             pages[1]
                 .resources
+                .as_dict()
+                .unwrap()
                 .get(b"XObject")
                 .and_then(Object::as_dict)
                 .and_then(|dict| dict.get(b"Stamp")),

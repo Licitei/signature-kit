@@ -7,7 +7,8 @@ use std::collections::HashSet;
 
 use crate::document::{
     Document, DocumentCache, Entry, MAX_SECTIONS, Page, PageRequest, STARTXREF_PROBE, Section,
-    apply_entries, find_startxref, merge_section_trailer, object_bound, previous_section,
+    apply_entries, borrow_pages, find_startxref, merge_section_trailer, object_bound,
+    previous_section,
 };
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
@@ -260,7 +261,7 @@ impl Frontier {
     ) -> Outcome<Self> {
         let mut pending = Vec::new();
         for (_, page) in &pages {
-            references(&page.resources, &mut pending);
+            collect(&page.resources, &mut pending);
             for key in [b"Contents".as_slice(), b"Annots"] {
                 if let Some(value) = page.dict.get(key) {
                     collect(value, &mut pending);
@@ -354,12 +355,7 @@ impl Lazy {
             .as_ref()
             .filter(|frontier| frontier.pending.is_empty())
             .ok_or_else(|| Failure::invalid("lazy plan is not ready"))?;
-        let selected: Vec<_> = frontier
-            .pages
-            .iter()
-            .map(|(index, page)| (*index, page))
-            .collect();
-        let result = run(&document, &selected);
+        let result = run(&document, &borrow_pages(&frontier.pages));
         if document.was_repaired() {
             self.sparse.missing.borrow_mut().clear();
             return Ok(None);
@@ -701,11 +697,7 @@ fn references(dict: &Dict, refs: &mut Vec<ObjRef>) {
         if annotation && matches!(key.as_slice(), b"Parent" | b"P" | b"V") {
             continue;
         }
-        if key == b"XObject"
-            && value
-                .as_dict()
-                .is_some_and(|entries| entries.entries.len() > 16)
-        {
+        if key == b"XObject" {
             continue;
         }
         collect(value, refs);

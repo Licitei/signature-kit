@@ -1,0 +1,48 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "@firecrawl/pdf-inspector": "1.27.0",
+        "@firecrawl/pdf-inspector-wasm": "1.27.0",
+        "@llamaindex/liteparse": "2.20.0",
+      },
+    },
+  },
+  "packages": {
+    "@firecrawl/pdf-inspector": ["@firecrawl/pdf-inspector@1.27.0", "", { "optionalDependencies": { "@firecrawl/pdf-inspector-darwin-arm64": "1.27.0", "@firecrawl/pdf-inspector-linux-arm64-gnu": "1.27.0", "@firecrawl/pdf-inspector-linux-arm64-musl": "1.27.0", "@firecrawl/pdf-inspector-linux-x64-gnu": "1.27.0", "@firecrawl/pdf-inspector-linux-x64-musl": "1.27.0", "@firecrawl/pdf-inspector-win32-x64-msvc": "1.27.0" }, "bin": { "pdf-inspector": "bin/pdf-inspector.mjs" } }, "sha512-ku0gmxe9dUoNloPFFPoIJlGIlW5FhZpnQThfBA82roa0jJwPNUWv0jYck27gG1BVuUGPCsP9pbCHcHQZJvCpTQ=="],
+
+    "@firecrawl/pdf-inspector-darwin-arm64": ["@firecrawl/pdf-inspector-darwin-arm64@1.27.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-i7D+Xack+5xuxYGji5D0F5WaaDIXJ04z97X1ql5OHzrBxv5U4GyVLnH1MI/R0nDCiVtFzbkCzryioXHV79Rtzw=="],
+
+    "@firecrawl/pdf-inspector-linux-arm64-gnu": ["@firecrawl/pdf-inspector-linux-arm64-gnu@1.27.0", "", { "os": "linux", "cpu": "arm64", "libc": "glibc" }, "sha512-QpHiR6Kox77M15/rgW8PMZY0mSNLCSc1WZ30ZrtIqnvY3LFydVbvSWJ/WLvYYueJs4XyRz3U1p032oAZAvF6ag=="],
+
+    "@firecrawl/pdf-inspector-linux-arm64-musl": ["@firecrawl/pdf-inspector-linux-arm64-musl@1.27.0", "", { "os": "linux", "cpu": "arm64", "libc": "musl" }, "sha512-1ZL0BCkPlLXbZTME+zvDQNv4zeHshYAtArDW0kMPz2aCmxxh5szpsscOIlsJb/Bw6OERHIrV3Hb2Lg8ERM9Jpw=="],
+
+    "@firecrawl/pdf-inspector-linux-x64-gnu": ["@firecrawl/pdf-inspector-linux-x64-gnu@1.27.0", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-Q+VuNrfIlHzb4MFIClJWEtrq0z+tAdASdal4JEFpwMPvugQQPfnJx/iS396wQAgt2gN6neAIbnySp5Ria9o9zA=="],
+
+    "@firecrawl/pdf-inspector-linux-x64-musl": ["@firecrawl/pdf-inspector-linux-x64-musl@1.27.0", "", { "os": "linux", "cpu": "x64", "libc": "musl" }, "sha512-gnq0lXTH26i93geCdDm7F2okjDA7zwKIR1+yxwhfzTxLfMeDlRZWMIXBsru01DH4aajwX2znM9Z/rTvO+FbcUA=="],
+
+    "@firecrawl/pdf-inspector-wasm": ["@firecrawl/pdf-inspector-wasm@1.27.0", "", {}, "sha512-i3npx+EgZ5eGwAEVoDJO2PVG4BJ42raQgtdtxQCRxq6egl5CrXniR1+ZL6qFVp2CQ+BEBhHtJA7ONemnCypV4Q=="],
+
+    "@firecrawl/pdf-inspector-win32-x64-msvc": ["@firecrawl/pdf-inspector-win32-x64-msvc@1.27.0", "", { "os": "win32", "cpu": "x64" }, "sha512-RtdlUI++jdcTwRT6bYQL1K99RHTgl463+eY2Tl5GMZZkG7AIGpXejAAhae6Y8oV4gCjM6Qdzof9xOh5Hl30NYg=="],
+
+    "@llamaindex/liteparse": ["@llamaindex/liteparse@2.20.0", "", { "dependencies": { "commander": "^12.0.0" }, "optionalDependencies": { "@llamaindex/liteparse-darwin-arm64": "2.19.0", "@llamaindex/liteparse-darwin-x64": "2.19.0", "@llamaindex/liteparse-linux-arm64-gnu": "2.19.0", "@llamaindex/liteparse-linux-x64-gnu": "2.19.0", "@llamaindex/liteparse-linux-x64-musl": "2.19.0", "@llamaindex/liteparse-win32-arm64-msvc": "2.19.0", "@llamaindex/liteparse-win32-x64-msvc": "2.19.0" }, "bin": { "lit": "dist/cli.js", "liteparse": "dist/cli.js" } }, "sha512-neiYQ/omjwoXsAi3ljq1neWpMO27kYA+WhLWFkKFcEJFcoKb/ABA74QiFGKga6BMk5SrskM9BqkhAqJ4CjWcSw=="],
+
+    "@llamaindex/liteparse-darwin-arm64": ["@llamaindex/liteparse-darwin-arm64@2.19.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-4g0oMB+vhF9CBdbA6781pZOHQ2zGlAwJdVuQGNwpEmn04n071toGHmhqfTwxhpxfYJdMtjzpSjxCcNPLyYp4OA=="],
+
+    "@llamaindex/liteparse-darwin-x64": ["@llamaindex/liteparse-darwin-x64@2.19.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-2etoaK0ISjsCx36HrH0U4WwxoSQiSWri/VPinhF/Y3QkKxN27it6PTrwTZ99fzkCy4pH8FEHhNtmMGuVWsLhgg=="],
+
+    "@llamaindex/liteparse-linux-arm64-gnu": ["@llamaindex/liteparse-linux-arm64-gnu@2.19.0", "", { "os": "linux", "cpu": "arm64", "libc": "glibc" }, "sha512-qbi8lcG8E/CDa9aRa/q6S7I1c+i/CI5IGI1LQIBDVwDvd/lYnMRW9sOpDXGY9X34xlaSC7D6PA3BQUIoYLEAIg=="],
+
+    "@llamaindex/liteparse-linux-x64-gnu": ["@llamaindex/liteparse-linux-x64-gnu@2.19.0", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-Haf7MLyjJ6D9ZEV0i7b7HEkbCBESGtu2dDvkr9tJYuDVzupfIJaFwhSBinL0iX0RTnHifBGjmH7iYKI+fjXVeQ=="],
+
+    "@llamaindex/liteparse-linux-x64-musl": ["@llamaindex/liteparse-linux-x64-musl@2.19.0", "", { "os": "linux", "cpu": "x64", "libc": "musl" }, "sha512-ENb4lndNfh85A2D4EeQKtF9dAoruVj71PSmbEwqTXjI+tSAduK+613JGFytIDlpcjY4bRMsJHkHtK2JpQVjNyg=="],
+
+    "@llamaindex/liteparse-win32-arm64-msvc": ["@llamaindex/liteparse-win32-arm64-msvc@2.19.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-pMB0BxR7CYbiWnLrMWzTE+7/x60ealTOyeMaxWX+u4vLtlMFDwSGG0NDUME2giusWR5mEhZwintV2RSPSvfVHg=="],
+
+    "@llamaindex/liteparse-win32-x64-msvc": ["@llamaindex/liteparse-win32-x64-msvc@2.19.0", "", { "os": "win32", "cpu": "x64" }, "sha512-ZVBvzug+SuQbH4ADuE8j3kw+d5LBSGP0QQAPWkr+DcqjXDmecp147ZIO61TmfjONeksQgrtmEw9yP1hbCfPaCA=="],
+
+    "commander": ["commander@12.1.0", "", {}, "sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA=="],
+  }
+}

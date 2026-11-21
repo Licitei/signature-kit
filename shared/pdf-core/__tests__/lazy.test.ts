@@ -19,11 +19,17 @@ const paths = [
   "encryption/signed.pdf",
 ].sort((left, right) => left.localeCompare(right));
 
-const pdfObjects = (objects: ReadonlyArray<string>): Uint8Array => {
+const pdfObjects = (
+  objects: ReadonlyArray<string>,
+  padding?: { readonly after: number; readonly bytes: number },
+): Uint8Array => {
   let pdf = "%PDF-1.7\n";
   const offsets = objects.map((object, index) => {
     const offset = pdf.length;
     pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    if (padding?.after === index + 1) {
+      pdf += " ".repeat(padding.bytes);
+    }
     return offset.toString().padStart(10, "0");
   });
   const xref = pdf.length;
@@ -168,13 +174,13 @@ describe("PdfCore byte-range documents", () => {
     ).pipe(Effect.provide(layer)),
   );
 
-  it.effect("fetches a used form without loading the shared form dictionary's other streams", () =>
+  it.effect.each([1, 17])("skips unused form streams with %i unused resource names", (count) =>
     Effect.scoped(
       Effect.gen(function* () {
         const core = yield* PdfCore;
         const stream = (dictionary: string, data: string) =>
           `<< ${dictionary} /Length ${data.length} >>\nstream\n${data}\nendstream`;
-        const unused = Array.from({ length: 17 }, (_, index) => `/Other${index} 7 0 R`);
+        const unused = Array.from({ length: count }, (_, index) => `/Other${index} 7 0 R`);
         const font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
         const form = "/Type /XObject /Subtype /Form /BBox [0 0 200 200]";
         const objects = [
@@ -196,6 +202,33 @@ describe("PdfCore byte-range documents", () => {
         expect(stats.strategy).toBe("lazy");
         expect(stats.rounds).toBe(2);
         expect(stats.bytesRead).toBeLessThan(bytes.byteLength / 2);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("accepts a complete content stream before the next xref offset", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const content = "BT /F1 12 Tf 20 100 Td (Selected) Tj ET";
+        const pdf = pdfObjects(
+          [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+          ],
+          { after: 4, bytes: 1024 * 1024 },
+        );
+        const doc = yield* core.openLazy(pdfCoreBytesSource(pdf), { gapBytes: 0 });
+        const options = { pageIndexes: [0] };
+        const result = yield* doc.text(options);
+        expect(result).toStrictEqual(yield* core.text(pdf, options));
+        expect(result.join(" ")).toContain("Selected");
+        const stats = yield* doc.stats;
+        expect(stats.strategy).toBe("lazy");
+        expect(stats.bytesRead).toBeLessThan(pdf.byteLength / 4);
       }),
     ).pipe(Effect.provide(layer)),
   );

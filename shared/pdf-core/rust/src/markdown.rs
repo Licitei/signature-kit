@@ -401,6 +401,9 @@ fn line_spans(line: &MdLine) -> Vec<Span> {
 fn x_after(line: &MdLine, chars: usize) -> f64 {
     let mut remaining = chars;
     for run in &line.runs {
+        if remaining == 0 && !run.text.is_empty() {
+            return run.x0;
+        }
         let count = run.text.chars().count();
         if remaining < count {
             let share = f64::from(u32::try_from(remaining).unwrap_or(u32::MAX))
@@ -739,7 +742,6 @@ fn emphatic(line: &Prepared<'_>) -> bool {
 
 fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> {
     let mut flows: Vec<Flow> = Vec::with_capacity(lines.len());
-    let mut members: Vec<Vec<usize>> = Vec::new();
     let mut previous: Option<&Prepared<'_>> = None;
     for line in lines {
         let Some(line_next) = line else {
@@ -768,30 +770,30 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             flow.left = flow.left.min(current.x0);
             flow.right = flow.right.max(current.x1);
             flows.push(flow);
-            if let Some(group) = members.last_mut() {
-                group.push(index);
-            }
         } else {
             flows.push(Flow {
-                id: members.len(),
+                id: index,
                 left: current.x0,
                 right: current.x1,
                 pitch: 0.0,
             });
-            members.push(vec![index]);
         }
         previous = Some(line_next);
     }
-    for group in &members {
+    let mut gaps = Vec::new();
+    for group in flows.chunk_by_mut(|left, right| left.id == right.id) {
+        let Some(first) = group.first() else {
+            continue;
+        };
+        let Some(members) = lines.get(first.id..first.id.saturating_add(group.len())) else {
+            continue;
+        };
         let mut left = f64::INFINITY;
         let mut right = f64::NEG_INFINITY;
-        let mut gaps: Vec<f64> = Vec::with_capacity(group.len());
+        gaps.clear();
         let mut before: Option<&MdLine> = None;
         let mut size = 0.0_f64;
-        for &index in group {
-            let Some(Some(line)) = lines.get(index) else {
-                continue;
-            };
+        for line in members.iter().flatten() {
             left = left.min(line.line.x0);
             right = right.max(line.line.x1);
             size = size.max(line.line.size);
@@ -802,20 +804,18 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             }
             before = Some(line.line);
         }
-        gaps.sort_unstable_by(f64::total_cmp);
         let pitch = if gaps.len() >= FLOW_SAMPLES {
+            gaps.sort_unstable_by(f64::total_cmp);
             gaps.get(gaps.len().checked_div(4).unwrap_or(0))
                 .copied()
                 .unwrap_or(0.0_f64)
         } else {
             metrics.pitch * size
         };
-        for &index in group {
-            if let Some(flow) = flows.get_mut(index) {
-                flow.left = left;
-                flow.right = right;
-                flow.pitch = pitch;
-            }
+        for flow in group {
+            flow.left = left;
+            flow.right = right;
+            flow.pitch = pitch;
         }
     }
     flows
@@ -1472,27 +1472,30 @@ pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics) {
 }
 
 fn escape_into(text: &str, out: &mut String) {
-    let chars: Vec<char> = text.chars().collect();
-    for (index, &ch) in chars.iter().enumerate() {
-        let before = index.checked_sub(1).and_then(|at| chars.get(at)).copied();
-        let after = chars.get(index.saturating_add(1)).copied();
-        let escape = match ch {
-            '\\' | '*' | '`' => true,
-            '_' => {
+    let mut start = 0;
+    for (index, token) in text.match_indices(['\\', '*', '`', '_', '<', ']', '[']) {
+        let tail = text.get(index.saturating_add(1)..).unwrap_or_default();
+        let escape = match token {
+            "\\" | "*" | "`" => true,
+            "_" => {
+                let before = text.get(..index).and_then(|head| head.chars().next_back());
                 !(before.is_some_and(char::is_alphanumeric)
-                    && after.is_some_and(char::is_alphanumeric))
+                    && tail.chars().next().is_some_and(char::is_alphanumeric))
             }
-            '<' => after
-                .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?')),
-            ']' => after == Some('('),
-            '[' => after == Some('['),
+            "<" => tail.as_bytes().first().is_some_and(|next| {
+                next.is_ascii_alphabetic() || matches!(next, b'/' | b'!' | b'?')
+            }),
+            "]" => tail.starts_with('('),
+            "[" => tail.starts_with('['),
             _ => false,
         };
         if escape {
+            out.push_str(text.get(start..index).unwrap_or_default());
             out.push('\\');
+            start = index;
         }
-        out.push(ch);
     }
+    out.push_str(text.get(start..).unwrap_or_default());
 }
 
 fn collapse(text: &str) -> String {
@@ -1524,11 +1527,11 @@ fn emphasize(span: &Span, out: &mut String) {
         out.push(' ');
     }
     let marker = match (span.bold, span.italic) {
+        (false, false) => "",
         _ if !inner.chars().any(char::is_alphanumeric) => "",
         (true, true) => "***",
         (true, false) => "**",
         (false, true) => "*",
-        (false, false) => "",
     };
     out.push_str(marker);
     escape_into(inner, out);
@@ -1541,39 +1544,43 @@ fn emphasize(span: &Span, out: &mut String) {
 fn normalized(spans: &[Span]) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::with_capacity(spans.len());
     for (index, span) in spans.iter().enumerate() {
-        let mut span_next = span.clone();
-        if span_next.text.trim().is_empty() {
+        let style = if span.text.trim().is_empty() {
             let next = spans.get(index.saturating_add(1));
             let keep = out.last().zip(next).is_some_and(|(before, after)| {
                 (before.bold, before.italic, before.link) == (after.bold, after.italic, after.link)
             });
             match out.last() {
-                Some(before) if keep => {
-                    span_next.bold = before.bold;
-                    span_next.italic = before.italic;
-                    span_next.link = before.link;
-                }
-                _ => {
-                    span_next.bold = false;
-                    span_next.italic = false;
-                    span_next.link = span_next.link.filter(|_| keep);
-                }
+                Some(before) if keep => (before.bold, before.italic, before.link),
+                _ => (false, false, None),
             }
-        }
-        match out.last_mut() {
-            Some(last)
-                if (last.bold, last.italic, last.link)
-                    == (span_next.bold, span_next.italic, span_next.link) =>
-            {
-                last.text.push_str(&span_next.text);
-            }
-            _ => out.push(span_next),
+        } else {
+            (span.bold, span.italic, span.link)
+        };
+        if let Some(last) = out.last_mut()
+            && (last.bold, last.italic, last.link) == style
+        {
+            last.text.push_str(&span.text);
+        } else {
+            let (bold, italic, link) = style;
+            out.push(Span {
+                bold,
+                italic,
+                link,
+                text: span.text.clone(),
+            });
         }
     }
     out
 }
 
 fn render_inline(spans: &[Span], links: &[LinkInfo], out: &mut String) {
+    if let [span] = spans
+        && span.link.is_none()
+        && !span.text.trim().is_empty()
+    {
+        emphasize(span, out);
+        return;
+    }
     let mut spans_next = normalized(spans);
     detach_link_trailers(&mut spans_next);
     let mut index = 0_usize;
@@ -1701,8 +1708,9 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
 
 pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
     let mut out = String::new();
+    let mut rendered = String::new();
     for block in blocks {
-        let mut rendered = String::new();
+        rendered.clear();
         render_block(block, links, &mut rendered);
         if rendered.trim().is_empty() {
             continue;

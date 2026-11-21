@@ -151,7 +151,7 @@ mod tests {
     }
 
     fn load_page_fonts(document: &Document<'_>, page: &Page) -> Vec<Font> {
-        let Some(fonts_value) = page.resources.get(b"Font") else {
+        let Some(fonts_value) = page.resources.as_dict().and_then(|dict| dict.get(b"Font")) else {
             return Vec::new();
         };
         let Ok(resolved_table) = document.resolve(fonts_value) else {
