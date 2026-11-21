@@ -20,6 +20,8 @@ import {
   PdfCoreOperationValue,
   PDF_CORE_MAX_LAZY_BYTES,
   PdfCoreLazyOptionsSchema,
+  PdfCorePageDiagnosticsOptionsSchema,
+  PdfCorePageDiagnosticsSchema,
   PdfCoreRangeSizeSchema,
   PdfCoreRenderOptionsSchema,
   PdfCoreSchemaNameValue,
@@ -29,6 +31,7 @@ import {
   PdfCoreSignatureSlotFailureSchema,
   PdfCoreTablesOptionsSchema,
   PdfCoreTablesSchema,
+  PdfCoreTextLayerSchema,
   PdfCoreTextOptionsSchema,
   PdfCoreTextSchema,
   PdfCoreWinAnsiFontSchema,
@@ -51,6 +54,8 @@ import type {
   PdfCoreMergeSources,
   PdfCoreObjectRef,
   PdfCoreOperation,
+  PdfCorePageDiagnostics,
+  PdfCorePageDiagnosticsOptions,
   PdfCorePngSize,
   PdfCoreRenderOptions,
   PdfCoreSchemaName,
@@ -71,6 +76,9 @@ export type PdfCoreRangeSource = {
 export type PdfCoreLazyDocument = {
   readonly text: (options?: PdfCoreTextOptions) => Effect.Effect<PdfCoreText, PdfCoreError>;
   readonly tables: (options?: PdfCoreTablesOptions) => Effect.Effect<PdfCoreTables, PdfCoreError>;
+  readonly pageDiagnostics: (
+    options?: PdfCorePageDiagnosticsOptions,
+  ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
   readonly renderPages: (
     options?: PdfCoreRenderOptions,
   ) => Effect.Effect<PdfCoreDisplayLists, PdfCoreError>;
@@ -114,6 +122,10 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     options?: PdfCoreTablesOptions,
   ) => Effect.Effect<PdfCoreTables, PdfCoreError>;
+  readonly pageDiagnostics: (
+    pdf: Uint8Array,
+    options?: PdfCorePageDiagnosticsOptions,
+  ) => Effect.Effect<PdfCorePageDiagnostics, PdfCoreError>;
   readonly signatures: (
     pdf: Uint8Array,
     analysis: PdfCoreSignatureAnalysis,
@@ -158,6 +170,7 @@ const FLAG_PAGE_LIMIT = 128;
 const FLAG_LAZY_RECOVER = 256;
 const FLAG_RUNS = 32;
 const STATUS_OK = 0;
+const STATUS_INVALID_PDF = 1;
 const STATUS_LIMIT_EXCEEDED = 3;
 const MAGIC = 0x4346_4450;
 const VERSION = 3;
@@ -168,7 +181,10 @@ const TABLES_MAGIC = 0x4254_4450;
 const TABLES_VERSION = 2;
 const TABLES_HEADER_BYTES = 16;
 const TABLE_RECORD_BYTES = 56;
-const CELL_RECORD_BYTES = 56;
+const CELL_RECORD_BYTES = 64;
+const DIAGNOSTICS_MAGIC = 0x4744_4450;
+const DIAGNOSTICS_VERSION = 1;
+const DIAGNOSTICS_RECORD_BYTES = 24;
 const RENDER_MAGIC = 0x4c52_4450;
 const RENDER_VERSION = 1;
 const RENDER_HEADER_BYTES = 16;
@@ -410,6 +426,7 @@ const lazyProfiles = {
   [PdfCoreOperationValue.text]: 0,
   [PdfCoreOperationValue.tables]: 1,
   [PdfCoreOperationValue.render]: 2,
+  [PdfCoreOperationValue.pageDiagnostics]: 3,
 };
 
 export const makePdfCore = (
@@ -886,10 +903,20 @@ export const makePdfCore = (
         let cursor = base + TABLES_HEADER_BYTES;
         for (let index = 0; index < tableCount; index += 1) {
           const cellsInTable = view.getUint32(cursor + 12, true);
+          const pageIndex = view.getUint32(cursor, true);
+          const lastPageIndex = view.getUint32(cursor + 48, true);
+          const pages =
+            lastPageIndex > pageIndex
+              ? Array.from(
+                  { length: lastPageIndex - pageIndex + 1 },
+                  (_, offset) => pageIndex + offset,
+                )
+              : undefined;
           const cells = [];
           let cellAt = cursor + TABLE_RECORD_BYTES;
           for (let cell = 0; cell < cellsInTable; cell += 1) {
             cells.push({
+              ...(pages === undefined ? {} : { pageIndex: view.getUint32(cellAt + 56, true) }),
               row: view.getUint32(cellAt, true),
               col: view.getUint32(cellAt + 4, true),
               rowSpan: view.getUint32(cellAt + 8, true),
@@ -905,15 +932,6 @@ export const makePdfCore = (
             });
             cellAt += CELL_RECORD_BYTES;
           }
-          const pageIndex = view.getUint32(cursor, true);
-          const lastPageIndex = view.getUint32(cursor + 48, true);
-          const pages =
-            lastPageIndex > pageIndex
-              ? Array.from(
-                  { length: lastPageIndex - pageIndex + 1 },
-                  (_, offset) => pageIndex + offset,
-                )
-              : undefined;
           tables.push({
             pageIndex,
             ...(pages === undefined ? {} : { pages }),
@@ -958,7 +976,8 @@ export const makePdfCore = (
       const pageIndexes = options.pageIndexes ?? [];
       const flags =
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
-        (options.mergeAcrossPages === true ? FLAG_MERGE_TABLES : 0);
+        (options.mergeAcrossPages === true ? FLAG_MERGE_TABLES : 0) |
+        (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
       return yield* read(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
@@ -1491,6 +1510,67 @@ export const makePdfCore = (
           );
         });
 
+    const runPageDiagnostics = Effect.fn(function* (
+      read: BlockReader,
+      rawOptions: PdfCorePageDiagnosticsOptions = {},
+    ) {
+      const operation = PdfCoreOperationValue.pageDiagnostics;
+      const options = yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsOptionsSchema)(
+        rawOptions,
+      ).pipe(
+        Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.pageDiagnosticsOptions)),
+      );
+      return yield* read(
+        operation,
+        core.pdf_core_page_diagnostics,
+        options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES,
+        options.pageIndexes ?? [],
+        (block) =>
+          Effect.gen(function* () {
+            const view = new DataView(block.memory, block.pointer, block.length);
+            if (view.getUint32(4, true) !== STATUS_OK) {
+              return yield* failStatus(operation, block);
+            }
+            const base = RESULT_HEADER_BYTES;
+            const records = base + 16;
+            const count = block.length >= records ? view.getUint32(base + 8, true) : 0;
+            if (
+              block.length !== records + count * DIAGNOSTICS_RECORD_BYTES ||
+              view.getUint32(base, true) !== DIAGNOSTICS_MAGIC ||
+              view.getUint32(base + 4, true) !== DIAGNOSTICS_VERSION
+            ) {
+              return yield* new PdfCoreError({
+                code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                operation,
+                reason: "The PDF core returned an unsupported page diagnostics payload.",
+              });
+            }
+            const pages = Array.from({ length: count }, (_, index) => {
+              const at = records + index * DIAGNOSTICS_RECORD_BYTES;
+              return {
+                pageIndex: view.getUint32(at, true),
+                textLayer: PdfCoreTextLayerSchema.literals[view.getUint32(at + 4, true)],
+                glyphs: view.getUint32(at + 8, true),
+                usableChars: view.getUint32(at + 12, true),
+                unmapped: view.getUint32(at + 16, true),
+                imageCount: view.getUint32(at + 20, true),
+              };
+            });
+            return yield* Schema.decodeUnknownEffect(PdfCorePageDiagnosticsSchema)(pages).pipe(
+              Effect.mapError(
+                (issue) =>
+                  new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.wasmLoadFailed,
+                    operation,
+                    schemaName: PdfCoreSchemaNameValue.pageDiagnostics,
+                    issueMessage: String(issue),
+                  }),
+              ),
+            );
+          }),
+      );
+    });
+
     const runRenderPages = Effect.fn(function* (
       read: BlockReader,
       rawOptions: PdfCoreRenderOptions = {},
@@ -1662,7 +1742,7 @@ export const makePdfCore = (
             );
             const view = new DataView(result.memory, result.pointer, result.length);
             const resultStatus = view.getUint32(4, true);
-            if (resultStatus === STATUS_LIMIT_EXCEEDED) {
+            if (resultStatus === STATUS_INVALID_PDF || resultStatus === STATUS_LIMIT_EXCEEDED) {
               return yield* failStatus(operation, result);
             }
             if (resultStatus !== STATUS_OK) {
@@ -1716,6 +1796,7 @@ export const makePdfCore = (
               const profile =
                 operation === PdfCoreOperationValue.text ||
                 operation === PdfCoreOperationValue.tables ||
+                operation === PdfCoreOperationValue.pageDiagnostics ||
                 operation === PdfCoreOperationValue.render
                   ? lazyProfiles[operation]
                   : undefined;
@@ -1796,6 +1877,8 @@ export const makePdfCore = (
       return {
         text: (options?: PdfCoreTextOptions) => runText(read, options),
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
+        pageDiagnostics: (options?: PdfCorePageDiagnosticsOptions) =>
+          runPageDiagnostics(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
         stats: Ref.get(state).pipe(Effect.map(({ closed: _closed, ...stats }) => stats)),
       };
@@ -1807,6 +1890,7 @@ export const makePdfCore = (
       inspect,
       text: (pdf, options) => runText(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),
+      pageDiagnostics: (pdf, options) => runPageDiagnostics(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),
       signatures,
       revisionComplete,

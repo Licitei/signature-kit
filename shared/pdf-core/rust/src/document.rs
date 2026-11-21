@@ -609,6 +609,27 @@ impl<'data> Document<'data> {
         Ok(document)
     }
 
+    fn page(&self, obj_ref: Option<ObjRef>, dict: &Dict, inherited: &Inherited) -> Outcome<Page> {
+        let merged = inherited.merged(dict);
+        let resources = match &merged.resources {
+            Some(object) => lenient(self.follow(object))?
+                .and_then(|value| value.as_dict().cloned())
+                .unwrap_or_default(),
+            None => Dict::default(),
+        };
+        let resources_ref = match merged.resources.as_deref() {
+            Some(Object::Ref(reference)) => Some(*reference),
+            _ => None,
+        };
+        Ok(Page {
+            obj_ref,
+            dict: dict.clone(),
+            resources,
+            resources_ref,
+            info: self.page_info(&merged)?,
+        })
+    }
+
     fn page_info(&self, inherited: &Inherited) -> Outcome<PageInfo> {
         let valid = |rect: [f64; 4]| rect[2] > rect[0] && rect[3] > rect[1];
         let media_box = match &inherited.media_box {
@@ -683,9 +704,16 @@ impl<'data> Document<'data> {
     }
 
     pub(crate) fn pages(&self) -> Outcome<Vec<Page>> {
-        let pages = self.walk_pages(None)?;
-        if pages.is_empty() && !self.repaired.get() && self.rebuild().is_ok() {
-            return self.walk_pages(None);
+        let mut pages = Vec::new();
+        let mut collect = |_, obj_ref, dict: &Dict, inherited: &Inherited| {
+            pages.push(self.page(obj_ref, dict, inherited)?);
+            Ok(())
+        };
+        if self.walk_pages(None, &mut collect)? == 0
+            && !self.repaired.get()
+            && self.rebuild().is_ok()
+        {
+            let _: usize = self.walk_pages(None, collect)?;
         }
         Ok(pages)
     }
@@ -1159,23 +1187,42 @@ impl<'data> Document<'data> {
     pub(crate) fn sparse_pages(
         &self,
         selection: PageRequest<&[u32]>,
-    ) -> Outcome<Vec<(usize, Page)>> {
+    ) -> Outcome<(usize, Vec<(usize, Page)>)> {
         if !self.root_valid() {
             return Err(Failure::invalid("missing document catalog"));
         }
         let stop_after = selection.stop_after();
         if stop_after == Some(0) {
-            return Ok(Vec::new());
+            return Ok((0, Vec::new()));
         }
-        let pages = self.walk_pages(stop_after)?;
-        if pages.is_empty() {
+        let mut pages = Vec::new();
+        let count = if let PageRequest::Indexes(Some(indexes)) = selection {
+            let mut chosen: HashMap<_, _> =
+                indexes.iter().map(|&index| (widen(index), None)).collect();
+            let visited_count =
+                self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+                    if let Some(page) = chosen.get_mut(&index) {
+                        *page = Some(self.page(obj_ref, dict, inherited)?);
+                    }
+                    Ok(())
+                })?;
+            pages.extend(indexes.iter().filter_map(|&requested| {
+                let index = widen(requested);
+                chosen.remove(&index).flatten().map(|page| (index, page))
+            }));
+            visited_count
+        } else {
+            self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+                if stop_after.is_none_or(|limit| index < limit) {
+                    pages.push((index, self.page(obj_ref, dict, inherited)?));
+                }
+                Ok(())
+            })?
+        };
+        if count == 0 {
             return Err(Failure::invalid("page tree requires repair"));
         }
-        let selected = selection.select(pages.len())?;
-        Ok(pick_pages(&pages, selected)
-            .into_iter()
-            .map(|(index, page)| (index, page.clone()))
-            .collect())
+        Ok((count, pages))
     }
 
     pub(crate) fn startxref(&self) -> Option<usize> {
@@ -1227,14 +1274,18 @@ impl<'data> Document<'data> {
         self.pending_reads() != 0
     }
 
-    fn walk_pages(&self, stop_after: Option<usize>) -> Outcome<Vec<Page>> {
+    fn walk_pages(
+        &self,
+        stop_after: Option<usize>,
+        mut visit: impl FnMut(usize, Option<ObjRef>, &Dict, &Inherited) -> Outcome<()>,
+    ) -> Outcome<usize> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
         let Some(root) = catalog.as_dict().and_then(|dict| dict.get(b"Pages")) else {
             return Err(Failure::invalid("missing page tree"));
         };
-        let mut pages: Vec<Page> = Vec::new();
+        let mut count = 0_usize;
         let mut visited: HashSet<u32> = HashSet::new();
         let mut stack: Vec<(Object, Inherited)> = vec![(root.clone(), Inherited::default())];
         let first = stop_after == Some(1);
@@ -1243,7 +1294,7 @@ impl<'data> Document<'data> {
             let obj_ref = if let Object::Ref(reference) = &node {
                 if !visited.insert(reference.number) {
                     if first {
-                        return self.walk_pages(None);
+                        return self.walk_pages(None, visit);
                     }
                     continue;
                 }
@@ -1262,11 +1313,10 @@ impl<'data> Document<'data> {
             }
             let Some(dict) = resolved.as_dict() else {
                 if first {
-                    return self.walk_pages(None);
+                    return self.walk_pages(None, visit);
                 }
                 continue;
             };
-            let merged = inherited.merged(dict);
             let kids = match dict.get(b"Kids") {
                 Some(kids) if !name_is(dict, b"Type", b"Page") => {
                     lenient(self.follow(kids))?.filter(|inner_kids| inner_kids.as_array().is_some())
@@ -1278,45 +1328,31 @@ impl<'data> Document<'data> {
             }
             if let Some(items) = kids.as_deref().and_then(Object::as_array) {
                 if first {
-                    let Some(count) = page_count(dict, items.len(), declared) else {
-                        return self.walk_pages(None);
+                    let Some(subtree_count) = page_count(dict, items.len(), declared) else {
+                        return self.walk_pages(None, visit);
                     };
-                    declared = count.saturating_sub(items.len().saturating_sub(1));
+                    declared = subtree_count.saturating_sub(items.len().saturating_sub(1));
                 }
+                let merged = inherited.merged(dict);
                 stack.extend(items.iter().rev().map(|kid| (kid.clone(), merged.clone())));
                 continue;
             }
             if name_is(dict, b"Type", b"Pages") {
                 if first {
-                    return self.walk_pages(None);
+                    return self.walk_pages(None, visit);
                 }
                 continue;
             }
-            if pages.len() >= self.limits.max_pages {
+            if count >= self.limits.max_pages {
                 return Err(Failure::limit("page count exceeds limit"));
             }
-            let resources = match &merged.resources {
-                Some(object) => lenient(self.follow(object))?
-                    .and_then(|value| value.as_dict().cloned())
-                    .unwrap_or_default(),
-                None => Dict::default(),
-            };
-            let resources_ref = match merged.resources.as_deref() {
-                Some(Object::Ref(reference)) => Some(*reference),
-                _ => None,
-            };
-            pages.push(Page {
-                obj_ref,
-                dict: dict.clone(),
-                resources,
-                resources_ref,
-                info: self.page_info(&merged)?,
-            });
-            if stop_after == Some(pages.len()) {
+            visit(count, obj_ref, dict, &inherited)?;
+            count = count.saturating_add(1);
+            if stop_after == Some(count) {
                 break;
             }
         }
-        Ok(pages)
+        Ok(count)
     }
 
     pub(crate) const fn was_repaired(&self) -> bool {
@@ -2704,7 +2740,7 @@ mod tests {
         for _ in 0_i32..64_i32 {
             match lazy.plan(PageRequest::Indexes(Some(&[0])), false, &Limits::default()) {
                 Plan::Ready => return Some(lazy),
-                Plan::Fallback | Plan::Full(_) => return None,
+                Plan::Failed(_) | Plan::Fallback | Plan::Full(_) => return None,
                 Plan::Need(ranges) => {
                     for range in ranges {
                         let offset = range.start;

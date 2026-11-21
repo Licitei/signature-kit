@@ -23,6 +23,7 @@ pub(crate) struct Cell {
     pub bbox: [f64; 4],
     pub col: u32,
     pub col_span: u32,
+    pub page_index: u32,
     pub row: u32,
     pub row_span: u32,
     pub text: String,
@@ -33,12 +34,20 @@ pub(crate) struct Table {
     pub bbox: [f64; 4],
     pub cells: Vec<Cell>,
     pub cols: u32,
+    pub columns: Vec<(f64, f64)>,
+    pub edges: TableEdges,
+    pub header_emphasized: bool,
     pub last_page_index: u32,
-    pub near_bottom: bool,
-    pub near_top: bool,
     pub page_index: u32,
+    pub row_axis_x: bool,
     pub rows: u32,
     pub ruled: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TableEdges {
+    pub near_bottom: bool,
+    pub near_top: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,8 +68,10 @@ pub(crate) struct Grid {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CellKind {
+    Amount,
+    Decimal,
     Empty,
-    Numeric,
+    Integer,
     Text,
 }
 
@@ -528,27 +539,25 @@ fn row_cells(table: &Table, row: u32) -> &[Cell] {
 }
 
 fn same_columns(left: &Table, right: &Table) -> bool {
-    let [left_start, _, left_end, _] = left.bbox;
-    let [right_start, _, right_end, _] = right.bbox;
-    let width = left_end - left_start;
-    let right_width = right_end - right_start;
+    let width = |table: &Table| {
+        table
+            .columns
+            .first()
+            .zip(table.columns.last())
+            .map_or(0.0_f64, |(&(start, _), &(_, end))| end - start)
+    };
+    let left_width = width(left);
     let width_tolerance = if left.ruled {
         4.0_f64
     } else {
-        width * 0.15_f64
+        left_width * 0.15_f64
     };
-    let first = row_cells(left, 0);
-    let next = row_cells(right, 0);
     left.cols == right.cols
         && left.ruled == right.ruled
-        && (left_start - right_start).abs() <= 4.0_f64
-        && (width - right_width).abs() <= width_tolerance
-        && first.len() == next.len()
-        && first.iter().zip(next).all(|(old, new)| {
-            old.col == new.col
-                && old.col_span == new.col_span
-                && (old.bbox[0] - new.bbox[0]).abs() <= 4.0_f64
-                && (!left.ruled || (old.bbox[2] - new.bbox[2]).abs() <= 4.0_f64)
+        && left.columns.len() == right.columns.len()
+        && (left_width - width(right)).abs() <= width_tolerance
+        && left.columns.iter().zip(&right.columns).all(|(old, new)| {
+            (old.0 - new.0).abs() <= 4.0_f64 && (!left.ruled || (old.1 - new.1).abs() <= 4.0_f64)
         })
 }
 
@@ -557,18 +566,70 @@ fn cell_kind(cell: &Cell) -> CellKind {
     if text.is_empty() {
         return CellKind::Empty;
     }
-    if text.contains(|ch: char| ch.is_ascii_digit()) && !text.contains(char::is_alphabetic) {
-        return CellKind::Numeric;
+    let currency = text
+        .strip_prefix("R$")
+        .or_else(|| text.strip_prefix("US$"))
+        .or_else(|| text.strip_prefix(['$', '\u{20ac}', '\u{a3}', '\u{a5}']));
+    let number = currency.unwrap_or(text);
+    if number.contains(|ch: char| ch.is_ascii_digit())
+        && number.chars().all(|ch| {
+            ch.is_ascii_digit()
+                || ch.is_whitespace()
+                || matches!(ch, '.' | ',' | '+' | '-' | '%' | '(' | ')')
+        })
+    {
+        if currency.is_some() {
+            return CellKind::Amount;
+        }
+        return if number.contains(['.', ',']) {
+            CellKind::Decimal
+        } else {
+            CellKind::Integer
+        };
     }
     CellKind::Text
 }
 
 fn follows_body(body: &[Cell], next: &[Cell]) -> bool {
-    !body.is_empty()
-        && body.len() == next.len()
-        && body.iter().zip(next).all(|(old, new)| {
-            old.col == new.col && old.col_span == new.col_span && cell_kind(old) == cell_kind(new)
+    if body.is_empty() || body.len() != next.len() {
+        return false;
+    }
+    let mut populated = false;
+    let matches = body.iter().zip(next).all(|(old, new)| {
+        if old.col != new.col || old.col_span != new.col_span {
+            return false;
+        }
+        let before = cell_kind(old);
+        let after = cell_kind(new);
+        if before == CellKind::Empty || after == CellKind::Empty {
+            return true;
+        }
+        populated = true;
+        before == after
+    });
+    matches && populated
+}
+
+fn row_height(table: &Table, row: u32) -> f64 {
+    row_cells(table, row)
+        .iter()
+        .find(|cell| cell.row_span == 1)
+        .map_or(0.0_f64, |cell| {
+            let [x0, y0, x1, y1] = cell.bbox;
+            if table.row_axis_x { x1 - x0 } else { y1 - y0 }
         })
+}
+
+fn short_edge_rows(left: &Table, right: &Table, tail: u32, head: u32) -> bool {
+    let before = row_height(left, tail.saturating_sub(1));
+    let after = row_height(right, head.saturating_add(1));
+    let tail_height = row_height(left, tail);
+    let head_height = row_height(right, head);
+    tail_height > 0.0_f64
+        && head_height > 0.0_f64
+        && tail_height <= before * 0.8_f64
+        && head_height <= after * 0.8_f64
+        && tail_height + head_height <= before.max(after) * 1.35_f64
 }
 
 fn split_row(tail: &[Cell], head: &[Cell], cols: u32) -> bool {
@@ -589,9 +650,12 @@ pub(crate) fn append_continuation(left: &mut Table, right: &mut Table) -> bool {
     }
     let header = row_cells(left, 0);
     let first = row_cells(right, 0);
-    let repeated = !header.is_empty()
+    let repeated = header.iter().any(|cell| !cell.text.trim().is_empty())
+        && header.len() == first.len()
         && header.iter().zip(first).all(|(old, new)| {
-            old.row_span == 1
+            old.col == new.col
+                && old.col_span == new.col_span
+                && old.row_span == 1
                 && new.row_span == 1
                 && old.text.split_whitespace().eq(new.text.split_whitespace())
         });
@@ -599,16 +663,16 @@ pub(crate) fn append_continuation(left: &mut Table, right: &mut Table) -> bool {
     let head = row_cells(right, skip_header);
     let tail_row = left.rows.saturating_sub(1);
     let tail = row_cells(left, tail_row);
-    let split = left.ruled && split_row(tail, head, left.cols);
+    let split = left.ruled
+        && short_edge_rows(left, right, tail_row, skip_header)
+        && split_row(tail, head, left.cols);
     let skip = skip_header.saturating_add(u32::from(split));
     if !repeated {
-        let body = if split {
-            row_cells(left, tail_row.saturating_sub(1))
-        } else {
-            tail
-        };
+        let previous_body = row_cells(left, tail_row.saturating_sub(1));
         let incoming = row_cells(right, u32::from(split));
-        if follows_body(header, incoming) || !follows_body(body, incoming) {
+        let compatible = (tail_row > 0 && !split && follows_body(tail, incoming))
+            || (tail_row > 1 && follows_body(previous_body, incoming));
+        if right.header_emphasized || !compatible {
             return false;
         }
     }
@@ -618,6 +682,8 @@ pub(crate) fn append_continuation(left: &mut Table, right: &mut Table) -> bool {
             for (old, new) in cells.iter_mut().zip(head) {
                 if old.text.trim().is_empty() {
                     old.text.clone_from(&new.text);
+                    old.bbox = new.bbox;
+                    old.page_index = new.page_index;
                 }
             }
         }
@@ -884,18 +950,21 @@ mod tests {
             col,
             row_span: 1,
             col_span: 1,
+            page_index: 0,
             bbox: [0.0_f64; 4],
             text: text.to_owned(),
         };
         Table {
             page_index: 0,
             last_page_index: 0,
-            near_bottom: false,
-            near_top: false,
+            edges: TableEdges::default(),
             ruled: true,
             bbox: [0.0; 4],
             rows: 2,
             cols: 2,
+            columns: vec![(0.0, 20.0), (20.0, 40.0)],
+            header_emphasized: false,
+            row_axis_x: false,
             cells: vec![
                 cell(0, 0, "Item"),
                 cell(0, 1, "Valor | R$"),

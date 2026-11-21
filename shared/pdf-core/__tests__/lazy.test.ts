@@ -365,6 +365,57 @@ describe("PdfCore byte-range documents", () => {
     ).pipe(Effect.provide(layer)),
   );
 
+  it.effect("reports OCR candidates by original page index and renders only those pages", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const stream = (data: string) => `<< /Length ${data.length} >>\nstream\n${data}\nendstream`;
+        const image = "q 180 0 0 180 10 10 cm BI /W 1 /H 1 /BPC 8 /CS /RGB /F /AHx ID 000000> EI Q";
+        const text = (value: string) => `BT /F1 12 Tf 1 0 0 1 20 100 Tm (${value}) Tj ET`;
+        const bytes = pdfObjects([
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Count 4 /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /MediaBox [0 0 200 200] /Resources << /Font << /F1 11 0 R >> >> >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 7 0 R >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 8 0 R >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 9 0 R >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 10 0 R >>",
+          stream(text("Native text")),
+          stream(image),
+          stream(image + " " + text("Stamp")),
+          stream(""),
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ]);
+        const diagnostics = yield* core.pageDiagnostics(bytes);
+        expect(
+          diagnostics.map(({ pageIndex, textLayer, imageCount }) => [
+            pageIndex,
+            textLayer,
+            imageCount,
+          ]),
+        ).toEqual([
+          [0, "usable", 0],
+          [1, "none", 1],
+          [2, "weak", 1],
+          [3, "none", 0],
+        ]);
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), {
+          pageLimit: 2,
+          allowFullRead: false,
+        });
+        expect(yield* doc.pageDiagnostics()).toEqual(diagnostics.slice(0, 2));
+        expect(yield* doc.pageDiagnostics({ pageIndexes: [2, 0] })).toEqual([
+          diagnostics[2],
+          diagnostics[0],
+        ]);
+        const pageIndexes = diagnostics
+          .filter((item) => item.textLayer !== "usable" && item.imageCount > 0)
+          .map((item) => item.pageIndex);
+        const pages = yield* doc.renderPages({ pageIndexes, scale: 0.5 });
+        expect(pages.map((item) => item.pageIndex)).toEqual([1, 2]);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
   it.effect("rejects invalid tuning and oversized sources before reading", () =>
     Effect.scoped(
       Effect.gen(function* () {

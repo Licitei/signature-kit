@@ -1,3 +1,4 @@
+use crate::diagnostics::PageScan;
 use crate::num::f64_to_i64;
 use crate::num::widen;
 use alloc::rc::Rc;
@@ -52,6 +53,7 @@ const OP_TJ_ARRAY: u32 = op(b"TJ");
 const OP_QUOTE: u32 = op(b"'");
 const OP_DQUOTE: u32 = op(b"\"");
 const OP_DO: u32 = op(b"Do");
+const OP_END_IMAGE: u32 = op(b"EI");
 const OP_GS: u32 = op(b"gs");
 const OP_LINE_WIDTH: u32 = op(b"w");
 const OP_MOVE: u32 = op(b"m");
@@ -225,6 +227,7 @@ struct GState {
     char_space: f64,
     ctm: Matrix,
     font: Option<Rc<FontEntry>>,
+    invisible_text: bool,
     leading: f64,
     line_width: f64,
     rise: f64,
@@ -247,6 +250,7 @@ impl GState {
             rise: 0.0,
             line_width: 1.0,
             stroked_fill: false,
+            invisible_text: false,
         }
     }
 }
@@ -394,7 +398,7 @@ impl Default for PendingRun {
     }
 }
 
-struct Interpreter<'doc, 'data> {
+struct Interpreter<'doc, 'data, 'scan> {
     active: Vec<ObjRef>,
     actual: Option<String>,
     actual_emitted: bool,
@@ -415,6 +419,7 @@ struct Interpreter<'doc, 'data> {
     repositioned: bool,
     ruling_cap: usize,
     rulings: Vec<Ruling>,
+    scan: Option<&'scan mut PageScan>,
     scopes: u32,
     skipped: HashSet<ObjRef>,
     text: String,
@@ -526,7 +531,7 @@ pub(crate) struct Session {
     skipped: HashSet<ObjRef>,
 }
 
-impl Interpreter<'_, '_> {
+impl Interpreter<'_, '_, '_> {
     fn apply_ext_gstate(
         &mut self,
         operands: &[Operand<'_>],
@@ -626,6 +631,18 @@ impl Interpreter<'_, '_> {
         }
     }
 
+    fn diagnose_glyph(
+        &mut self,
+        extracted: &str,
+        spanned: bool,
+        bounds: Option<[f64; 4]>,
+        invisible: bool,
+    ) {
+        if let Some(scan) = self.scan.as_deref_mut() {
+            scan.glyph(extracted, spanned, bounds, invisible);
+        }
+    }
+
     fn do_xobject(
         &mut self,
         name: &[u8],
@@ -659,14 +676,19 @@ impl Interpreter<'_, '_> {
         let Object::Stream(stream) = &*resolved else {
             return Ok(());
         };
-        let is_form = stream
-            .dict
-            .get(b"Subtype")
-            .and_then(Object::as_name)
-            .is_some_and(|subtype| subtype == b"Form");
-        if !is_form {
-            if let Some(inner_reference) = reference {
-                let _: bool = self.skipped.insert(inner_reference);
+        let subtype = stream.dict.get(b"Subtype").and_then(Object::as_name);
+        if subtype != Some(b"Form") {
+            match (self.scan.as_deref_mut(), reference) {
+                (Some(scan), _) if subtype == Some(b"Image") => {
+                    scan.image(
+                        transformed_bounds(&state.ctm, 0.0_f64, 0.0_f64, 1.0_f64, 1.0_f64),
+                        self.clip,
+                    );
+                }
+                (None, Some(inner_reference)) => {
+                    let _: bool = self.skipped.insert(inner_reference);
+                }
+                _ => {}
             }
             return Ok(());
         }
@@ -677,7 +699,7 @@ impl Interpreter<'_, '_> {
                 Ok(data) => {
                     let shared_data: Rc<[u8]> = data.into();
                     if let Some(known) = reference {
-                        if scan_shows(&shared_data) == Shows::Nothing {
+                        if self.scan.is_none() && scan_shows(&shared_data) == Shows::Nothing {
                             let _: bool = self.skipped.insert(known);
                         } else {
                             self.forms.insert(known, &shared_data, self.generation);
@@ -979,6 +1001,20 @@ impl Interpreter<'_, '_> {
         path.clear();
     }
 
+    fn paint_operator(
+        &mut self,
+        code: u32,
+        operands: &[Operand<'_>],
+        state: &GState,
+        path: &mut PathBuilder,
+        curves: &mut u32,
+    ) -> bool {
+        let Some(scan) = self.scan.as_deref_mut() else {
+            return self.path_operator(code, operands, state, path);
+        };
+        graphics(scan, code, curves)
+    }
+
     fn path_operator(
         &mut self,
         code: u32,
@@ -1023,7 +1059,7 @@ impl Interpreter<'_, '_> {
         true
     }
 
-    fn place(
+    fn place<const DIAGNOSTICS: bool>(
         &mut self,
         entry: &FontEntry,
         placement: &Placement,
@@ -1088,15 +1124,16 @@ impl Interpreter<'_, '_> {
                 step_x = width + spacing * scale;
                 step_y = 0.0_f64;
             }
-            let clipped = usable
-                && self.clip.is_some_and(|clip| {
-                    let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                    bounds[2] < clip[0]
-                        || bounds[0] > clip[2]
-                        || bounds[3] < clip[1]
-                        || bounds[1] > clip[3]
-                });
-            if usable && !clipped {
+            let bounds = || transformed_bounds(&mapping, x0, y0, x1, y1);
+            let in_form = usable && !self.clip.is_some_and(|clip| outside(bounds(), clip));
+            if DIAGNOSTICS {
+                self.diagnose_glyph(
+                    glyph_text,
+                    spanned,
+                    in_form.then(bounds),
+                    state.invisible_text,
+                );
+            } else if in_form {
                 let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
                 let origin = (
                     pen_x * a + (pen_y + state.rise) * c + e,
@@ -1128,8 +1165,7 @@ impl Interpreter<'_, '_> {
                 if matches!(join, Join::Same | Join::Spaced) {
                     self.extend(glyph_text, visible, join == Join::Spaced);
                     if visible {
-                        let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.merge_bounds(bounds);
+                        self.merge_bounds(bounds());
                         self.pending.bold &= style.0;
                         self.pending.italic &= style.1;
                         self.pending.ink_end = end;
@@ -1140,8 +1176,7 @@ impl Interpreter<'_, '_> {
                         self.flush()?;
                     }
                     if visible {
-                        let bounds = transformed_bounds(&mapping, x0, y0, x1, y1);
-                        self.begin(glyph_text, bounds, effective_size, direction, end, style);
+                        self.begin(glyph_text, bounds(), effective_size, direction, end, style);
                     }
                 }
             }
@@ -1200,16 +1235,19 @@ impl Interpreter<'_, '_> {
             .budget
             .checked_sub(data.len())
             .ok_or_else(|| Failure::limit("content streams exceed limit"))?;
-        match scan_shows(data) {
-            Shows::Text => {}
-            Shows::Forms if scope.has_forms(self.document) => {}
-            Shows::Forms | Shows::Nothing => return Ok(()),
+        if self.scan.is_none() {
+            match scan_shows(data) {
+                Shows::Text => {}
+                Shows::Forms if scope.has_forms(self.document) => {}
+                Shows::Forms | Shows::Nothing => return Ok(()),
+            }
         }
         let max_stack = self.limits.max_nesting.saturating_mul(4);
         let mut stack: Vec<GState> = Vec::new();
         let mut overflow = 0_usize;
         let mut operands: Vec<Operand<'_>> = Vec::new();
         let mut path = PathBuilder::default();
+        let mut curves = 0_u32;
         let mut marked: Vec<bool> = Vec::new();
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
@@ -1229,6 +1267,16 @@ impl Interpreter<'_, '_> {
             };
             let code = op(name);
             match code {
+                OP_END_IMAGE if self.scan.is_some() => {
+                    if lexer.take_inline_image().is_some()
+                        && let Some(scan) = self.scan.as_deref_mut()
+                    {
+                        scan.image(
+                            transformed_bounds(&state.ctm, 0.0_f64, 0.0_f64, 1.0_f64, 1.0_f64),
+                            self.clip,
+                        );
+                    }
+                }
                 OP_SAVE => {
                     if stack.len() >= max_stack {
                         overflow = overflow.saturating_add(1);
@@ -1248,7 +1296,7 @@ impl Interpreter<'_, '_> {
                 }
                 _ => {
                     if !self.state_operator(code, &operands, scope, state, matrices)
-                        && !self.path_operator(code, &operands, state, &mut path)
+                        && !self.paint_operator(code, &operands, state, &mut path, &mut curves)
                     {
                         let shown = ShowContext {
                             operands: &operands,
@@ -1284,6 +1332,9 @@ impl Interpreter<'_, '_> {
 
     fn show(&mut self, state: &GState, matrices: &mut TextMatrices, bytes: &[u8]) -> Outcome<()> {
         let Some(entry) = state.font.clone() else {
+            if let Some(scan) = self.scan.as_deref_mut() {
+                scan.missing_font(bytes.len());
+            }
             return Ok(());
         };
         let placement = Placement::new(&entry, state, &matrices.tm);
@@ -1308,6 +1359,8 @@ impl Interpreter<'_, '_> {
             if let Some(bytes) = item.string(scratch) {
                 if let Some((entry, placement)) = &prepared {
                     self.show_with(entry, placement, state, matrices, bytes)?;
+                } else if let Some(scan) = self.scan.as_deref_mut() {
+                    scan.missing_font(bytes.len());
                 }
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1_000.0_f64 * state.size;
@@ -1388,7 +1441,11 @@ impl Interpreter<'_, '_> {
         glyphs.clear();
         decoded.clear();
         entry.font.decode(bytes, &mut glyphs, &mut decoded);
-        let result = self.place(entry, placement, state, matrices, &glyphs, &decoded);
+        let result = if self.scan.is_some() {
+            self.place::<true>(entry, placement, state, matrices, &glyphs, &decoded)
+        } else {
+            self.place::<false>(entry, placement, state, matrices, &glyphs, &decoded)
+        };
         self.glyphs = glyphs;
         self.decoded = decoded;
         result
@@ -1441,6 +1498,10 @@ impl Interpreter<'_, '_> {
             OP_TR => {
                 if let Some([value]) = tail_numbers::<1, _>(operands) {
                     state.stroked_fill = (value - 2.0).abs() < 0.5_f64;
+                    if self.scan.is_some() {
+                        state.invisible_text =
+                            (value - 3.0_f64).abs() < 0.5_f64 || (value - 7.0_f64).abs() < 0.5_f64;
+                    }
                 }
             }
             OP_TF => {
@@ -1526,6 +1587,28 @@ impl Interpreter<'_, '_> {
             (DEFAULT_ASCENT, DEFAULT_DESCENT)
         }
     }
+}
+
+fn graphics(scan: &mut PageScan, code: u32, curves: &mut u32) -> bool {
+    match code {
+        OP_CURVE | OP_CURVE_V | OP_CURVE_Y => *curves = curves.saturating_add(1),
+        OP_FILL
+        | OP_FILL_OLD
+        | OP_FILL_EO
+        | OP_FILL_STROKE
+        | OP_FILL_STROKE_EO
+        | OP_CLOSE_FILL_STROKE
+        | OP_CLOSE_FILL_STROKE_EO => {
+            scan.filled_curves(mem::take(curves));
+        }
+        OP_STROKE | OP_CLOSE_STROKE | OP_NO_PAINT => *curves = 0,
+        _ => return false,
+    }
+    true
+}
+
+const fn outside(bounds: [f64; 4], clip: [f64; 4]) -> bool {
+    bounds[2] < clip[0] || bounds[0] > clip[2] || bounds[3] < clip[1] || bounds[1] > clip[3]
 }
 
 const fn op(name: &[u8]) -> u32 {
@@ -1673,6 +1756,31 @@ pub(crate) fn extract_content(
     capture: Capture,
     session: &mut Session,
 ) -> Outcome<PageContent> {
+    extract_page(document, page, limits, capture, session, None)
+}
+
+pub(crate) fn scan_page(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    session: &mut Session,
+    scan: &mut PageScan,
+) -> Outcome<()> {
+    let capture = Capture {
+        structure: true,
+        ..Capture::default()
+    };
+    extract_page(document, page, limits, capture, session, Some(scan)).map(drop)
+}
+
+fn extract_page(
+    document: &Document<'_>,
+    page: &Page,
+    limits: &Limits,
+    capture: Capture,
+    session: &mut Session,
+    scan: Option<&mut PageScan>,
+) -> Outcome<PageContent> {
     let content = document.content(page)?;
     if content.is_empty() {
         return Ok(PageContent::default());
@@ -1702,6 +1810,7 @@ pub(crate) fn extract_content(
         capture,
         repositioned: false,
         rulings: Vec::new(),
+        scan,
         ruling_cap: limits.max_items_per_page,
         page_extent: ((mx1 - mx0).abs(), (my1 - my0).abs()),
         clip: None,

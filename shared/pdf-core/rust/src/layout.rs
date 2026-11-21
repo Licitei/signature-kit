@@ -11,7 +11,8 @@ use crate::markdown::{
     MdBlock, MdItem, MdLine, MdRun, document_metrics, join_pages, page_blocks, render_page,
 };
 use crate::table::{
-    Cell, Rule, Table, append_continuation, column_of, merge_row, render_text, ruled_grids,
+    Cell, Rule, Table, TableEdges, append_continuation, column_of, merge_row, render_text,
+    ruled_grids,
 };
 use crate::text::{Capture, PageContent, Reposition, Session, extract_content};
 
@@ -787,6 +788,7 @@ where
                 col: u32::try_from(column_index).unwrap_or(u32::MAX),
                 row_span: 1,
                 col_span: 1,
+                page_index: 0,
                 bbox: [left, bottom, right, top],
                 text: String::new(),
             });
@@ -887,15 +889,23 @@ fn aligned_tables(
             index = last.saturating_add(1);
             continue;
         }
+        let header_emphasized = first.iter().all(|segment| segment.bold)
+            && rows
+                .get(1)
+                .and_then(|row| row.first())
+                .and_then(|&line| line_at(line))
+                .is_some_and(|second| second.iter().any(|segment| !segment.bold));
         tables.push(Table {
             page_index: 0,
+            header_emphasized,
+            row_axis_x: false,
             last_page_index: 0,
-            near_bottom: false,
-            near_top: false,
+            edges: TableEdges::default(),
             bbox: bounds,
             ruled: false,
             rows: u32::try_from(rows.len()).unwrap_or(u32::MAX),
             cols: u32::try_from(columns.len()).unwrap_or(u32::MAX),
+            columns,
             cells,
         });
         for flag in consumed.iter_mut().take(last.saturating_add(1)).skip(index) {
@@ -963,19 +973,39 @@ fn ruled_tables<'data>(
                 col: u32::try_from(shape.col).unwrap_or(u32::MAX),
                 row_span: u32::try_from(shape.row_span).unwrap_or(1),
                 col_span: u32::try_from(shape.col_span).unwrap_or(1),
+                page_index: 0,
                 bbox: grid.cell_rect(*shape),
                 text: cell_text(inside),
             })
             .collect();
+        let styled_row = |row| {
+            let mut glyphs = grid
+                .cells
+                .iter()
+                .zip(&cells)
+                .skip_while(|(shape, _)| shape.row < row)
+                .take_while(|(shape, _)| shape.row == row)
+                .flat_map(|(_, in_cell)| in_cell.iter())
+                .peekable();
+            glyphs.peek().is_some() && glyphs.all(|frag| frag.bold)
+        };
+        let header_emphasized = styled_row(0) && !styled_row(1);
         tables.push(Table {
             page_index: 0,
+            header_emphasized,
+            row_axis_x: false,
             last_page_index: 0,
-            near_bottom: false,
-            near_top: false,
+            edges: TableEdges::default(),
             bbox: grid.bounds(),
             ruled: true,
             rows: u32::try_from(grid.rows()).unwrap_or(u32::MAX),
             cols: u32::try_from(grid.cols()).unwrap_or(u32::MAX),
+            columns: grid
+                .xs
+                .iter()
+                .copied()
+                .zip(grid.xs.iter().copied().skip(1))
+                .collect(),
             cells: converted,
         });
     }
@@ -1379,10 +1409,15 @@ fn page_layout(
         layout.pieces.append(&mut sink.pieces);
         let back = 4_usize.saturating_sub(turns & 3) & 3;
         for mut table in sink.tables {
-            if let Some([_, bottom, _, top]) = pool_extent {
+            table.row_axis_x = turns & 1 != 0;
+            if let Some([left, bottom, _, top]) = pool_extent {
+                for (start, end) in &mut table.columns {
+                    *start -= left;
+                    *end -= left;
+                }
                 let edge = (top - bottom) * 0.18_f64;
-                table.near_bottom = table.bbox[1] <= bottom + edge;
-                table.near_top = table.bbox[3] >= top - edge;
+                table.edges.near_bottom = table.bbox[1] <= bottom + edge;
+                table.edges.near_top = table.bbox[3] >= top - edge;
             }
             table.bbox = turn_rect(back, table.bbox);
             for cell in &mut table.cells {
@@ -1436,6 +1471,9 @@ fn single_page(
             for table in &mut layout.tables {
                 table.page_index = u32::try_from(page_index).unwrap_or(u32::MAX);
                 table.last_page_index = table.page_index;
+                for cell in &mut table.cells {
+                    cell.page_index = table.page_index;
+                }
             }
             layout.height = page.info.crop_box[3] - page.info.crop_box[1];
             Ok(layout)
@@ -1639,13 +1677,13 @@ fn merge_tables(layouts: &mut [PageLayout], pages: &[Vec<MdBlock>], drop_running
             let Some(next) = head.and_then(|table| layout.tables.get_mut(table)) else {
                 return false;
             };
-            next.near_top
+            next.edges.near_top
                 && origin.last_page_index.checked_add(1) == Some(next.page_index)
                 && append_continuation(origin, next)
         });
         previous = tail.and_then(|index| {
             let table = layout.tables.get(index)?;
-            if !table.near_bottom {
+            if !table.edges.near_bottom {
                 return None;
             }
             if head == tail && joined.is_some() {
@@ -1660,6 +1698,7 @@ fn merged_document_tables(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
     limits: &Limits,
+    drop_running: bool,
 ) -> Outcome<Vec<Table>> {
     let mode = Mode {
         aligned: true,
@@ -1686,7 +1725,7 @@ fn merged_document_tables(
         .iter()
         .map(|layout| page_blocks(&layout.md, None, metrics))
         .collect();
-    merge_tables(&mut layouts, &blocks, true);
+    merge_tables(&mut layouts, &blocks, drop_running);
     Ok(layouts
         .into_iter()
         .flat_map(|layout| layout.tables)
@@ -1760,6 +1799,7 @@ pub(crate) fn document_tables(
     page_indexes: PageRequest<&[u32]>,
     limits: &Limits,
     merge_across_pages: bool,
+    drop_running: bool,
 ) -> Outcome<Vec<Table>> {
     if bytes.len() > limits.max_pdf_bytes {
         return Err(Failure::limit("pdf exceeds size limit"));
@@ -1772,6 +1812,7 @@ pub(crate) fn document_tables(
         &pick_pages(&pages, selected),
         limits,
         merge_across_pages,
+        drop_running,
     )
 }
 
@@ -1781,9 +1822,10 @@ pub(crate) fn opened_tables(
     selected: &[(usize, &Page)],
     limits: &Limits,
     merge_across_pages: bool,
+    drop_running: bool,
 ) -> Outcome<Vec<Table>> {
     if merge_across_pages {
-        return merged_document_tables(document, selected, limits);
+        return merged_document_tables(document, selected, limits, drop_running);
     }
     let mode = Mode {
         markdown: false,
@@ -2289,7 +2331,14 @@ mod structure_tests {
     };
 
     fn tables_of(bytes: &[u8]) -> Vec<Table> {
-        document_tables(bytes, PageRequest::Indexes(None), &text_limits(), false).unwrap()
+        document_tables(
+            bytes,
+            PageRequest::Indexes(None),
+            &text_limits(),
+            false,
+            true,
+        )
+        .unwrap()
     }
 
     fn pages_of(bytes: &[u8], options: TextOptions) -> Vec<String> {
@@ -2715,6 +2764,7 @@ mod structure_tests {
             PageRequest::Indexes(Some(&[1])),
             &text_limits(),
             false,
+            true,
         )
         .unwrap();
         assert_eq!(second.len(), 1);
@@ -2724,6 +2774,7 @@ mod structure_tests {
             PageRequest::Indexes(Some(&[5])),
             &text_limits(),
             false,
+            true,
         )
         .unwrap_err();
         assert_eq!(missing.code, FailureCode::InvalidPdf);
@@ -2742,6 +2793,70 @@ mod structure_tests {
         assert_eq!(markdown[0].matches("| Item | Valor |").count(), 1);
         assert_eq!(markdown[0].matches("| Areia | 8,00 |").count(), 2);
         assert_eq!(markdown[1], "");
+    }
+
+    #[test]
+    fn rotated_continuations_use_visible_columns_and_keep_page_boxes() {
+        let rotated = |top| PageSpec {
+            content: format!("q 0 1 -1 0 600 0 cm\n{}Q\n", price_table(top)),
+            rotate: 90,
+        };
+        let bytes = document(&[rotated(125.0_f64), rotated(580.0_f64)], &[]);
+        let fragments = tables_of(&bytes);
+        assert_eq!(fragments.len(), 2);
+        let tables = document_tables(
+            &bytes,
+            PageRequest::Indexes(None),
+            &text_limits(),
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!(
+            (table.page_index, table.last_page_index, table.rows),
+            (0, 1, 5)
+        );
+        assert_eq!(table.bbox, fragments[0].bbox);
+        assert_eq!(cell(table, 3, 0).bbox, cell(&fragments[1], 1, 0).bbox);
+    }
+
+    #[test]
+    fn column_spans_in_header_do_not_block_headerless_continuations() {
+        let columns = [50.0_f64, 150.0_f64, 250.0_f64, 350.0_f64];
+        let mut first = grid(
+            &[160.0_f64, 140.0_f64, 120.0_f64, 100.0_f64],
+            &[50.0_f64, 250.0_f64, 350.0_f64],
+        );
+        first.push_str(&rule(150.0_f64, 100.0_f64, 150.0_f64, 140.0_f64));
+        first.push_str(&text(55.0_f64, 148.0_f64, 10.0_f64, "Item and category"));
+        first.push_str(&text(255.0_f64, 148.0_f64, 10.0_f64, "Price"));
+        let mut second = grid(&[750.0_f64, 730.0_f64, 710.0_f64], &columns);
+        for (page, baselines) in [
+            (&mut first, [128.0_f64, 108.0_f64]),
+            (&mut second, [738.0_f64, 718.0_f64]),
+        ] {
+            for y in baselines {
+                page.push_str(&text(55.0_f64, y, 10.0_f64, "Cement"));
+                page.push_str(&text(155.0_f64, y, 10.0_f64, "Building"));
+                page.push_str(&text(255.0_f64, y, 10.0_f64, "12.50"));
+            }
+        }
+        let bytes = document(&[page(first), page(second)], &[]);
+        assert_eq!(tables_of(&bytes).len(), 2);
+        let tables = document_tables(
+            &bytes,
+            PageRequest::Indexes(None),
+            &text_limits(),
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!((tables[0].rows, tables[0].cols), (5, 3));
+        assert_eq!(cell(&tables[0], 0, 0).col_span, 2);
+        assert_eq!(cell(&tables[0], 3, 1).text, "Building");
     }
 
     #[test]
@@ -3027,6 +3142,7 @@ mod structure_tests {
                 PageRequest::Indexes(None),
                 &limits,
                 false,
+                true,
             )));
             drop(black_box(document_text(
                 &bytes,
@@ -3053,7 +3169,8 @@ mod structure_tests {
                 document_text(&bytes, PageRequest::Indexes(None), &tight, options).unwrap_err();
             assert_eq!(error.code, FailureCode::LimitExceeded);
         }
-        let error = document_tables(&bytes, PageRequest::Indexes(None), &tight, false).unwrap_err();
+        let error =
+            document_tables(&bytes, PageRequest::Indexes(None), &tight, false, true).unwrap_err();
         assert_eq!(error.code, FailureCode::LimitExceeded);
         assert_eq!(
             document_text(&bytes, PageRequest::Indexes(Some(&[0])), &tight, PLAIN).unwrap(),
@@ -3152,7 +3269,16 @@ mod structure_tests {
         }
         content.push_str(&text(50.0, 700.0, 10.0, "texto"));
         let bytes = document(&[page(content)], &[]);
-        drop(document_tables(&bytes, PageRequest::Indexes(None), &text_limits(), false).unwrap());
+        drop(
+            document_tables(
+                &bytes,
+                PageRequest::Indexes(None),
+                &text_limits(),
+                false,
+                true,
+            )
+            .unwrap(),
+        );
         drop(document_text(&bytes, PageRequest::Indexes(None), &text_limits(), MARKDOWN).unwrap());
     }
 }

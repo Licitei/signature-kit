@@ -20,6 +20,7 @@ const MIN_PROBE: usize = 128;
 
 #[derive(Debug)]
 pub(crate) enum Plan {
+    Failed(Failure),
     Fallback,
     Full(Vec<Range<usize>>),
     Need(Vec<Range<usize>>),
@@ -548,15 +549,23 @@ impl Lazy {
         if self.sparse.size > limits.max_pdf_bytes {
             return Plan::Fallback;
         }
-        let first = requested.stop_after() == Some(1);
+        let stop_after = requested.stop_after();
+        let first = stop_after == Some(1);
         if let Some(plan) = self.index(first, limits) {
             return plan;
         }
         let result = self.document(limits).and_then(|document| {
             if frontier.is_none() {
-                let pages = document.sparse_pages(requested)?;
+                let (count, pages) = document.sparse_pages(requested)?;
                 if self.sparse.misses() != 0 {
-                    return Ok(());
+                    return Ok(None);
+                }
+                if matches!(requested, PageRequest::Indexes(Some(_)))
+                    && stop_after.is_some_and(|end| end > count)
+                    && !document.was_repaired()
+                    && let Err(failure) = requested.select(count)
+                {
+                    return Ok(Some(failure));
                 }
                 frontier = Some(Frontier::new(&document, requested, pages, render)?);
             }
@@ -566,7 +575,7 @@ impl Lazy {
             if document.was_repaired() {
                 return Err(Failure::invalid("lazy document requires repair"));
             }
-            Ok(())
+            Ok(None)
         });
         self.frontier = frontier;
         if self.sparse.misses() != 0 {
@@ -580,10 +589,10 @@ impl Lazy {
             }
             return self.sparse.plan_ranges(wanted, true);
         }
-        if result.is_ok() && self.frontier.is_some() {
-            Plan::Ready
-        } else {
-            Plan::Fallback
+        match result {
+            Ok(Some(failure)) => Plan::Failed(failure),
+            Ok(None) if self.frontier.is_some() => Plan::Ready,
+            Ok(None) | Err(_) => Plan::Fallback,
         }
     }
 
@@ -714,5 +723,80 @@ fn collect(object: &Object, refs: &mut Vec<ObjRef>) {
         | Object::Real(_)
         | Object::Name(_)
         | Object::String(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Lazy, Plan, Tuning};
+    use crate::document::PageRequest;
+    use crate::failure::FailureCode;
+    use crate::inspection::Limits;
+    use crate::test_pdf::build;
+
+    #[test]
+    fn exact_selection_skips_unselected_leaf_resources() {
+        let bytes = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /MediaBox [0 0 200 200] >>"
+                    .to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /Resources 6 0 R >>".to_owned(),
+            ),
+            (4, "<< /Type /Page /Parent 2 0 R >>".to_owned()),
+            (5, format!("<{}>", "00".repeat(4 * 1024))),
+            (6, "<< /Font << >> >>".to_owned()),
+            (7, format!("<{}>", "00".repeat(4 * 1024))),
+        ]);
+        let marker = b"6 0 obj\n";
+        let excluded = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        let limits = Limits::default();
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 0,
+                probe: 128,
+                round_bytes: 2048,
+            },
+        );
+        let request = PageRequest::Indexes(Some(&[1][..]));
+        for _ in 0_i32..16_i32 {
+            match lazy.plan(request, false, &limits) {
+                Plan::Need(ranges) => {
+                    for range in ranges {
+                        assert!(!range.contains(&excluded), "read unselected resources");
+                        assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                    }
+                }
+                Plan::Ready => {
+                    let indexes = lazy
+                        .execute(&limits, |_, pages| {
+                            Ok(pages.iter().map(|(index, _)| *index).collect::<Vec<_>>())
+                        })
+                        .unwrap();
+                    assert_eq!(indexes, Some(vec![1]));
+                    let missing = PageRequest::Indexes(Some(&[2][..]));
+                    let Plan::Failed(failure) =
+                        lazy.plan_with_recovery(missing, false, &limits, false)
+                    else {
+                        panic!("out-of-range selection did not fail");
+                    };
+                    assert_eq!(failure.code, FailureCode::InvalidPdf);
+                    assert!(matches!(lazy.plan(request, false, &limits), Plan::Ready));
+                    return;
+                }
+                Plan::Failed(_) | Plan::Fallback | Plan::Full(_) => {
+                    panic!("exact selection requires fallback");
+                }
+            }
+        }
+        panic!("exact selection did not complete");
     }
 }
