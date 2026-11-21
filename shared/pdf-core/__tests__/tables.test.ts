@@ -5,7 +5,7 @@ import { Effect, Layer } from "effect";
 import { PdfCoreErrorCodeValue } from "../dist/config.js";
 import type { PdfCoreTextOptions } from "../dist/config.js";
 import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 
@@ -55,23 +55,26 @@ const show = (x: number, y: number, value: string): string =>
 const line = (x0: number, y0: number, x1: number, y1: number): string =>
   `0.5 w ${x0} ${y0} m ${x1} ${y1} l S\n`;
 
-const priceTable = (top: number): string => {
-  const rows = [top, top - 20, top - 40, top - 60];
-  const columns = [50, 200, 350];
+type TableRow = readonly [string, string];
+
+const ruledTable = (top: number, body: ReadonlyArray<TableRow>): string => {
+  const bottom = top - body.length * 20;
   let out = "";
-  for (const y of rows) out += line(50, y, 350, y);
-  for (const x of columns) out += line(x, top - 60, x, top);
-  const body: ReadonlyArray<readonly [string, string]> = [
-    ["Item | tipo", "Valor"],
-    ["Cimento", "12,50"],
-    ["Areia", "8,00"],
-  ];
+  for (let y = top; y >= bottom; y -= 20) out += line(50, y, 350, y);
+  for (const x of [50, 200, 350]) out += line(x, bottom, x, top);
   body.forEach(([left, right], index) => {
     out += show(55, top - 12 - index * 20, left);
     out += show(205, top - 12 - index * 20, right);
   });
   return out;
 };
+
+const priceTable = (top: number): string =>
+  ruledTable(top, [
+    ["Item | tipo", "Valor"],
+    ["Cimento", "12,50"],
+    ["Areia", "8,00"],
+  ]);
 
 const page = (index: number): string =>
   `${show(50, 770, "Prefeitura Municipal de Marilac")}${show(50, 600, `Corpo da pagina ${index}`)}${priceTable(700)}`;
@@ -99,6 +102,163 @@ describe("PdfCore.tables", () => {
         text: "Item | tipo",
       });
       expect(first?.cells[5]?.text).toBe("8,00");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("merges 60 ruled rows across three pages with mixed header repetition", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const header: TableRow = ["Product", "Price"];
+      const body = Array.from({ length: 60 }, (_, index): TableRow => [
+        `Product ${index + 1}`,
+        `${index + 10}.00`,
+      ]);
+      const pdf = buildPdf([
+        ruledTable(490, [header, ...body.slice(0, 20)]),
+        ruledTable(750, [header, ...body.slice(20, 52)]),
+        ruledTable(750, body.slice(52)),
+      ]);
+      const options = { mergeAcrossPages: true };
+      const perPage = yield* core.tables(pdf);
+      expect(perPage.map((table) => table.rows)).toEqual([21, 33, 8]);
+      expect(perPage[2]?.cells[0]?.text).toBe("Product 53");
+
+      const merged = yield* core.tables(pdf, options);
+      expect(merged).toHaveLength(1);
+      const [table] = merged;
+      expect(table).toMatchObject({ pageIndex: 0, pages: [0, 1, 2], rows: 61, cols: 2 });
+      expect(table?.cells.map((cell) => [cell.row, cell.col, cell.text])).toEqual(
+        [header, ...body].flatMap((row, index) => row.map((value, col) => [index, col, value])),
+      );
+      const markdown = yield* core.text(pdf, { ...options, format: "markdown" });
+      expect(markdown).toEqual([
+        [
+          "| Product | Price |",
+          "| --- | --- |",
+          ...body.map(([name, price]) => `| ${name} | ${price} |`),
+        ].join("\n"),
+        "",
+        "",
+      ]);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const lazy = yield* core.openLazy(pdfCoreBytesSource(pdf));
+          expect(yield* lazy.tables(options)).toEqual(merged);
+          expect(yield* lazy.text({ ...options, format: "markdown" })).toEqual(markdown);
+          expect((yield* lazy.stats).strategy).toBe("lazy");
+        }),
+      );
+      const skipped = yield* core.tables(pdf, { ...options, pageIndexes: [0, 2] });
+      const reversed = yield* core.tables(pdf, { ...options, pageIndexes: [1, 0] });
+      expect(skipped.map((item) => item.pageIndex)).toEqual([0, 2]);
+      expect(reversed.map((item) => item.pageIndex)).toEqual([1, 0]);
+      expect(yield* core.text(pdf, options)).toEqual(yield* core.text(pdf));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("looks past running furniture on a borderless continuation", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const aligned = (top: number, rows: ReadonlyArray<TableRow>): string =>
+        rows
+          .map(
+            ([left, right], index) =>
+              show(55, top - index * 18, left) + show(205, top - index * 18, right),
+          )
+          .join("");
+      const furniture = (pageNumber: number, content: string): string =>
+        show(50, 783, "Monthly inventory") + content + show(50, 25, `Page ${pageNumber} of 2`);
+      const pdf = buildPdf([
+        furniture(
+          1,
+          aligned(145, [
+            ["Product", "Price"],
+            ["Cement", "12.50"],
+            ["Sand", "08.00"],
+          ]),
+        ),
+        furniture(
+          2,
+          aligned(730, [
+            ["Gravel", "18.00"],
+            ["Bricks", "10.00"],
+            ["Mortar", "15.00"],
+          ]),
+        ),
+      ]);
+      const [table, ...rest] = yield* core.tables(pdf, { mergeAcrossPages: true });
+      expect(rest).toEqual([]);
+      expect(table).toMatchObject({ pages: [0, 1], rows: 6 });
+      expect(table?.cells.filter((cell) => cell.col === 0).map((cell) => cell.text)).toEqual([
+        "Product",
+        "Cement",
+        "Sand",
+        "Gravel",
+        "Bricks",
+        "Mortar",
+      ]);
+      const markdown = yield* core.text(pdf, { format: "markdown", mergeAcrossPages: true });
+      expect(markdown[0]).toContain("| Gravel | 18.00 |");
+      expect(markdown.join("\n").match(/Monthly inventory/g)).toHaveLength(1);
+      expect(markdown.join("\n")).not.toMatch(/Page [12] of 2/);
+      const kept = yield* core.text(pdf, {
+        format: "markdown",
+        mergeAcrossPages: true,
+        dropRunningHeaders: false,
+      });
+      expect(kept[1]).toContain("| Gravel | 18.00 |");
+      expect(kept[1]).toContain("Page 2 of 2");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("joins complementary cells in a row cut at a page break", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const pdf = buildPdf([
+        ruledTable(160, [
+          ["Product", "Price"],
+          ["Cement", "12.50"],
+          ["Sand", ""],
+        ]),
+        ruledTable(750, [
+          ["", "8.00"],
+          ["Gravel", "18.00"],
+          ["Bricks", "10.00"],
+        ]),
+      ]);
+      const [table] = yield* core.tables(pdf, { mergeAcrossPages: true });
+      expect(table).toMatchObject({ pages: [0, 1], rows: 5 });
+      expect(table?.cells.filter((cell) => cell.row === 2).map((cell) => cell.text)).toEqual([
+        "Sand",
+        "8.00",
+      ]);
+      const markdown = yield* core.text(pdf, { format: "markdown", mergeAcrossPages: true });
+      expect(markdown[0]).toContain("| Sand | 8.00 |");
+      expect(markdown[1]).toBe("");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps unrelated edge tables with matching grids and distinct headers", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const pdf = buildPdf([
+        ruledTable(160, [
+          ["Product", "Price"],
+          ["Cement", "12.50"],
+          ["Sand", "8.00"],
+        ]),
+        ruledTable(750, [
+          ["Department", "Budget"],
+          ["Sales", "900"],
+          ["Operations", "1100"],
+        ]),
+      ]);
+      const options = { mergeAcrossPages: true };
+      const tables = yield* core.tables(pdf, options);
+      expect(tables).toEqual(yield* core.tables(pdf));
+      const markdown = yield* core.text(pdf, { format: "markdown", ...options });
+      expect(markdown[0]).toContain("| Product | Price |");
+      expect(markdown[1]).toContain("| Department | Budget |");
     }).pipe(Effect.provide(layer)),
   );
 

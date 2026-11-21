@@ -178,10 +178,12 @@ export const PdfCoreTextOptionsSchema = Schema.Struct({
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
   format: Schema.optional(PdfCoreTextFormatSchema),
   dropRunningHeaders: Schema.optional(Schema.Boolean),
+  mergeAcrossPages: Schema.optional(Schema.Boolean),
 });
 export type PdfCoreTextOptions = (typeof PdfCoreTextOptionsSchema)["Type"];
 
 export const PdfCoreTablesOptionsSchema = Schema.Struct({
+  mergeAcrossPages: Schema.optional(Schema.Boolean),
   pageIndexes: Schema.optional(Schema.Array(pageIndexSchema)),
 });
 export type PdfCoreTablesOptions = (typeof PdfCoreTablesOptionsSchema)["Type"];
@@ -231,6 +233,7 @@ export const PdfCoreCellSchema = Schema.Struct({
 export type PdfCoreCell = (typeof PdfCoreCellSchema)["Type"];
 
 export const PdfCoreTableSchema = Schema.Struct({
+  pages: Schema.optional(Schema.Array(pageIndexSchema)),
   pageIndex: pageIndexSchema,
   bbox: PdfCoreBoxSchema,
   rows: pageIndexSchema,
@@ -341,6 +344,8 @@ const isLazyOpenFunction = (
   typeof value === "function" && value.length === 4;
 const isLazyCloseFunction = (value: unknown): value is (handle: number) => void =>
   typeof value === "function" && value.length === 1;
+const isLazyFullBytesFunction = (value: unknown): value is (handle: number) => number =>
+  typeof value === "function";
 const isLazyFeedFunction = (
   value: unknown,
 ): value is (handle: number, offset: number, pointer: number, length: number) => number =>
@@ -380,6 +385,9 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_png_size: Schema.declare(isBufferFunction, { identifier: "pdf_core_png_size" }),
   pdf_core_lazy_open: Schema.declare(isLazyOpenFunction, { identifier: "pdf_core_lazy_open" }),
   pdf_core_lazy_close: Schema.declare(isLazyCloseFunction, { identifier: "pdf_core_lazy_close" }),
+  pdf_core_lazy_full_bytes: Schema.declare(isLazyFullBytesFunction, {
+    identifier: "pdf_core_lazy_full_bytes",
+  }),
   pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
   pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
   pdf_core_lazy_run: Schema.declare(isLazyRunFunction, { identifier: "pdf_core_lazy_run" }),
@@ -390,6 +398,7 @@ const byteOffsetSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum
 
 export const PDF_CORE_MAX_LAZY_BYTES = 512 * 1024 * 1024;
 export const PdfCoreLazyOptionsSchema = Schema.Struct({
+  pageLimit: Schema.optional(pageIndexSchema),
   probeBytes: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 1024 * 1024 })),
   ),

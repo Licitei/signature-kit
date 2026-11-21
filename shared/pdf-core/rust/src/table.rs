@@ -1,6 +1,7 @@
 use crate::markdown::reflow_lines;
 use crate::num::usize_to_f64;
 use crate::num::widen;
+use core::mem::take;
 use std::collections::HashMap;
 
 const LEVEL_TOLERANCE: f64 = 2.0;
@@ -32,8 +33,12 @@ pub(crate) struct Table {
     pub bbox: [f64; 4],
     pub cells: Vec<Cell>,
     pub cols: u32,
+    pub last_page_index: u32,
+    pub near_bottom: bool,
+    pub near_top: bool,
     pub page_index: u32,
     pub rows: u32,
+    pub ruled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +55,13 @@ pub(crate) struct Grid {
     index: Vec<u32>,
     pub(crate) xs: Vec<f64>,
     pub(crate) ys: Vec<f64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CellKind {
+    Empty,
+    Numeric,
+    Text,
 }
 
 impl Grid {
@@ -509,6 +521,119 @@ pub(crate) fn column_of(columns: &[(f64, f64)], x0: f64, x1: f64) -> Option<usiz
     }
 }
 
+fn row_cells(table: &Table, row: u32) -> &[Cell] {
+    let start = table.cells.partition_point(|cell| cell.row < row);
+    let end = table.cells.partition_point(|cell| cell.row <= row);
+    table.cells.get(start..end).unwrap_or_default()
+}
+
+fn same_columns(left: &Table, right: &Table) -> bool {
+    let [left_start, _, left_end, _] = left.bbox;
+    let [right_start, _, right_end, _] = right.bbox;
+    let width = left_end - left_start;
+    let right_width = right_end - right_start;
+    let width_tolerance = if left.ruled {
+        4.0_f64
+    } else {
+        width * 0.15_f64
+    };
+    let first = row_cells(left, 0);
+    let next = row_cells(right, 0);
+    left.cols == right.cols
+        && left.ruled == right.ruled
+        && (left_start - right_start).abs() <= 4.0_f64
+        && (width - right_width).abs() <= width_tolerance
+        && first.len() == next.len()
+        && first.iter().zip(next).all(|(old, new)| {
+            old.col == new.col
+                && old.col_span == new.col_span
+                && (old.bbox[0] - new.bbox[0]).abs() <= 4.0_f64
+                && (!left.ruled || (old.bbox[2] - new.bbox[2]).abs() <= 4.0_f64)
+        })
+}
+
+fn cell_kind(cell: &Cell) -> CellKind {
+    let text = cell.text.trim();
+    if text.is_empty() {
+        return CellKind::Empty;
+    }
+    if text.contains(|ch: char| ch.is_ascii_digit()) && !text.contains(char::is_alphabetic) {
+        return CellKind::Numeric;
+    }
+    CellKind::Text
+}
+
+fn follows_body(body: &[Cell], next: &[Cell]) -> bool {
+    !body.is_empty()
+        && body.len() == next.len()
+        && body.iter().zip(next).all(|(old, new)| {
+            old.col == new.col && old.col_span == new.col_span && cell_kind(old) == cell_kind(new)
+        })
+}
+
+fn split_row(tail: &[Cell], head: &[Cell], cols: u32) -> bool {
+    tail.len() == widen(cols)
+        && head.len() == tail.len()
+        && tail.iter().any(|cell| !cell.text.trim().is_empty())
+        && head.iter().any(|cell| !cell.text.trim().is_empty())
+        && tail.iter().zip(head).all(|(old, new)| {
+            old.row_span == 1
+                && new.row_span == 1
+                && (old.text.trim().is_empty() != new.text.trim().is_empty())
+        })
+}
+
+pub(crate) fn append_continuation(left: &mut Table, right: &mut Table) -> bool {
+    if !same_columns(left, right) {
+        return false;
+    }
+    let header = row_cells(left, 0);
+    let first = row_cells(right, 0);
+    let repeated = !header.is_empty()
+        && header.iter().zip(first).all(|(old, new)| {
+            old.row_span == 1
+                && new.row_span == 1
+                && old.text.split_whitespace().eq(new.text.split_whitespace())
+        });
+    let skip_header = u32::from(repeated);
+    let head = row_cells(right, skip_header);
+    let tail_row = left.rows.saturating_sub(1);
+    let tail = row_cells(left, tail_row);
+    let split = left.ruled && split_row(tail, head, left.cols);
+    let skip = skip_header.saturating_add(u32::from(split));
+    if !repeated {
+        let body = if split {
+            row_cells(left, tail_row.saturating_sub(1))
+        } else {
+            tail
+        };
+        let incoming = row_cells(right, u32::from(split));
+        if follows_body(header, incoming) || !follows_body(body, incoming) {
+            return false;
+        }
+    }
+    if split {
+        let start = left.cells.partition_point(|cell| cell.row < tail_row);
+        if let Some(cells) = left.cells.get_mut(start..) {
+            for (old, new) in cells.iter_mut().zip(head) {
+                if old.text.trim().is_empty() {
+                    old.text.clone_from(&new.text);
+                }
+            }
+        }
+    }
+    for mut cell in take(&mut right.cells) {
+        if cell.row >= skip {
+            cell.row = left.rows.saturating_add(cell.row.saturating_sub(skip));
+            left.cells.push(cell);
+        }
+    }
+    left.rows = left.rows.saturating_add(right.rows.saturating_sub(skip));
+    left.last_page_index = right.last_page_index;
+    right.rows = 0;
+    true
+}
+
 fn matrix(table: &Table) -> Vec<Vec<Option<&str>>> {
     let rows = widen(table.rows);
     let cols = widen(table.cols);
@@ -764,6 +889,10 @@ mod tests {
         };
         Table {
             page_index: 0,
+            last_page_index: 0,
+            near_bottom: false,
+            near_top: false,
+            ruled: true,
             bbox: [0.0; 4],
             rows: 2,
             cols: 2,

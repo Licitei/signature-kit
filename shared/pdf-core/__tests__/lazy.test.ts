@@ -19,6 +19,18 @@ const paths = [
   "encryption/signed.pdf",
 ].sort((left, right) => left.localeCompare(right));
 
+const pdfObjects = (objects: ReadonlyArray<string>): Uint8Array => {
+  let pdf = "%PDF-1.7\n";
+  const offsets = objects.map((object, index) => {
+    const offset = pdf.length;
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset.toString().padStart(10, "0");
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((offset) => `${offset} 00000 n \n`).join("")}trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+};
+
 describe("PdfCore byte-range documents", () => {
   for (const name of paths) {
     it.effect(
@@ -76,9 +88,16 @@ describe("PdfCore byte-range documents", () => {
             }
             const stats = yield* doc.stats;
             expect(stats.bytesRead).toBe(reads.reduce((sum, [, length]) => sum + length, 0));
-            expect(
-              reads.filter(([offset, length]) => offset === 0 && length === pdf.byteLength),
-            ).toHaveLength(stats.strategy === "fallback" ? 1 : 0);
+            const ordered = reads.slice().sort(([left], [right]) => left - right);
+            let end = 0;
+            for (const [offset, length] of ordered) {
+              expect(offset).toBeGreaterThanOrEqual(end);
+              end = offset + length;
+            }
+            expect(stats.bytesRead).toBeLessThanOrEqual(pdf.byteLength);
+            if (stats.strategy === "fallback") {
+              expect(stats.bytesRead).toBe(pdf.byteLength);
+            }
           }),
         ).pipe(Effect.provide(layer)),
       60_000,
@@ -167,15 +186,7 @@ describe("PdfCore byte-range documents", () => {
           stream(form, "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Selected) Tj ET"),
           stream(form, " ".repeat(256 * 1024)),
         ];
-        let pdf = "%PDF-1.7\n";
-        const offsets = objects.map((object, index) => {
-          const offset = pdf.length;
-          pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
-          return offset.toString().padStart(10, "0");
-        });
-        const xref = pdf.length;
-        pdf += `xref\n0 8\n0000000000 65535 f \n${offsets.map((offset) => `${offset} 00000 n \n`).join("")}trailer\n<< /Root 1 0 R /Size 8 >>\nstartxref\n${xref}\n%%EOF\n`;
-        const bytes = new TextEncoder().encode(pdf);
+        const bytes = pdfObjects(objects);
         const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), { gapBytes: 0 });
         const options = { pageIndexes: [0] };
         const result = yield* doc.text(options);
@@ -185,6 +196,124 @@ describe("PdfCore byte-range documents", () => {
         expect(stats.strategy).toBe("lazy");
         expect(stats.rounds).toBe(2);
         expect(stats.bytesRead).toBeLessThan(bytes.byteLength / 2);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads the requested prefix and lets explicit indexes override it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const bytes = readFileSync(new URL("habilitacao-150.pdf", fixtures));
+        const source = pdfCoreBytesSource(bytes);
+        const doc = yield* core.openLazy(source, { pageLimit: 2 });
+        expect(yield* doc.text({ format: "markdown" })).toEqual(
+          yield* core.text(bytes, { pageIndexes: [0, 1], format: "markdown" }),
+        );
+        expect((yield* doc.stats).bytesRead).toBeLessThan(bytes.length);
+        expect((yield* doc.stats).strategy).toBe("lazy");
+        expect(yield* doc.tables()).toEqual(yield* core.tables(bytes, { pageIndexes: [0, 1] }));
+        expect(yield* doc.text({ pageIndexes: [2] })).toEqual(
+          yield* core.text(bytes, { pageIndexes: [2] }),
+        );
+        expect(yield* doc.text({ pageIndexes: [] })).toEqual([]);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("parses a single non-first page without reading the other content streams", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const stream = (data: string) => `<< /Length ${data.length} >>\nstream\n${data}\nendstream`;
+        const large = stream(" ".repeat(512 * 1024));
+        const bytes = pdfObjects([
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R] /MediaBox [0 0 200 200] /Resources << /Font << /F1 9 0 R >> >> >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 7 0 R >>",
+          "<< /Type /Page /Parent 2 0 R /Contents 8 0 R >>",
+          large,
+          stream("BT /F1 12 Tf 1 0 0 1 20 100 Tm (Middle page) Tj ET"),
+          large,
+          "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ]);
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), { gapBytes: 0 });
+        const selection = { pageIndexes: [1] };
+        expect(yield* doc.text(selection)).toEqual(["Middle page"]);
+        expect(yield* doc.renderPages(selection)).toEqual(
+          yield* core.renderPages(bytes, selection),
+        );
+        const stats = yield* doc.stats;
+        expect(stats.strategy).toBe("lazy");
+        expect(stats.bytesRead).toBeLessThan(bytes.length / 4);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("honours the page limit during fallback and fetches each byte only once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const bytes = readFileSync(new URL("broken-xref.pdf", fixtures));
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), {
+          pageLimit: 1,
+          probeBytes: 128,
+          maxRoundBytes: 256,
+        });
+        expect(yield* doc.text()).toEqual(yield* core.text(bytes, { pageIndexes: [0] }));
+        expect(yield* doc.renderPages({ scale: 0.5 })).toEqual(
+          yield* core.renderPages(bytes, { pageIndexes: [0], scale: 0.5 }),
+        );
+        const stats = yield* doc.stats;
+        expect(stats.strategy).toBe("fallback");
+        expect(stats.bytesRead).toBe(bytes.length);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("clamps a page limit to the actual page count and accepts zero", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const bytes = readFileSync(new URL("links.pdf", fixtures));
+        const source = pdfCoreBytesSource(bytes);
+        const all = yield* core.openLazy(source, { pageLimit: 100 });
+        const none = yield* core.openLazy(source, { pageLimit: 0 });
+        expect(yield* all.text()).toEqual(yield* core.text(bytes));
+        expect(yield* none.text()).toEqual([]);
+        expect(yield* none.tables()).toEqual([]);
+        expect(yield* none.renderPages()).toEqual([]);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("omits the signature payload when extracting or rendering a signed page", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const content = "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Signed page) Tj ET";
+        const appearance = "0 0 20 10 re f";
+        const pdf = pdfObjects([
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+          "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>",
+          `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+          "<< /Type /Annot /Subtype /Widget /FT /Sig /V 6 0 R /Rect [50 50 70 60] /AP << /N 7 0 R >> >>",
+          `<< /Type /Sig /Contents <${"00".repeat(256 * 1024)}> >>`,
+          `<< /Type /XObject /Subtype /Form /BBox [0 0 20 10] /Length ${appearance.length} >>\nstream\n${appearance}\nendstream`,
+        ]);
+        const document = yield* core.openLazy(pdfCoreBytesSource(pdf), { gapBytes: 0 });
+        const options = { pageIndexes: [0] };
+        const text = yield* document.text(options);
+        expect(text).toStrictEqual(yield* core.text(pdf, options));
+        expect(text.join(" ")).toContain("Signed page");
+        expect(yield* document.renderPages(options)).toStrictEqual(
+          yield* core.renderPages(pdf, options),
+        );
+        const stats = yield* document.stats;
+        expect(stats.strategy).toBe("lazy");
+        expect(stats.bytesRead).toBeLessThan(pdf.byteLength / 2);
       }),
     ).pipe(Effect.provide(layer)),
   );

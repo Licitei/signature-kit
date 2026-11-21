@@ -2,11 +2,12 @@ use core::cell::RefCell;
 use core::iter;
 use core::mem;
 use core::ops::Range;
+use core::slice;
 use std::collections::HashSet;
 
 use crate::document::{
-    Document, DocumentCache, Entry, MAX_SECTIONS, Page, STARTXREF_PROBE, Section, apply_entries,
-    find_startxref, merge_section_trailer, object_bound, previous_section,
+    Document, DocumentCache, Entry, MAX_SECTIONS, Page, PageRequest, STARTXREF_PROBE, Section,
+    apply_entries, find_startxref, merge_section_trailer, object_bound, previous_section,
 };
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
@@ -20,6 +21,7 @@ const MIN_PROBE: usize = 128;
 #[derive(Debug)]
 pub(crate) enum Plan {
     Fallback,
+    Full(Vec<Range<usize>>),
     Need(Vec<Range<usize>>),
     Ready,
 }
@@ -126,53 +128,62 @@ impl Sparse {
             .tuning
             .gap
             .min(self.tuning.round_bytes.checked_div(4).unwrap_or_default());
-        if read_ahead
-            && gap != 0
-            && let Some(requests) = self.ranges(&wanted, gap)
-        {
-            return Plan::Need(requests);
-        }
-        self.ranges(&wanted, 0).map_or(Plan::Fallback, Plan::Need)
-    }
-
-    fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Option<Vec<Range<usize>>> {
-        let mut requests = Vec::new();
-        for range in wanted {
-            let end = range.end.saturating_add(gap).min(self.size);
-            let mut start = range.start.saturating_sub(gap);
-            let first = self
-                .segments
-                .partition_point(|segment| segment.end() <= start);
-            for segment in self.segments.iter().skip(first) {
-                if segment.start >= end {
-                    break;
-                }
-                if segment.start > start {
-                    append_range(&mut requests, start..segment.start, gap);
-                }
-                start = start.max(segment.end());
-            }
-            if start < end {
-                append_range(&mut requests, start..end, gap);
-            }
-        }
         let cached = self
             .segments
             .iter()
             .map(|segment| segment.bytes.len())
             .sum::<usize>();
-        let budget = self.size.saturating_sub(usize::from(gap != 0)).min(
-            self.size
-                .checked_div(2)
-                .unwrap_or_default()
-                .max(MIN_SELECTIVE_BUDGET),
-        );
-        let planned = requests
-            .iter()
-            .fold(cached, |sum, range| sum.saturating_add(range.len()));
-        if requests.is_empty() || planned > budget {
-            return None;
+        let budget = self
+            .size
+            .checked_div(2)
+            .unwrap_or_default()
+            .max(MIN_SELECTIVE_BUDGET);
+        if read_ahead && gap != 0 {
+            let requests = self.ranges(&wanted, gap);
+            let planned = requests
+                .iter()
+                .fold(cached, |sum, range| sum.saturating_add(range.len()));
+            if !requests.is_empty() && planned < self.size && planned <= budget {
+                return Plan::Need(self.round(requests));
+            }
         }
+        let requests = self.ranges(&wanted, 0);
+        if requests.is_empty() {
+            return Plan::Fallback;
+        }
+        Plan::Need(self.round(requests))
+    }
+
+    fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Vec<Range<usize>> {
+        let mut targets = Vec::new();
+        for range in wanted {
+            let start = range.start.saturating_sub(gap);
+            let end = range.end.saturating_add(gap).min(self.size);
+            append_range(&mut targets, start..end, gap);
+        }
+        let mut requests = Vec::new();
+        for target in targets {
+            let mut start = target.start;
+            let first = self
+                .segments
+                .partition_point(|segment| segment.end() <= start);
+            for segment in self.segments.iter().skip(first) {
+                if segment.start >= target.end {
+                    break;
+                }
+                if segment.start > start {
+                    requests.push(start..segment.start);
+                }
+                start = start.max(segment.end());
+            }
+            if start < target.end {
+                requests.push(start..target.end);
+            }
+        }
+        requests
+    }
+
+    fn round(&self, mut requests: Vec<Range<usize>>) -> Vec<Range<usize>> {
         let mut remaining = self.tuning.round_bytes;
         for request in &mut requests {
             let length = request.len().min(remaining);
@@ -180,7 +191,7 @@ impl Sparse {
             remaining = remaining.saturating_sub(length);
         }
         requests.retain(|request| !request.is_empty());
-        Some(requests)
+        requests
     }
 
     pub(crate) fn request(&self, start: usize, end: usize) {
@@ -209,7 +220,7 @@ impl Sparse {
 
 #[derive(Debug)]
 struct Frontier {
-    indexes: Option<Vec<u32>>,
+    selection: PageRequest<Vec<u32>>,
     pages: Vec<(usize, Page)>,
     pending: Vec<ObjRef>,
     visited: HashSet<u32>,
@@ -239,7 +250,7 @@ impl Frontier {
 
     fn new(
         document: &Document<'_>,
-        indexes: Option<&[u32]>,
+        selection: PageRequest<&[u32]>,
         pages: Vec<(usize, Page)>,
         render: bool,
     ) -> Outcome<Self> {
@@ -259,7 +270,7 @@ impl Frontier {
             collect(properties, &mut pending);
         }
         Ok(Self {
-            indexes: indexes.map(<[u32]>::to_vec),
+            selection: selection.owned(),
             pages,
             pending,
             visited: HashSet::new(),
@@ -278,6 +289,7 @@ struct Index {
 #[derive(Debug)]
 pub(crate) struct Lazy {
     cache: DocumentCache,
+    fallback: bool,
     frontier: Option<Frontier>,
     index: Index,
     indexed: bool,
@@ -483,6 +495,7 @@ impl Lazy {
     pub(crate) fn new(size: usize, tuning: Tuning) -> Self {
         Self {
             cache: DocumentCache::new(),
+            fallback: false,
             frontier: None,
             index: Index::default(),
             indexed: false,
@@ -499,12 +512,17 @@ impl Lazy {
         }
     }
 
-    pub(crate) fn plan(&mut self, indexes: Option<&[u32]>, render: bool, limits: &Limits) -> Plan {
+    pub(crate) fn plan(
+        &mut self,
+        requested: PageRequest<&[u32]>,
+        render: bool,
+        limits: &Limits,
+    ) -> Plan {
         let misses = mem::take(self.sparse.missing.get_mut());
         let mut frontier = self
             .frontier
             .take()
-            .filter(|frontier| frontier.indexes.as_deref() == indexes && self.render == render);
+            .filter(|frontier| frontier.selection.borrowed() == requested && self.render == render);
         if !misses.is_empty()
             && frontier
                 .as_ref()
@@ -520,18 +538,17 @@ impl Lazy {
         if self.sparse.size > limits.max_pdf_bytes {
             return Plan::Fallback;
         }
-        let first =
-            indexes.is_some_and(|items| !items.is_empty() && items.iter().all(|item| *item == 0));
+        let first = requested.stop_after() == Some(1);
         if let Some(plan) = self.index(first, limits) {
             return plan;
         }
         let result = self.document(limits).and_then(|document| {
             if frontier.is_none() {
-                let pages = document.sparse_pages(indexes)?;
+                let pages = document.sparse_pages(requested)?;
                 if self.sparse.misses() != 0 {
                     return Ok(());
                 }
-                frontier = Some(Frontier::new(&document, indexes, pages, render)?);
+                frontier = Some(Frontier::new(&document, requested, pages, render)?);
             }
             if let Some(selection) = &mut frontier {
                 selection.advance(&document, &self.sparse)?;
@@ -558,6 +575,39 @@ impl Lazy {
         } else {
             Plan::Fallback
         }
+    }
+
+    pub(crate) fn plan_with_recovery(
+        &mut self,
+        requested: PageRequest<&[u32]>,
+        render: bool,
+        limits: &Limits,
+        recover: bool,
+    ) -> Plan {
+        if !self.fallback {
+            if !recover {
+                let plan = self.plan(requested, render, limits);
+                if !matches!(plan, Plan::Fallback) {
+                    return plan;
+                }
+            }
+            self.fallback = true;
+            self.cache = DocumentCache::new();
+            self.frontier = None;
+            self.index = Index::default();
+        }
+        let wanted = 0..self.sparse.size;
+        Plan::Full(
+            self.sparse
+                .round(self.sparse.ranges(slice::from_ref(&wanted), 0)),
+        )
+    }
+
+    pub(crate) fn full_bytes(&self) -> Option<&[u8]> {
+        if !self.fallback {
+            return None;
+        }
+        self.sparse.bytes(0..self.sparse.size)
     }
 
     fn section_range(&self, offset: usize, length: usize) -> Range<usize> {
@@ -613,7 +663,7 @@ fn references(dict: &Dict, refs: &mut Vec<ObjRef>) {
     let annotation = object_type == Some(b"Annot")
         || dict.get(b"Subtype").and_then(Object::as_name) == Some(b"Widget");
     for (key, value) in &dict.entries {
-        if annotation && matches!(key.as_slice(), b"Parent" | b"P") {
+        if annotation && matches!(key.as_slice(), b"Parent" | b"P" | b"V") {
             continue;
         }
         if key == b"XObject"
