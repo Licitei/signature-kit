@@ -9,7 +9,7 @@ const IMAGE_FILTERS: [&[u8]; 4] = [
     b"JBIG2Decode",
 ];
 
-type FilterChain<'data> = (Vec<Vec<u8>>, Vec<Option<&'data Dict>>);
+type FilterChain<'data> = (Vec<&'data [u8]>, Vec<Option<&'data Dict>>);
 
 pub(crate) fn decode_stream(
     dict: &Dict,
@@ -33,13 +33,19 @@ pub(crate) fn decode_stream(
         }
         return Ok(raw.to_vec());
     }
-    let mut data = raw.to_vec();
+    let mut data: Option<Vec<u8>> = None;
     for (index, filter) in filters.iter().enumerate() {
         let last = index.saturating_add(1) == filters.len();
         let parms_next = parms.get(index).copied().flatten();
-        data = apply_filter(filter, parms_next, &data, max_output, last)?;
+        data = Some(apply_filter(
+            filter,
+            parms_next,
+            data.as_deref().unwrap_or(raw),
+            max_output,
+            last,
+        )?);
     }
-    Ok(data)
+    Ok(data.unwrap_or_default())
 }
 
 fn parse_filter_chain(dict: &Dict) -> Outcome<FilterChain<'_>> {
@@ -56,7 +62,7 @@ fn parse_filter_chain(dict: &Dict) -> Outcome<FilterChain<'_>> {
                 Some(Object::Dict(d)) => vec![Some(d)],
                 Some(_) => return Err(Failure::invalid("decode parms shape")),
             };
-            Ok((vec![name.clone()], parms))
+            Ok((vec![name.as_slice()], parms))
         }
         Some(Object::Array(items)) => {
             if matches!(parms_key, Some(Object::Ref(_))) {
@@ -71,7 +77,7 @@ fn parse_filter_chain(dict: &Dict) -> Outcome<FilterChain<'_>> {
                         "filter entry is not a name"
                     }));
                 };
-                filters.push(name.clone());
+                filters.push(name.as_slice());
             }
             let parms = match parms_key {
                 None | Some(Object::Null) => vec![None; filters.len()],

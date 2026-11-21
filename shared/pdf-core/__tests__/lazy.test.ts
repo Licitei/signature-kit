@@ -416,6 +416,42 @@ describe("PdfCore byte-range documents", () => {
     ).pipe(Effect.provide(layer)),
   );
 
+  it.effect("copies exactly the seven OCR pages of a ten-page mixed PDF", () =>
+    Effect.gen(function* () {
+      const core = yield* PdfCore;
+      const nativePages = [0, 2, 7];
+      const pageCount = 10;
+      const pageObjects = Array.from({ length: pageCount }, (_, index) => index + 4);
+      const image = "BI /W 1 /H 1 /BPC 8 /CS /RGB /F /AHx ID 000000> EI";
+      const pdf = pdfObjects([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        `<< /Type /Pages /Count ${pageCount} /Kids [${pageObjects.map((id) => `${id} 0 R`).join(" ")}] /MediaBox [0 0 200 200] /Resources << /Font << /F1 3 0 R >> >> >>`,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ...pageObjects.map(
+          (id) => `<< /Type /Page /Parent 2 0 R /Contents ${id + pageCount} 0 R >>`,
+        ),
+        ...pageObjects.map((_, index) => {
+          const content = nativePages.includes(index)
+            ? `BT /F1 12 Tf 1 0 0 1 20 100 Tm (Native page ${index + 1}) Tj ET`
+            : `q 180 0 0 180 ${index + 1} 10 cm ${image} Q`;
+          return `<< /Length ${content.length} >>\nstream\n${content}\nendstream`;
+        }),
+      ]);
+
+      const diagnostics = yield* core.pageDiagnostics(pdf);
+      const pageIndexes = diagnostics
+        .filter((page) => page.textLayer !== "usable")
+        .map((page) => page.pageIndex);
+      expect(pageIndexes).toEqual([1, 3, 4, 5, 6, 8, 9]);
+
+      const subset = yield* core.merge([{ pdf, pageIndexes }], { dropWidgets: true });
+      expect(subset.byteLength).toBeLessThan(pdf.byteLength);
+      const expected = yield* core.renderPages(pdf, { pageIndexes });
+      const actual = yield* core.renderPages(subset);
+      expect(actual).toEqual(expected.map((page, pageIndex) => ({ ...page, pageIndex })));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("rejects invalid tuning and oversized sources before reading", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -3,7 +3,7 @@ use core::mem;
 use std::collections::HashMap;
 
 use crate::deflate::zlib_compress;
-use crate::document::{Document, Page, select_pages};
+use crate::document::{Document, Page};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
 use crate::num::{f64_to_i64, widen};
@@ -341,12 +341,12 @@ impl Graph {
     }
 }
 
-struct MergeOutput {
+struct MergeOutput<'data> {
     bodies: Vec<Option<Object>>,
-    datas: Vec<Option<Vec<u8>>>,
+    datas: Vec<Option<&'data [u8]>>,
 }
 
-impl MergeOutput {
+impl<'data> MergeOutput<'data> {
     fn emit(&self, trailer: Dict, layout: Packing) -> Vec<u8> {
         let mut written = Written {
             entries: Vec::new(),
@@ -363,11 +363,15 @@ impl MergeOutput {
                 packed.push((number, object));
                 continue;
             }
-            let data = self
-                .datas
-                .get(index)
-                .and_then(Option::as_deref)
-                .unwrap_or_default();
+            let data = if let Object::Stream(stream) = object {
+                stream
+                    .decrypted
+                    .as_deref()
+                    .or_else(|| self.datas.get(index).copied().flatten())
+                    .unwrap_or_default()
+            } else {
+                &[]
+            };
             written.indirect(number, 0, object, data, &Object::Ref);
         }
         let next = u32::try_from(self.bodies.len().saturating_add(1)).unwrap_or(u32::MAX);
@@ -429,7 +433,7 @@ impl MergeOutput {
         u32::try_from(self.bodies.len()).unwrap_or(u32::MAX)
     }
 
-    fn set(&mut self, number: u32, object: Object, data: Option<Vec<u8>>) {
+    fn set(&mut self, number: u32, object: Object, data: Option<&'data [u8]>) {
         let index = widen_index(number).saturating_sub(1);
         if let Some(slot) = self.bodies.get_mut(index) {
             *slot = Some(object);
@@ -447,8 +451,8 @@ struct Copier<'doc, 'data> {
     queue: Vec<(ObjRef, u32)>,
 }
 
-impl Copier<'_, '_> {
-    fn copy(&mut self, object: &Object, output: &mut MergeOutput) -> Outcome<Object> {
+impl<'data> Copier<'_, 'data> {
+    fn copy(&mut self, object: &Object, output: &mut MergeOutput<'_>) -> Outcome<Object> {
         Ok(match object {
             Object::Ref(reference) => self.reference(*reference, output)?,
             Object::Array(items) => Object::Array(
@@ -459,7 +463,7 @@ impl Copier<'_, '_> {
             ),
             Object::Dict(dict) => Object::Dict(self.copy_dict(dict, output)?),
             Object::Stream(stream) => Object::Stream(Stream {
-                decrypted: None,
+                decrypted: stream.decrypted.clone(),
                 data: stream.data.clone(),
                 dict: self.copy_dict(&stream.dict, output)?,
             }),
@@ -472,7 +476,7 @@ impl Copier<'_, '_> {
         })
     }
 
-    fn copy_dict(&mut self, dict: &Dict, output: &mut MergeOutput) -> Outcome<Dict> {
+    fn copy_dict(&mut self, dict: &Dict, output: &mut MergeOutput<'_>) -> Outcome<Dict> {
         let mut copied = Dict::default();
         for (key, value) in &dict.entries {
             copied
@@ -482,15 +486,16 @@ impl Copier<'_, '_> {
         Ok(copied)
     }
 
-    fn drain(&mut self, output: &mut MergeOutput) -> Outcome<()> {
+    fn drain(&mut self, output: &mut MergeOutput<'data>) -> Outcome<()> {
         while let Some((reference, number)) = self.queue.pop() {
             let loaded = self.document.load(reference)?;
             let copied = self.copy(&loaded, output)?;
             let data = match &*loaded {
-                Object::Stream(stream) => {
-                    Some(stream.encoded_bytes(self.document.bytes())?.to_vec())
+                Object::Stream(stream) if stream.decrypted.is_none() => {
+                    Some(stream.source_bytes(self.document.bytes())?)
                 }
-                Object::Array(_)
+                Object::Stream(_)
+                | Object::Array(_)
                 | Object::Bool(_)
                 | Object::Dict(_)
                 | Object::Integer(_)
@@ -505,7 +510,7 @@ impl Copier<'_, '_> {
         Ok(())
     }
 
-    fn reference(&mut self, reference: ObjRef, output: &mut MergeOutput) -> Outcome<Object> {
+    fn reference(&mut self, reference: ObjRef, output: &mut MergeOutput<'_>) -> Outcome<Object> {
         if let Some(&number) = self.page_numbers.get(&reference.number) {
             return Ok(Object::Ref(ObjRef {
                 number,
@@ -716,31 +721,22 @@ pub(crate) fn merge(
     let mut kids: Vec<Object> = Vec::new();
     for (position, source) in sources.iter().enumerate() {
         let document = Document::open(source, limits)?;
-        let pages = document.pages()?;
-        let selected = select_pages(
-            pages.len(),
-            selections.get(position).and_then(Option::as_deref),
-        )?;
+        let pages = document.selected_pages(selections.get(position).and_then(Option::as_deref))?;
         let mut copier = Copier {
             document: &document,
             map: HashMap::new(),
             page_numbers: HashMap::new(),
             queue: Vec::new(),
         };
-        let mut planned: Vec<(usize, u32)> = Vec::with_capacity(selected.len());
-        for index in selected {
+        let mut planned = Vec::with_capacity(pages.len());
+        for page in &pages {
             let number = output.reserve();
-            if let Some(page) = pages.get(index)
-                && let Some(reference) = page.obj_ref
-            {
+            if let Some(reference) = page.obj_ref {
                 let _: Option<u32> = copier.page_numbers.insert(reference.number, number);
             }
-            planned.push((index, number));
+            planned.push(number);
         }
-        for (index, number) in planned {
-            let Some(page) = pages.get(index) else {
-                continue;
-            };
+        for (page, number) in pages.iter().zip(planned) {
             let dict = flatten_page(&document, page, drop_widgets)?;
             let mut page_dict = copier.copy_dict(&dict, &mut output)?;
             page_dict.insert(

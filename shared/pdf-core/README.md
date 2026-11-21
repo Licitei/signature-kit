@@ -236,6 +236,24 @@ const pageIndexes = diagnostics
 const pagesForOcr = await doc.renderPages({ pageIndexes });
 ```
 
+### Build an OCR-only PDF
+
+If your OCR service accepts a PDF and you have the original bytes, pass the diagnosed page indices to the existing page copier. It preserves page order and copies the page content and resources without rendering images. Keep `sourcePageIndexes` alongside the new PDF to map each OCR page back to its source. This policy includes blank pages and pages whose text is drawn as vectors. If you only want image-only and weak pages, use the filter from the previous example. For a range source without the original bytes in memory, use the per-page rendering flow above.
+
+```ts
+const diagnostics = await core.pageDiagnostics(pdf);
+const sourcePageIndexes = diagnostics
+  .filter((page) => page.textLayer !== "usable")
+  .map((page) => page.pageIndex);
+
+if (sourcePageIndexes.length > 0) {
+  const ocrPdf = await core.merge([{ pdf, pageIndexes: sourcePageIndexes }], {
+    dropWidgets: true,
+  });
+  await submitForOcr(ocrPdf, sourcePageIndexes);
+}
+```
+
 After building the repository, run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
 
 ## Wasm ABI

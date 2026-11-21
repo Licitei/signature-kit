@@ -1498,8 +1498,7 @@ impl Renderer<'_, '_> {
                         .last()
                         .and_then(|operand| operand.string(&mut scratch))
                     {
-                        let owned = bytes.to_vec();
-                        self.show(&owned, frame, state, &mut text, depth, visible)?;
+                        self.show(bytes, frame, state, &mut text, depth, visible)?;
                     }
                 }
                 b"'" | b"\"" => {
@@ -1521,52 +1520,37 @@ impl Renderer<'_, '_> {
                         .last()
                         .and_then(|operand| operand.string(&mut scratch))
                     {
-                        let owned = bytes.to_vec();
-                        self.show(&owned, frame, state, &mut text, depth, visible)?;
+                        self.show(bytes, frame, state, &mut text, depth, visible)?;
                     }
                 }
                 b"TJ" => {
                     if let Some(Operand::Array(items)) = operands.last() {
-                        let parts: Vec<Result<Vec<u8>, f64>> = items
-                            .iter()
-                            .filter_map(|item| {
-                                item.as_number().map(Err).or_else(|| {
-                                    let mut buffer = Vec::new();
-                                    item.string(&mut buffer).map(|bytes| Ok(bytes.to_vec()))
-                                })
-                            })
-                            .collect();
-                        for part in parts {
-                            match part {
-                                Ok(bytes) => {
-                                    self.show(&bytes, frame, state, &mut text, depth, visible)?;
-                                }
-                                Err(adjust) => {
-                                    let vertical = state
-                                        .font
-                                        .as_ref()
-                                        .is_some_and(|font| font.font.is_vertical());
-                                    let amount = -adjust / 1_000.0_f64 * state.font_size;
-                                    text.matrix = if vertical {
-                                        translate(0.0, amount, &text.matrix)
-                                    } else {
-                                        translate(amount * state.scale, 0.0, &text.matrix)
-                                    };
-                                }
+                        for item in items {
+                            if let Some(adjust) = item.as_number() {
+                                let vertical = state
+                                    .font
+                                    .as_ref()
+                                    .is_some_and(|font| font.font.is_vertical());
+                                let amount = -adjust / 1_000.0_f64 * state.font_size;
+                                text.matrix = if vertical {
+                                    translate(0.0, amount, &text.matrix)
+                                } else {
+                                    translate(amount * state.scale, 0.0, &text.matrix)
+                                };
+                            } else if let Some(bytes) = item.string(&mut scratch) {
+                                self.show(bytes, frame, state, &mut text, depth, visible)?;
                             }
                         }
                     }
                 }
                 b"Do" => {
                     if visible && let Some(name) = operands.last().and_then(Operand::as_name) {
-                        let owned = name.to_vec();
-                        self.xobject(&owned, frame, state, depth)?;
+                        self.xobject(name, frame, state, depth)?;
                     }
                 }
                 b"sh" => {
                     if visible && let Some(name) = operands.last().and_then(Operand::as_name) {
-                        let owned = name.to_vec();
-                        self.shade(&owned, frame, state);
+                        self.shade(name, frame, state);
                     }
                 }
                 b"EI" => {

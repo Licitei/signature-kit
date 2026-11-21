@@ -1191,7 +1191,9 @@ fn layout_pool(
             previous = Some(block);
         }
     }
-    out.tables.extend(tables);
+    if !mode.text || mode.markdown {
+        out.tables.extend(tables);
+    }
 }
 
 fn separator(segments: &[Segment], before: &Block, after: &Block) -> &'static str {
@@ -1436,19 +1438,11 @@ pub(crate) fn text_limits() -> Limits {
         ..Limits::default()
     }
 }
-fn page_links(links: &[LinkInfo], page_index: usize) -> Vec<LinkRect> {
-    links
-        .iter()
-        .enumerate()
-        .filter(|(_, link)| usize::try_from(link.page_index).ok() == Some(page_index))
-        .map(|(index, link)| (link.rect, index))
-        .collect()
-}
 fn single_page(
     document: &Document<'_>,
     page: &Page,
     page_index: usize,
-    links: &[LinkInfo],
+    links: &[LinkRect],
     limits: &Limits,
     session: &mut Session,
     mode: Mode,
@@ -1458,7 +1452,6 @@ fn single_page(
         structure: true,
         split_style: mode.markdown,
     };
-    let scoped = page_links(links, page_index);
     match extract_content(document, page, limits, capture, session) {
         Ok(content) => {
             let mut layout = page_layout(
@@ -1466,7 +1459,7 @@ fn single_page(
                 page.info.rotate,
                 Some(page.info.crop_box),
                 mode,
-                &scoped,
+                links,
             );
             for table in &mut layout.tables {
                 table.page_index = u32::try_from(page_index).unwrap_or(u32::MAX);
@@ -1511,21 +1504,34 @@ pub(crate) fn opened_text(
         text: true,
     };
     let mut all_links = Vec::new();
+    let mut link_ends = Vec::new();
     if options.markdown {
+        link_ends.reserve(selected.len());
         for &(position, page) in selected {
             if let Ok(page_index) = u32::try_from(position) {
                 document.page_links(page, page_index, &mut all_links)?;
             }
+            link_ends.push(all_links.len());
         }
     }
     let mut session = Session::default();
     let mut layouts: Vec<PageLayout> = Vec::with_capacity(selected.len());
-    for &(position, page) in selected {
+    let mut link_start = 0_usize;
+    for (ordinal, &(position, page)) in selected.iter().enumerate() {
+        let link_end = link_ends.get(ordinal).copied().unwrap_or(link_start);
+        let scoped: Vec<LinkRect> = all_links
+            .get(link_start..link_end)
+            .unwrap_or_default()
+            .iter()
+            .zip(link_start..)
+            .map(|(link, index)| (link.rect, index))
+            .collect();
+        link_start = link_end;
         layouts.push(single_page(
             document,
             page,
             position,
-            &all_links,
+            &scoped,
             limits,
             &mut session,
             mode,
@@ -1534,7 +1540,7 @@ pub(crate) fn opened_text(
     if options.markdown {
         return markdown_pages(&mut layouts, &all_links, options, limits);
     }
-    let dropped = if options.drop_running {
+    let dropped = if options.drop_running && layouts.len() >= 2 {
         running_keys(
             &layouts
                 .iter()
@@ -1632,6 +1638,7 @@ fn continuation_tables(
         let band = block.band();
         block.table_index().is_some()
             || band == Band::Free
+            || running.is_empty()
             || !running.contains_key(&(band == Band::Top, running_key(block.plain())))
     });
     let first = content.next();
@@ -1643,6 +1650,9 @@ fn continuation_tables(
 }
 
 fn merge_tables(layouts: &mut [PageLayout], pages: &[Vec<MdBlock>], drop_running: bool) {
+    if pages.len() < 2 {
+        return;
+    }
     let running = if drop_running {
         running_keys(
             &pages
@@ -1744,7 +1754,7 @@ fn markdown_pages(
         .iter()
         .map(|layout| page_blocks(&layout.md, Some(&layout.tables), metrics))
         .collect();
-    if options.merge_across_pages {
+    if options.merge_across_pages && pages.len() >= 2 {
         merge_tables(layouts, &pages, options.drop_running);
         for (layout, blocks) in layouts.iter().zip(&mut pages) {
             blocks.retain_mut(|block| {
@@ -1761,7 +1771,7 @@ fn markdown_pages(
             });
         }
     }
-    if options.drop_running {
+    if options.drop_running && pages.len() >= 2 {
         let dropped = running_keys(
             &pages
                 .iter()
@@ -1777,10 +1787,14 @@ fn markdown_pages(
         for (position, blocks) in pages.iter_mut().enumerate() {
             blocks.retain(|block| !is_dropped(&dropped, block.band(), block.plain(), position));
         }
-        let heights: Vec<f64> = layouts.iter().map(|layout| layout.height).collect();
-        drop_furniture(&mut pages, &heights);
+        if pages.len() >= FURNITURE_MIN_PAGES {
+            let heights: Vec<f64> = layouts.iter().map(|layout| layout.height).collect();
+            drop_furniture(&mut pages, &heights);
+        }
     }
-    join_pages(&mut pages, metrics);
+    if pages.len() >= 2 {
+        join_pages(&mut pages, metrics);
+    }
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
     let mut total_bytes = 0_usize;
     for blocks in &pages {
@@ -3251,6 +3265,14 @@ mod structure_tests {
         )
         .unwrap();
         assert_eq!(second, [all[1].clone()]);
+        let reversed = document_text(
+            &bytes,
+            PageRequest::Indexes(Some(&[1, 0])),
+            &text_limits(),
+            MARKDOWN,
+        )
+        .unwrap();
+        assert_eq!(reversed, [all[1].clone(), all[0].clone()]);
     }
 
     #[test]

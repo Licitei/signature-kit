@@ -45,6 +45,10 @@ impl Stream {
         if let Some(bytes) = &self.decrypted {
             return Ok(bytes);
         }
+        self.source_bytes(pdf)
+    }
+
+    pub(crate) fn source_bytes<'data>(&self, pdf: &'data [u8]) -> Outcome<&'data [u8]> {
         pdf.get(self.data.clone())
             .ok_or_else(|| Failure::invalid("stream data out of range"))
     }
