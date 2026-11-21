@@ -1318,7 +1318,11 @@ fn prepare(item: &MdItem, metrics: Metrics) -> Option<Prepared<'_>> {
     })
 }
 
-pub(crate) fn page_blocks(items: &[MdItem], tables: &[Table], metrics: Metrics) -> Vec<MdBlock> {
+pub(crate) fn page_blocks(
+    items: &[MdItem],
+    tables: Option<&[Table]>,
+    metrics: Metrics,
+) -> Vec<MdBlock> {
     let body = metrics.body;
     let prepared: Vec<Option<Prepared<'_>>> =
         items.iter().map(|item| prepare(item, metrics)).collect();
@@ -1333,7 +1337,6 @@ pub(crate) fn page_blocks(items: &[MdItem], tables: &[Table], metrics: Metrics) 
                 band,
                 top,
             } = item
-                && let Some(table) = tables.get(*table_index)
             {
                 if let Some((para, _)) = current.take() {
                     finish(para, body, &mut list, &mut out);
@@ -1342,7 +1345,10 @@ pub(crate) fn page_blocks(items: &[MdItem], tables: &[Table], metrics: Metrics) 
                 out.push(MdBlock {
                     kind: Kind::Table(*table_index),
                     spans: Vec::new(),
-                    plain: render_markdown(table),
+                    plain: tables
+                        .and_then(|all| all.get(*table_index))
+                        .map(render_markdown)
+                        .unwrap_or_default(),
                     band: *band,
                     lines: 0,
                     size: 0.0,
@@ -1741,7 +1747,7 @@ mod tests {
     }
 
     fn render(items: &[MdItem]) -> String {
-        render_page(&page_blocks(items, &[], document_metrics([items])), &[])
+        render_page(&page_blocks(items, None, document_metrics([items])), &[])
     }
 
     fn joined(left: &str, right: &str) -> (String, String) {

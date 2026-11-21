@@ -1604,7 +1604,7 @@ fn continuation_tables(
     )
 }
 
-fn merge_tables(layouts: &mut [PageLayout], pages: &mut [Vec<MdBlock>], drop_running: bool) {
+fn merge_tables(layouts: &mut [PageLayout], pages: &[Vec<MdBlock>], drop_running: bool) {
     let running = if drop_running {
         running_keys(
             &pages
@@ -1654,20 +1654,6 @@ fn merge_tables(layouts: &mut [PageLayout], pages: &mut [Vec<MdBlock>], drop_run
             Some((position, index))
         });
     }
-    for (layout, blocks) in layouts.iter().zip(pages) {
-        blocks.retain_mut(|block| {
-            let Some(table) = block
-                .table_index()
-                .and_then(|index| layout.tables.get(index))
-            else {
-                return true;
-            };
-            if table.last_page_index != table.page_index {
-                block.update_table(table);
-            }
-            table.rows != 0
-        });
-    }
 }
 
 fn merged_document_tables(
@@ -1696,11 +1682,11 @@ fn merged_document_tables(
         layouts.push(layout);
     }
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
-    let mut blocks: Vec<_> = layouts
+    let blocks: Vec<_> = layouts
         .iter()
-        .map(|layout| page_blocks(&layout.md, &layout.tables, metrics))
+        .map(|layout| page_blocks(&layout.md, None, metrics))
         .collect();
-    merge_tables(&mut layouts, &mut blocks, true);
+    merge_tables(&mut layouts, &blocks, true);
     Ok(layouts
         .into_iter()
         .flat_map(|layout| layout.tables)
@@ -1717,10 +1703,24 @@ fn markdown_pages(
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
     let mut pages: Vec<Vec<MdBlock>> = layouts
         .iter()
-        .map(|layout| page_blocks(&layout.md, &layout.tables, metrics))
+        .map(|layout| page_blocks(&layout.md, Some(&layout.tables), metrics))
         .collect();
     if options.merge_across_pages {
-        merge_tables(layouts, &mut pages, options.drop_running);
+        merge_tables(layouts, &pages, options.drop_running);
+        for (layout, blocks) in layouts.iter().zip(&mut pages) {
+            blocks.retain_mut(|block| {
+                let Some(table) = block
+                    .table_index()
+                    .and_then(|index| layout.tables.get(index))
+                else {
+                    return true;
+                };
+                if table.last_page_index != table.page_index {
+                    block.update_table(table);
+                }
+                table.rows != 0
+            });
+        }
     }
     if options.drop_running {
         let dropped = running_keys(

@@ -183,6 +183,10 @@ impl Sparse {
         requests
     }
 
+    pub(crate) fn request(&self, start: usize, end: usize) {
+        self.missing.borrow_mut().push(start..end);
+    }
+
     fn round(&self, mut requests: Vec<Range<usize>>) -> Vec<Range<usize>> {
         let mut remaining = self.tuning.round_bytes;
         for request in &mut requests {
@@ -192,10 +196,6 @@ impl Sparse {
         }
         requests.retain(|request| !request.is_empty());
         requests
-    }
-
-    pub(crate) fn request(&self, start: usize, end: usize) {
-        self.missing.borrow_mut().push(start..end);
     }
 
     fn window(&self, start: usize, end: usize) -> &[u8] {
@@ -220,9 +220,9 @@ impl Sparse {
 
 #[derive(Debug)]
 struct Frontier {
-    selection: PageRequest<Vec<u32>>,
     pages: Vec<(usize, Page)>,
     pending: Vec<ObjRef>,
+    selection: PageRequest<Vec<u32>>,
     visited: HashSet<u32>,
 }
 
@@ -368,6 +368,13 @@ impl Lazy {
 
     pub(crate) fn feed(&mut self, offset: usize, bytes: &[u8]) -> bool {
         self.sparse.feed(offset, bytes)
+    }
+
+    pub(crate) fn full_bytes(&self) -> Option<&[u8]> {
+        if !self.fallback {
+            return None;
+        }
+        self.sparse.bytes(0..self.sparse.size)
     }
 
     fn head_and_tail(&mut self, limits: &Limits) -> Option<Plan> {
@@ -601,13 +608,6 @@ impl Lazy {
             self.sparse
                 .round(self.sparse.ranges(slice::from_ref(&wanted), 0)),
         )
-    }
-
-    pub(crate) fn full_bytes(&self) -> Option<&[u8]> {
-        if !self.fallback {
-            return None;
-        }
-        self.sparse.bytes(0..self.sparse.size)
     }
 
     fn section_range(&self, offset: usize, length: usize) -> Range<usize> {
