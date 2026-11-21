@@ -5,10 +5,10 @@ Texto de corpo com destaque **CONCORRÊNCIA** aberta.
 - primeiro item
 - segundo item
 
-*1.1. cláusula numerada permanece parágrafo.*
+_1.1. cláusula numerada permanece parágrafo._
 
 [Link para documentação](https://signature-kit.dev/corpus/markdown-link)
 
-| Item | Qtd |
-| --- | --- |
-| Areia | 4 |
+| Item  | Qtd |
+| ----- | --- |
+| Areia | 4   |
