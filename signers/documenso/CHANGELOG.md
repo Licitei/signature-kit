@@ -1,3 +1,11 @@
+## @signature-kit/documenso@0.4.2
+
+### Faster selected-page and Markdown PDF extraction
+
+The PDF core opens selected pages without materializing the whole page tree, defers unused XObjects, and accepts complete streams before the next cross-reference offset. Markdown rendering reuses buffers and the number parser uses bounded accumulation for common operands. Page resources share the resolved dictionary across readers, and the JavaScript bindings share result-block validation and disposal.
+
+The pdf-core README documents the procurement corpus results, evidence audit, Wasm size, and an isolated benchmark against LiteParse and PDF Inspector. This release also refreshes all public SignatureKit packages.
+
 ## @signature-kit/documenso@0.4.1
 
 ### Publish the worker signing runtime

@@ -365,16 +365,22 @@ impl<'data> Parser<'data> {
         }
         let mut whole: u64 = 0;
         let mut overflow = false;
-        let mut digits = 0_usize;
+        let start = self.pos;
+        let short_end = start.saturating_add(19);
+        while self.pos < short_end
+            && let Some(byte @ b'0'..=b'9') = self.peek()
+        {
+            whole = whole.wrapping_mul(10).wrapping_add(u64::from(byte & 0x0f));
+            self.pos = self.pos.saturating_add(1);
+        }
         while let Some(byte @ b'0'..=b'9') = self.peek() {
             match whole
                 .checked_mul(10)
-                .and_then(|value| value.checked_add(u64::from(byte.saturating_sub(b'0'))))
+                .and_then(|value| value.checked_add(u64::from(byte & 0x0f)))
             {
                 Some(value) => whole = value,
                 None => overflow = true,
             }
-            digits = digits.saturating_add(1);
             self.pos = self.pos.saturating_add(1);
         }
         if self.peek() == Some(b'.') {
@@ -383,8 +389,9 @@ impl<'data> Parser<'data> {
             let mut scale = 0_usize;
             while let Some(byte @ b'0'..=b'9') = self.peek() {
                 if scale < 18 {
-                    fraction = (fraction.saturating_mul(10))
-                        .saturating_add(u64::from(byte.saturating_sub(b'0')));
+                    fraction = fraction
+                        .wrapping_mul(10)
+                        .wrapping_add(u64::from(byte & 0x0f));
                     scale = scale.saturating_add(1);
                 }
                 self.pos = self.pos.saturating_add(1);
@@ -393,7 +400,7 @@ impl<'data> Parser<'data> {
             let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
             return Object::Real(if negative { -magnitude } else { magnitude });
         }
-        if digits == 0 {
+        if self.pos == start {
             return Object::Integer(0);
         }
         if overflow || whole > i64::MAX.cast_unsigned() {
@@ -805,6 +812,7 @@ pub(crate) struct IndirectObject {
     pub end: usize,
     pub obj_ref: ObjRef,
     pub object: Object,
+    pub used_declared_length: bool,
 }
 
 #[inline]
@@ -1014,30 +1022,27 @@ fn trim_stream_end(data: &[u8], start: usize, mut end: usize) -> usize {
 }
 
 fn end_marker_follows(data: &[u8], pos: usize) -> bool {
-    let mut cursor = pos;
-    while data.get(cursor).copied().is_some_and(is_whitespace) {
-        cursor = cursor.saturating_add(1);
-    }
+    let cursor = skip_whitespace_at(data, pos);
     keyword_at(data, cursor, b"endstream") || keyword_at(data, cursor, b"endobj")
 }
 
-fn stream_range(data: &[u8], start: usize, declared: Option<usize>) -> Range<usize> {
+fn stream_range(data: &[u8], start: usize, declared: Option<usize>) -> (Range<usize>, bool) {
     let declared_end = declared
         .and_then(|length| start.checked_add(length))
         .filter(|&end| end <= data.len());
     if let Some(end) = declared_end
         && end_marker_follows(data, end)
     {
-        return start..end;
+        return (start..end, true);
     }
     if let Some(marker) = find_bytes(data, start, b"endstream") {
-        return start..trim_stream_end(data, start, marker);
+        return (start..trim_stream_end(data, start, marker), false);
     }
     if let Some(end) = declared_end {
-        return start..end;
+        return (start..end, false);
     }
     let end = find_bytes(data, start, b"endobj").unwrap_or(data.len());
-    start..trim_stream_end(data, start, end)
+    (start..trim_stream_end(data, start, end), false)
 }
 
 fn object_tail(data: &[u8], from: usize) -> usize {
@@ -1079,10 +1084,11 @@ pub(crate) fn parse_indirect_object(
             _ => None,
         };
         let start = stream_start(data, keyword.saturating_add(6));
-        let range = stream_range(data, start, declared);
+        let (range, used_declared_length) = stream_range(data, start, declared);
         let end = object_tail(data, range.end);
         return Ok(IndirectObject {
             obj_ref,
+            used_declared_length,
             object: Object::Stream(Stream {
                 dict,
                 data: range,
@@ -1094,6 +1100,7 @@ pub(crate) fn parse_indirect_object(
     Ok(IndirectObject {
         obj_ref,
         object,
+        used_declared_length: false,
         end: object_tail(data, after),
     })
 }

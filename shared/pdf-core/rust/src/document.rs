@@ -64,8 +64,17 @@ pub(crate) struct Page {
     pub dict: Dict,
     pub info: PageInfo,
     pub obj_ref: Option<ObjRef>,
-    pub resources: Dict,
+    pub resources: Rc<Object>,
     pub resources_ref: Option<ObjRef>,
+}
+
+impl Page {
+    pub(crate) fn resources_for_write(&self) -> Object {
+        self.resources_ref.map_or_else(
+            || Object::Dict(self.resources.as_dict().cloned().unwrap_or_default()),
+            Object::Ref,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -612,11 +621,10 @@ impl<'data> Document<'data> {
     fn page(&self, obj_ref: Option<ObjRef>, dict: &Dict, inherited: &Inherited) -> Outcome<Page> {
         let merged = inherited.merged(dict);
         let resources = match &merged.resources {
-            Some(object) => lenient(self.follow(object))?
-                .and_then(|value| value.as_dict().cloned())
-                .unwrap_or_default(),
-            None => Dict::default(),
-        };
+            Some(object) => lenient(self.follow(object))?.filter(|value| value.as_dict().is_some()),
+            None => None,
+        }
+        .unwrap_or_else(|| Rc::new(Object::Dict(Dict::default())));
         let resources_ref = match merged.resources.as_deref() {
             Some(Object::Ref(reference)) => Some(*reference),
             _ => None,
@@ -733,7 +741,9 @@ impl<'data> Document<'data> {
         if let Ok(object) = &parsed
             && (object.end < window.len() || end == ceiling)
             && object_terminated(window, object.end)
-            && (!matches!(object.object, Object::Stream(_)) || end == ceiling)
+            && (!matches!(object.object, Object::Stream(_))
+                || object.used_declared_length
+                || end == ceiling)
         {
             return parsed.map(Some);
         }
@@ -1181,20 +1191,31 @@ impl<'data> Document<'data> {
         Self::new(bytes, limits).section_at(skip_whitespace_at(bytes, 0), complete)
     }
 
-    pub(crate) fn selected_pages(&self, selection: Option<&[u32]>) -> Outcome<Vec<Page>> {
-        let Some(indexes) = selection else {
-            return self.pages();
-        };
-        let initial = self.requested_pages(indexes, None)?;
-        let (count, pages) = if initial.0 == 0 && !self.repaired.get() && self.rebuild().is_ok() {
-            self.requested_pages(indexes, None)?
+    pub(crate) fn selected_page_entries(
+        &self,
+        selection: PageRequest<&[u32]>,
+    ) -> Outcome<Vec<(usize, Page)>> {
+        let initial = self.walk_selected_pages(selection)?;
+        let (count, pages) = if initial.0 == 0
+            && selection.stop_after() != Some(0)
+            && !self.repaired.get()
+            && self.rebuild().is_ok()
+        {
+            self.walk_selected_pages(selection)?
         } else {
             initial
         };
-        if indexes.iter().any(|&index| widen(index) >= count) {
+        if selection.stop_after().is_some_and(|limit| limit > count)
+            && matches!(selection, PageRequest::Indexes(Some(_)))
+        {
             return Err(Failure::invalid("page index out of range"));
         }
-        Ok(pages.into_iter().map(|(_, page)| page).collect())
+        Ok(pages)
+    }
+
+    pub(crate) fn selected_pages(&self, selection: Option<&[u32]>) -> Outcome<Vec<Page>> {
+        self.selected_page_entries(PageRequest::Indexes(selection))
+            .map(|pages| pages.into_iter().map(|(_, page)| page).collect())
     }
 
     pub(crate) const fn shift(&self) -> usize {
@@ -1229,23 +1250,8 @@ impl<'data> Document<'data> {
         if !self.root_valid() {
             return Err(Failure::invalid("missing document catalog"));
         }
-        let stop_after = selection.stop_after();
-        if stop_after == Some(0) {
-            return Ok((0, Vec::new()));
-        }
-        let (count, pages) = if let PageRequest::Indexes(Some(indexes)) = selection {
-            self.requested_pages(indexes, stop_after)?
-        } else {
-            let mut pages = Vec::new();
-            let count = self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
-                if stop_after.is_none_or(|limit| index < limit) {
-                    pages.push((index, self.page(obj_ref, dict, inherited)?));
-                }
-                Ok(())
-            })?;
-            (count, pages)
-        };
-        if count == 0 {
+        let (count, pages) = self.walk_selected_pages(selection)?;
+        if count == 0 && selection.stop_after() != Some(0) {
             return Err(Failure::invalid("page tree requires repair"));
         }
         Ok((count, pages))
@@ -1381,6 +1387,27 @@ impl<'data> Document<'data> {
         Ok(count)
     }
 
+    fn walk_selected_pages(
+        &self,
+        selection: PageRequest<&[u32]>,
+    ) -> Outcome<(usize, Vec<(usize, Page)>)> {
+        let stop_after = selection.stop_after();
+        if stop_after == Some(0) {
+            return Ok((0, Vec::new()));
+        }
+        if let PageRequest::Indexes(Some(indexes)) = selection {
+            return self.requested_pages(indexes, stop_after);
+        }
+        let mut pages = Vec::new();
+        let count = self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+            if stop_after.is_none_or(|limit| index < limit) {
+                pages.push((index, self.page(obj_ref, dict, inherited)?));
+            }
+            Ok(())
+        })?;
+        Ok((count, pages))
+    }
+
     pub(crate) const fn was_repaired(&self) -> bool {
         self.repaired.get()
     }
@@ -1417,12 +1444,6 @@ impl Document<'_> {
             return filters::decode_stream(&stream.dict, raw, max, prefix);
         };
         let mut resolved = Dict::default();
-        for (key, value) in &stream.dict.entries {
-            if matches!(key.as_slice(), b"Filter" | b"DecodeParms" | b"DP") {
-                continue;
-            }
-            resolved.entries.push((key.clone(), value.clone()));
-        }
         resolved
             .entries
             .push((b"Filter".to_vec(), self.resolve_deep(filter, 0)?));
@@ -1664,11 +1685,8 @@ fn page_count(dict: &Dict, kids: usize, declared: usize) -> Option<usize> {
     (kids > 0 && count >= kids && count <= declared).then_some(count)
 }
 
-pub(crate) fn pick_pages(pages: &[Page], selected: Vec<usize>) -> Vec<(usize, &Page)> {
-    selected
-        .into_iter()
-        .filter_map(|index| pages.get(index).map(|page| (index, page)))
-        .collect()
+pub(crate) fn borrow_pages(pages: &[(usize, Page)]) -> Vec<(usize, &Page)> {
+    pages.iter().map(|(index, page)| (*index, page)).collect()
 }
 
 pub(crate) fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcome<Vec<usize>> {
@@ -2404,14 +2422,21 @@ mod tests {
             &[0.0_f64, 0.0_f64, 400.0_f64, 500.0_f64],
         );
         assert_eq!(pages[0].info.rotate, 180_i32);
-        assert!(pages[0].resources.get(b"Font").is_some());
+        assert!(pages[0].resources.as_dict().unwrap().get(b"Font").is_some());
         assert_exact(
             &pages[1].info.media_box,
             &[0.0_f64, 0.0_f64, 10.0_f64, 20.0_f64],
         );
         assert_eq!(pages[1].info.rotate, 90_i32);
-        assert!(pages[1].resources.get(b"XObject").is_some());
-        assert!(pages[1].resources.get(b"Font").is_none());
+        assert!(
+            pages[1]
+                .resources
+                .as_dict()
+                .unwrap()
+                .get(b"XObject")
+                .is_some()
+        );
+        assert!(pages[1].resources.as_dict().unwrap().get(b"Font").is_none());
     }
 
     #[test]

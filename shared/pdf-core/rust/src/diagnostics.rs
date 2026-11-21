@@ -1,4 +1,4 @@
-use crate::document::{Document, Page, PageRequest, pick_pages};
+use crate::document::{Document, Page, PageRequest, borrow_pages};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
 use crate::text::{Session, scan_page};
@@ -73,12 +73,12 @@ impl PageScan {
         invisible: bool,
     ) {
         self.glyphs = self.glyphs.saturating_add(1);
-        self.unmapped = self.unmapped.saturating_add(u32::from(
-            !actual_text && extracted.is_empty() || extracted.chars().any(unmapped_character),
-        ));
+        let mut unmapped = !actual_text && extracted.is_empty();
         let on_page = bounds.is_some_and(|rect| area(rect, self.crop) > 0.0_f64);
         for ch in extracted.chars() {
-            if !ch.is_whitespace() && !unmapped_character(ch) {
+            let unknown = unmapped_character(ch);
+            unmapped |= unknown;
+            if !ch.is_whitespace() && !unknown {
                 self.nonblank = true;
                 self.usable_chars = self.usable_chars.saturating_add(u32::from(on_page));
                 self.visible_chars = self
@@ -86,6 +86,7 @@ impl PageScan {
                     .saturating_add(u32::from(on_page && !invisible));
             }
         }
+        self.unmapped = self.unmapped.saturating_add(u32::from(unmapped));
     }
 
     pub(crate) fn image(&mut self, bounds: Rect, clip: Option<Rect>) {
@@ -154,9 +155,8 @@ pub(crate) fn document_diagnostics(
         return Err(Failure::limit("pdf exceeds size limit"));
     }
     let document = Document::open(bytes, limits)?;
-    let pages = document.pages()?;
-    let selected = selection.select(pages.len())?;
-    opened_diagnostics(&document, &pick_pages(&pages, selected), limits)
+    let pages = document.selected_page_entries(selection)?;
+    opened_diagnostics(&document, &borrow_pages(&pages), limits)
 }
 
 #[inline(never)]

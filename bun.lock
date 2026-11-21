@@ -33,7 +33,7 @@
     },
     "apps/docs": {
       "name": "@signature-kit/docs",
-      "version": "0.0.4",
+      "version": "0.0.5",
       "dependencies": {
         "@alchemy.run/domain": "2.0.0-beta.85",
         "@effect/platform-browser": "4.1.0",
@@ -107,7 +107,7 @@
     },
     "core/certificates": {
       "name": "@signature-kit/certificates",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "dependencies": {
         "@signature-kit/asn1": "^0.2.1",
         "@signature-kit/crypto": "^0.2.1",
@@ -117,7 +117,7 @@
     },
     "core/http": {
       "name": "@signature-kit/http",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "dependencies": {
         "@signature-kit/signatures": "^0.3.0",
         "effect": "4.1.0",
@@ -125,7 +125,7 @@
     },
     "core/i18n": {
       "name": "@signature-kit/i18n",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "dependencies": {
         "effect": "4.1.0",
       },
@@ -136,14 +136,14 @@
     },
     "core/signatures": {
       "name": "@signature-kit/signatures",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "dependencies": {
         "effect": "4.1.0",
       },
     },
     "formats/pdf": {
       "name": "@signature-kit/pdf",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
         "@effect/platform-browser": "4.1.0",
         "@signature-kit/cms": "^0.2.1",
@@ -162,7 +162,7 @@
     },
     "formats/react": {
       "name": "@signature-kit/react",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "@effect/platform-browser": "4.1.0",
         "@signature-kit/a1": "^0.4.0",
@@ -183,7 +183,7 @@
     },
     "formats/xml": {
       "name": "@signature-kit/xml",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "dependencies": {
         "@peculiar/x509": "2.2.0",
         "@signature-kit/crypto": "^0.2.1",
@@ -201,14 +201,14 @@
     },
     "shared/asn1": {
       "name": "@signature-kit/asn1",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "dependencies": {
         "effect": "4.1.0",
       },
     },
     "shared/cms": {
       "name": "@signature-kit/cms",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "dependencies": {
         "@peculiar/asn1-cms": "2.11.0",
         "@peculiar/asn1-schema": "2.11.0",
@@ -225,7 +225,7 @@
     },
     "shared/crypto": {
       "name": "@signature-kit/crypto",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "dependencies": {
         "@signature-kit/asn1": "^0.2.1",
         "effect": "4.1.0",
@@ -233,7 +233,7 @@
     },
     "shared/pdf-core": {
       "name": "@signature-kit/pdf-core",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "effect": "4.1.0",
       },
@@ -247,7 +247,7 @@
     },
     "signers/a1": {
       "name": "@signature-kit/a1",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "dependencies": {
         "@signature-kit/certificates": "^0.3.0",
         "@signature-kit/crypto": "^0.2.1",
@@ -258,7 +258,7 @@
     },
     "signers/assinafy": {
       "name": "@signature-kit/assinafy",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
@@ -269,7 +269,7 @@
     },
     "signers/clicksign": {
       "name": "@signature-kit/clicksign",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
@@ -280,7 +280,7 @@
     },
     "signers/documenso": {
       "name": "@signature-kit/documenso",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
@@ -291,7 +291,7 @@
     },
     "signers/docuseal": {
       "name": "@signature-kit/docuseal",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
@@ -302,7 +302,7 @@
     },
     "signers/zapsign": {
       "name": "@signature-kit/zapsign",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "dependencies": {
         "@signature-kit/crypto": "^0.2.1",
         "@signature-kit/http": "^0.1.0",
@@ -313,7 +313,7 @@
     },
     "tooling/integration-tests": {
       "name": "@tooling/integration-tests",
-      "version": "0.0.4",
+      "version": "0.0.5",
       "dependencies": {
         "@effect/vitest": "4.1.0",
         "@signature-kit/a1": "^0.4.0",
@@ -342,7 +342,7 @@
     },
     "validators/iti": {
       "name": "@signature-kit/iti",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "dependencies": {
         "@peculiar/asn1-ess": "2.11.0",
         "@peculiar/asn1-schema": "2.11.0",

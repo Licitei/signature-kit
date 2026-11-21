@@ -3,7 +3,7 @@ use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
 
-use crate::document::{Document, Page, PageRequest, pick_pages};
+use crate::document::{Document, Page, PageRequest, borrow_pages};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
@@ -1486,9 +1486,8 @@ pub(crate) fn document_text(
         return Err(Failure::limit("pdf exceeds size limit"));
     }
     let document = Document::open(bytes, limits)?;
-    let pages = document.pages()?;
-    let selected = page_indexes.select(pages.len())?;
-    opened_text(&document, &pick_pages(&pages, selected), limits, options)
+    let pages = document.selected_page_entries(page_indexes)?;
+    opened_text(&document, &borrow_pages(&pages), limits, options)
 }
 
 #[inline(never)]
@@ -1819,11 +1818,10 @@ pub(crate) fn document_tables(
         return Err(Failure::limit("pdf exceeds size limit"));
     }
     let document = Document::open(bytes, limits)?;
-    let pages = document.pages()?;
-    let selected = page_indexes.select(pages.len())?;
+    let pages = document.selected_page_entries(page_indexes)?;
     opened_tables(
         &document,
-        &pick_pages(&pages, selected),
+        &borrow_pages(&pages),
         limits,
         merge_across_pages,
         drop_running,
