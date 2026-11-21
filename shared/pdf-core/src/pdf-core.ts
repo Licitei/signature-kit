@@ -1546,7 +1546,7 @@ export const makePdfCore = (
         });
       }
       const maxRoundBytes = tuning.maxRoundBytes ?? 2 * 1024 * 1024;
-      const maxCachedBytes = tuning.maxCachedBytes ?? 4 * 1024 * 1024;
+      const maxCachedBytes = tuning.maxCachedBytes ?? 2 * 1024 * 1024;
       const lock = yield* Semaphore.make(1);
       type LazyState = PdfCoreLazyStats & { readonly closed: boolean };
       const state = yield* Ref.make<LazyState>({

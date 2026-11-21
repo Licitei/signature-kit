@@ -628,8 +628,19 @@ impl Lazy {
         self.cache = DocumentCache::new();
         self.frontier = None;
         self.sparse.missing.get_mut().clear();
+        let prefix = self
+            .sparse
+            .window(0, limit.min(self.sparse.tuning.probe))
+            .to_vec();
         self.sparse.segments.clear();
-        0
+        let retained = prefix.len();
+        if retained != 0 {
+            self.sparse.segments.push(Segment {
+                bytes: prefix,
+                start: 0,
+            });
+        }
+        retained
     }
 }
 
