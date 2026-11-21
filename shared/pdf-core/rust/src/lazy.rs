@@ -61,6 +61,13 @@ impl Sparse {
         (bytes.len() == length).then_some(bytes)
     }
 
+    fn cached_bytes(&self) -> usize {
+        self.segments
+            .iter()
+            .map(|segment| segment.bytes.len())
+            .sum()
+    }
+
     pub(crate) fn feed(&mut self, offset: usize, bytes: &[u8]) -> bool {
         let end = offset.saturating_add(bytes.len());
         if end > self.size || bytes.is_empty() {
@@ -128,17 +135,13 @@ impl Sparse {
             .tuning
             .gap
             .min(self.tuning.round_bytes.checked_div(4).unwrap_or_default());
-        let cached = self
-            .segments
-            .iter()
-            .map(|segment| segment.bytes.len())
-            .sum::<usize>();
-        let budget = self
-            .size
-            .checked_div(2)
-            .unwrap_or_default()
-            .max(MIN_SELECTIVE_BUDGET);
         if read_ahead && gap != 0 {
+            let cached = self.cached_bytes();
+            let budget = self
+                .size
+                .checked_div(2)
+                .unwrap_or_default()
+                .max(MIN_SELECTIVE_BUDGET);
             let requests = self.ranges(&wanted, gap);
             let planned = requests
                 .iter()
@@ -615,6 +618,18 @@ impl Lazy {
             ..offset
                 .saturating_add(length.saturating_mul(2).max(self.sparse.tuning.probe))
                 .min(self.sparse.size)
+    }
+
+    pub(crate) fn trim(&mut self, limit: usize) -> usize {
+        let cached = self.sparse.cached_bytes();
+        if cached <= limit || self.fallback && cached == self.sparse.size {
+            return cached;
+        }
+        self.cache = DocumentCache::new();
+        self.frontier = None;
+        self.sparse.missing.get_mut().clear();
+        self.sparse.segments.clear();
+        0
     }
 }
 

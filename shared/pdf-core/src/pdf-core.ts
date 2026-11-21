@@ -1546,11 +1546,13 @@ export const makePdfCore = (
         });
       }
       const maxRoundBytes = tuning.maxRoundBytes ?? 2 * 1024 * 1024;
+      const maxCachedBytes = tuning.maxCachedBytes ?? 4 * 1024 * 1024;
       const lock = yield* Semaphore.make(1);
       type LazyState = PdfCoreLazyStats & { readonly closed: boolean };
       const state = yield* Ref.make<LazyState>({
         closed: false,
         bytesRead: 0,
+        cachedBytes: 0,
         rounds: 0,
         strategy: "lazy",
       });
@@ -1574,7 +1576,7 @@ export const makePdfCore = (
             : Effect.succeed(opened);
         }),
         (opened) =>
-          Ref.update(state, (current) => ({ ...current, closed: true })).pipe(
+          Ref.update(state, (current) => ({ ...current, closed: true, cachedBytes: 0 })).pipe(
             Effect.andThen(Effect.sync(() => core.pdf_core_lazy_close(opened))),
           ),
       );
@@ -1697,6 +1699,16 @@ export const makePdfCore = (
         );
       });
 
+      const trim = Effect.suspend(() => {
+        if (Ref.getUnsafe(state).closed) {
+          return Effect.void;
+        }
+        const cachedBytes = core.pdf_core_lazy_trim(handle, maxCachedBytes) >>> 0;
+        return Ref.update(state, (current) =>
+          current.closed ? current : { ...current, cachedBytes },
+        );
+      });
+
       const read: BlockReader = (operation, entry, flags, indexes, decode, scale = 1) =>
         lock.withPermits(1)(
           Effect.scoped(
@@ -1724,6 +1736,14 @@ export const makePdfCore = (
               while (true) {
                 const next = yield* plan(operation, profile, readFlags | recovery, pages);
                 const fallback = next.status === 2 || next.status === 3;
+                if (fallback && tuning.allowFullRead === false) {
+                  return yield* new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.unsupportedFeature,
+                    operation,
+                    reason:
+                      "This PDF requires full-file recovery, which is disabled for this source.",
+                  });
+                }
                 if (fallback && Ref.getUnsafe(state).strategy !== "fallback") {
                   yield* Ref.update(state, (current): LazyState => ({
                     ...current,
@@ -1770,16 +1790,14 @@ export const makePdfCore = (
                 recovery = decoded.recovery;
               }
             }),
-          ),
+          ).pipe(Effect.ensuring(trim)),
         );
 
       return {
         text: (options?: PdfCoreTextOptions) => runText(read, options),
         tables: (options?: PdfCoreTablesOptions) => runTables(read, options),
         renderPages: (options?: PdfCoreRenderOptions) => runRenderPages(read, options),
-        stats: Ref.get(state).pipe(
-          Effect.map(({ bytesRead, rounds, strategy }) => ({ bytesRead, rounds, strategy })),
-        ),
+        stats: Ref.get(state).pipe(Effect.map(({ closed: _closed, ...stats }) => stats)),
       };
     });
 

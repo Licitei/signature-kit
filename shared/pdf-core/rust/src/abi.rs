@@ -1129,6 +1129,16 @@ pub(crate) extern "C" fn pdf_core_lazy_full_bytes(handle: u32) -> *const u8 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn pdf_core_lazy_trim(handle: u32, limit: usize) -> usize {
+    LAZY_DOCUMENTS.with(|documents| {
+        let mut all = documents.borrow_mut();
+        all.iter_mut()
+            .find(|(id, _)| *id == handle)
+            .map_or(0, |(_, document)| document.trim(limit))
+    })
+}
+
 fn encode_plan(plan: Plan) -> Outcome<Writer> {
     let mut out = Writer::with_capacity(4);
     let ranges = match plan {

@@ -345,7 +345,9 @@ const isLazyOpenFunction = (
 const isLazyCloseFunction = (value: unknown): value is (handle: number) => void =>
   typeof value === "function" && value.length === 1;
 const isLazyFullBytesFunction = (value: unknown): value is (handle: number) => number =>
-  typeof value === "function";
+  typeof value === "function" && value.length === 1;
+const isLazyTrimFunction = (value: unknown): value is (handle: number, limit: number) => number =>
+  typeof value === "function" && value.length === 2;
 const isLazyFeedFunction = (
   value: unknown,
 ): value is (handle: number, offset: number, pointer: number, length: number) => number =>
@@ -391,6 +393,7 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_lazy_feed: Schema.declare(isLazyFeedFunction, { identifier: "pdf_core_lazy_feed" }),
   pdf_core_lazy_plan: Schema.declare(isLazyPlanFunction, { identifier: "pdf_core_lazy_plan" }),
   pdf_core_lazy_run: Schema.declare(isLazyRunFunction, { identifier: "pdf_core_lazy_run" }),
+  pdf_core_lazy_trim: Schema.declare(isLazyTrimFunction, { identifier: "pdf_core_lazy_trim" }),
 });
 export type PdfCoreExports = (typeof PdfCoreExportsSchema)["Type"];
 
@@ -398,6 +401,10 @@ const byteOffsetSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum
 
 export const PDF_CORE_MAX_LAZY_BYTES = 512 * 1024 * 1024;
 export const PdfCoreLazyOptionsSchema = Schema.Struct({
+  allowFullRead: Schema.optional(Schema.Boolean),
+  maxCachedBytes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: PDF_CORE_MAX_LAZY_BYTES })),
+  ),
   pageLimit: Schema.optional(pageIndexSchema),
   probeBytes: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 1024 * 1024 })),
@@ -412,6 +419,7 @@ export const PdfCoreLazyOptionsSchema = Schema.Struct({
 export type PdfCoreLazyOptions = (typeof PdfCoreLazyOptionsSchema)["Type"];
 export const PdfCoreLazyStatsSchema = Schema.Struct({
   bytesRead: Schema.Int,
+  cachedBytes: Schema.Int,
   rounds: Schema.Int,
   strategy: Schema.Literals(["lazy", "fallback"]),
 });

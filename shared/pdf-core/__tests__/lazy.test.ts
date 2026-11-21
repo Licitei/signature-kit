@@ -272,6 +272,53 @@ describe("PdfCore byte-range documents", () => {
     ).pipe(Effect.provide(layer)),
   );
 
+  it.effect("releases page ranges between operations when the cache budget is zero", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const bytes = readFileSync(new URL("habilitacao-150.pdf", fixtures));
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), {
+          pageLimit: 1,
+          maxCachedBytes: 0,
+          allowFullRead: false,
+        });
+        expect(yield* doc.text()).toEqual(yield* core.text(bytes, { pageIndexes: [0] }));
+        const first = yield* doc.stats;
+        expect(first.cachedBytes).toBe(0);
+        expect(first.bytesRead).toBeLessThan(bytes.length);
+        expect(yield* doc.text({ pageIndexes: [4] })).toEqual(
+          yield* core.text(bytes, { pageIndexes: [4] }),
+        );
+        const second = yield* doc.stats;
+        expect(second.cachedBytes).toBe(0);
+        expect(second.strategy).toBe("lazy");
+        expect(second.bytesRead).toBeGreaterThan(first.bytesRead);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("can decline full recovery before fetching the remaining file", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const broken = readFileSync(new URL("broken-xref.pdf", fixtures));
+        const bytes = new Uint8Array(64 * 1024).fill(32);
+        bytes.set(broken);
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), {
+          pageLimit: 1,
+          probeBytes: 128,
+          maxCachedBytes: 0,
+          allowFullRead: false,
+        });
+        const result = yield* Effect.flip(doc.text());
+        expect(result.code).toBe(PdfCoreErrorCodeValue.unsupportedFeature);
+        const stats = yield* doc.stats;
+        expect(stats.bytesRead).toBeLessThan(bytes.length / 4);
+        expect(stats.cachedBytes).toBe(0);
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
   it.effect("clamps a page limit to the actual page count and accepts zero", () =>
     Effect.scoped(
       Effect.gen(function* () {
