@@ -34,6 +34,7 @@ export const verifyPdfSignatures = (
       ),
     );
 
+    yield* Effect.annotateCurrentSpan("signature_kit.pdf.bytes", request.pdf.byteLength);
     const results: PdfSignatureVerificationResult[] = [];
     yield* forEachPdfSignature(request.pdf, (extracted, index, total) =>
       Effect.gen(function* () {
@@ -62,10 +63,21 @@ export const verifyPdfSignatures = (
           revisionEnd,
           coversFileEnd: extracted.coversFileEnd,
         });
-      }),
+      }).pipe(
+        Effect.withSpan("pdf.verify.signature", {
+          attributes: {
+            "signature_kit.pdf.signature_index": index,
+            "signature_kit.pdf.signed_bytes": extracted.signedData.byteLength,
+          },
+        }),
+      ),
     );
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pdf.signature_count": results.length,
+      "signature_kit.pdf.valid_signatures": results.filter((result) => result.valid).length,
+    });
     return results;
-  });
+  }).pipe(Effect.withSpan(PdfOperationValue.verify));
 
 export const verifyPdf = Effect.fn(function* (
   input: PdfVerificationRequest,

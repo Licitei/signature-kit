@@ -561,29 +561,45 @@ const zapSignSignatureRequestProvider = Provider.effect(
       nuke: { skip: true },
       diff: zapsignSignatureRequestDiff,
       list: () => Effect.succeed([]),
-      read: Effect.fn(function* ({ output }) {
-        if (output === undefined) return undefined;
-        const options = yield* credentials;
-        const baseUrl = zapSignBaseUrl(options);
-        return yield* getZapSignSignatureRequestInternal(http, options, baseUrl, output.id).pipe(
-          Effect.catchIf(
-            (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
-            () => Effect.succeed(undefined),
-          ),
-        );
-      }),
-      reconcile: Effect.fn(function* ({ news, output }) {
+      read: Effect.fn("zapsign.read", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          if (output === undefined) return undefined;
+          const options = yield* credentials;
+          const baseUrl = zapSignBaseUrl(options);
+          return yield* getZapSignSignatureRequestInternal(http, options, baseUrl, output.id).pipe(
+            Effect.catchIf(
+              (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
+              () => Effect.succeed(undefined),
+            ),
+          );
+        },
+      ),
+      reconcile: Effect.fn("zapsign.reconcile", {
+        attributes: { "signature_kit.provider": PROVIDER },
+      })(function* ({ news, output }) {
         if (output !== undefined) return output;
         const options = yield* credentials;
         const baseUrl = zapSignBaseUrl(options);
         const input = yield* zapsignSignatureRequestInputFromResourceProps(news);
-        return yield* createZapSignDocument(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan({
+          "signature_kit.document_count": input.documents.length,
+          "signature_kit.signer_count": input.recipients.length,
+          "signature_kit.document.bytes": input.documents.reduce(
+            (total, document) => total + document.content.byteLength,
+            0,
+          ),
+        });
+        const created = yield* createZapSignDocument(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan("signature_kit.signature_request.state", created.state);
+        return created;
       }),
-      delete: Effect.fn(function* ({ output }) {
-        const options = yield* credentials;
-        const baseUrl = zapSignBaseUrl(options);
-        return yield* deleteZapSignSignatureRequestInternal(http, options, baseUrl, output.id);
-      }),
+      delete: Effect.fn("zapsign.delete", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          const options = yield* credentials;
+          const baseUrl = zapSignBaseUrl(options);
+          return yield* deleteZapSignSignatureRequestInternal(http, options, baseUrl, output.id);
+        },
+      ),
     });
   }),
 );
@@ -618,7 +634,14 @@ export const getZapSignSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* getZapSignSignatureRequestInternal(http, valid, zapSignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((request) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.state", request.state),
+    ),
+    Effect.withSpan("zapsign.getSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const listZapSignSignatureRequests = (
   options: ZapSignProviderOptions,
@@ -639,7 +662,14 @@ export const listZapSignSignatureRequests = (
     );
     const http = yield* SignatureHttpClient;
     return yield* listZapSignSignatureRequestsInternal(http, valid, zapSignBaseUrl(valid));
-  });
+  }).pipe(
+    Effect.tap((requests) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.count", requests.length),
+    ),
+    Effect.withSpan("zapsign.listSignatureRequests", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const cancelZapSignSignatureRequest = (
   options: ZapSignProviderOptions,
@@ -661,7 +691,11 @@ export const cancelZapSignSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* cancelZapSignSignatureRequestInternal(http, valid, zapSignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("zapsign.cancelSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const deleteZapSignSignatureRequest = (
   options: ZapSignProviderOptions,
@@ -683,7 +717,11 @@ export const deleteZapSignSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* deleteZapSignSignatureRequestInternal(http, valid, zapSignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("zapsign.deleteSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const downloadZapSignSignedDocument = (
   options: ZapSignProviderOptions,
@@ -705,9 +743,18 @@ export const downloadZapSignSignedDocument = (
     );
     const http = yield* SignatureHttpClient;
     return yield* downloadZapSignSignedDocumentInternal(http, valid, zapSignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((bytes) =>
+      Effect.annotateCurrentSpan("signature_kit.document.bytes", bytes.byteLength),
+    ),
+    Effect.withSpan("zapsign.downloadSignedDocument", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
-export const waitForZapSignSignatureRequest = Effect.fn(function* (
+export const waitForZapSignSignatureRequest = Effect.fn("zapsign.waitForSignatureRequest", {
+  attributes: { "signature_kit.provider": PROVIDER },
+})(function* (
   options: ZapSignProviderOptions,
   id: string,
   pollInterval: Duration.Duration,

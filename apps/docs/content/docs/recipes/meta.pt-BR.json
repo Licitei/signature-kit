@@ -6,6 +6,7 @@
     "react-signing-hook",
     "react-components",
     "react-pdf-preview",
-    "anchor-placement"
+    "anchor-placement",
+    "tracing"
   ]
 }

@@ -382,6 +382,10 @@ export const validatePdfConformance = (
       ),
     );
 
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pdf.bytes": valid.pdf.byteLength,
+      "signature_kit.iti.trusted_roots": valid.trustedRoots !== undefined,
+    });
     yield* loadPdfSignatureDocument({
       id: "iti-conformance",
       name: "document.pdf",
@@ -428,7 +432,9 @@ export const validatePdfConformance = (
       ),
     );
 
+    yield* Effect.annotateCurrentSpan("signature_kit.pdf.signature_count", signatures.length);
     if (signatures.length === 0) {
+      yield* Effect.annotateCurrentSpan("signature_kit.iti.outcome", "rejected");
       return {
         validator: ItiOperation.conformance,
         standard: ITI_PADES_AD_RB_SIGNATURE_TYPE,
@@ -577,7 +583,11 @@ export const validatePdfConformance = (
           certificationPath: chainStatus(valid.trustedRoots, cmsVerification.chainValid),
           attributes,
         } satisfies ItiSignatureConformance;
-      }),
+      }).pipe(
+        Effect.withSpan("iti.conformance.signature", {
+          attributes: { "signature_kit.pdf.signature_index": index },
+        }),
+      ),
     );
 
     const attributesApproved = reports.every((report) =>
@@ -591,6 +601,10 @@ export const validatePdfConformance = (
         report.certificationPath !== "invalid",
     );
     const approved = signaturesApproved && attributesApproved;
+    yield* Effect.annotateCurrentSpan(
+      "signature_kit.iti.outcome",
+      approved ? "approved" : "rejected",
+    );
 
     return {
       validator: ItiOperation.conformance,
@@ -600,4 +614,4 @@ export const validatePdfConformance = (
       signatureCount: signatures.length,
       signatures: reports,
     } satisfies ItiConformanceReport;
-  });
+  }).pipe(Effect.withSpan(ItiOperation.conformance));

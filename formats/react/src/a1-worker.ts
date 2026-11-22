@@ -47,7 +47,7 @@ export const a1WorkerHandlersLayer = A1WorkerRequests.toLayer(
   Effect.gen(function* () {
     const session = yield* SignatureSession;
     return A1WorkerRequests.of({
-      Initialize: Effect.fn(function* (input) {
+      Initialize: Effect.fn("react.a1.worker.initialize")(function* (input) {
         const options = { pfx: input.pfx, password: Redacted.make(input.password) };
         const loaded = yield* session.initialize(
           Effect.gen(function* () {
@@ -59,10 +59,12 @@ export const a1WorkerHandlersLayer = A1WorkerRequests.toLayer(
         return { generation: loaded.generation, profile: loaded.value };
       }),
       Sign: ({ generation, input }) =>
-        session.use(generation, (adapter) =>
-          // effect-boundary: worker signing assembly [allow-provide: session supplies the active signer]
-          prepareAndSignPdf(input).pipe(Effect.provideService(Signatures, adapter)),
-        ),
+        session
+          .use(generation, (adapter) =>
+            // effect-boundary: worker signing assembly [allow-provide: session supplies the active signer]
+            prepareAndSignPdf(input).pipe(Effect.provideService(Signatures, adapter)),
+          )
+          .pipe(Effect.withSpan("react.a1.worker.sign")),
       Dispose: session.dispose,
     });
   }),

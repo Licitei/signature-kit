@@ -1,0 +1,91 @@
+---
+title: Rastreamento com OpenTelemetry
+description: "Exporte spans do SignatureKit de leitura de PDF, assinatura e chamadas a provedores para um coletor OTLP ou para o console."
+---
+
+Toda operação pública do SignatureKit roda dentro de um span do Effect. Leitura de PDF, extração de Markdown, carga de certificado, assinatura, verificação e chamadas a provedores remotos geram um span cada. Os pacotes usam só o tracer nativo do Effect e não dependem de `@opentelemetry/api` nem de um SDK. Se a sua app não instala um exportador, o tracer nativo descarta cada span quando ele termina.
+
+Para exportar, forneça a camada oficial do [`@effect/opentelemetry`](https://effect.website/docs/observability/tracing/) na fronteira da app.
+
+```sh
+bun add @effect/opentelemetry @opentelemetry/api @opentelemetry/resources \
+  @opentelemetry/sdk-trace-base @opentelemetry/sdk-trace-node \
+  @opentelemetry/semantic-conventions @opentelemetry/exporter-trace-otlp-http
+```
+
+```ts title="tracing.ts"
+import { readFile } from "node:fs/promises"
+
+import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
+import * as NodeServices from "@effect/platform-node/NodeServices"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+import {
+  BatchSpanProcessor,
+  ConsoleSpanExporter,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base"
+import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file"
+import { PdfCore } from "@signature-kit/pdf-core/pdf-core"
+import { Effect, Layer } from "effect"
+
+const TracingLive = NodeSdk.layer(() => ({
+  resource: { serviceName: "contracts-api", serviceVersion: "1.4.0" },
+  spanProcessor:
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT === undefined
+      ? new SimpleSpanProcessor(new ConsoleSpanExporter())
+      : new BatchSpanProcessor(new OTLPTraceExporter()),
+}))
+
+const program = Effect.gen(function* () {
+  const core = yield* PdfCore
+  const pdf = new Uint8Array(yield* Effect.promise(() => readFile(process.argv[2] ?? "")))
+  return (yield* core.text(pdf, { format: "markdown" })).join("\n\n")
+}).pipe(Effect.withSpan("contracts.extractMarkdown"))
+
+await Effect.runPromise(
+  program.pipe(
+    Effect.provide(
+      pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer), Layer.provideMerge(TracingLive)),
+    ),
+  ),
+)
+```
+
+Rode `bun tracing.ts contrato.pdf` para imprimir os spans no console. Defina `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` para enviá-los via OTLP/HTTP a um coletor, como Jaeger, Grafana Tempo ou o OpenTelemetry Collector.
+
+Forneça a camada de rastreamento por baixo das camadas do SignatureKit com `Layer.provideMerge`, não ao lado delas com `Layer.mergeAll`. Caso contrário, os spans emitidos enquanto uma camada é construída, como `pdfCore.load`, não chegam ao exportador.
+
+## Árvore de spans
+
+O exemplo acima gera esta árvore:
+
+```text
+contracts.extractMarkdown
+pdfCore.load                    signature_kit.wasm.memory_bytes
+  pdfCore.wasm.instantiate
+pdfCore.text                    signature_kit.pdf.bytes, .page_count, .output_format, .merge_across_pages
+  pdfCore.wasm.copyIn           signature_kit.wasm.input_bytes
+  pdfCore.wasm.run              signature_kit.pdf_core.operation
+  pdfCore.wasm.decode           signature_kit.wasm.result_bytes
+```
+
+`pdfCore.wasm.run` cobre a leitura, o layout, a junção de tabelas e a renderização de Markdown dentro do núcleo Wasm. O núcleo em Rust não recebe imports, então não tem relógio, e spans por página adicionariam custo ao caminho crítico.
+
+Os nomes dos spans seguem `<escopo>.<operação>`:
+
+- `pdfCore.*`: operações do motor de PDF. Documentos lazy adicionam `pdfCore.lazy.plan`, `pdfCore.lazy.supply` e `pdfCore.readRange`.
+- `pdf.*`: assinatura em `@signature-kit/pdf`. `pdf.sign` contém `pdf.placeholder`, `pdf.byteRange.prepare`, `pdf.signer.load`, `pdf.cms.create` e `pdf.contents.embed`. Verificação, carimbo, junção, busca de âncoras e lotes têm spans próprios.
+- `crypto.pkcs12.*`, `certificates.*`, `a1.*` e `signatures.*`: carga de certificado, importação de chave, assinatura e verificação.
+- `cms.*`, `xml.*` e `iti.*`: CMS, carimbo do tempo, XML-DSig e validação no ITI.
+- `assinafy.*`, `clicksign.*`, `documenso.*`, `docuseal.*` e `zapsign.*`: ciclo de vida das solicitações de assinatura remota.
+- Chamadas HTTP são spans de cliente com o nome do método (`GET`, `POST`). Elas trazem `http.request.method`, `http.response.status_code`, `server.address` e `signature_kit.provider`.
+
+Operações que falham terminam com status `ERROR` e um evento `exception` com o erro tipado.
+
+## O que os spans nunca contêm
+
+Os atributos trazem tamanhos, contagens, literais de algoritmo e de status, e nomes de provedor. Eles nunca contêm texto do documento, termos de busca de âncoras, titular ou número de série do certificado, CPF/CNPJ, senhas, chaves, digests, bytes de assinatura, ids de solicitação do provedor nem URLs com caminho ou query string.
+
+## Entradas Promise
+
+`@signature-kit/pdf-core/promise` e `@signature-kit/pdf-core/node` usam o tracer padrão do Effect, então os spans delas nunca são exportados. Use a API Effect com a camada acima quando precisar de traces.

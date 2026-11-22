@@ -493,6 +493,12 @@ export const inspectDetachedSignedData = (
       signerInfo.signedAttrs?.attributes ?? [],
       inspectAttribute,
     );
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.cms.bytes": valid.cms.byteLength,
+      "signature_kit.cms.signer_count": signed.signerInfos.length,
+      "signature_kit.cms.certificate_count": signed.certificates?.length ?? 0,
+      "signature_kit.cms.signed_attribute_count": attributes.length,
+    });
     const signerSid = signerIdentifierFromSid(signerInfo.sid);
     const inspectableCertificate = yield* findSignerCertificate(signed.certificates, signerSid);
 
@@ -517,4 +523,4 @@ export const inspectDetachedSignedData = (
             }),
       signedAttributes: attributes,
     };
-  });
+  }).pipe(Effect.withSpan(CmsOperationValue.parse));

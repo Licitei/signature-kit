@@ -363,7 +363,7 @@ const verifySingleSignature = (
         ),
       ),
     );
-  });
+  }).pipe(Effect.withSpan("xml.verify.signature"));
 
 export const verifyXml = (
   request: XmlVerificationRequest,
@@ -388,6 +388,12 @@ export const verifyXml = (
 
     const signatureStructure = xmlRuntime.inspectSignatureStructure(document);
     const signatureCount = signatureStructure.signatureCount;
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.xml.characters": input.xml.length,
+      "signature_kit.xml.signature_count": signatureCount,
+      "signature_kit.xml.reference_count": signatureStructure.referenceUris.length,
+      "signature_kit.xml.required_reference": input.requiredReference !== undefined,
+    });
     if (signatureCount === 0) {
       return yield* new XmlError({
         code: XmlErrorCodeValue.signatureNotFound,
@@ -407,6 +413,7 @@ export const verifyXml = (
       referenceUris,
     };
     if (!signatureStructure.valid) {
+      yield* Effect.annotateCurrentSpan("signature_kit.xml.valid", false);
       return invalidResult;
     }
 
@@ -484,6 +491,7 @@ export const verifyXml = (
           !referenceUris.includes(input.requiredReference.uri))) ||
       (input.publicKeyDer === undefined && input.trustedCertificateDer === undefined)
     ) {
+      yield* Effect.annotateCurrentSpan("signature_kit.xml.valid", false);
       return invalidResult;
     }
 
@@ -509,13 +517,15 @@ export const verifyXml = (
         SignedXml,
       );
       if (!valid) {
+        yield* Effect.annotateCurrentSpan("signature_kit.xml.valid", false);
         return invalidResult;
       }
     }
 
+    yield* Effect.annotateCurrentSpan("signature_kit.xml.valid", true);
     return {
       valid: true,
       signatureCount,
       referenceUris,
     };
-  });
+  }).pipe(Effect.withSpan(XmlOperationValue.verify));

@@ -50,6 +50,15 @@ const diagnosticRequestUrl = (request: SignatureHttpRequest): string =>
   request.diagnosticUrl ??
   request.url.replace(/[?#].*$/, "").replace(/^([a-z][a-z\d+.-]*:\/\/)(?:[^/?#]*@)/i, "$1");
 
+const serverAttributes = (url: string): Record<string, string | number> => {
+  if (!URL.canParse(url)) return {};
+  const parsed = new URL(url);
+  return {
+    "server.address": parsed.hostname,
+    ...(parsed.port === "" ? {} : { "server.port": Number(parsed.port) }),
+  };
+};
+
 const isRetryableMethod = (method: SignatureHttpMethod): boolean =>
   method === "DELETE" || method === "GET" || method === "PUT";
 
@@ -277,8 +286,22 @@ const transport = <A>(
           }),
         );
       }),
+      Effect.onExit(() =>
+        response === undefined
+          ? Effect.void
+          : Effect.annotateCurrentSpan("http.response.status_code", response.status),
+      ),
     );
-  });
+  }).pipe(
+    Effect.withSpan(request.method, {
+      kind: "client",
+      attributes: {
+        "http.request.method": request.method,
+        ...serverAttributes(request.url),
+        ...(request.provider === undefined ? {} : { "signature_kit.provider": request.provider }),
+      },
+    }),
+  );
 
 const JsonUnknownSchema = Schema.fromJsonString(Schema.Unknown);
 

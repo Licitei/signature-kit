@@ -277,7 +277,17 @@ export const validatePdfWithIti = (
         }),
       );
     }
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.iti.source": "pdf" in source ? "bytes" : "url",
+      "signature_kit.pdf.bytes": pdf.byteLength,
+    });
     const conformance = yield* validatePdfConformance({ pdf });
     const response = yield* submitToIti(pdf, valid.fileName ?? DEFAULT_FILE_NAME);
-    return yield* buildRemoteReport(response, conformance);
-  });
+    const report = yield* buildRemoteReport(response, conformance);
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.iti.remote_status": response.status,
+      "signature_kit.iti.outcome": report.outcome,
+      "signature_kit.iti.approved": report.approved,
+    });
+    return report;
+  }).pipe(Effect.withSpan(ItiOperation.remote));

@@ -1122,7 +1122,11 @@ const parseXml = (xml: string): Effect.Effect<Document, XmlError> =>
           }),
       ),
     );
-  });
+  }).pipe(
+    Effect.withSpan(XmlOperationValue.parse, {
+      attributes: { "signature_kit.xml.characters": xml.length },
+    }),
+  );
 
 const importSpkiVerificationKey = (
   publicKeyDer: Uint8Array,
@@ -1175,10 +1179,16 @@ export const xmlRuntimeLayer: Layer.Layer<XmlRuntime, XmlError> = Layer.effect(
               ? importSpkiVerificationKey(der, verificationAlgorithm(key))
               : exportCertificateVerificationKey(der, verificationAlgorithm(key)),
           ),
+          Effect.withSpan(XmlOperationValue.keyImport, {
+            attributes: {
+              "signature_kit.xml.key_source": key.source,
+              "signature_kit.hash.algorithm": key.algorithmHash,
+            },
+          }),
         ),
     });
 
-    return {
+    const service: XmlRuntimeService = {
       parse: parseXml,
       signedXml: () => Effect.succeed(XmlRuntimeSignedXml),
       validateSignatureTransforms,
@@ -1192,5 +1202,6 @@ export const xmlRuntimeLayer: Layer.Layer<XmlRuntime, XmlError> = Layer.effect(
           verificationKeyCacheKey("certificate", certificateDer, algorithm),
         ),
     };
-  }),
+    return service;
+  }).pipe(Effect.withSpan(XmlOperationValue.runtime)),
 );

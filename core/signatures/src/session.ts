@@ -111,10 +111,10 @@ export const signatureSessionLayer = (reasons: {
             const detached = yield* Semaphore.withPermit(lock)(detach);
             yield* drain(detached, Exit.void);
           }),
-        );
+        ).pipe(Effect.withSpan("signatures.session.dispose"));
       yield* Effect.addFinalizer(dispose);
       return SignatureSession.of({
-        initialize: Effect.fn((acquire) =>
+        initialize: Effect.fn("signatures.session.initialize")((acquire) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
               const started = yield* Semaphore.withPermit(lock)(
@@ -183,7 +183,7 @@ export const signatureSessionLayer = (reasons: {
             }),
           ),
         ),
-        use: Effect.fn((requested, run) =>
+        use: Effect.fn("signatures.session.use")((requested, run) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
               const fiber = yield* Semaphore.withPermit(lock)(

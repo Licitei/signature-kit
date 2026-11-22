@@ -31,6 +31,13 @@ export const createDetachedSignedData = (
       ),
     );
     const hashAlgorithm = valid.hashAlgorithm ?? "sha256";
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.cms.content_bytes": valid.content.byteLength,
+      "signature_kit.hash.algorithm": hashAlgorithm,
+      "signature_kit.cms.certificate_count": 1 + (valid.chainDer?.length ?? 0),
+      "signature_kit.cms.icp_brasil_policy": valid.icpBrasil !== undefined,
+      "signature_kit.timestamp.requested": valid.timestamp !== undefined,
+    });
 
     const certificate = yield* Effect.try({
       try: () => pkijs.Certificate.fromBER(new Uint8Array(valid.certificateDer).buffer),
@@ -66,6 +73,10 @@ export const createDetachedSignedData = (
     const [messageDigest, certificateSha256] = yield* Effect.all(
       [digest(hashAlgorithm, valid.content), digest("sha256", embeddedCertificateDer)],
       { concurrency: "unbounded" },
+    ).pipe(
+      Effect.withSpan("cms.digest", {
+        attributes: { "signature_kit.hash.algorithm": hashAlgorithm },
+      }),
     );
 
     const signed = yield* Effect.try({
@@ -116,7 +127,7 @@ export const createDetachedSignedData = (
           reason: "Web Crypto signing of the CMS attributes failed.",
           operation: CmsOperationValue.sign,
         }),
-    });
+    }).pipe(Effect.withSpan("cms.signature"));
 
     if (valid.timestamp !== undefined) {
       const signerInfo = signed.signerInfos[0];
@@ -157,7 +168,7 @@ export const createDetachedSignedData = (
       });
     }
 
-    return yield* Effect.try({
+    const encoded = yield* Effect.try({
       try: () => {
         const contentInfo = new pkijs.ContentInfo({
           contentType: CmsOid.signedData,
@@ -172,4 +183,6 @@ export const createDetachedSignedData = (
           operation: CmsOperationValue.encode,
         }),
     });
-  });
+    yield* Effect.annotateCurrentSpan("signature_kit.cms.output_bytes", encoded.byteLength);
+    return encoded;
+  }).pipe(Effect.withSpan(CmsOperationValue.sign));

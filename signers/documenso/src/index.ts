@@ -624,6 +624,12 @@ const createDocumensoEnvelopeRequest = (
   input: DocumensoEnvelopeInput,
 ): Effect.Effect<DocumensoEnvelope, SignatureKitError> =>
   createEnvelope(http, options, baseUrl, input).pipe(
+    Effect.withSpan("documenso.createEnvelope", {
+      attributes: {
+        "signature_kit.provider": PROVIDER,
+        "signature_kit.document_count": input.documents.length,
+      },
+    }),
     Effect.flatMap((envelope) => {
       if (input.send === false) {
         return Effect.succeed({
@@ -635,6 +641,9 @@ const createDocumensoEnvelopeRequest = (
         });
       }
       return distributeEnvelope(http, options, baseUrl, input, envelope).pipe(
+        Effect.withSpan("documenso.distributeEnvelope", {
+          attributes: { "signature_kit.provider": PROVIDER },
+        }),
         Effect.catchIf(shouldRollbackDocumensoCreate, (error) =>
           deleteEnvelope(http, options, baseUrl, envelope.id).pipe(
             Effect.ignore,
@@ -655,29 +664,45 @@ const documensoSignatureRequestProvider = Provider.effect(
       nuke: { skip: true },
       diff: documensoSignatureRequestDiff,
       list: () => Effect.succeed([]),
-      read: Effect.fn(function* ({ output }) {
-        if (output === undefined) return undefined;
-        const options = yield* credentials;
-        const baseUrl = documensoBaseUrl(options);
-        return yield* getEnvelope(http, options, baseUrl, output.id).pipe(
-          Effect.catchIf(
-            (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
-            () => Effect.succeed(undefined),
-          ),
-        );
-      }),
-      reconcile: Effect.fn(function* ({ news, output }) {
+      read: Effect.fn("documenso.read", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          if (output === undefined) return undefined;
+          const options = yield* credentials;
+          const baseUrl = documensoBaseUrl(options);
+          return yield* getEnvelope(http, options, baseUrl, output.id).pipe(
+            Effect.catchIf(
+              (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
+              () => Effect.succeed(undefined),
+            ),
+          );
+        },
+      ),
+      reconcile: Effect.fn("documenso.reconcile", {
+        attributes: { "signature_kit.provider": PROVIDER },
+      })(function* ({ news, output }) {
         if (output !== undefined) return output;
         const options = yield* credentials;
         const baseUrl = documensoBaseUrl(options);
         const input = yield* documensoSignatureRequestInputFromResourceProps(news);
-        return yield* createDocumensoEnvelopeRequest(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan({
+          "signature_kit.document_count": input.documents.length,
+          "signature_kit.signer_count": input.recipients.length,
+          "signature_kit.document.bytes": input.documents.reduce(
+            (total, document) => total + document.content.byteLength,
+            0,
+          ),
+        });
+        const created = yield* createDocumensoEnvelopeRequest(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan("signature_kit.signature_request.state", created.state);
+        return created;
       }),
-      delete: Effect.fn(function* ({ output }) {
-        const options = yield* credentials;
-        const baseUrl = documensoBaseUrl(options);
-        return yield* deleteEnvelope(http, options, baseUrl, output.id);
-      }),
+      delete: Effect.fn("documenso.delete", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          const options = yield* credentials;
+          const baseUrl = documensoBaseUrl(options);
+          return yield* deleteEnvelope(http, options, baseUrl, output.id);
+        },
+      ),
     });
   }),
 );
@@ -712,7 +737,14 @@ export const getDocumensoSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* getEnvelope(http, valid, documensoBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((request) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.state", request.state),
+    ),
+    Effect.withSpan("documenso.getSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const listDocumensoSignatureRequests = (
   options: DocumensoProviderOptions,
@@ -733,7 +765,14 @@ export const listDocumensoSignatureRequests = (
     );
     const http = yield* SignatureHttpClient;
     return yield* listEnvelopes(http, valid, documensoBaseUrl(valid));
-  });
+  }).pipe(
+    Effect.tap((requests) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.count", requests.length),
+    ),
+    Effect.withSpan("documenso.listSignatureRequests", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const cancelDocumensoSignatureRequest = (
   options: DocumensoProviderOptions,
@@ -755,7 +794,11 @@ export const cancelDocumensoSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* cancelEnvelope(http, valid, documensoBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("documenso.cancelSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const deleteDocumensoSignatureRequest = (
   options: DocumensoProviderOptions,
@@ -777,7 +820,11 @@ export const deleteDocumensoSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* deleteEnvelope(http, valid, documensoBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("documenso.deleteSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const downloadDocumensoSignedDocument = (
   options: DocumensoProviderOptions,
@@ -799,9 +846,18 @@ export const downloadDocumensoSignedDocument = (
     );
     const http = yield* SignatureHttpClient;
     return yield* downloadSignedEnvelopeDocument(http, valid, documensoBaseUrl(valid), envelopeId);
-  });
+  }).pipe(
+    Effect.tap((bytes) =>
+      Effect.annotateCurrentSpan("signature_kit.document.bytes", bytes.byteLength),
+    ),
+    Effect.withSpan("documenso.downloadSignedDocument", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
-export const waitForDocumensoSignatureRequest = Effect.fn(function* (
+export const waitForDocumensoSignatureRequest = Effect.fn("documenso.waitForSignatureRequest", {
+  attributes: { "signature_kit.provider": PROVIDER },
+})(function* (
   options: DocumensoProviderOptions,
   id: string,
   pollInterval: Duration.Duration,

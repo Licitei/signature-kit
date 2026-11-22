@@ -154,6 +154,14 @@ export const addSignaturePlaceholder = (
         : DEFAULT_SIGNATURE_LENGTH);
     const subFilter =
       request.policy === "pades-icp-brasil" ? "ETSI.CAdES.detached" : "adbe.pkcs7.detached";
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pdf.bytes": request.pdf.byteLength,
+      "signature_kit.pdf.page_count": document.pages.length,
+      "signature_kit.pdf.contents_bytes": signatureLength,
+      "signature_kit.signature.subfilter": subFilter,
+      "signature_kit.pdf.visible_widget": isVisibleWidget,
+      "signature_kit.pdf.already_signed": signed,
+    });
     const signingTime = request.signingTime ?? new Date(yield* Clock.currentTimeMillis);
     const signatureRef = { number: document.nextObjectNumber, generation: 0 };
     const widgetRef = { number: document.nextObjectNumber + 1, generation: 0 };
@@ -253,4 +261,4 @@ export const addSignaturePlaceholder = (
             }),
         ),
       );
-  });
+  }).pipe(Effect.withSpan(PdfOperationValue.placeholder));

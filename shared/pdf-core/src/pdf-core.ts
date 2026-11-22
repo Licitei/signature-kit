@@ -441,7 +441,7 @@ export const makePdfCore = (
           operation: PdfCoreOperationValue.load,
           reason: "The PDF core WebAssembly module failed to instantiate.",
         }),
-    });
+    }).pipe(Effect.withSpan("pdfCore.wasm.instantiate"));
     const core = yield* Schema.decodeUnknownEffect(PdfCoreExportsSchema)(instance.exports).pipe(
       Effect.mapError(
         (issue) =>
@@ -453,6 +453,10 @@ export const makePdfCore = (
             issueMessage: String(issue),
           }),
       ),
+    );
+    yield* Effect.annotateCurrentSpan(
+      "signature_kit.wasm.memory_bytes",
+      core.memory.buffer.byteLength,
     );
 
     const allocate = (
@@ -486,6 +490,10 @@ export const makePdfCore = (
     ): Effect.Effect<A, PdfCoreError> =>
       Effect.scoped(
         Effect.gen(function* () {
+          yield* Effect.annotateCurrentSpan({
+            "signature_kit.pdf.bytes": pdf.byteLength,
+            "signature_kit.pdf.requested_pages": pageIndexes.length,
+          });
           const input = yield* copyIn(operation, pdf);
           const pages = yield* allocate(
             operation,
@@ -495,8 +503,20 @@ export const makePdfCore = (
           const result = yield* resultBlock(operation, () =>
             entry(input.pointer, pdf.byteLength, flags, pages.pointer, pageIndexes.length),
           );
-          return yield* decode(result);
+          return yield* decodeResult(result, decode);
         }),
+      );
+
+    const decodeResult = <A>(
+      block: ResultBlock,
+      decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
+    ): Effect.Effect<A, PdfCoreError> =>
+      decode(block).pipe(
+        Effect.withSpan(
+          "pdfCore.wasm.decode",
+          { attributes: { "signature_kit.wasm.result_bytes": block.length } },
+          { captureStackTrace: false },
+        ),
       );
 
     const copyIn = (
@@ -508,6 +528,11 @@ export const makePdfCore = (
           Effect.sync(() =>
             new Uint8Array(core.memory.buffer, allocation.pointer, bytes.byteLength).set(bytes),
           ),
+        ),
+        Effect.withSpan(
+          "pdfCore.wasm.copyIn",
+          { attributes: { "signature_kit.wasm.input_bytes": bytes.byteLength } },
+          { captureStackTrace: false },
         ),
       );
 
@@ -546,7 +571,13 @@ export const makePdfCore = (
                 }),
               )
             : Effect.succeed({ pointer, length });
-        }),
+        }).pipe(
+          Effect.withSpan(
+            "pdfCore.wasm.run",
+            { attributes: { "signature_kit.pdf_core.operation": operation } },
+            { captureStackTrace: false },
+          ),
+        ),
         (block) => Effect.sync(() => core.pdf_core_free(block.pointer, block.length)),
       ).pipe(
         Effect.map((block) => ({
@@ -744,7 +775,10 @@ export const makePdfCore = (
         );
       });
 
-    const inspect = Effect.fn(function* (pdf: Uint8Array, rawOptions: PdfCoreInspectOptions) {
+    const inspect = Effect.fn(PdfCoreOperationValue.inspect)(function* (
+      pdf: Uint8Array,
+      rawOptions: PdfCoreInspectOptions,
+    ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreInspectOptionsSchema)(
         rawOptions,
       ).pipe(
@@ -764,7 +798,7 @@ export const makePdfCore = (
         (options.links ? FLAG_LINKS : 0) |
         (options.runs === true ? FLAG_RUNS : 0) |
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES);
-      return yield* readBlock(
+      const inspection = yield* readBlock(
         PdfCoreOperationValue.inspect,
         core.pdf_core_inspect,
         pdf,
@@ -772,6 +806,8 @@ export const makePdfCore = (
         pageIndexes,
         decodeBlock,
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.page_count", inspection.pages.length);
+      return inspection;
     });
 
     const decodeTextBlock = (block: ResultBlock): Effect.Effect<PdfCoreText, PdfCoreError> =>
@@ -815,7 +851,10 @@ export const makePdfCore = (
         );
       });
 
-    const runText = Effect.fn(function* (read: BlockReader, rawOptions: PdfCoreTextOptions = {}) {
+    const runText = Effect.fn(PdfCoreOperationValue.text)(function* (
+      read: BlockReader,
+      rawOptions: PdfCoreTextOptions = {},
+    ) {
       const options = yield* Schema.decodeUnknownEffect(PdfCoreTextOptionsSchema)(rawOptions).pipe(
         Effect.mapError(
           (issue) =>
@@ -833,13 +872,19 @@ export const makePdfCore = (
         (options.format === "markdown" ? FLAG_MARKDOWN : 0) |
         (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING) |
         (options.mergeAcrossPages === true ? FLAG_MERGE_TABLES : 0);
-      return yield* read(
+      yield* Effect.annotateCurrentSpan({
+        "signature_kit.pdf.output_format": options.format ?? "text",
+        "signature_kit.pdf.merge_across_pages": options.mergeAcrossPages === true,
+      });
+      const pages = yield* read(
         PdfCoreOperationValue.text,
         core.pdf_core_text,
         flags,
         pageIndexes,
         decodeTextBlock,
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.page_count", pages.length);
+      return pages;
     });
 
     const decodeTablesBlock = (block: ResultBlock): Effect.Effect<PdfCoreTables, PdfCoreError> =>
@@ -929,7 +974,7 @@ export const makePdfCore = (
         );
       });
 
-    const runTables = Effect.fn(function* (
+    const runTables = Effect.fn(PdfCoreOperationValue.tables)(function* (
       read: BlockReader,
       rawOptions: PdfCoreTablesOptions = {},
     ) {
@@ -951,13 +996,19 @@ export const makePdfCore = (
         (options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES) |
         (options.mergeAcrossPages === true ? FLAG_MERGE_TABLES : 0) |
         (options.dropRunningHeaders === false ? 0 : FLAG_DROP_RUNNING);
-      return yield* read(
+      yield* Effect.annotateCurrentSpan(
+        "signature_kit.pdf.merge_across_pages",
+        options.mergeAcrossPages === true,
+      );
+      const tables = yield* read(
         PdfCoreOperationValue.tables,
         core.pdf_core_tables,
         flags,
         pageIndexes,
         decodeTablesBlock,
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.table_count", tables.length);
+      return tables;
     });
 
     const invalidOptions =
@@ -1071,7 +1122,7 @@ export const makePdfCore = (
         );
       });
 
-    const signatures = Effect.fn(function* (
+    const signatures = Effect.fn(PdfCoreOperationValue.signatures)(function* (
       pdf: Uint8Array,
       rawAnalysis: PdfCoreSignatureAnalysis,
     ) {
@@ -1079,18 +1130,30 @@ export const makePdfCore = (
       const analysis = yield* Schema.decodeUnknownEffect(PdfCoreSignatureAnalysisSchema)(
         rawAnalysis,
       ).pipe(Effect.mapError(invalidOptions(operation)));
-      return yield* Effect.scoped(
+      yield* Effect.annotateCurrentSpan({
+        "signature_kit.pdf.bytes": pdf.byteLength,
+        "signature_kit.pdf.signature_analysis": analysis,
+      });
+      const report = yield* Effect.scoped(
         Effect.gen(function* () {
           const input = yield* copyIn(operation, pdf);
           const block = yield* resultBlock(operation, () =>
             core.pdf_core_signatures(input.pointer, pdf.byteLength, SIGNATURE_MODES[analysis]),
           );
-          return yield* decodeSignatures(block);
+          return yield* decodeResult(block, decodeSignatures);
         }),
       );
+      yield* Effect.annotateCurrentSpan(
+        "signature_kit.pdf.signature_count",
+        report.dictionaries.length,
+      );
+      return report;
     });
 
-    const revisionComplete = Effect.fn(function* (pdf: Uint8Array, end: number) {
+    const revisionComplete = Effect.fn(PdfCoreOperationValue.revision)(function* (
+      pdf: Uint8Array,
+      end: number,
+    ) {
       if (!Number.isSafeInteger(end) || end <= 0 || end > pdf.byteLength || end > MAX_UINT32) {
         return false;
       }
@@ -1214,7 +1277,7 @@ export const makePdfCore = (
         );
       });
 
-    const document = Effect.fn(function* (
+    const document = Effect.fn(PdfCoreOperationValue.document)(function* (
       pdf: Uint8Array,
       rawOptions: PdfCoreDocumentOptions = {},
     ) {
@@ -1224,7 +1287,8 @@ export const makePdfCore = (
       ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.documentOptions)));
       const pageIndexes = options.annotationPages ?? [];
       const prefix = utf8Encoder.encode(options.fieldNamePrefix ?? "");
-      return yield* Effect.scoped(
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.bytes", pdf.byteLength);
+      const description = yield* Effect.scoped(
         Effect.gen(function* () {
           const input = yield* copyIn(operation, pdf);
           const pages = yield* allocate(
@@ -1244,12 +1308,14 @@ export const makePdfCore = (
               prefix.byteLength,
             ),
           );
-          return yield* decodeDocument(block);
+          return yield* decodeResult(block, decodeDocument);
         }),
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.page_count", description.pages.length);
+      return description;
     });
 
-    const edit = Effect.fn(function* (
+    const edit = Effect.fn(PdfCoreOperationValue.edit)(function* (
       pdf: Uint8Array,
       rawOperations: PdfCoreEditOperations,
       rawOptions: PdfCoreEditOptions = {},
@@ -1275,7 +1341,12 @@ export const makePdfCore = (
       writer.u32(operations.length);
       for (const value of operations) writeOperation(writer, value);
       const payload = writer.finish();
-      return yield* Effect.scoped(
+      yield* Effect.annotateCurrentSpan({
+        "signature_kit.pdf.bytes": pdf.byteLength,
+        "signature_kit.pdf.edit_operations": operations.length,
+        "signature_kit.pdf.edit_mode": options.mode ?? "auto",
+      });
+      const edited = yield* Effect.scoped(
         Effect.gen(function* () {
           const input = yield* copyIn(operation, pdf);
           const ops = yield* copyIn(operation, payload);
@@ -1285,9 +1356,11 @@ export const makePdfCore = (
           return yield* payloadBytes(operation, block);
         }),
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.output_bytes", edited.byteLength);
+      return edited;
     });
 
-    const merge = Effect.fn(function* (
+    const merge = Effect.fn(PdfCoreOperationValue.merge)(function* (
       rawSources: PdfCoreMergeSources,
       rawOptions: PdfCoreMergeOptions = {},
     ) {
@@ -1311,7 +1384,11 @@ export const makePdfCore = (
       const flags =
         (options.dropWidgets === true ? MERGE_DROP_WIDGETS : 0) |
         (options.objectStreams === true ? MERGE_OBJECT_STREAMS : 0);
-      return yield* Effect.scoped(
+      yield* Effect.annotateCurrentSpan({
+        "signature_kit.pdf.sources": sources.length,
+        "signature_kit.pdf.bytes": total,
+      });
+      const merged = yield* Effect.scoped(
         Effect.gen(function* () {
           const input = yield* allocate(operation, total);
           const view = new Uint8Array(core.memory.buffer, input.pointer, total);
@@ -1327,9 +1404,11 @@ export const makePdfCore = (
           return yield* payloadBytes(operation, block);
         }),
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.output_bytes", merged.byteLength);
+      return merged;
     });
 
-    const deflate = Effect.fn(function* (data: Uint8Array) {
+    const deflate = Effect.fn(PdfCoreOperationValue.deflate)(function* (data: Uint8Array) {
       const operation = PdfCoreOperationValue.deflate;
       return yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1342,12 +1421,15 @@ export const makePdfCore = (
       );
     });
 
-    const create = Effect.fn(function* (rawOptions: PdfCoreCreateOptions) {
+    const create = Effect.fn(PdfCoreOperationValue.create)(function* (
+      rawOptions: PdfCoreCreateOptions,
+    ) {
       const operation = PdfCoreOperationValue.create;
       const options = yield* Schema.decodeUnknownEffect(PdfCoreCreateOptionsSchema)(
         rawOptions,
       ).pipe(Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.createOptions)));
       const sizes = Float64Array.from(options.pages.flatMap((page) => [page.width, page.height]));
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.page_count", options.pages.length);
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const input = yield* allocate(operation, sizes.byteLength);
@@ -1360,7 +1442,9 @@ export const makePdfCore = (
       );
     });
 
-    const fontMetrics = Effect.fn(function* (rawBaseFont: PdfCoreWinAnsiFont) {
+    const fontMetrics = Effect.fn(PdfCoreOperationValue.fontMetrics)(function* (
+      rawBaseFont: PdfCoreWinAnsiFont,
+    ) {
       const operation = PdfCoreOperationValue.fontMetrics;
       const baseFont = yield* Schema.decodeUnknownEffect(PdfCoreWinAnsiFontSchema)(
         rawBaseFont,
@@ -1396,7 +1480,7 @@ export const makePdfCore = (
       return { baseFont, unicode, widths };
     });
 
-    const pngSize = Effect.fn(function* (png: Uint8Array) {
+    const pngSize = Effect.fn(PdfCoreOperationValue.pngSize)(function* (png: Uint8Array) {
       const operation = PdfCoreOperationValue.pngSize;
       const payload = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1483,7 +1567,7 @@ export const makePdfCore = (
           );
         });
 
-    const runPageDiagnostics = Effect.fn(function* (
+    const runPageDiagnostics = Effect.fn(PdfCoreOperationValue.pageDiagnostics)(function* (
       read: BlockReader,
       rawOptions: PdfCorePageDiagnosticsOptions = {},
     ) {
@@ -1544,7 +1628,7 @@ export const makePdfCore = (
       );
     });
 
-    const runRenderPages = Effect.fn(function* (
+    const runRenderPages = Effect.fn(PdfCoreOperationValue.render)(function* (
       read: BlockReader,
       rawOptions: PdfCoreRenderOptions = {},
     ) {
@@ -1564,7 +1648,7 @@ export const makePdfCore = (
       const scale = options.scale ?? PDF_CORE_DEFAULT_RENDER_SCALE;
       const pageIndexes = options.pageIndexes ?? [];
       const flags = options.pageIndexes === undefined ? 0 : FLAG_PAGE_INDEXES;
-      return yield* read(
+      const displayLists = yield* read(
         PdfCoreOperationValue.render,
         (pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength) =>
           core.pdf_core_render(pdfPointer, pdfLength, entryFlags, pagesPointer, pagesLength, scale),
@@ -1573,6 +1657,8 @@ export const makePdfCore = (
         decodeRenderBlock(scale),
         scale,
       );
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.page_count", displayLists.length);
+      return displayLists;
     });
 
     const full =
@@ -1580,7 +1666,7 @@ export const makePdfCore = (
       (operation, entry, flags, indexes, decode) =>
         readBlock(operation, entry, pdf, flags, indexes, decode);
 
-    const openLazy = Effect.fn(function* (
+    const openLazy = Effect.fn(PdfCoreOperationValue.openLazy)(function* (
       source: PdfCoreRangeSource,
       options?: PdfCoreLazyOptions,
     ) {
@@ -1598,6 +1684,7 @@ export const makePdfCore = (
           reason: "Lazy PDF sources may contain at most 512 MiB.",
         });
       }
+      yield* Effect.annotateCurrentSpan("signature_kit.pdf.bytes", size);
       const maxRoundBytes = tuning.maxRoundBytes ?? 2 * 1024 * 1024;
       const maxCachedBytes = tuning.maxCachedBytes ?? 2 * 1024 * 1024;
       const lock = yield* Semaphore.make(1);
@@ -1643,7 +1730,10 @@ export const makePdfCore = (
         return precise === undefined ? Effect.void : Effect.fail(precise);
       });
 
-      const fetchRange = Effect.fn(function* (offset: number, length: number) {
+      const fetchRange = Effect.fn(PdfCoreOperationValue.readRange)(function* (
+        offset: number,
+        length: number,
+      ) {
         yield* ensureOpen;
         const bytes = yield* source.read(offset, length);
         yield* Ref.update(state, (current) => ({
@@ -1665,9 +1755,13 @@ export const makePdfCore = (
         ...current,
         rounds: current.rounds + 1,
       }));
-      const supply = Effect.fn(function* (
+      const supply = Effect.fn("pdfCore.lazy.supply")(function* (
         ranges: ReadonlyArray<{ offset: number; length: number }>,
       ) {
+        yield* Effect.annotateCurrentSpan({
+          "signature_kit.pdf.range_count": ranges.length,
+          "signature_kit.pdf.range_bytes": ranges.reduce((sum, range) => sum + range.length, 0),
+        });
         yield* startRound;
         yield* Effect.forEach(
           ranges,
@@ -1688,7 +1782,7 @@ export const makePdfCore = (
         );
       });
 
-      const plan = Effect.fn(function* (
+      const plan = Effect.fn("pdfCore.lazy.plan")(function* (
         operation: PdfCoreOperation,
         profile: number,
         flags: number,
@@ -1777,6 +1871,11 @@ export const makePdfCore = (
                 return yield* Effect.die("Invalid lazy PDF operation.");
               }
               yield* ensureOpen;
+              yield* Effect.annotateCurrentSpan({
+                "signature_kit.pdf.bytes": size,
+                "signature_kit.pdf.lazy": true,
+                "signature_kit.pdf.requested_pages": indexes.length,
+              });
               const limit = (flags & FLAG_PAGE_INDEXES) === 0 ? tuning.pageLimit : undefined;
               const selection = limit === undefined ? indexes : [limit];
               const readFlags =
@@ -1835,10 +1934,16 @@ export const makePdfCore = (
                         return { recovery: 0 };
                       }
                     }
-                    return { value: yield* decode(result) };
+                    return { value: yield* decodeResult(result, decode) };
                   }),
                 );
                 if ("value" in decoded) {
+                  const stats = Ref.getUnsafe(state);
+                  yield* Effect.annotateCurrentSpan({
+                    "signature_kit.pdf.lazy_strategy": stats.strategy,
+                    "signature_kit.pdf.lazy_rounds": stats.rounds,
+                    "signature_kit.pdf.lazy_bytes_read": stats.bytesRead,
+                  });
                   return decoded.value;
                 }
                 recovery = decoded.recovery;
@@ -1857,7 +1962,7 @@ export const makePdfCore = (
       };
     });
 
-    return {
+    const service: PdfCoreService = {
       openLazy,
       wasmMemoryBytes: () => Effect.sync(() => core.memory.buffer.byteLength),
       inspect,
@@ -1875,7 +1980,8 @@ export const makePdfCore = (
       fontMetrics,
       pngSize,
     };
-  });
+    return service;
+  }).pipe(Effect.withSpan(PdfCoreOperationValue.load));
 
 export const pdfCoreLayer = (module: WebAssembly.Module): Layer.Layer<PdfCore, PdfCoreError> =>
   Layer.effect(PdfCore, makePdfCore(module));

@@ -55,8 +55,14 @@ export const renderPdfPagesBrowser = (
 ): Effect.Effect<ReadonlyArray<PdfPageImage>, PdfError, PdfPageRenderer> =>
   Effect.gen(function* () {
     const renderer = yield* PdfPageRenderer;
-    return yield* renderer.render(pdf, options);
-  });
+    const images = yield* renderer.render(pdf, options);
+    yield* Effect.annotateCurrentSpan("signature_kit.pdf.page_count", images.length);
+    return images;
+  }).pipe(
+    Effect.withSpan(PdfOperationValue.renderPages, {
+      attributes: { "signature_kit.pdf.bytes": pdf.byteLength },
+    }),
+  );
 
 const batches = (pageIndexes: ReadonlyArray<number>): ReadonlyArray<ReadonlyArray<number>> => {
   const groups: Array<ReadonlyArray<number>> = [];

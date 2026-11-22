@@ -2104,6 +2104,17 @@ const stampPdfRubricWithUpdateMode = (
         valid,
         [{ coordinateSpace: "pdf", pages: valid.pages, rect: valid.rect }],
         forIncrementalUpdate,
+      ).pipe(
+        Effect.withSpan("pdf.stamp.rubric", {
+          attributes: {
+            "signature_kit.pdf.bytes": pdf.byteLength,
+            ...(Array.isArray(valid.pages)
+              ? { "signature_kit.pdf.rubric_pages": valid.pages.length }
+              : { "signature_kit.pdf.rubric_all_pages": true }),
+            "signature_kit.pdf.incremental": forIncrementalUpdate,
+            "signature_kit.pdf.rubric_initials": valid.initials !== undefined,
+          },
+        }),
       );
     }),
   );
@@ -2316,7 +2327,17 @@ export const stampPdfVisibleSignatures = (
           forIncrementalUpdate,
           "Failed to draw the visible signature stamp.",
         );
-      }),
+      }).pipe(
+        Effect.withSpan("pdf.stamp.visible", {
+          attributes: {
+            "signature_kit.pdf.bytes": valid.pdf.byteLength,
+            "signature_kit.pdf.stamp_count": valid.stamps.length,
+            "signature_kit.pdf.incremental": forIncrementalUpdate,
+            "signature_kit.pdf.badge": valid.badge !== undefined,
+            "signature_kit.pdf.qr": valid.qr !== undefined,
+          },
+        }),
+      ),
     ),
   );
 
@@ -2415,7 +2436,16 @@ const stampPdfRubricOnPagesWithUpdateMode = (
           rect: rubricRectForPage(page, textBoxes),
         });
       }
-      return stampPdfRubricTargets(valid.pdf, valid, targets, forIncrementalUpdate);
+      return stampPdfRubricTargets(valid.pdf, valid, targets, forIncrementalUpdate).pipe(
+        Effect.withSpan("pdf.stamp.rubric", {
+          attributes: {
+            "signature_kit.pdf.bytes": valid.pdf.byteLength,
+            "signature_kit.pdf.rubric_pages": targets.length,
+            "signature_kit.pdf.incremental": forIncrementalUpdate,
+            "signature_kit.pdf.rubric_initials": valid.initials !== undefined,
+          },
+        }),
+      );
     }),
   );
 

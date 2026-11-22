@@ -86,6 +86,7 @@ export const parseCertificate = (
       ),
     );
     const pfx = certificateBytes(validSource);
+    yield* Effect.annotateCurrentSpan("signature_kit.pkcs12.bytes", pfx.length);
     if (pfx.length === 0) {
       return yield* new SignatureKitError({
         code: SignatureKitErrorCodeValue.emptyFile,
@@ -120,6 +121,10 @@ export const parseCertificate = (
     );
 
     const validityInspection = yield* inspectCertificateValidity(x509.validity);
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.certificate_count": pkcs12.chain.length + 1,
+      "signature_kit.certificate.validity_status": validityInspection.status,
+    });
     return yield* Schema.decodeUnknownEffect(CertificateSchema)({
       serialNumber: x509.serialNumber,
       subject: x509.subject,
@@ -147,7 +152,7 @@ export const parseCertificate = (
           }),
       ),
     );
-  });
+  }).pipe(Effect.withSpan("certificates.parseCertificate"));
 
 export const extractBrazilianFields = (
   subjectRaw: string,
@@ -855,4 +860,7 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
           })
         : error,
     ),
+    Effect.withSpan("certificates.parseX509", {
+      attributes: { "signature_kit.certificate.bytes": der.byteLength },
+    }),
   );

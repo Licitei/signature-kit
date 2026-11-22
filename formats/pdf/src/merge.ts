@@ -94,12 +94,16 @@ export const mergePdfs = (
           }),
       ),
     );
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.document_count": valid.length,
+      "signature_kit.pdf.bytes": valid.reduce((sum, pdf) => sum + pdf.byteLength, 0),
+    });
     return yield* copyPages(
       valid.map((pdf) => ({ pdf })),
       operation,
       signedSources,
     );
-  });
+  }).pipe(Effect.withSpan(PdfOperationValue.mergeDocuments));
 
 export const extractPdfPages = (
   pdf: PdfExtractPagesInput["pdf"],
@@ -123,5 +127,9 @@ export const extractPdfPages = (
           }),
       ),
     );
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pdf.bytes": source.pdf.byteLength,
+      "signature_kit.pdf.requested_pages": source.pageIndexes.length,
+    });
     return yield* copyPages([source], operation);
-  });
+  }).pipe(Effect.withSpan(PdfOperationValue.extractPages));
