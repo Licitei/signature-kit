@@ -58,11 +58,25 @@ export const signPdf = (
     );
     const hashAlgorithm = request.hashAlgorithm ?? "sha256";
     const signatureAlgorithm = yield* signatureAlgorithmForHash(hashAlgorithm);
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pdf.bytes": request.pdf.byteLength,
+      "signature_kit.hash.algorithm": hashAlgorithm,
+      "signature_kit.signature.policy": request.policy ?? "pades-ades",
+      "signature_kit.signature.timestamped": request.timestamp !== undefined,
+    });
     const placeholderPdf = yield* addSignaturePlaceholder(request);
-    const prepared = yield* preparePdfByteRange(placeholderPdf);
+    const prepared = yield* preparePdfByteRange(placeholderPdf).pipe(
+      Effect.withSpan("pdf.byteRange.prepare", {
+        attributes: { "signature_kit.pdf.bytes": placeholderPdf.byteLength },
+      }),
+    );
     const [certificate, signingKey] = yield* Effect.all(
       [signatures.certificate(), signatures.importSigningKey(signatureAlgorithm)],
       { concurrency: "unbounded" },
+    ).pipe(
+      Effect.withSpan("pdf.signer.load", {
+        attributes: { "signature_kit.signature.algorithm": signatureAlgorithm },
+      }),
     );
     const icpBrasil =
       request.icpBrasil ??
@@ -75,7 +89,15 @@ export const signPdf = (
       hashAlgorithm,
       icpBrasil,
       timestamp: request.timestamp,
-    });
+    }).pipe(
+      Effect.withSpan("pdf.cms.create", {
+        attributes: {
+          "signature_kit.hash.algorithm": hashAlgorithm,
+          "signature_kit.pdf.signed_bytes": prepared.signedData.byteLength,
+          "signature_kit.signature.icp_brasil": icpBrasil !== undefined,
+        },
+      }),
+    );
     const signatureHex = bytesToHex(cms);
     if (signatureHex.length > prepared.placeholderLength) {
       return yield* new PdfError({
@@ -87,10 +109,21 @@ export const signPdf = (
     }
 
     const paddedSignature = `<${signatureHex}${"0".repeat(prepared.placeholderLength - signatureHex.length)}>`;
-    return replaceRange(
-      prepared.pdf,
-      prepared.contentsStart,
-      prepared.contentsEnd + 1,
-      encodeAscii(paddedSignature),
+    const signed = yield* Effect.sync(() =>
+      replaceRange(
+        prepared.pdf,
+        prepared.contentsStart,
+        prepared.contentsEnd + 1,
+        encodeAscii(paddedSignature),
+      ),
+    ).pipe(
+      Effect.withSpan("pdf.contents.embed", {
+        attributes: {
+          "signature_kit.pdf.contents_bytes": prepared.placeholderLength,
+          "signature_kit.pdf.cms_bytes": cms.byteLength,
+        },
+      }),
     );
-  });
+    yield* Effect.annotateCurrentSpan("signature_kit.pdf.output_bytes", signed.byteLength);
+    return signed;
+  }).pipe(Effect.withSpan(PdfOperationValue.sign));

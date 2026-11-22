@@ -66,7 +66,14 @@ const importKey = (
         reason: `Failed to import ${format} key for ${algorithm}.`,
         operation: SignatureKitOperationValue.cryptoImport,
       }),
-  });
+  }).pipe(
+    Effect.withSpan("a1.importKey", {
+      attributes: {
+        "signature_kit.key.format": format,
+        "signature_kit.signature.algorithm": algorithm,
+      },
+    }),
+  );
 
 const importPrivateKey = (
   privateKey: Redacted.Redacted<string>,
@@ -109,7 +116,14 @@ const signWithKey = (
       }),
     );
     return new Uint8Array(signature);
-  });
+  }).pipe(
+    Effect.withSpan("a1.sign", {
+      attributes: {
+        "signature_kit.signature.algorithm": algorithm,
+        "signature_kit.data.bytes": content.byteLength,
+      },
+    }),
+  );
 
 const verifyWithKey = (
   key: CryptoKey,
@@ -131,7 +145,15 @@ const verifyWithKey = (
         retryable: false,
         operation: SignatureKitOperationValue.cryptoVerify,
       }),
-  });
+  }).pipe(
+    Effect.tap((valid) => Effect.annotateCurrentSpan("signature_kit.signature.valid", valid)),
+    Effect.withSpan("a1.verify", {
+      attributes: {
+        "signature_kit.signature.algorithm": algorithm,
+        "signature_kit.data.bytes": content.byteLength,
+      },
+    }),
+  );
 
 const cachedKey = (
   cache: Map<SignatureAlgorithm, CryptoKey>,
@@ -158,7 +180,11 @@ const loadA1Certificate = (
           issueMessage: String(issue),
         }),
     ),
+    Effect.tap((valid) =>
+      Effect.annotateCurrentSpan("signature_kit.pkcs12.bytes", valid.pfx.byteLength),
+    ),
     Effect.flatMap((valid) => parseCertificate(valid.pfx, valid.password)),
+    Effect.withSpan("a1.loadCertificate"),
   );
 
 const certificateProfile = (
@@ -202,7 +228,7 @@ const certificateProfile = (
       validTo: certificate.validity.notAfter,
       daysUntilExpiry: daysUntilExpiry(certificate),
     };
-  });
+  }).pipe(Effect.withSpan("a1.certificateProfile"));
 
 export const createA1SignerAdapter = (certificate: Certificate): SignerAdapter => {
   const privateKeys = new Map<SignatureAlgorithm, CryptoKey>();
@@ -328,9 +354,13 @@ export const fetchA1Pkcs12 = (
                   reason: "The fetched A1 certificate is empty.",
                 }),
             ),
+            Effect.tap((bytes) =>
+              Effect.annotateCurrentSpan("signature_kit.pkcs12.bytes", bytes.byteLength),
+            ),
           ),
       ),
     ),
+    Effect.withSpan("a1.fetchPkcs12"),
   );
 
 const loadA1CertificateFromRemoteSource = (

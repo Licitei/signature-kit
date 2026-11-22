@@ -4,6 +4,6 @@
 
 ### 1.1. Subseção
 
-Corpo com **negrito** e _itálico_ no mesmo parágrafo.
+Corpo com **negrito** e *itálico* no mesmo parágrafo.
 
 [Documentação](https://signature-kit.dev/corpus/headings-link)

@@ -2,7 +2,7 @@ import { AsnConvert, OctetString } from "@peculiar/asn1-schema";
 import { MessageImprint, TimeStampReq, TimeStampReqVersion } from "@peculiar/asn1-tsp";
 import { AlgorithmIdentifier } from "@peculiar/asn1-x509";
 import * as asn1js from "asn1js";
-import { Effect, Schema } from "effect";
+import { Effect, Match, Schema } from "effect";
 import * as pkijs from "pkijs";
 import {
   CmsError,
@@ -330,6 +330,11 @@ export const requestTimestamp = (
       ),
     );
     const diagnosticUrl = diagnosticTimestampUrl(valid.tsaUrl);
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.hash.algorithm": valid.hashAlgorithm,
+      "signature_kit.timestamp.data_bytes": valid.data.byteLength,
+      "signature_kit.timestamp.trusted_root_count": valid.trustedRoots.length,
+    });
 
     const trustedCerts = yield* Effect.try({
       try: () =>
@@ -367,7 +372,33 @@ export const requestTimestamp = (
         }),
     });
 
-    const response = yield* downloadTimestamp(valid, requestDer);
+    const response = yield* downloadTimestamp(valid, requestDer).pipe(
+      Effect.tap((download) =>
+        Effect.annotateCurrentSpan(
+          Match.value(download).pipe(
+            Match.tagsExhaustive({
+              TsaHttpFailure: ({ status }) => ({ "http.response.status_code": status }),
+              TsaHttpSuccess: ({ responseBytes }) => ({
+                "signature_kit.timestamp.response_bytes": responseBytes.byteLength,
+              }),
+              TsaRequestAbort: ({ timedOut }) => ({
+                "signature_kit.timestamp.timed_out": timedOut,
+              }),
+            }),
+          ),
+        ),
+      ),
+      Effect.withSpan("POST", {
+        kind: "client",
+        attributes: {
+          "http.request.method": "POST",
+          ...(URL.canParse(valid.tsaUrl)
+            ? { "server.address": new URL(valid.tsaUrl).hostname }
+            : {}),
+          "signature_kit.timestamp.request_bytes": requestDer.byteLength,
+        },
+      }),
+    );
 
     if (response._tag === "TsaRequestAbort") {
       return yield* new CmsError({
@@ -579,4 +610,4 @@ export const requestTimestamp = (
     }
 
     return new Uint8Array(token.toSchema().toBER(false));
-  });
+  }).pipe(Effect.withSpan(CmsOperationValue.timestamp));

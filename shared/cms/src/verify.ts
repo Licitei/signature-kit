@@ -43,117 +43,127 @@ const signerSerialHex = (signed: pkijs.SignedData): string | null => {
   return output;
 };
 
-export const verifyDetachedSignedData = (
+export const verifyDetachedSignedData = Effect.fn(CmsOperationValue.verify)(function* (
   input: VerifyDetachedSignedDataInput,
-): Effect.Effect<CmsVerifyResult, CmsError> =>
-  Effect.gen(function* () {
-    const valid = yield* Schema.decodeUnknownEffect(VerifyDetachedSignedDataInputSchema)(
-      input,
-    ).pipe(
-      Effect.mapError(
-        (issue) =>
-          new CmsError({
-            code: CmsErrorCodeValue.verifyError,
-            reason: `Invalid CMS verification input: ${String(issue)}`,
-            operation: CmsOperationValue.verify,
-          }),
-      ),
-    );
-
-    const contentInfo = yield* Effect.try({
-      try: () => pkijs.ContentInfo.fromBER(new Uint8Array(valid.cms).buffer),
-      catch: () =>
+): Effect.fn.Return<CmsVerifyResult, CmsError> {
+  const valid = yield* Schema.decodeUnknownEffect(VerifyDetachedSignedDataInputSchema)(input).pipe(
+    Effect.mapError(
+      (issue) =>
         new CmsError({
-          code: CmsErrorCodeValue.decodeError,
-          reason: "Failed to parse the CMS ContentInfo.",
+          code: CmsErrorCodeValue.verifyError,
+          reason: `Invalid CMS verification input: ${String(issue)}`,
           operation: CmsOperationValue.verify,
         }),
-    });
-    if (contentInfo.contentType !== CmsOid.signedData) {
-      return yield* new CmsError({
+    ),
+  );
+
+  const contentInfo = yield* Effect.try({
+    try: () => pkijs.ContentInfo.fromBER(new Uint8Array(valid.cms).buffer),
+    catch: () =>
+      new CmsError({
         code: CmsErrorCodeValue.decodeError,
-        reason: "CMS ContentInfo is not signedData.",
+        reason: "Failed to parse the CMS ContentInfo.",
         operation: CmsOperationValue.verify,
-      });
-    }
-
-    const signed = yield* Effect.try({
-      try: () => new pkijs.SignedData({ schema: contentInfo.content }),
-      catch: () =>
-        new CmsError({
-          code: CmsErrorCodeValue.decodeError,
-          reason: "Failed to parse the CMS SignedData.",
-          operation: CmsOperationValue.verify,
-        }),
-    });
-    if (signed.signerInfos.length !== 1) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.decodeError,
-        reason: "CMS SignedData must contain exactly one SignerInfo.",
-        operation: CmsOperationValue.verify,
-      });
-    }
-
-    if (signed.encapContentInfo.eContentType !== CmsOid.data) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.decodeError,
-        reason: "CMS SignedData eContentType is not id-data.",
-        operation: CmsOperationValue.verify,
-      });
-    }
-    if (signed.encapContentInfo.eContent !== undefined) {
-      return {
-        valid: false,
-        chainValid: false,
-        revocationStatus: "not_checked",
-        signerSerialNumber: signerSerialHex(signed),
-      };
-    }
-
-    const trustedCerts = yield* Effect.try({
-      try: () =>
-        (valid.trustedRoots ?? []).map((der) =>
-          pkijs.Certificate.fromBER(new Uint8Array(der).buffer),
-        ),
-      catch: () =>
-        new CmsError({
-          code: CmsErrorCodeValue.decodeError,
-          reason: "Failed to parse a trusted root DER.",
-          operation: CmsOperationValue.verify,
-        }),
-    });
-
-    const serial = signerSerialHex(signed);
-    const checkChain = trustedCerts.length > 0;
-
-    const verification = yield* Effect.promise(() =>
-      signed.verify({
-        signer: 0,
-        data: new Uint8Array(valid.content).buffer,
-        checkChain,
-        trustedCerts,
-        passedWhenNotRevValues: false,
-        extendedMode: true,
       }),
-    ).pipe(
-      Effect.catchDefect((cause) =>
-        Schema.decodeUnknownEffect(SignedDataVerifyErrorSchema)(cause).pipe(
-          Effect.matchEffect({
-            onFailure: () => Effect.die(cause),
-            onSuccess: (error) =>
-              Effect.succeed({
-                signatureVerified: error.signatureVerified === true,
-                signerCertificateVerified: error.signerCertificateVerified === true,
-              }),
-          }),
-        ),
-      ),
-    );
-
-    return {
-      valid: verification.signatureVerified === true,
-      chainValid: checkChain ? verification.signerCertificateVerified === true : false,
-      revocationStatus: checkChain && hasRecognizedRevocation(signed) ? "checked" : "not_checked",
-      signerSerialNumber: serial,
-    };
   });
+  if (contentInfo.contentType !== CmsOid.signedData) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.decodeError,
+      reason: "CMS ContentInfo is not signedData.",
+      operation: CmsOperationValue.verify,
+    });
+  }
+
+  const signed = yield* Effect.try({
+    try: () => new pkijs.SignedData({ schema: contentInfo.content }),
+    catch: () =>
+      new CmsError({
+        code: CmsErrorCodeValue.decodeError,
+        reason: "Failed to parse the CMS SignedData.",
+        operation: CmsOperationValue.verify,
+      }),
+  });
+  if (signed.signerInfos.length !== 1) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.decodeError,
+      reason: "CMS SignedData must contain exactly one SignerInfo.",
+      operation: CmsOperationValue.verify,
+    });
+  }
+
+  if (signed.encapContentInfo.eContentType !== CmsOid.data) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.decodeError,
+      reason: "CMS SignedData eContentType is not id-data.",
+      operation: CmsOperationValue.verify,
+    });
+  }
+  if (signed.encapContentInfo.eContent !== undefined) {
+    return {
+      valid: false,
+      chainValid: false,
+      revocationStatus: "not_checked",
+      signerSerialNumber: signerSerialHex(signed),
+    };
+  }
+
+  const trustedCerts = yield* Effect.try({
+    try: () =>
+      (valid.trustedRoots ?? []).map((der) =>
+        pkijs.Certificate.fromBER(new Uint8Array(der).buffer),
+      ),
+    catch: () =>
+      new CmsError({
+        code: CmsErrorCodeValue.decodeError,
+        reason: "Failed to parse a trusted root DER.",
+        operation: CmsOperationValue.verify,
+      }),
+  });
+
+  const serial = signerSerialHex(signed);
+  const checkChain = trustedCerts.length > 0;
+  yield* Effect.annotateCurrentSpan({
+    "signature_kit.cms.bytes": valid.cms.byteLength,
+    "signature_kit.cms.content_bytes": valid.content.byteLength,
+    "signature_kit.cms.certificate_count": signed.certificates?.length ?? 0,
+    "signature_kit.cms.trusted_root_count": trustedCerts.length,
+    "signature_kit.cms.chain_checked": checkChain,
+  });
+
+  const verification = yield* Effect.promise(() =>
+    signed.verify({
+      signer: 0,
+      data: new Uint8Array(valid.content).buffer,
+      checkChain,
+      trustedCerts,
+      passedWhenNotRevValues: false,
+      extendedMode: true,
+    }),
+  ).pipe(
+    Effect.catchDefect((cause) =>
+      Schema.decodeUnknownEffect(SignedDataVerifyErrorSchema)(cause).pipe(
+        Effect.matchEffect({
+          onFailure: () => Effect.die(cause),
+          onSuccess: (error) =>
+            Effect.succeed({
+              signatureVerified: error.signatureVerified === true,
+              signerCertificateVerified: error.signerCertificateVerified === true,
+            }),
+        }),
+      ),
+    ),
+  );
+
+  const result: CmsVerifyResult = {
+    valid: verification.signatureVerified === true,
+    chainValid: checkChain ? verification.signerCertificateVerified === true : false,
+    revocationStatus: checkChain && hasRecognizedRevocation(signed) ? "checked" : "not_checked",
+    signerSerialNumber: serial,
+  };
+  yield* Effect.annotateCurrentSpan({
+    "signature_kit.cms.valid": result.valid,
+    "signature_kit.cms.chain_valid": result.chainValid,
+    "signature_kit.cms.revocation_status": result.revocationStatus,
+  });
+  return result;
+});

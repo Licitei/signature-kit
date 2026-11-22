@@ -350,6 +350,10 @@ const verifyMac = (
         : 1,
       "MAC",
     );
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pkcs12.mac_algorithm": algorithm,
+      "signature_kit.pkcs12.mac_iterations": iterations,
+    });
 
     const macKey = yield* pkcs12Kdf(
       bmpPassword,
@@ -368,7 +372,7 @@ const verifyMac = (
         operation: CryptoOperationValue.pkcs12Mac,
       });
     }
-  });
+  }).pipe(Effect.withSpan("crypto.pkcs12.mac"));
 
 const pbkdf2HashAlgorithm = (oid: string): Effect.Effect<HmacHashAlgorithm, CryptoError> => {
   if (oid === OID_HMAC_SHA1) return Effect.succeed("sha1");
@@ -558,6 +562,10 @@ const decryptEncryptedData = (
       encryptedContentNode.kind === "constructed"
         ? concatBytes(yield* Effect.forEach(encryptedContentNode.children, readOctetString))
         : encryptedContentNode.bytes;
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pkcs12.pbe_algorithm": algOid,
+      "signature_kit.data.bytes": encryptedContent.byteLength,
+    });
 
     return yield* decryptPbe(
       encryptedContent,
@@ -576,7 +584,7 @@ const decryptEncryptedData = (
           : error,
       ),
     );
-  });
+  }).pipe(Effect.withSpan("crypto.pkcs12.decrypt"));
 
 type SafeBag =
   | { readonly kind: "cert"; readonly data: Uint8Array; readonly localKeyId: string | null }
@@ -790,6 +798,7 @@ const decryptShroudedKeyBag = (
     const algOid = yield* oidString(yield* elementAt(algSeq, 0, "algorithm OID"));
     const algParams = yield* elementAt(algSeq, 1, "algorithm parameters");
     const encryptedData = yield* readOctetString(yield* elementAt(fields, 1, "encrypted key"));
+    yield* Effect.annotateCurrentSpan("signature_kit.pkcs12.pbe_algorithm", algOid);
 
     const pkcs8 = yield* decryptPbe(
       encryptedData,
@@ -818,7 +827,7 @@ const decryptShroudedKeyBag = (
     }
     yield* validatePrivateKeyInfo(pkcs8);
     return pkcs8;
-  });
+  }).pipe(Effect.withSpan("crypto.pkcs12.decryptKey"));
 
 export const parsePkcs12 = (
   data: Uint8Array,
@@ -829,6 +838,7 @@ export const parsePkcs12 = (
     const bmpPassword = toBmpString(phrase);
     const passwordBytes = new TextEncoder().encode(phrase);
     const kdfBudget: KdfBudget = { remaining: MAX_KDF_WORK };
+    yield* Effect.annotateCurrentSpan("signature_kit.pkcs12.bytes", data.byteLength);
 
     const pfx = yield* decode(data);
     const pfxChildren = yield* childrenOf(pfx);
@@ -984,6 +994,7 @@ export const parsePkcs12 = (
     for (const entry of certificates) {
       if (entry !== selectedCertificate) chain.push(entry.data);
     }
+    yield* Effect.annotateCurrentSpan("signature_kit.certificate_count", certificates.length);
 
     return {
       certificate: selectedPair.certificate.data,
@@ -1000,4 +1011,5 @@ export const parsePkcs12 = (
           })
         : error,
     ),
+    Effect.withSpan("crypto.pkcs12.parse"),
   );

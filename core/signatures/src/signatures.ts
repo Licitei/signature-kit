@@ -305,9 +305,21 @@ export const signaturesLayer = (signer: SignerAdapter): Layer.Layer<Signatures> 
 
 export const signatures = {
   inspect: (): Effect.Effect<SignerIdentity, SignatureKitError, Signatures> =>
-    Signatures.use((service) => service.inspect()),
+    Signatures.use((service) =>
+      service.inspect().pipe(
+        Effect.withSpan("signatures.inspect", {
+          attributes: { "signature_kit.signer.id": service.id },
+        }),
+      ),
+    ),
   certificate: (): Effect.Effect<Certificate, SignatureKitError, Signatures> =>
-    Signatures.use((service) => service.certificate()),
+    Signatures.use((service) =>
+      service.certificate().pipe(
+        Effect.withSpan("signatures.certificate", {
+          attributes: { "signature_kit.signer.id": service.id },
+        }),
+      ),
+    ),
   importSigningKey: (
     algorithm: SignatureAlgorithm,
   ): Effect.Effect<CryptoKey, SignatureKitError, Signatures> =>
@@ -323,7 +335,15 @@ export const signatures = {
             issueMessage: String(issue),
           }),
       ),
-      Effect.flatMap((valid) => Signatures.use((service) => service.importSigningKey(valid))),
+      Effect.flatMap((valid) =>
+        Signatures.use((service) =>
+          Effect.annotateCurrentSpan({
+            "signature_kit.signer.id": service.id,
+            "signature_kit.signature.algorithm": valid,
+          }).pipe(Effect.andThen(service.importSigningKey(valid))),
+        ),
+      ),
+      Effect.withSpan("signatures.importSigningKey"),
     ),
   sign: (input: SignInput): Effect.Effect<SignatureArtifact, SignatureKitError, Signatures> =>
     Schema.decodeUnknownEffect(SignInputSchema)(input).pipe(
@@ -338,7 +358,16 @@ export const signatures = {
             issueMessage: String(issue),
           }),
       ),
-      Effect.flatMap((valid) => Signatures.use((service) => service.sign(valid))),
+      Effect.flatMap((valid) =>
+        Signatures.use((service) =>
+          Effect.annotateCurrentSpan({
+            "signature_kit.signer.id": service.id,
+            "signature_kit.signature.algorithm": valid.algorithm,
+            "signature_kit.data.bytes": valid.content.byteLength,
+          }).pipe(Effect.andThen(service.sign(valid))),
+        ),
+      ),
+      Effect.withSpan("signatures.sign"),
     ),
   verify: (input: VerifyInput): Effect.Effect<VerificationResult, SignatureKitError, Signatures> =>
     Schema.decodeUnknownEffect(VerifyInputSchema)(input).pipe(
@@ -353,6 +382,18 @@ export const signatures = {
             issueMessage: String(issue),
           }),
       ),
-      Effect.flatMap((valid) => Signatures.use((service) => service.verify(valid))),
+      Effect.flatMap((valid) =>
+        Signatures.use((service) =>
+          Effect.annotateCurrentSpan({
+            "signature_kit.signer.id": service.id,
+            "signature_kit.signature.algorithm": valid.algorithm,
+            "signature_kit.data.bytes": valid.content.byteLength,
+          }).pipe(Effect.andThen(service.verify(valid))),
+        ),
+      ),
+      Effect.tap((result) =>
+        Effect.annotateCurrentSpan("signature_kit.signature.valid", result.valid),
+      ),
+      Effect.withSpan("signatures.verify"),
     ),
 };

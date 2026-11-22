@@ -646,6 +646,12 @@ const createClicksignSignatureRequest = (
   const [document] = input.documents;
 
   return createDocument(http, options, baseUrl, input, document).pipe(
+    Effect.withSpan("clicksign.createDocument", {
+      attributes: {
+        "signature_kit.provider": PROVIDER,
+        "signature_kit.document.bytes": document.content.byteLength,
+      },
+    }),
     Effect.flatMap((documentKey) =>
       Effect.forEach(
         input.recipients,
@@ -666,6 +672,12 @@ const createClicksignSignatureRequest = (
           ),
         { concurrency: 4 },
       ).pipe(
+        Effect.withSpan("clicksign.createSigners", {
+          attributes: {
+            "signature_kit.provider": PROVIDER,
+            "signature_kit.signer_count": input.recipients.length,
+          },
+        }),
         Effect.catchIf(shouldRollbackClicksignCreate, (error) =>
           deleteClicksignSignatureRequestInternal(http, options, baseUrl, documentKey).pipe(
             Effect.ignore,
@@ -680,7 +692,15 @@ const createClicksignSignatureRequest = (
                 (requestSignatureKey) =>
                   notifyRecipient(http, options, baseUrl, requestSignatureKey, input),
                 { concurrency: 4, discard: true },
-              ).pipe(Effect.as({ documentKey })),
+              ).pipe(
+                Effect.withSpan("clicksign.notifySigners", {
+                  attributes: {
+                    "signature_kit.provider": PROVIDER,
+                    "signature_kit.signer_count": requestSignatureKeys.length,
+                  },
+                }),
+                Effect.as({ documentKey }),
+              ),
         ),
       ),
     ),
@@ -702,29 +722,50 @@ const clicksignSignatureRequestProvider = Provider.effect(
       nuke: { skip: true },
       diff: clicksignSignatureRequestDiff,
       list: () => Effect.succeed([]),
-      read: Effect.fn(function* ({ output }) {
-        if (output === undefined) return undefined;
-        const options = yield* credentials;
-        const baseUrl = clicksignBaseUrl(options);
-        return yield* getClicksignSignatureRequestInternal(http, options, baseUrl, output.id).pipe(
-          Effect.catchIf(
-            (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
-            () => Effect.succeed(undefined),
-          ),
-        );
-      }),
-      reconcile: Effect.fn(function* ({ news, output }) {
+      read: Effect.fn("clicksign.read", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          if (output === undefined) return undefined;
+          const options = yield* credentials;
+          const baseUrl = clicksignBaseUrl(options);
+          return yield* getClicksignSignatureRequestInternal(
+            http,
+            options,
+            baseUrl,
+            output.id,
+          ).pipe(
+            Effect.catchIf(
+              (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
+              () => Effect.succeed(undefined),
+            ),
+          );
+        },
+      ),
+      reconcile: Effect.fn("clicksign.reconcile", {
+        attributes: { "signature_kit.provider": PROVIDER },
+      })(function* ({ news, output }) {
         if (output !== undefined) return output;
         const options = yield* credentials;
         const baseUrl = clicksignBaseUrl(options);
         const input = yield* clicksignSignatureRequestInputFromResourceProps(news);
-        return yield* createClicksignSignatureRequest(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan({
+          "signature_kit.document_count": input.documents.length,
+          "signature_kit.signer_count": input.recipients.length,
+          "signature_kit.document.bytes": input.documents.reduce(
+            (total, document) => total + document.content.byteLength,
+            0,
+          ),
+        });
+        const created = yield* createClicksignSignatureRequest(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan("signature_kit.signature_request.state", created.state);
+        return created;
       }),
-      delete: Effect.fn(function* ({ output }) {
-        const options = yield* credentials;
-        const baseUrl = clicksignBaseUrl(options);
-        return yield* deleteClicksignSignatureRequestInternal(http, options, baseUrl, output.id);
-      }),
+      delete: Effect.fn("clicksign.delete", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          const options = yield* credentials;
+          const baseUrl = clicksignBaseUrl(options);
+          return yield* deleteClicksignSignatureRequestInternal(http, options, baseUrl, output.id);
+        },
+      ),
     });
   }),
 );
@@ -759,7 +800,14 @@ export const getClicksignSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* getClicksignSignatureRequestInternal(http, valid, clicksignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((request) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.state", request.state),
+    ),
+    Effect.withSpan("clicksign.getSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const listClicksignSignatureRequests = (
   options: ClicksignProviderOptions,
@@ -784,7 +832,14 @@ export const listClicksignSignatureRequests = (
     );
     const http = yield* SignatureHttpClient;
     return yield* listClicksignSignatureRequestsInternal(http, valid, clicksignBaseUrl(valid));
-  });
+  }).pipe(
+    Effect.tap((requests) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.count", requests.length),
+    ),
+    Effect.withSpan("clicksign.listSignatureRequests", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const cancelClicksignSignatureRequest = (
   options: ClicksignProviderOptions,
@@ -806,7 +861,11 @@ export const cancelClicksignSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* cancelClicksignSignatureRequestInternal(http, valid, clicksignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("clicksign.cancelSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const deleteClicksignSignatureRequest = (
   options: ClicksignProviderOptions,
@@ -828,7 +887,11 @@ export const deleteClicksignSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* deleteClicksignSignatureRequestInternal(http, valid, clicksignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("clicksign.deleteSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const downloadClicksignSignedDocument = (
   options: ClicksignProviderOptions,
@@ -850,9 +913,18 @@ export const downloadClicksignSignedDocument = (
     );
     const http = yield* SignatureHttpClient;
     return yield* downloadClicksignSignedDocumentInternal(http, valid, clicksignBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((bytes) =>
+      Effect.annotateCurrentSpan("signature_kit.document.bytes", bytes.byteLength),
+    ),
+    Effect.withSpan("clicksign.downloadSignedDocument", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
-export const waitForClicksignSignatureRequest = Effect.fn(function* (
+export const waitForClicksignSignatureRequest = Effect.fn("clicksign.waitForSignatureRequest", {
+  attributes: { "signature_kit.provider": PROVIDER },
+})(function* (
   options: ClicksignProviderOptions,
   id: string,
   pollInterval: Duration.Duration,

@@ -315,8 +315,13 @@ export function findPdfTextAnchors(
           rectForAnchorBox(page, box, valid),
         )
       : [];
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.pdf.anchor_matchers": valid.matchers.length,
+      "signature_kit.pdf.anchor_matches": contentRects.length + linkRects.length,
+      "signature_kit.pdf.inspected": inspection !== emptyInspection,
+    });
     return [...contentRects, ...linkRects];
-  });
+  }).pipe(Effect.withSpan(PdfOperationValue.findTextAnchors));
 }
 
 export const removePdfLinkAnchors = (

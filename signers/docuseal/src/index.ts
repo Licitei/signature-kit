@@ -618,30 +618,46 @@ const docuSealSignatureRequestProvider = Provider.effect(
       nuke: { skip: true },
       diff: docusealSignatureRequestDiff,
       list: () => Effect.succeed([]),
-      read: Effect.fn(function* ({ output }) {
-        if (output === undefined) return undefined;
-        const options = yield* credentials;
-        const baseUrl = docuSealBaseUrl(options);
-        return yield* fetchSubmission(http, options, baseUrl, output.id).pipe(
-          Effect.map((result) => toDocuSealSubmissionAttributes(baseUrl, result)),
-          Effect.catchIf(
-            (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
-            () => Effect.succeed(undefined),
-          ),
-        );
-      }),
-      reconcile: Effect.fn(function* ({ news, output }) {
+      read: Effect.fn("docuseal.read", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          if (output === undefined) return undefined;
+          const options = yield* credentials;
+          const baseUrl = docuSealBaseUrl(options);
+          return yield* fetchSubmission(http, options, baseUrl, output.id).pipe(
+            Effect.map((result) => toDocuSealSubmissionAttributes(baseUrl, result)),
+            Effect.catchIf(
+              (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
+              () => Effect.succeed(undefined),
+            ),
+          );
+        },
+      ),
+      reconcile: Effect.fn("docuseal.reconcile", {
+        attributes: { "signature_kit.provider": PROVIDER },
+      })(function* ({ news, output }) {
         if (output !== undefined) return output;
         const options = yield* credentials;
         const baseUrl = docuSealBaseUrl(options);
         const input = yield* docusealSignatureRequestInputFromResourceProps(news);
-        return yield* createSubmission(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan({
+          "signature_kit.document_count": input.documents.length,
+          "signature_kit.signer_count": input.recipients.length,
+          "signature_kit.document.bytes": input.documents.reduce(
+            (total, document) => total + document.content.byteLength,
+            0,
+          ),
+        });
+        const created = yield* createSubmission(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan("signature_kit.signature_request.state", created.state);
+        return created;
       }),
-      delete: Effect.fn(function* ({ output }) {
-        const options = yield* credentials;
-        const baseUrl = docuSealBaseUrl(options);
-        return yield* deleteSubmission(http, options, baseUrl, output.id);
-      }),
+      delete: Effect.fn("docuseal.delete", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          const options = yield* credentials;
+          const baseUrl = docuSealBaseUrl(options);
+          return yield* deleteSubmission(http, options, baseUrl, output.id);
+        },
+      ),
     });
   }),
 );
@@ -678,7 +694,14 @@ export const getDocuSealSignatureRequest = (
     return yield* fetchSubmission(http, valid, baseUrl, id).pipe(
       Effect.map((result) => toDocuSealSubmissionAttributes(baseUrl, result)),
     );
-  });
+  }).pipe(
+    Effect.tap((request) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.state", request.state),
+    ),
+    Effect.withSpan("docuseal.getSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const listDocuSealSignatureRequests = (
   options: DocuSealProviderOptions,
@@ -699,7 +722,14 @@ export const listDocuSealSignatureRequests = (
     );
     const http = yield* SignatureHttpClient;
     return yield* listSubmissions(http, valid, docuSealBaseUrl(valid));
-  });
+  }).pipe(
+    Effect.tap((requests) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.count", requests.length),
+    ),
+    Effect.withSpan("docuseal.listSignatureRequests", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const deleteDocuSealSignatureRequest = (
   options: DocuSealProviderOptions,
@@ -721,7 +751,11 @@ export const deleteDocuSealSignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* deleteSubmission(http, valid, docuSealBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("docuseal.deleteSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const downloadDocuSealSignedDocument = (
   options: DocuSealProviderOptions,
@@ -743,9 +777,18 @@ export const downloadDocuSealSignedDocument = (
     );
     const http = yield* SignatureHttpClient;
     return yield* downloadDocumentFromSubmission(http, valid, docuSealBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((bytes) =>
+      Effect.annotateCurrentSpan("signature_kit.document.bytes", bytes.byteLength),
+    ),
+    Effect.withSpan("docuseal.downloadSignedDocument", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
-export const waitForDocuSealSignatureRequest = Effect.fn(function* (
+export const waitForDocuSealSignatureRequest = Effect.fn("docuseal.waitForSignatureRequest", {
+  attributes: { "signature_kit.provider": PROVIDER },
+})(function* (
   options: DocuSealProviderOptions,
   id: string,
   pollInterval: Duration.Duration,

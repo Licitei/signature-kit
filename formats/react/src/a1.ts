@@ -245,6 +245,9 @@ const loadCertificate = async (
       });
     }),
     Effect.scoped,
+    Effect.withSpan("react.a1.loadCertificate", {
+      attributes: { "signature_kit.certificate.pfx_bytes": pfx.byteLength },
+    }),
   );
 
   // effect-boundary: React hook event action [allow-run: hook event-action boundary]
@@ -332,10 +335,13 @@ const signDocuments = async (input: A1SignerInput): Promise<A1SignerRunOutcome> 
         updateSignerState(operation, (state) => ({ ...state, rows: pendingRows(valid.documents) })),
       ),
     ),
+    Effect.tap((valid) =>
+      Effect.annotateCurrentSpan("signature_kit.document_count", valid.documents.length),
+    ),
     Effect.flatMap((valid) =>
       resolveA1SignerSession(valid.credentials).pipe(
         Effect.flatMap((session) =>
-          Effect.forEach(valid.documents, (document): Effect.Effect<A1SignerRow> => {
+          Effect.forEach(valid.documents, (document, index): Effect.Effect<A1SignerRow> => {
             const name = rowName(document);
             const stampSize = document.stampSize ?? valid.stamp?.stampSize;
             return Effect.sync(() =>
@@ -377,6 +383,12 @@ const signDocuments = async (input: A1SignerInput): Promise<A1SignerRunOutcome> 
                         }),
                       ),
                     ),
+                    Effect.withSpan("react.a1.signDocument", {
+                      attributes: {
+                        "signature_kit.document_index": index,
+                        "signature_kit.pdf.bytes": document.pdf.byteLength,
+                      },
+                    }),
                     Effect.result,
                   ),
               ),
@@ -395,6 +407,7 @@ const signDocuments = async (input: A1SignerInput): Promise<A1SignerRunOutcome> 
       ),
     ),
     Effect.scoped,
+    Effect.withSpan("react.a1.signDocuments"),
     Effect.ensuring(
       Effect.sync(() => updateSignerState(operation, (state) => ({ ...state, busy: false }))),
     ),

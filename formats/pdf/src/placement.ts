@@ -628,6 +628,12 @@ export const resolvePlacementForDocument = (
 
       return resolvedVisibleWidgetPlacement(pageIndex, appearance.widgetRect);
     }),
+    Effect.withSpan("pdf.placement.resolve", {
+      attributes: {
+        "signature_kit.pdf.page_count": document.pages.length,
+        "signature_kit.pdf.placement_kind": placement?.kind ?? "widget",
+      },
+    }),
   );
 };
 

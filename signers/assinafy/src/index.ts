@@ -624,14 +624,30 @@ const createAssinafySignatureRequest = (
   const [document] = input.documents;
 
   return uploadDocument(http, options, baseUrl, document).pipe(
+    Effect.withSpan("assinafy.uploadDocument", {
+      attributes: {
+        "signature_kit.provider": PROVIDER,
+        "signature_kit.document.bytes": document.content.byteLength,
+      },
+    }),
     Effect.flatMap((uploadedDocument) =>
       Effect.forEach(
         input.recipients,
         (recipient) => createSigner(http, options, baseUrl, recipient),
         { concurrency: 4 },
       ).pipe(
+        Effect.withSpan("assinafy.createSigners", {
+          attributes: {
+            "signature_kit.provider": PROVIDER,
+            "signature_kit.signer_count": input.recipients.length,
+          },
+        }),
         Effect.flatMap((signerIds) =>
-          createAssignment(http, options, baseUrl, uploadedDocument.id, signerIds, input),
+          createAssignment(http, options, baseUrl, uploadedDocument.id, signerIds, input).pipe(
+            Effect.withSpan("assinafy.createAssignment", {
+              attributes: { "signature_kit.provider": PROVIDER },
+            }),
+          ),
         ),
         Effect.catchIf(shouldRollbackAssinafyCreate, (error) =>
           deleteAssinafySignatureRequestInternal(http, options, baseUrl, uploadedDocument.id).pipe(
@@ -663,29 +679,45 @@ const assinafySignatureRequestProvider = Provider.effect(
       nuke: { skip: true },
       diff: assinafySignatureRequestDiff,
       list: () => Effect.succeed([]),
-      read: Effect.fn(function* ({ output }) {
-        if (output === undefined) return undefined;
-        const options = yield* credentials;
-        const baseUrl = assinafyBaseUrl(options);
-        return yield* getAssinafySignatureRequestInternal(http, options, baseUrl, output.id).pipe(
-          Effect.catchIf(
-            (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
-            () => Effect.succeed(undefined),
-          ),
-        );
-      }),
-      reconcile: Effect.fn(function* ({ news, output }) {
+      read: Effect.fn("assinafy.read", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          if (output === undefined) return undefined;
+          const options = yield* credentials;
+          const baseUrl = assinafyBaseUrl(options);
+          return yield* getAssinafySignatureRequestInternal(http, options, baseUrl, output.id).pipe(
+            Effect.catchIf(
+              (error) => error.code === SignatureKitErrorCodeValue.http && error.status === 404,
+              () => Effect.succeed(undefined),
+            ),
+          );
+        },
+      ),
+      reconcile: Effect.fn("assinafy.reconcile", {
+        attributes: { "signature_kit.provider": PROVIDER },
+      })(function* ({ news, output }) {
         if (output !== undefined) return output;
         const options = yield* credentials;
         const baseUrl = assinafyBaseUrl(options);
         const input = yield* assinafySignatureRequestInputFromResourceProps(news);
-        return yield* createAssinafySignatureRequest(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan({
+          "signature_kit.document_count": input.documents.length,
+          "signature_kit.signer_count": input.recipients.length,
+          "signature_kit.document.bytes": input.documents.reduce(
+            (total, document) => total + document.content.byteLength,
+            0,
+          ),
+        });
+        const created = yield* createAssinafySignatureRequest(http, options, baseUrl, input);
+        yield* Effect.annotateCurrentSpan("signature_kit.signature_request.state", created.state);
+        return created;
       }),
-      delete: Effect.fn(function* ({ output }) {
-        const options = yield* credentials;
-        const baseUrl = assinafyBaseUrl(options);
-        return yield* deleteAssinafySignatureRequestInternal(http, options, baseUrl, output.id);
-      }),
+      delete: Effect.fn("assinafy.delete", { attributes: { "signature_kit.provider": PROVIDER } })(
+        function* ({ output }) {
+          const options = yield* credentials;
+          const baseUrl = assinafyBaseUrl(options);
+          return yield* deleteAssinafySignatureRequestInternal(http, options, baseUrl, output.id);
+        },
+      ),
     });
   }),
 );
@@ -720,7 +752,14 @@ export const getAssinafySignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* getAssinafySignatureRequestInternal(http, valid, assinafyBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((request) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.state", request.state),
+    ),
+    Effect.withSpan("assinafy.getSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const listAssinafySignatureRequests = (
   options: AssinafyProviderOptions,
@@ -745,7 +784,14 @@ export const listAssinafySignatureRequests = (
     );
     const http = yield* SignatureHttpClient;
     return yield* listAssinafySignatureRequestsInternal(http, valid, assinafyBaseUrl(valid));
-  });
+  }).pipe(
+    Effect.tap((requests) =>
+      Effect.annotateCurrentSpan("signature_kit.signature_request.count", requests.length),
+    ),
+    Effect.withSpan("assinafy.listSignatureRequests", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const deleteAssinafySignatureRequest = (
   options: AssinafyProviderOptions,
@@ -767,7 +813,11 @@ export const deleteAssinafySignatureRequest = (
     );
     const http = yield* SignatureHttpClient;
     return yield* deleteAssinafySignatureRequestInternal(http, valid, assinafyBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.withSpan("assinafy.deleteSignatureRequest", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
 export const downloadAssinafySignedDocument = (
   options: AssinafyProviderOptions,
@@ -789,9 +839,18 @@ export const downloadAssinafySignedDocument = (
     );
     const http = yield* SignatureHttpClient;
     return yield* downloadAssinafySignedDocumentInternal(http, valid, assinafyBaseUrl(valid), id);
-  });
+  }).pipe(
+    Effect.tap((bytes) =>
+      Effect.annotateCurrentSpan("signature_kit.document.bytes", bytes.byteLength),
+    ),
+    Effect.withSpan("assinafy.downloadSignedDocument", {
+      attributes: { "signature_kit.provider": PROVIDER },
+    }),
+  );
 
-export const waitForAssinafySignatureRequest = Effect.fn(function* (
+export const waitForAssinafySignatureRequest = Effect.fn("assinafy.waitForSignatureRequest", {
+  attributes: { "signature_kit.provider": PROVIDER },
+})(function* (
   options: AssinafyProviderOptions,
   id: string,
   pollInterval: Duration.Duration,

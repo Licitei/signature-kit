@@ -48,6 +48,11 @@ export const signXml = (
     );
     const xmlRuntime = yield* XmlRuntime;
     const algorithm = input.algorithm ?? "rsa-sha256";
+    yield* Effect.annotateCurrentSpan({
+      "signature_kit.signature.algorithm": algorithm,
+      "signature_kit.xml.canonicalization": input.canonicalization ?? "exclusive",
+      "signature_kit.xml.characters": input.xml.length,
+    });
 
     const document = yield* xmlRuntime.parse(input.xml);
     const sourceSignatureStructure = yield* xmlRuntime.validateSigningDocument(document);
@@ -91,7 +96,11 @@ export const signXml = (
           retryable: false,
           operation: XmlOperationValue.sign,
         }),
-    });
+    }).pipe(
+      Effect.withSpan("xml.signature", {
+        attributes: { "signature_kit.hash.algorithm": reference.hash },
+      }),
+    );
 
     const output = yield* Effect.try({
       try: () => signedXml.toString(),
@@ -113,5 +122,6 @@ export const signXml = (
       ),
     );
     yield* xmlRuntime.validateSigningDocument(signedDocument);
+    yield* Effect.annotateCurrentSpan("signature_kit.xml.output_characters", output.length);
     return output;
-  });
+  }).pipe(Effect.withSpan(XmlOperationValue.sign));

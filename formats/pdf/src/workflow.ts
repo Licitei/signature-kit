@@ -170,7 +170,13 @@ export const loadPdfSignatureDocument = (
   input: PdfDocumentInput,
   options?: PdfDocumentLoadOptions,
 ): Effect.Effect<PdfSignatureDocument, PdfError, PdfCore> =>
-  loadPdfSignatureDocumentWithPages(input, options).pipe(Effect.map((loaded) => loaded.document));
+  loadPdfSignatureDocumentWithPages(input, options).pipe(
+    Effect.map((loaded) => loaded.document),
+    Effect.tap((document) =>
+      Effect.annotateCurrentSpan("signature_kit.pdf.page_count", document.pages.length),
+    ),
+    Effect.withSpan(PdfOperationValue.loadDocument),
+  );
 
 type PdfSigningBatchGeometry = {
   readonly pages: ReadonlyArray<PdfSignaturePage>;
@@ -635,6 +641,7 @@ export const signPdfSignatureField = (
         ),
       ),
     ),
+    Effect.withSpan(PdfOperationValue.signField),
   );
 
 const pdfSigningInputFromPreparedDocument = (
@@ -1005,7 +1012,10 @@ const preparePdfVisibleDocument = (input: PdfPrepareAndSignInput) =>
 export const preparePdfVisualPreview = (
   input: PdfPrepareAndSignInput,
 ): Effect.Effect<Uint8Array, PdfError, PdfCore> =>
-  preparePdfVisibleDocument(input).pipe(Effect.map((prepared) => prepared.pdf));
+  preparePdfVisibleDocument(input).pipe(
+    Effect.map((prepared) => prepared.pdf),
+    Effect.withSpan("pdf.workflow.prepare-preview"),
+  );
 
 export const prepareAndSignPdf = (
   input: PdfPrepareAndSignInput,
@@ -1020,6 +1030,7 @@ export const prepareAndSignPdf = (
         },
       }),
     ),
+    Effect.withSpan(PdfOperationValue.prepareAndSign),
   );
 
 export type PdfSigningBatchPreparationCallbacks = {
@@ -1051,9 +1062,15 @@ export const preparePdfSigningBatch = (
           issueMessage: String(issue),
         }),
     ),
+    Effect.tap((valid) =>
+      Effect.annotateCurrentSpan("signature_kit.document_count", valid.documents.length),
+    ),
     Effect.flatMap((valid) =>
       Effect.forEach(valid.documents, (document, index) =>
         preparePdfSigningBatchDocument(document, valid.stamp, valid.signing).pipe(
+          Effect.withSpan("pdf.workflow.prepare-batch.document", {
+            attributes: { "signature_kit.document_index": index },
+          }),
           Effect.tap((result) =>
             Effect.sync(() =>
               callbacks.onItemSettled?.(result, index, valid.documents.length),
@@ -1068,6 +1085,7 @@ export const preparePdfSigningBatch = (
         ),
       ),
     ),
+    Effect.withSpan("pdf.workflow.prepare-batch"),
   );
 
 export type PdfSignatureBatchCallbacks = {
@@ -1080,6 +1098,9 @@ export const signPdfSignatureBatch = (
 ): Effect.Effect<ReadonlyArray<PdfBatchResult>, never, Signatures | PdfCore> =>
   Effect.forEach(items, (item, index): Effect.Effect<PdfBatchResult, never, Signatures | PdfCore> =>
     signPdfSignatureField(item.input).pipe(
+      Effect.withSpan("pdf.workflow.sign-batch.document", {
+        attributes: { "signature_kit.document_index": index },
+      }),
       Effect.match({
         onSuccess: (signedPdf): PdfBatchResult => ({ id: item.id, ok: true, signedPdf }),
         onFailure: (error): PdfBatchResult => ({ id: item.id, ok: false, error }),
@@ -1091,4 +1112,8 @@ export const signPdfSignatureBatch = (
         ),
       ),
     ),
+  ).pipe(
+    Effect.withSpan("pdf.workflow.sign-batch", {
+      attributes: { "signature_kit.document_count": items.length },
+    }),
   );

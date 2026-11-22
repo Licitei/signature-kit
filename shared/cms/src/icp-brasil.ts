@@ -91,6 +91,7 @@ export const parseIcpBrasilPadesPolicy = (
   policyDer: Uint8Array,
 ): Effect.Effect<IcpBrasilPolicy, CmsError> =>
   Effect.gen(function* () {
+    yield* Effect.annotateCurrentSpan("signature_kit.cms.policy_bytes", policyDer.byteLength);
     const root = yield* decode(policyDer);
     if (root.kind !== "constructed" || root.class !== "universal" || root.tag !== 0x10) {
       return yield* new CmsError({
@@ -173,6 +174,7 @@ export const parseIcpBrasilPadesPolicy = (
           })
         : error,
     ),
+    Effect.withSpan(CmsOperationValue.policy),
   );
 
 type PolicyRequestAbort = {
@@ -281,7 +283,17 @@ export const fetchIcpBrasilPadesPolicy = (
           }),
       ),
     );
-    const response = yield* downloadIcpBrasilPadesPolicy(valid.timeoutMillis);
+    const response = yield* downloadIcpBrasilPadesPolicy(valid.timeoutMillis).pipe(
+      Effect.tap((download) =>
+        download._tag === "PolicyHttpFailure"
+          ? Effect.annotateCurrentSpan("http.response.status_code", download.status)
+          : Effect.void,
+      ),
+      Effect.withSpan("GET", {
+        kind: "client",
+        attributes: { "http.request.method": "GET", "signature_kit.cms.policy": "adRbV11" },
+      }),
+    );
     if (response._tag === "PolicyRequestAbort") {
       return yield* new CmsError({
         code: CmsErrorCodeValue.policyError,
@@ -312,4 +324,4 @@ export const fetchIcpBrasilPadesPolicy = (
       });
     }
     return policy;
-  });
+  }).pipe(Effect.withSpan("cms.policy.fetch"));
