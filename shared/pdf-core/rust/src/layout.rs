@@ -26,6 +26,7 @@ const LINE_PITCH: f64 = 1.5;
 const CELL_EM: f64 = 20.0;
 const SIZE_TOLERANCE: f64 = 0.25;
 const SAME_LINE: f64 = 0.5;
+const ISOLATED_SLACK_EM: f64 = 2.0;
 const LOOKBACK: usize = 8;
 const CORE_TOP: f64 = 0.15;
 const CORE_BOTTOM: f64 = 0.2;
@@ -555,6 +556,75 @@ fn line_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Opt
                 .map(|_| target)
         })
         .collect()
+}
+
+fn join_isolated_rows(segments: &mut [Segment], ranges: &mut [(usize, usize)]) {
+    let single = |position: Option<usize>| {
+        let &(start, end) = ranges.get(position?)?;
+        (end.saturating_sub(start) == 1)
+            .then(|| segments.get(start))
+            .flatten()
+    };
+    let mut joined: Vec<usize> = Vec::new();
+    for (position, &(start, end)) in ranges.iter().enumerate() {
+        if end.saturating_sub(start) < 2 {
+            continue;
+        }
+        let (Some(above), Some(below), Some(line)) = (
+            single(position.checked_sub(1)),
+            single(position.checked_add(1)),
+            segments.get(start..end),
+        ) else {
+            continue;
+        };
+        let size = line_size(line);
+        let center = line.first().map_or(0.0_f64, |segment| segment.center);
+        let pitch = LINE_PITCH * size;
+        let adjacent = above.center > center
+            && above.center - center <= pitch
+            && center > below.center
+            && center - below.center <= pitch;
+        let similar = line
+            .iter()
+            .chain([above, below])
+            .all(|segment| similar_size(segment.size, size));
+        let slack = ISOLATED_SLACK_EM * size;
+        let x0 = line
+            .iter()
+            .map(|segment| segment.x0)
+            .fold(f64::INFINITY, f64::min);
+        let x1 = line
+            .iter()
+            .map(|segment| segment.x1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let aligned = (above.x0 - x0).abs() <= slack && (below.x0 - x0).abs() <= slack;
+        let inside = aligned && x1 <= above.x1.max(below.x1) + slack;
+        if adjacent && similar && inside {
+            joined.push(position);
+        }
+    }
+    for position in joined {
+        let Some(range) = ranges.get_mut(position) else {
+            continue;
+        };
+        let (start, end) = *range;
+        let Some((head, rest)) = segments
+            .get_mut(start..end)
+            .and_then(|line| line.split_first_mut())
+        else {
+            continue;
+        };
+        for segment in rest {
+            head.members.append(&mut segment.members);
+            head.x1 = head.x1.max(segment.x1);
+            head.y0 = head.y0.min(segment.y0);
+            head.y1 = head.y1.max(segment.y1);
+            head.size = head.size.max(segment.size);
+            head.bold &= segment.bold;
+            head.italic &= segment.italic;
+        }
+        range.1 = start.saturating_add(1);
+    }
 }
 
 fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
@@ -1348,6 +1418,7 @@ fn flow_region(
     if !context.mode.text {
         return;
     }
+    join_isolated_rows(&mut segments, &mut ranges);
     let mut blocks = build_blocks(&segments, &ranges);
     for &index in &table_ids {
         let Some(table) = tables.get(index) else {
@@ -3699,6 +3770,172 @@ mod structure_tests {
             assert!(!out.contains('|'), "{out}");
         }
         assert_eq!(tables_of(&bytes).len(), 0);
+    }
+
+    #[test]
+    fn tight_justified_word_gaps_become_spaces() {
+        let content = concat!(
+            "BT /F1 10 Tf 1 0 0 1 50 700 Tm ",
+            "[(is)-197(a)20(v)25(ailable,)-196(traditional)-197(compilers)] TJ ET\n",
+            "BT /F1 10 Tf 1 0 0 1 50 680 Tm ",
+            "[(W)80(e)-170(spe)-60(ci)-40(fic)15(ation)] TJ ET\n",
+        );
+        let bytes = document(&[page(content.to_owned())], &[]);
+        for options in [MARKDOWN, PLAIN] {
+            let out = pages_of(&bytes, options).concat();
+            assert!(out.contains("is available, traditional compilers"), "{out}");
+            assert!(out.contains("We speci"), "{out}");
+            assert!(!out.contains("spe ci"), "{out}");
+        }
+    }
+
+    #[test]
+    fn numbered_code_lines_keep_their_indented_statement() {
+        let mut content = String::new();
+        let rows: [(&str, f64, &str); 6] = [
+            ("1", 58.0, "for (var i = 2; i < 100; ++i) {"),
+            ("2", 66.0, "if (!primes[i])"),
+            ("3", 74.0, "continue;"),
+            ("4", 66.0, "for (var k = i + i; i < 100; k += i)"),
+            ("5", 120.0, "primes[k] = false;"),
+            ("6", 58.0, "}"),
+        ];
+        for (row, (number, x, code)) in rows.iter().enumerate() {
+            let y = 700.0_f64 - 10.0_f64 * usize_to_f64(row);
+            content.push_str(&text(50.0, y, 8.0, number));
+            content.push_str(&text(*x, y, 8.0, code));
+        }
+        let bytes = document(&[page(content)], &[]);
+        for options in [MARKDOWN, PLAIN] {
+            let out = pages_of(&bytes, options).concat();
+            let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains("5 primes[k] = false; 6 }"), "{out}");
+        }
+    }
+
+    #[test]
+    fn wide_gutter_index_pages_read_column_by_column() {
+        let mut content = String::new();
+        for row in 0_usize..14_usize {
+            let y = 700.0_f64 - 9.0_f64 * usize_to_f64(row);
+            let odd = row.rem_euclid(2) == 1;
+            let (first, second, third) = if odd {
+                (
+                    format!("Subtopic about it {row}"),
+                    format!("Income statement {row}"),
+                    format!("Related entry {row}"),
+                )
+            } else {
+                (
+                    format!("Heading {row} about topics 12"),
+                    format!("11{row}0S:"),
+                    format!("Another heading {row} 7"),
+                )
+            };
+            let indent = if odd { 11.0_f64 } else { 0.0_f64 };
+            content.push_str(&text(42.0 + indent, y, 7.5, &first));
+            content.push_str(&text(145.0 + indent, y, 7.5, &second));
+            content.push_str(&text(252.0 + indent, y, 7.5, &third));
+            let level = 11.0_f64 * usize_to_f64(row.rem_euclid(4));
+            content.push_str(&text(
+                350.0 + level,
+                y,
+                7.5,
+                &format!("Worksheet entry {row} 8"),
+            ));
+        }
+        let bytes = document(&[page(content)], &[]);
+        assert_eq!(tables_of(&bytes).len(), 0);
+        let out = pages_of(&bytes, MARKDOWN).concat();
+        let first = position(&out, "Subtopic about it 13");
+        let second = position(&out, "1100S:");
+        let third = position(&out, "Another heading 0 7");
+        let fourth = position(&out, "Worksheet entry 0 8");
+        assert!(first < second && second < third && third < fourth, "{out}");
+        assert!(
+            out.contains("Heading 0 about topics 12\n\nSubtopic about it 1"),
+            "{out}"
+        );
+    }
+
+    fn shared_break_row(row: usize) -> f64 {
+        let gap = if row >= 4 { 12.0_f64 } else { 0.0_f64 };
+        700.0_f64 - 12.0_f64 * usize_to_f64(row) - gap
+    }
+
+    #[test]
+    fn large_margin_icons_do_not_bridge_the_column_gutter() {
+        let mut content = String::new();
+        for (row, line) in LEFT_COLUMN.iter().enumerate() {
+            content.push_str(&text(50.0, shared_break_row(row), 10.0, line));
+        }
+        for (row, line) in RIGHT_COLUMN.iter().enumerate() {
+            let x = if (1..=3).contains(&row) {
+                310.0_f64
+            } else {
+                285.0_f64
+            };
+            content.push_str(&text(x, shared_break_row(row), 10.0, line));
+        }
+        content.push_str(&text(285.0, shared_break_row(2) - 13.7, 48.0, "!"));
+        let bytes = document(&[page(content)], &[]);
+        for options in [MARKDOWN, PLAIN] {
+            let out = pages_of(&bytes, options).concat();
+            let left_end = position(&out, "records hot loops while the program");
+            let right_start = position(&out, "side web programming");
+            assert!(left_end < right_start, "{out}");
+        }
+    }
+
+    #[test]
+    fn coincident_paragraph_breaks_keep_prose_columns() {
+        let column = |x: f64, breaks: &[usize], lines: &[&str]| {
+            let mut out = String::new();
+            let mut y = 740.0_f64;
+            for row in 0_usize..20_usize {
+                if breaks.contains(&row) {
+                    y -= 12.0_f64;
+                }
+                let line = lines
+                    .get(row.rem_euclid(lines.len()))
+                    .copied()
+                    .unwrap_or_default();
+                out.push_str(&text(x, y, 10.0, line));
+                y -= 12.0_f64;
+            }
+            out
+        };
+        let mut content = column(50.0_f64, &[5, 10, 15], &LEFT_COLUMN);
+        content.push_str(&column(285.0_f64, &[5, 10, 15, 16, 17, 18], &RIGHT_COLUMN));
+        let bytes = document(&[page(content)], &[]);
+        for options in [MARKDOWN, PLAIN] {
+            let out = pages_of(&bytes, options).concat();
+            let left_late = position(&out, "and is now the de facto standard");
+            let right_start = position(&out, "side web programming");
+            assert!(left_late < right_start, "{out}");
+        }
+    }
+
+    #[test]
+    fn bulleted_column_keeps_its_gutter() {
+        let mut content = String::new();
+        for (row, line) in LEFT_COLUMN.iter().enumerate() {
+            content.push_str(&text(50.0, shared_break_row(row), 10.0, line));
+        }
+        for (row, line) in RIGHT_COLUMN.iter().enumerate() {
+            let y = shared_break_row(row);
+            if row == 0 || row == 4 {
+                content.push_str(&text(285.0, y, 10.0, "\\225"));
+            }
+            content.push_str(&text(297.0, y, 10.0, line));
+        }
+        let bytes = document(&[page(content)], &[]);
+        for options in [MARKDOWN, PLAIN] {
+            let out = pages_of(&bytes, options).concat();
+            let left_end = position(&out, "records hot loops while the program");
+            let right_start = position(&out, "side web programming");
+            assert!(left_end < right_start, "{out}");
+        }
     }
 
     #[test]

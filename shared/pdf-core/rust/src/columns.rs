@@ -11,12 +11,12 @@ const PROSE_HALF_WORDS: usize = 6;
 const WORD_LETTERS: usize = 3;
 const LIST_LINES: usize = 12;
 const LIST_SNAP: f64 = 1.0;
-const LIST_LEVELS: usize = 3;
-const LIST_HALF_WORDS: usize = 3;
-const LIST_GUTTER_EM: f64 = 2.5;
+const LIST_LEVELS: usize = 4;
+const LIST_HALF_WORDS: usize = 2;
+const LIST_GUTTER_EM: f64 = 4.5;
 const FLOW_SHARE: usize = 4;
 const LEVEL_SHARE: usize = 7;
-const LEVEL_REACH_EM: f64 = 4.0;
+const LEVEL_REACH_EM: f64 = 5.0;
 const EDGE_SLACK: f64 = 0.5;
 const MAX_DEPTH: usize = 24;
 const BREAK_PITCH: f64 = 1.4;
@@ -24,6 +24,7 @@ const SYNC_BREAKS: usize = 3;
 const SYNC_REACH: f64 = 0.5;
 const HOLE_EM: f64 = 4.0;
 const MIN_SIZE: f64 = 1.0;
+const BULLET_REACH: f64 = 4.0;
 
 #[derive(Clone, Copy)]
 struct Open {
@@ -185,6 +186,7 @@ impl Side {
             .fold(0_usize, |sum, group| sum.saturating_add(group.1));
         let (low, high) = top
             .iter()
+            .filter(|group| group.1 >= 2)
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), group| {
                 (low.min(group.0), high.max(group.0))
             });
@@ -302,12 +304,26 @@ impl Partition<'_, '_> {
 
 fn merged_spans(frags: &[Frag<'_>], members: &[usize], reach: f64, out: &mut Vec<(f64, f64)>) {
     out.clear();
+    let mut bullet = false;
     for frag in members.iter().filter_map(|&index| frags.get(index)) {
+        let gap = frag.x0 - out.last().map_or(f64::NEG_INFINITY, |span| span.1);
+        let joined = gap < reach || (bullet && gap < BULLET_REACH * reach);
         match out.last_mut() {
-            Some(span) if frag.x0 - span.1 < reach => span.1 = span.1.max(frag.x1),
+            Some(span) if joined => span.1 = span.1.max(frag.x1),
             _ => out.push((frag.x0, frag.x1)),
         }
+        bullet = !joined && is_bullet(frag.text);
     }
+}
+
+fn is_bullet(text: &str) -> bool {
+    let mut chars = text.trim().chars();
+    chars.next().is_some_and(|ch| {
+        matches!(
+            ch,
+            '•' | '●' | '▪' | '◦' | '■' | '□' | '►' | '➢' | '❖' | '✓' | '·'
+        ) || ('\u{f000}'..='\u{f0ff}').contains(&ch)
+    }) && chars.next().is_none()
 }
 
 fn widest_free(spans: &[(f64, f64)], open: &Open) -> Option<(f64, f64)> {
@@ -322,6 +338,14 @@ fn widest_free(spans: &[(f64, f64)], open: &Open) -> Option<(f64, f64)> {
         left = left.max(end);
     }
     best
+}
+
+fn body_size(frags: &[Frag<'_>], line: &Line) -> f64 {
+    line.members
+        .iter()
+        .filter_map(|&index| frags.get(index))
+        .max_by_key(|frag| frag.text.len())
+        .map_or(line.size, |frag| frag.size)
 }
 
 fn line_extent(frags: &[Frag<'_>], line: &Line) -> (f64, f64) {
@@ -359,10 +383,11 @@ fn candidates(frags: &[Frag<'_>], lines: &[Line], ordered: &[&[usize]]) -> Vec<G
     let mut next: Vec<Open> = Vec::new();
     let mut spans: Vec<(f64, f64)> = Vec::new();
     for (index, (line, members)) in lines.iter().zip(ordered).enumerate() {
-        merged_spans(frags, members, GUTTER_EM * line.size, &mut spans);
+        let size = body_size(frags, line);
+        merged_spans(frags, members, GUTTER_EM * size, &mut spans);
         next.clear();
         for mut candidate in open.iter().copied() {
-            let width = GUTTER_EM * candidate.size.min(line.size);
+            let width = GUTTER_EM * candidate.size.min(size);
             match widest_free(&spans, &candidate) {
                 Some((low, high)) if high - low >= width => {
                     candidate.x0 = low;
@@ -388,7 +413,7 @@ fn candidates(frags: &[Frag<'_>], lines: &[Line], ordered: &[&[usize]]) -> Vec<G
             let (Some(&(_, low)), Some(&(high, _))) = (pair.first(), pair.get(1)) else {
                 continue;
             };
-            let fresh = high - low >= GUTTER_EM * line.size
+            let fresh = high - low >= GUTTER_EM * size
                 && !next.iter().any(|kept| kept.x0 < high && low < kept.x1);
             if fresh {
                 next.push(Open {
@@ -396,7 +421,7 @@ fn candidates(frags: &[Frag<'_>], lines: &[Line], ordered: &[&[usize]]) -> Vec<G
                     last: index,
                     left: 1,
                     right: 1,
-                    size: line.size,
+                    size,
                     x0: low,
                     x1: high,
                 });
@@ -445,8 +470,9 @@ fn columnar(
         let (Some(line), Some(members)) = (lines.get(index), ordered.get(index)) else {
             continue;
         };
-        size = size.max(line.size);
-        let slack = EDGE_SLACK * line.size;
+        let body = body_size(frags, line);
+        size = size.max(body);
+        let slack = EDGE_SLACK * body;
         let active = || {
             all.iter()
                 .filter(|other| other.first <= index && index <= other.last)
@@ -501,7 +527,8 @@ fn synchronized(left: &Side, right: &Side) -> bool {
         })
         .count()
         .min(fewer);
-    common >= SYNC_BREAKS && common.saturating_mul(5) >= fewer.saturating_mul(3)
+    let more = left_breaks.len().max(right_breaks.len());
+    common >= SYNC_BREAKS && common.saturating_mul(5) >= more.saturating_mul(3)
 }
 
 const fn slot_of(line: usize, gutter: &Gutter, side: Ordering) -> usize {

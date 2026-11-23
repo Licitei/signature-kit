@@ -3,6 +3,7 @@ use crate::layout::Band;
 use crate::num::fold_string;
 use crate::table::{Table, render_markdown};
 
+const PAGE_DIGITS: usize = 4;
 const WORD_GAP: f64 = 0.12;
 const SPACE_EM: f64 = 0.28;
 const FLOW_GAP: f64 = 3.0;
@@ -822,6 +823,24 @@ fn trailer_cut(text: &str) -> usize {
     kept.len()
 }
 
+fn page_reference_end(text: &str) -> bool {
+    let mut words = text.split_whitespace().rev();
+    let last = words.next().unwrap_or_default();
+    !last.is_empty()
+        && last.len() <= PAGE_DIGITS
+        && last.bytes().all(|byte| byte.is_ascii_digit())
+        && words
+            .next()
+            .is_some_and(|word| word.chars().any(char::is_alphabetic) || word.ends_with(','))
+}
+
+fn index_entry(text: &str) -> bool {
+    let mut chars = text.trim_start().chars();
+    let capitalized = chars.next().is_some_and(char::is_uppercase)
+        && chars.next().is_some_and(char::is_lowercase);
+    capitalized && (page_reference_end(text) || text.trim_end().ends_with(':'))
+}
+
 fn starts_lower(text: &str) -> bool {
     text.trim_start()
         .chars()
@@ -1032,6 +1051,9 @@ fn breaks_within_flow(
     }
     if strong {
         return false;
+    }
+    if page_reference_end(&previous.plain) && index_entry(&next.plain) {
+        return true;
     }
     let shout_above = emphatic(previous);
     let shout_below = emphatic(next);
