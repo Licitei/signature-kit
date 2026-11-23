@@ -2453,7 +2453,6 @@ mod tests {
 #[cfg(test)]
 mod properties {
     use super::*;
-    use core::ops::Range;
     use proptest::prelude::*;
 
     const PIECES: [&str; 14] = [
