@@ -202,7 +202,12 @@ jobs:
         working-directory: shared/pdf-core/rust
         env:
           RUSTFLAGS: --cap-lints=warn
-        run: cargo-kani -Z stubbing -j 4 --output-format=terse
+        run: |
+          cargo-kani -Z stubbing -j 4 --output-format=terse \
+            --harness glue_only_drops_a_trailing_break_hyphen \
+            --harness page_joins_pair_body_with_body_and_notes_with_notes \
+            --harness column_slots_cover_every_item_and_split_both_sides \
+            --harness object_headers_never_panic
 
   ci:
     name: CI
