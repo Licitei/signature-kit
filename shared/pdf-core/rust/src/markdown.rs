@@ -1325,8 +1325,11 @@ fn heading_level(para: &Para, body: f64) -> Option<usize> {
     }
     let ratio = para.size / body.max(1e-3);
     let bold = all_bold(&para.spans);
-    let depth = numbering_depth(text);
     let big = ratio >= HEADING_RATIO;
+    if !(upper || bold || big) {
+        return None;
+    }
+    let depth = numbering_depth(text);
     let visible = text.chars().filter(|ch| !ch.is_whitespace()).count();
     let words: Vec<&str> = text.split_whitespace().collect();
     let readable = letters.saturating_mul(10) >= visible.saturating_mul(6)
