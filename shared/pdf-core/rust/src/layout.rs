@@ -28,6 +28,7 @@ const SIZE_TOLERANCE: f64 = 0.25;
 const SAME_LINE: f64 = 0.5;
 const ISOLATED_SLACK_EM: f64 = 2.0;
 const LOOKBACK: usize = 8;
+const NAIVE_SPANS: usize = 8;
 const CORE_TOP: f64 = 0.15;
 const CORE_BOTTOM: f64 = 0.2;
 const DUPLICATE_OVERLAP: f64 = 0.5;
@@ -541,9 +542,13 @@ fn line_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Opt
     }) && line
         .iter()
         .all(|segment| segment.x0.is_finite() && segment.x1.is_finite());
-    if !finite {
+    if !finite || (active.len() <= NAIVE_SPANS && line.len() <= NAIVE_SPANS) {
         return naive_targets(blocks, active, line);
     }
+    swept_targets(blocks, active, line)
+}
+
+fn swept_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Option<usize>> {
     let open = Sweep::new(active.iter().filter_map(|&id| {
         blocks
             .get(id)
@@ -2388,6 +2393,10 @@ mod tests {
             })
             .take(width)
             .collect();
+            assert_eq!(
+                swept_targets(&blocks, &active, &line),
+                naive_targets(&blocks, &active, &line)
+            );
             assert_eq!(
                 line_targets(&blocks, &active, &line),
                 naive_targets(&blocks, &active, &line)
