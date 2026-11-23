@@ -34,6 +34,8 @@ pub(crate) enum Packing {
     ObjectStreams,
 }
 
+type Fetch<'call> = dyn Fn(ObjRef) -> Outcome<Option<Rc<Body>>> + 'call;
+type Remap<'call> = dyn Fn(ObjRef) -> Object + 'call;
 type XrefRow = (u32, u16, XrefEntry);
 
 #[derive(Debug)]
@@ -85,10 +87,14 @@ impl Changes {
 }
 
 impl Written {
-    fn indirect<F>(&mut self, number: u32, generation: u16, object: &Object, data: &[u8], map: &F)
-    where
-        F: Fn(ObjRef) -> Object,
-    {
+    fn indirect(
+        &mut self,
+        number: u32,
+        generation: u16,
+        object: &Object,
+        data: &[u8],
+        map: &Remap<'_>,
+    ) {
         self.entries
             .push((number, generation, XrefEntry::Offset(self.out.len())));
         push_unsigned(&mut self.out, u64::from(number));
@@ -239,10 +245,7 @@ struct Graph {
 }
 
 impl Graph {
-    fn close<F>(&mut self, fetch: &F) -> Outcome<()>
-    where
-        F: Fn(ObjRef) -> Outcome<Option<Rc<Body>>>,
-    {
+    fn close(&mut self, fetch: &Fetch<'_>) -> Outcome<()> {
         while let Some(original) = self.queue.pop() {
             let Some(&assigned) = self.map.get(&original.number) else {
                 continue;
@@ -253,7 +256,7 @@ impl Graph {
             let mut found: Vec<ObjRef> = Vec::new();
             collect_refs(&body.object, &mut found);
             for reference in found {
-                let _: ObjRef = self.reach(reference, fetch)?;
+                let _: ObjRef = self.reach(reference)?;
             }
             if let Some(slot) = self.bodies.get_mut(widen_index(assigned)) {
                 *slot = Some((original, body));
@@ -313,11 +316,7 @@ impl Graph {
         Ok(written.out)
     }
 
-    fn reach<F>(&mut self, reference: ObjRef, fetch: &F) -> Outcome<ObjRef>
-    where
-        F: Fn(ObjRef) -> Outcome<Option<Rc<Body>>>,
-    {
-        let _: &F = fetch;
+    fn reach(&mut self, reference: ObjRef) -> Outcome<ObjRef> {
         if let Some(assigned) = self.map.get(&reference.number) {
             return Ok(ObjRef {
                 number: *assigned,
@@ -675,9 +674,9 @@ pub(crate) fn rewrite(
         })))
     };
     let mut graph = Graph::default();
-    let new_root = graph.reach(root, &fetch)?;
+    let new_root = graph.reach(root)?;
     let new_info = match info {
-        Some(reference) => Some(graph.reach(reference, &fetch)?),
+        Some(reference) => Some(graph.reach(reference)?),
         None => None,
     };
     graph.close(&fetch)?;
@@ -747,10 +746,7 @@ pub(crate) fn merge(
     Ok(output.finish(pages_number, catalog_number, kids, layout))
 }
 
-pub(crate) fn serialize<F>(out: &mut Vec<u8>, object: &Object, map: &F)
-where
-    F: Fn(ObjRef) -> Object,
-{
+pub(crate) fn serialize(out: &mut Vec<u8>, object: &Object, map: &Remap<'_>) {
     match object {
         Object::Null => token(out, b"null"),
         Object::Bool(value) => token(out, if *value { b"true" } else { b"false" }),
@@ -786,10 +782,7 @@ where
     }
 }
 
-pub(crate) fn serialize_dict<F>(out: &mut Vec<u8>, dict: &Dict, map: &F)
-where
-    F: Fn(ObjRef) -> Object,
-{
+pub(crate) fn serialize_dict(out: &mut Vec<u8>, dict: &Dict, map: &Remap<'_>) {
     out.extend_from_slice(b"<<");
     for (key, value) in &dict.entries {
         push_name(out, key);
@@ -892,15 +885,12 @@ fn packable(object: &Object) -> bool {
             .is_none_or(|dict| dict.get(b"ByteRange").is_none() || dict.get(b"Contents").is_none())
 }
 
-fn pack_object_streams<F>(
+fn pack_object_streams(
     written: &mut Written,
     packed: &[(u32, &Object)],
     first_free: u32,
-    map: &F,
-) -> u32
-where
-    F: Fn(ObjRef) -> Object,
-{
+    map: &Remap<'_>,
+) -> u32 {
     let mut next = first_free;
     for chunk in packed.chunks(OBJECTS_PER_STREAM) {
         let stream_number = next;
