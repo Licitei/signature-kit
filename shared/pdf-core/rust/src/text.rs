@@ -21,6 +21,8 @@ const MAX_FORM_DEPTH: usize = 24;
 const MAX_CACHED_FONTS: usize = 2048;
 const MAX_CACHED_FORM_BYTES: usize = 16 << 20;
 const SPACE_GAP: f64 = 0.2;
+const MIN_SPACE_GAP: f64 = 0.1;
+const SPACE_WIDTH_SHARE: f64 = 0.5;
 const BREAK_GAP: f64 = 1.5;
 const BACK_GAP: f64 = 0.4;
 const BASELINE_TOLERANCE: f64 = 0.3;
@@ -214,6 +216,7 @@ struct FontEntry {
     descent: f64,
     font: Font,
     italic: bool,
+    space_gap: f64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum FontKey {
@@ -853,7 +856,7 @@ impl Interpreter<'_, '_, '_> {
         style
     }
 
-    fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64) -> Join {
+    fn join(&self, origin: (f64, f64), direction: (f64, f64), size: f64, space_gap: f64) -> Join {
         if !self.pending.open {
             return Join::Closed;
         }
@@ -868,7 +871,7 @@ impl Interpreter<'_, '_, '_> {
         let on_line = across.abs() <= BASELINE_TOLERANCE * size;
         let near = along >= -BACK_GAP * size && along <= BREAK_GAP * size;
         if aligned && similar && on_line && near {
-            if along > SPACE_GAP * size {
+            if along > space_gap * size {
                 Join::Spaced
             } else {
                 Join::Same
@@ -884,12 +887,14 @@ impl Interpreter<'_, '_, '_> {
         let font = Font::load(self.document, dict, self.limits).ok()?;
         let (ascent, descent) = self.vertical_metrics(dict);
         let FontStyle { bold, italic } = self.font_style(dict, &font);
+        let space_gap = space_gap(&font);
         Some(Rc::new(FontEntry {
             ascent,
             bold,
             descent,
             font,
             italic,
+            space_gap,
         }))
     }
 
@@ -1143,7 +1148,7 @@ impl Interpreter<'_, '_, '_> {
                     (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
                     (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
                 );
-                let mut join = self.join(origin, direction, effective_size);
+                let mut join = self.join(origin, direction, effective_size, entry.space_gap);
                 if repositioned
                     && matches!(join, Join::Same | Join::Spaced)
                     && match self.capture.reposition {
@@ -1609,6 +1614,26 @@ fn graphics(scan: &mut PageScan, code: u32, curves: &mut u32) -> bool {
 
 const fn outside(bounds: [f64; 4], clip: [f64; 4]) -> bool {
     bounds[2] < clip[0] || bounds[0] > clip[2] || bounds[3] < clip[1] || bounds[1] > clip[3]
+}
+
+fn space_gap(font: &Font) -> f64 {
+    let mut glyphs = Vec::with_capacity(1);
+    let mut text = String::with_capacity(1);
+    for probe in [" ", ".", ","] {
+        glyphs.clear();
+        text.clear();
+        font.decode(probe.as_bytes(), &mut glyphs, &mut text);
+        let [glyph] = glyphs.as_slice() else {
+            return SPACE_GAP;
+        };
+        if text != probe {
+            return SPACE_GAP;
+        }
+        if glyph.advance > 0.0_f64 {
+            return (glyph.advance * SPACE_WIDTH_SHARE).clamp(MIN_SPACE_GAP, SPACE_GAP);
+        }
+    }
+    SPACE_GAP
 }
 
 const fn op(name: &[u8]) -> u32 {
