@@ -38,6 +38,14 @@ pub(crate) struct PathData {
     pub verbs: Vec<u8>,
 }
 
+#[derive(Debug)]
+pub(crate) struct Pen<'path> {
+    pub open: bool,
+    pub path: &'path mut PathData,
+    pub x: f64,
+    pub y: f64,
+}
+
 impl PathData {
     pub(crate) fn clear(&mut self) {
         self.verbs.clear();
@@ -87,6 +95,50 @@ impl PathData {
         self.line(x + width, y + height);
         self.line(x, y + height);
         self.verbs.push(VERB_CLOSE);
+    }
+}
+
+impl<'path> Pen<'path> {
+    pub(crate) fn close(&mut self) {
+        if self.open {
+            self.path.close();
+            self.open = false;
+        }
+    }
+
+    pub(crate) fn curve(&mut self, deltas: [f64; 6]) {
+        let x1 = self.x + deltas[0];
+        let y1 = self.y + deltas[1];
+        let x2 = x1 + deltas[2];
+        let y2 = y1 + deltas[3];
+        self.x = x2 + deltas[4];
+        self.y = y2 + deltas[5];
+        self.path.cubic([x1, y1, x2, y2, self.x, self.y]);
+        self.open = true;
+    }
+
+    pub(crate) fn line(&mut self, dx: f64, dy: f64) {
+        self.x += dx;
+        self.y += dy;
+        self.path.line(self.x, self.y);
+        self.open = true;
+    }
+
+    pub(crate) fn move_by(&mut self, dx: f64, dy: f64) {
+        self.close();
+        self.x += dx;
+        self.y += dy;
+        self.path.move_to(self.x, self.y);
+        self.open = true;
+    }
+
+    pub(crate) const fn new(path: &'path mut PathData) -> Self {
+        Self {
+            open: false,
+            path,
+            x: 0.0,
+            y: 0.0,
+        }
     }
 }
 
@@ -257,4 +309,17 @@ impl DisplayList {
     pub(crate) fn u32(&mut self, value: u32) {
         self.ops.extend_from_slice(&value.to_le_bytes());
     }
+}
+
+pub(crate) fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
+    let [a1, b1, c1, d1, e1, f1] = *first;
+    let [a2, b2, c2, d2, e2, f2] = *second;
+    [
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    ]
 }

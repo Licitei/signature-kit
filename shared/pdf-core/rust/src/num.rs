@@ -1,3 +1,5 @@
+use core::cmp::Ordering;
+
 const _: () = assert!(
     usize::BITS >= u32::BITS,
     "usize must be at least 32 bits wide"
@@ -120,6 +122,62 @@ pub(crate) const fn bounded(value: f64, low: f64, high: f64) -> f64 {
     value.max(low).min(high)
 }
 
+pub(crate) fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let high = u16::from(*bytes.get(offset)?);
+    let low = u16::from(*bytes.get(offset.checked_add(1)?)?);
+    Some((high << 8) | low)
+}
+
+pub(crate) fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let high = u32::from(read_u16(bytes, offset)?);
+    let low = u32::from(read_u16(bytes, offset.checked_add(2)?)?);
+    Some((high << 16) | low)
+}
+
+#[inline(never)]
+pub(crate) fn sort_total<T>(items: &mut [T], compare: &dyn Fn(&T, &T) -> Ordering) {
+    let len = items.len();
+    for root in (0..len >> 1_u32).rev() {
+        sift_down(items, root, len, compare);
+    }
+    for end in (1..len).rev() {
+        items.swap(0, end);
+        sift_down(items, 0, end, compare);
+    }
+}
+
+fn sift_down<T>(
+    items: &mut [T],
+    mut root: usize,
+    end: usize,
+    compare: &dyn Fn(&T, &T) -> Ordering,
+) {
+    loop {
+        let left = root.saturating_mul(2).saturating_add(1);
+        if left >= end {
+            return;
+        }
+        let right = left.saturating_add(1);
+        let child = match (items.get(left), items.get(right)) {
+            (Some(low), Some(high)) if right < end && compare(high, low).is_gt() => right,
+            _ => left,
+        };
+        let Some((parent, larger)) = items.get(root).zip(items.get(child)) else {
+            return;
+        };
+        if !compare(larger, parent).is_gt() {
+            return;
+        }
+        items.swap(root, child);
+        root = child;
+    }
+}
+
+#[inline(never)]
+pub(crate) fn sort_unstable_with<T>(items: &mut [T], compare: &dyn Fn(&T, &T) -> Ordering) {
+    items.sort_unstable_by(|left, right| compare(left, right));
+}
+
 pub(crate) fn parse_decimal(text: &[u8]) -> Option<f64> {
     let (negative, body) = match text.split_first() {
         Some((b'-', rest)) => (true, rest),
@@ -185,4 +243,27 @@ pub(crate) fn parse_decimal(text: &[u8]) -> Option<f64> {
         steps = steps.saturating_add(1);
     }
     Some(if negative { -value } else { value })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::iter;
+
+    #[test]
+    fn sort_total_matches_the_standard_sort() {
+        let mut state = 0x9e37_79b9_u32;
+        for len in 0..200_usize {
+            let mut values: Vec<u32> = iter::repeat_with(|| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                state >> 24_u32
+            })
+            .take(len)
+            .collect();
+            let mut expected = values.clone();
+            expected.sort_unstable();
+            sort_total(&mut values, &Ord::cmp);
+            assert_eq!(values, expected);
+        }
+    }
 }

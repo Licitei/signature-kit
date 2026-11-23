@@ -1,4 +1,4 @@
-use crate::num::{f64_to_i64, fold_char, widen};
+use crate::num::{f64_to_i64, fold_char, sort_total, sort_unstable_with, widen};
 use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
@@ -175,7 +175,7 @@ struct Sweep {
 impl Sweep {
     fn new(spans: impl Iterator<Item = (usize, f64, f64)>) -> Self {
         let mut items: Vec<(usize, f64, f64)> = spans.collect();
-        items.sort_unstable_by(|left, right| left.1.total_cmp(&right.1));
+        sort_unstable_with(&mut items, &|left, right| left.1.total_cmp(&right.1));
         let mut reach = Vec::with_capacity(items.len());
         let mut furthest = f64::NEG_INFINITY;
         for item in &items {
@@ -215,6 +215,12 @@ pub(crate) enum Band {
     Bottom,
     Free,
     Top,
+}
+
+#[derive(Clone, Copy)]
+enum FragOrder {
+    Center,
+    X0,
 }
 
 struct Piece {
@@ -326,24 +332,20 @@ fn compare(left: f64, right: f64) -> Ordering {
     left.total_cmp(&right)
 }
 
-fn sort_frag_indices_by_center(order: &mut [usize], frags: &[Frag<'_>]) {
+fn sort_frag_indices(order: &mut [usize], frags: &[Frag<'_>], by: FragOrder) {
     order.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
-        (Some(left), Some(right)) => {
-            compare(right.center(), left.center()).then_with(|| compare(left.x0, right.x0))
-        }
-        _ => Ordering::Equal,
-    });
-}
-
-fn sort_frag_indices_by_x0(order: &mut [usize], frags: &[Frag<'_>]) {
-    order.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
-        (Some(left), Some(right)) => compare(left.x0, right.x0),
+        (Some(left), Some(right)) => match by {
+            FragOrder::Center => {
+                compare(right.center(), left.center()).then_with(|| compare(left.x0, right.x0))
+            }
+            FragOrder::X0 => compare(left.x0, right.x0),
+        },
         _ => Ordering::Equal,
     });
 }
 
 fn sort_block_indices_reading(order: &mut [usize], blocks: &[Block]) {
-    order.sort_unstable_by(|&a, &b| match (blocks.get(a), blocks.get(b)) {
+    sort_unstable_with(order, &|&a, &b| match (blocks.get(a), blocks.get(b)) {
         (Some(left), Some(right)) => {
             compare(right.top, left.top).then_with(|| compare(left.x0, right.x0))
         }
@@ -353,7 +355,7 @@ fn sort_block_indices_reading(order: &mut [usize], blocks: &[Block]) {
 
 fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
     let mut order: Vec<usize> = (0..frags.len()).collect();
-    sort_frag_indices_by_center(&mut order, frags);
+    sort_frag_indices(&mut order, frags, FragOrder::Center);
     let mut lines: Vec<Line> = Vec::new();
     for index in order {
         let Some(frag) = frags.get(index) else {
@@ -376,7 +378,7 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
         }
     }
     for line in &mut lines {
-        sort_frag_indices_by_x0(&mut line.members, frags);
+        sort_frag_indices(&mut line.members, frags, FragOrder::X0);
     }
     lines
 }
@@ -384,7 +386,7 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
 fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     let mut gaps: Vec<f64> = Vec::new();
     let mut ordered = members.to_vec();
-    sort_frag_indices_by_x0(&mut ordered, frags);
+    sort_frag_indices(&mut ordered, frags, FragOrder::X0);
     let mut previous: Option<&Frag<'_>> = None;
     for index in ordered {
         let Some(frag) = frags.get(index) else {
@@ -408,7 +410,7 @@ fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     if compact.is_empty() {
         return CELL_GAP;
     }
-    compact.sort_unstable_by(f64::total_cmp);
+    sort_total(&mut compact, &f64::total_cmp);
     let bucket = usize::midpoint(0, compact.len());
     let typical = compact.get(bucket).copied().unwrap_or(WORD_GAP);
     CELL_GAP.max(typical * INTRA_WORD_SCALE)
@@ -694,18 +696,21 @@ fn by_start(
     descending: bool,
 ) -> Vec<usize> {
     let mut sorted: Vec<usize> = ids.to_vec();
-    sorted.sort_unstable_by(|&a, &b| match (blocks.get(a), blocks.get(b)) {
-        (Some(left), Some(right)) => {
-            let (left_start, _) = key(left);
-            let (right_start, _) = key(right);
-            if descending {
-                compare(right_start, left_start)
-            } else {
-                compare(left_start, right_start)
+    sort_unstable_with(
+        &mut sorted,
+        &|&a, &b| match (blocks.get(a), blocks.get(b)) {
+            (Some(left), Some(right)) => {
+                let (left_start, _) = key(left);
+                let (right_start, _) = key(right);
+                if descending {
+                    compare(right_start, left_start)
+                } else {
+                    compare(left_start, right_start)
+                }
             }
-        }
-        _ => Ordering::Equal,
-    });
+            _ => Ordering::Equal,
+        },
+    );
     sorted
 }
 
@@ -1693,7 +1698,7 @@ fn page_layout(
     let mut ranking: Vec<usize> = (0..4)
         .filter(|&quarter| weights.get(quarter).copied().unwrap_or(0) > 0)
         .collect();
-    ranking.sort_unstable_by(|&a, &b| {
+    sort_unstable_with(&mut ranking, &|&a, &b| {
         weights
             .get(b)
             .copied()
@@ -1817,9 +1822,6 @@ pub(crate) fn document_text(
     limits: &Limits,
     options: TextOptions,
 ) -> Outcome<Vec<String>> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.selected_page_entries(page_indexes)?;
     opened_text(&document, &borrow_pages(&pages), limits, options)
@@ -2150,9 +2152,6 @@ pub(crate) fn document_tables(
     merge_across_pages: bool,
     drop_running: bool,
 ) -> Outcome<Vec<Table>> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.selected_page_entries(page_indexes)?;
     opened_tables(

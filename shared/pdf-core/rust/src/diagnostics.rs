@@ -151,9 +151,6 @@ pub(crate) fn document_diagnostics(
     selection: PageRequest<&[u32]>,
     limits: &Limits,
 ) -> Outcome<Vec<PageDiagnostics>> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.selected_page_entries(selection)?;
     opened_diagnostics(&document, &borrow_pages(&pages), limits)

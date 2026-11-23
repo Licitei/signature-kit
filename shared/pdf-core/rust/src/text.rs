@@ -1,4 +1,5 @@
 use crate::diagnostics::PageScan;
+use crate::display::{Matrix, multiply};
 use crate::num::f64_to_i64;
 use crate::num::widen;
 use alloc::rc::Rc;
@@ -91,8 +92,6 @@ const ITALIC_FLAG: i64 = 1 << 6;
 
 const ITALIC_ANGLE: f64 = 4.0;
 
-type Matrix = [f64; 6];
-
 #[derive(PartialEq, Eq)]
 enum Shows {
     Forms,
@@ -100,7 +99,7 @@ enum Shows {
     Text,
 }
 
-trait Numeric {
+pub(crate) trait Numeric {
     fn number(&self) -> Option<f64>;
 }
 
@@ -1666,20 +1665,7 @@ fn scan_shows(data: &[u8]) -> Shows {
     if forms { Shows::Forms } else { Shows::Nothing }
 }
 
-fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
-    let [a1, b1, c1, d1, e1, f1] = *first;
-    let [a2, b2, c2, d2, e2, f2] = *second;
-    [
-        a1 * a2 + b1 * c2,
-        a1 * b2 + b1 * d2,
-        c1 * a2 + d1 * c2,
-        c1 * b2 + d1 * d2,
-        e1 * a2 + f1 * c2 + e2,
-        e1 * b2 + f1 * d2 + f2,
-    ]
-}
-
-fn tail_numbers<const N: usize, T>(operands: &[T]) -> Option<[f64; N]>
+pub(crate) fn tail_numbers<const N: usize, T>(operands: &[T]) -> Option<[f64; N]>
 where
     T: Numeric,
 {

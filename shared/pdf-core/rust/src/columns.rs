@@ -3,6 +3,7 @@ use core::iter::once;
 use core::mem::swap;
 
 use crate::layout::{Frag, Line};
+use crate::num::sort_total;
 
 const GUTTER_EM: f64 = 0.75;
 const GUTTER_LINES: usize = 4;
@@ -147,7 +148,7 @@ impl Side {
                 .map(|(_, lower)| *lower)
                 .collect()
         };
-        gaps.sort_unstable_by(f64::total_cmp);
+        sort_total(&mut gaps, &f64::total_cmp);
         let pitch = gaps
             .get(gaps.len().checked_div(2).unwrap_or(0))
             .copied()
@@ -211,7 +212,7 @@ impl Side {
     }
 
     fn snapped(&mut self, tolerance: f64) -> Vec<(f64, usize)> {
-        self.levels.sort_unstable_by(f64::total_cmp);
+        sort_total(&mut self.levels, &f64::total_cmp);
         let mut groups: Vec<(f64, usize)> = Vec::new();
         for &x in &self.levels {
             match groups.last_mut() {
@@ -529,7 +530,7 @@ fn columnar(
         left.add(frags, traits, before, line.center);
         right.add(frags, traits, after, line.center);
     }
-    holes.sort_unstable_by(f64::total_cmp);
+    sort_total(&mut holes, &f64::total_cmp);
     let tight = holes
         .get(holes.len().checked_div(4).unwrap_or(0))
         .is_some_and(|&hole| hole <= HOLE_EM);

@@ -1,7 +1,7 @@
 use crate::ccitt::{self, CcittParams};
 use crate::color::{ColorSpace, cmyk_to_rgb};
 use crate::num::{bounded, f64_to_usize, unit_to_u8, usize_to_f64};
-use crate::object::{Dict, Object, Resolver};
+use crate::object::{Dict, Object, Resolver, numbers};
 
 const MAX_PIXELS: usize = 1 << 26;
 const MAX_OUTPUT_PIXELS: usize = 1 << 24;
@@ -194,17 +194,6 @@ fn flag(resolver: &dyn Resolver, dict: &Dict, key: &[u8]) -> bool {
     dict.get(key)
         .and_then(|value| resolver.resolve(value).ok())
         .is_some_and(|value| matches!(*value, Object::Bool(true)))
-}
-
-fn numbers(resolver: &dyn Resolver, dict: &Dict, key: &[u8]) -> Vec<f64> {
-    dict.get(key)
-        .and_then(|value| resolver.resolve(value).ok())
-        .and_then(|value| {
-            value
-                .as_array()
-                .map(|items| items.iter().filter_map(Object::as_number).collect())
-        })
-        .unwrap_or_default()
 }
 
 pub(crate) fn image_filter(
