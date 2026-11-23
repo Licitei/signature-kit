@@ -29,6 +29,7 @@ export default defineConfig({
   },
   test: {
     include: ["**/*.browser.test.*"],
+    teardownTimeout: 2000,
     globalSetup: ["tooling/testing/__tests__/packed-browser-setup.ts"],
     deps: {
       optimizer: {

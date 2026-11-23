@@ -70,9 +70,11 @@
           "{projectRoot}/rust/Cargo.toml",
           "{projectRoot}/rust/Cargo.lock",
           "{projectRoot}/rust/build.rs",
+          "{projectRoot}/rust/rust-toolchain.toml",
           "{projectRoot}/rust/data/**/*",
           "{projectRoot}/rust/src/**/*",
           "{projectRoot}/scripts/build-wasm.sh",
+          "{projectRoot}/scripts/build-wasm-cached.sh",
           "{projectRoot}/node_modules/binaryen/package.json",
           {
             "runtime": "rustc --version"
@@ -82,7 +84,7 @@
           "{projectRoot}/dist/pdf-core.wasm"
         ],
         "options": {
-          "command": "bash scripts/build-wasm.sh",
+          "command": "bash scripts/build-wasm-cached.sh",
           "cwd": "{projectRoot}"
         }
       },
