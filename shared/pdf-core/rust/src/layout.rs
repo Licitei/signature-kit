@@ -216,6 +216,12 @@ pub(crate) enum Band {
     Top,
 }
 
+#[derive(Clone, Copy)]
+enum FragOrder {
+    Center,
+    X0,
+}
+
 struct Piece {
     band: Band,
     lead: &'static str,
@@ -325,18 +331,14 @@ fn compare(left: f64, right: f64) -> Ordering {
     left.total_cmp(&right)
 }
 
-fn sort_frag_indices_by_center(order: &mut [usize], frags: &[Frag<'_>]) {
-    sort_unstable_with(order, &|&a, &b| match (frags.get(a), frags.get(b)) {
-        (Some(left), Some(right)) => {
-            compare(right.center(), left.center()).then_with(|| compare(left.x0, right.x0))
-        }
-        _ => Ordering::Equal,
-    });
-}
-
-fn sort_frag_indices_by_x0(order: &mut [usize], frags: &[Frag<'_>]) {
-    sort_unstable_with(order, &|&a, &b| match (frags.get(a), frags.get(b)) {
-        (Some(left), Some(right)) => compare(left.x0, right.x0),
+fn sort_frag_indices(order: &mut [usize], frags: &[Frag<'_>], by: FragOrder) {
+    order.sort_unstable_by(|&a, &b| match (frags.get(a), frags.get(b)) {
+        (Some(left), Some(right)) => match by {
+            FragOrder::Center => {
+                compare(right.center(), left.center()).then_with(|| compare(left.x0, right.x0))
+            }
+            FragOrder::X0 => compare(left.x0, right.x0),
+        },
         _ => Ordering::Equal,
     });
 }
@@ -352,7 +354,7 @@ fn sort_block_indices_reading(order: &mut [usize], blocks: &[Block]) {
 
 fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
     let mut order: Vec<usize> = (0..frags.len()).collect();
-    sort_frag_indices_by_center(&mut order, frags);
+    sort_frag_indices(&mut order, frags, FragOrder::Center);
     let mut lines: Vec<Line> = Vec::new();
     for index in order {
         let Some(frag) = frags.get(index) else {
@@ -375,7 +377,7 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
         }
     }
     for line in &mut lines {
-        sort_frag_indices_by_x0(&mut line.members, frags);
+        sort_frag_indices(&mut line.members, frags, FragOrder::X0);
     }
     lines
 }
@@ -383,7 +385,7 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
 fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     let mut gaps: Vec<f64> = Vec::new();
     let mut ordered = members.to_vec();
-    sort_frag_indices_by_x0(&mut ordered, frags);
+    sort_frag_indices(&mut ordered, frags, FragOrder::X0);
     let mut previous: Option<&Frag<'_>> = None;
     for index in ordered {
         let Some(frag) = frags.get(index) else {
