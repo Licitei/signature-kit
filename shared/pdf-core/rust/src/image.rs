@@ -595,15 +595,20 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Optio
     };
     let decode = numbers(ctx.resolver, dict, b"Decode");
     let invert = decode.first().is_some_and(|first| *first > 0.5_f64);
-    let lut = component_lut(
-        if decode.len() >= 2 {
-            &decode
-        } else {
-            &[0.0_f64, 1.0_f64]
-        },
-        0,
-        bits,
-    );
+    let lut: Vec<u8> = if stencil {
+        if invert { vec![0, 255] } else { vec![255, 0] }
+    } else {
+        byte_lut(
+            if decode.len() >= 2 {
+                &decode
+            } else {
+                &[0.0_f64, 1.0_f64]
+            },
+            0,
+            bits,
+        )
+    };
+    let fallback = if stencil { 255 } else { unit_to_u8(1.0_f64) };
     let row_bytes = width.checked_mul(usize::try_from(bits).ok()?)?.div_ceil(8);
     let mut pixels = Vec::with_capacity(width.checked_mul(height)?);
     for y in 0..height {
@@ -611,18 +616,21 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Optio
         let row = data
             .get(start..start.saturating_add(row_bytes))
             .unwrap_or_default();
+        if bits == 8 && row.len() >= width {
+            pixels.extend(
+                row.iter()
+                    .take(width)
+                    .map(|byte| lut.get(usize::from(*byte)).copied().unwrap_or(fallback)),
+            );
+            continue;
+        }
         for x in 0..width {
             let raw_value = sample(row, x, bits);
-            let value = if stencil {
-                if (raw_value == 0) == invert { 0 } else { 255 }
-            } else {
-                unit_to_u8(
-                    lut.get(usize::try_from(raw_value).unwrap_or(0))
-                        .copied()
-                        .unwrap_or(1.0_f64),
-                )
-            };
-            pixels.push(value);
+            pixels.push(
+                lut.get(usize::try_from(raw_value).unwrap_or(0))
+                    .copied()
+                    .unwrap_or(fallback),
+            );
         }
     }
     Some(Pixels::Raster(Raster {
