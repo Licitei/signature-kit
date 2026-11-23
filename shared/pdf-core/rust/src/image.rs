@@ -442,6 +442,14 @@ fn convert_row(
     }
 }
 
+fn apply_plane_value(pixel: &mut [u8; 4], matte: Option<[u8; 3]>, value: u32) {
+    if let Some(background) = matte {
+        unmatte(pixel, background, value);
+    }
+    pixel[3] =
+        u8::try_from(u32::from(pixel[3]).saturating_mul(value).div_euclid(255)).unwrap_or(u8::MAX);
+}
+
 fn apply_alpha(alpha: &Alpha, row: &[u8], y: usize, layout: &Layout, out: &mut [u8]) {
     match alpha {
         Alpha::Opaque | Alpha::Deferred(_) => {}
@@ -457,20 +465,29 @@ fn apply_alpha(alpha: &Alpha, row: &[u8], y: usize, layout: &Layout, out: &mut [
                 .pixels
                 .get(start..start.saturating_add(plane_width))
                 .unwrap_or_default();
-            for (x, pixel) in out
-                .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-                .enumerate()
-                .take(layout.width)
-            {
-                let plane_x = x.saturating_mul(plane_width).div_euclid(layout.width);
-                let value = u32::from(plane_row.get(plane_x).copied().unwrap_or(255));
-                if let Some(background) = matte {
-                    unmatte(pixel, *background, value);
+            let pixels = out.as_chunks_mut::<4>().0;
+            if plane_row.is_empty() {
+                return;
+            }
+            if plane_width == layout.width {
+                for (pixel, value) in pixels.iter_mut().zip(plane_row) {
+                    apply_plane_value(pixel, *matte, u32::from(*value));
                 }
-                pixel[3] = u8::try_from(u32::from(pixel[3]).saturating_mul(value).div_euclid(255))
-                    .unwrap_or(u8::MAX);
+                return;
+            }
+            let step = plane_width.div_euclid(layout.width);
+            let step_rest = plane_width.rem_euclid(layout.width);
+            let mut plane_x = 0_usize;
+            let mut rest = 0_usize;
+            for pixel in pixels.iter_mut().take(layout.width) {
+                let value = u32::from(plane_row.get(plane_x).copied().unwrap_or(255));
+                apply_plane_value(pixel, *matte, value);
+                plane_x = plane_x.saturating_add(step);
+                rest = rest.saturating_add(step_rest);
+                if rest >= layout.width {
+                    rest = rest.saturating_sub(layout.width);
+                    plane_x = plane_x.saturating_add(1);
+                }
             }
         }
         Alpha::ColorKey(ranges) => {
