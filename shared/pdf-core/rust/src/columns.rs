@@ -232,21 +232,39 @@ impl Side {
 
 impl Traits {
     fn of(frag: &Frag<'_>) -> Self {
-        let words = frag
-            .text
-            .split_whitespace()
-            .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= WORD_LETTERS)
-            .count();
-        let mut ending = frag.text.trim_end().chars().rev();
-        let tail = ending.next().map(|last| {
-            (
-                last,
-                last == '-' && ending.next().is_some_and(char::is_alphabetic),
-            )
-        });
+        let mut words = 0_usize;
+        let mut run = 0_usize;
+        let mut letters = false;
+        let mut head: Option<char> = None;
+        let mut tail: Option<(char, bool)> = None;
+        let mut previous: Option<char> = None;
+        for ch in frag.text.chars() {
+            if ch.is_whitespace() {
+                if run >= WORD_LETTERS {
+                    words = words.saturating_add(1);
+                }
+                run = 0;
+            } else {
+                if ch.is_alphabetic() {
+                    run = run.saturating_add(1);
+                    letters = true;
+                }
+                if head.is_none() {
+                    head = Some(ch);
+                }
+                tail = Some((
+                    ch,
+                    ch == '-' && previous.is_some_and(char::is_alphabetic),
+                ));
+            }
+            previous = Some(ch);
+        }
+        if run >= WORD_LETTERS {
+            words = words.saturating_add(1);
+        }
         Self {
-            head: frag.text.trim_start().chars().next(),
-            letters: frag.text.chars().any(char::is_alphabetic),
+            head,
+            letters,
             tail,
             words,
         }
