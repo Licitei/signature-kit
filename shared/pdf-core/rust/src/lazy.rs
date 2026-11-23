@@ -281,6 +281,32 @@ impl Frontier {
             visited: HashSet::new(),
         })
     }
+
+    fn walk(
+        frontier: &mut Option<Self>,
+        document: &Document<'_>,
+        sparse: &Sparse,
+        requested: PageRequest<&[u32]>,
+        render: bool,
+    ) -> Outcome<Option<Failure>> {
+        if frontier.is_none() {
+            let (count, pages) = document.sparse_pages(requested)?;
+            if sparse.misses() != 0 {
+                return Ok(None);
+            }
+            if matches!(requested, PageRequest::Indexes(Some(_)))
+                && requested.stop_after().is_some_and(|end| end > count)
+                && let Err(failure) = requested.select(count)
+            {
+                return Ok(Some(failure));
+            }
+            *frontier = Some(Self::new(document, requested, pages, render)?);
+        }
+        if let Some(selection) = frontier {
+            selection.advance(document, sparse)?;
+        }
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -550,29 +576,16 @@ impl Lazy {
         if let Some(plan) = self.index(first, limits) {
             return plan;
         }
+        let mut repaired = false;
         let result = self.document(limits).and_then(|document| {
-            if frontier.is_none() {
-                let (count, pages) = document.sparse_pages(requested)?;
-                if self.sparse.misses() != 0 {
-                    return Ok(None);
-                }
-                if matches!(requested, PageRequest::Indexes(Some(_)))
-                    && stop_after.is_some_and(|end| end > count)
-                    && !document.was_repaired()
-                    && let Err(failure) = requested.select(count)
-                {
-                    return Ok(Some(failure));
-                }
-                frontier = Some(Frontier::new(&document, requested, pages, render)?);
-            }
-            if let Some(selection) = &mut frontier {
-                selection.advance(&document, &self.sparse)?;
-            }
-            if document.was_repaired() {
-                return Err(Failure::invalid("lazy document requires repair"));
-            }
-            Ok(None)
+            let walked = Frontier::walk(&mut frontier, &document, &self.sparse, requested, render);
+            repaired = document.was_repaired();
+            walked
         });
+        if repaired {
+            self.sparse.missing.get_mut().clear();
+            return Plan::Fallback;
+        }
         self.frontier = frontier;
         if self.sparse.misses() != 0 {
             let wanted = mem::take(self.sparse.missing.get_mut());
@@ -724,7 +737,8 @@ mod tests {
     use crate::document::PageRequest;
     use crate::failure::FailureCode;
     use crate::inspection::Limits;
-    use crate::test_pdf::build;
+    use crate::layout::{TextOptions, document_text, opened_text, text_limits};
+    use crate::test_pdf::{build, stream_object};
 
     #[test]
     fn exact_selection_skips_unselected_leaf_resources() {
@@ -790,5 +804,71 @@ mod tests {
             }
         }
         panic!("exact selection did not complete");
+    }
+
+    #[test]
+    fn page_object_needing_repair_falls_back_instead_of_dropping_the_page() {
+        let content = stream_object("", "BT /F1 12 Tf 72 700 Td (Second) Tj ET");
+        let bytes = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /MediaBox [0 0 200 200] >>"
+                    .to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /Contents 5 0 (R >>".to_owned(),
+            ),
+            (
+                4,
+                "<< /Type /Page /Parent 2 0 R /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> >> >>"
+                    .to_owned(),
+            ),
+            (5, content),
+            (
+                6,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            ),
+        ]);
+        let limits = text_limits();
+        let options = TextOptions {
+            drop_running: false,
+            markdown: false,
+            merge_across_pages: false,
+        };
+        let request = PageRequest::First(2);
+        let eager = document_text(&bytes, request, &limits, options).unwrap();
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 0,
+                probe: 64,
+                round_bytes: 4096,
+            },
+        );
+        for _ in 0_i32..64_i32 {
+            match lazy.plan_with_recovery(request, false, &limits, false) {
+                Plan::Need(ranges) | Plan::Full(ranges) if !ranges.is_empty() => {
+                    for range in ranges {
+                        assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                    }
+                }
+                Plan::Ready => {
+                    let lazy_text = lazy
+                        .execute(&limits, |opened, pages| {
+                            opened_text(opened, pages, &limits, options)
+                        })
+                        .unwrap();
+                    if let Some(pages) = lazy_text {
+                        assert_eq!(pages, eager);
+                        return;
+                    }
+                }
+                Plan::Full(_) | Plan::Fallback => return,
+                Plan::Need(_) | Plan::Failed(_) => panic!("unexpected lazy plan"),
+            }
+        }
+        panic!("lazy plan did not settle");
     }
 }

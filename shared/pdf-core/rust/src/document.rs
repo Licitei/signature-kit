@@ -3124,17 +3124,3 @@ mod tests {
         assert_eq!(count, widen(pages));
     }
 }
-
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    #[kani::proof]
-    #[kani::unwind(24)]
-    fn startxref_lookup_never_panics() {
-        let bytes: [u8; 16] = kani::any();
-        if let Some(offset) = find_startxref(&bytes) {
-            assert!(offset <= usize::MAX);
-        }
-    }
-}

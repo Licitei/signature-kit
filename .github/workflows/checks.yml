@@ -203,11 +203,18 @@ jobs:
         env:
           RUSTFLAGS: --cap-lints=warn
         run: |
-          cargo-kani -Z stubbing -j 4 --output-format=terse \
-            --harness glue_only_drops_a_trailing_break_hyphen \
-            --harness page_joins_pair_body_with_body_and_notes_with_notes \
-            --harness column_slots_cover_every_item_and_split_both_sides \
-            --harness object_headers_never_panic
+          cargo-kani -Z stubbing -j 4 --output-format=terse --exact \
+            --harness columns::proofs::column_slots_cover_every_item_and_split_both_sides \
+            --harness markdown::proofs::glue_only_drops_a_trailing_break_hyphen \
+            --harness markdown::proofs::page_joins_pair_body_with_body_and_notes_with_notes \
+            --harness syntax::proofs::object_headers_never_panic \
+            --harness syntax::proofs::unsigned_numbers_read_every_leading_digit \
+            --harness syntax::proofs::find_bytes_returns_the_first_match_at_or_after_the_start \
+            --harness filters::proofs::png_reconstruction_matches_the_png_specification \
+            --harness filters::proofs::packed_samples_round_trip_and_leave_neighbours_alone \
+            --harness filters::proofs::ascii_hex_output_respects_its_budget \
+            --harness filters::proofs::ascii85_full_groups_decode_to_big_endian_words \
+            --harness inflate::proofs::bit_reader_returns_bits_lsb_first_and_never_overreads
 
   ci:
     name: CI

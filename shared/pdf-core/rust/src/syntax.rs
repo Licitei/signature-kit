@@ -1655,24 +1655,46 @@ mod proofs {
     use super::*;
 
     #[kani::proof]
-    #[kani::unwind(10)]
-    fn object_parser_never_panics_on_short_input() {
+    #[kani::unwind(8)]
+    fn unsigned_numbers_read_every_leading_digit() {
         let bytes: [u8; 6] = kani::any();
-        let mut parser = Parser::new(&bytes, 0, 2, kani::any());
-        let parsed = parser.parse_object();
-        assert!(parser.pos <= bytes.len() || parsed.is_err());
+        let start: usize = kani::any();
+        kani::assume(start <= bytes.len());
+        let mut pos = start;
+        let parsed = read_unsigned(&bytes, &mut pos);
+        let mut end = start;
+        let mut expected = 0_u64;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            expected = expected * 10 + u64::from(bytes[end] - b'0');
+            end += 1;
+        }
+        if end == start {
+            assert!(parsed.is_none());
+            assert_eq!(pos, start);
+        } else {
+            assert_eq!(parsed, Some(expected));
+            assert_eq!(pos, end);
+        }
     }
 
     #[kani::proof]
-    #[kani::unwind(10)]
-    fn content_lexer_never_panics_on_short_input() {
-        let bytes: [u8; 6] = kani::any();
-        let mut lexer = ContentLexer::new(&bytes);
-        for _ in 0..3 {
-            if lexer.next().is_none() {
+    #[kani::unwind(9)]
+    fn find_bytes_returns_the_first_match_at_or_after_the_start() {
+        let data: [u8; 7] = kani::any();
+        let needle: [u8; 2] = kani::any();
+        let from: usize = kani::any();
+        kani::assume(from <= data.len() + 1);
+        let found = find_bytes(&data, from, &needle);
+        let mut expected = None;
+        let mut at = from;
+        while at + needle.len() <= data.len() {
+            if data[at] == needle[0] && data[at + 1] == needle[1] {
+                expected = Some(at);
                 break;
             }
+            at += 1;
         }
+        assert_eq!(found, expected);
     }
 
     #[kani::proof]

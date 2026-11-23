@@ -747,16 +747,85 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use crate::deflate::zlib_compress;
+    use proptest::prelude::*;
+
+    fn payload() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec((any::<u8>(), 1_u8..=255, 1_u8..5), 0..64).prop_map(|runs| {
+            let mut out = Vec::new();
+            for (byte, length, alphabet) in runs {
+                out.extend((0..length).map(|step| byte.wrapping_add(step.rem_euclid(alphabet))));
+            }
+            out
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        #[test]
+        fn inflate_inverts_the_crate_compressor_at_every_cut(
+            data in payload(),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let compressed = zlib_compress(&data);
+            prop_assert_eq!(&inflate(&compressed, data.len().max(1)).unwrap_or_default(), &data);
+            if !data.is_empty() {
+                let len = cut.index(data.len()).saturating_add(1);
+                prop_assert_eq!(inflate_prefix(&compressed, len).unwrap(), &data[..len]);
+                if len < data.len() {
+                    prop_assert!(inflate(&compressed, len).is_err());
+                }
+            }
+        }
+
+        #[test]
+        fn truncated_streams_yield_a_prefix_or_fail(
+            data in payload(),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let compressed = zlib_compress(&data);
+            let end = cut.index(compressed.len().saturating_add(1));
+            if let Ok(prefix) = inflate(&compressed[..end], 1 << 24_u32) {
+                prop_assert!(data.starts_with(&prefix));
+            }
+        }
+    }
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
 
+    fn bit_at(data: &[u8], index: usize) -> u32 {
+        u32::from((data[index / 8] >> (index % 8)) & 1)
+    }
+
     #[kani::proof]
-    #[kani::unwind(12)]
-    fn inflate_never_panics_on_short_input() {
-        let bytes: [u8; 4] = kani::any();
-        if let Ok(out) = inflate(&bytes, 8) {
-            assert!(out.len() <= 8);
+    #[kani::unwind(18)]
+    fn bit_reader_returns_bits_lsb_first_and_never_overreads() {
+        let data: [u8; 9] = kani::any();
+        let mut reader = BitReader::new(&data);
+        let mut consumed = 0_usize;
+        for _ in 0..2 {
+            let count: u8 = kani::any();
+            kani::assume(count <= 16);
+            let taken = reader.take_bits(count);
+            let available = data.len() * 8 - consumed;
+            if usize::from(count) > available {
+                assert!(taken.is_none());
+                return;
+            }
+            let value = taken.unwrap();
+            let mut expected = 0_u32;
+            for bit in 0..usize::from(count) {
+                expected |= bit_at(&data, consumed + bit) << bit;
+            }
+            assert_eq!(value, expected);
+            consumed += usize::from(count);
         }
     }
 }

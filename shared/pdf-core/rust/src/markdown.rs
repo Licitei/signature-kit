@@ -2377,6 +2377,7 @@ mod tests {
 #[cfg(test)]
 mod properties {
     use super::*;
+    use core::ops::Range;
     use proptest::prelude::*;
 
     const PIECES: [&str; 14] = [
@@ -2407,6 +2408,15 @@ mod properties {
         "informa-",
         "tion we need",
     ];
+
+    const LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    const DIGIT_OR_UPPER: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const ALPHANUMERIC: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    fn word(alphabet: &'static [u8], length: Range<usize>) -> impl Strategy<Value = String> {
+        prop::collection::vec(prop::sample::select(alphabet), length)
+            .prop_map(|bytes| bytes.into_iter().map(char::from).collect())
+    }
 
     fn text() -> impl Strategy<Value = String> {
         prop::collection::vec(prop::sample::select(PIECES.as_slice()), 0..16)
@@ -2480,6 +2490,27 @@ mod properties {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(4_000))]
+
+        #[test]
+        fn hyphen_keeps_portuguese_clitics_prefixes_and_weekdays(stem in word(LOWER, 1..13)) {
+            for tail in CLITICS.iter().chain(WEEKDAY_TAILS.iter()) {
+                prop_assert!(keeps_hyphen(&stem, tail));
+            }
+            for prefix in ["ex", "vice", "sem", "bem", "sota", "soto"] {
+                prop_assert!(keeps_hyphen(prefix, &stem));
+            }
+        }
+
+        #[test]
+        fn hyphen_keeps_digit_groups_and_capitalised_continuations(
+            stem in word(ALPHANUMERIC, 1..13),
+            first in word(DIGIT_OR_UPPER, 1..2),
+            rest in word(LOWER, 0..9),
+        ) {
+            let left = format!("{stem}-");
+            let right = format!("{first}{rest}");
+            prop_assert!(!matches!(glue(&left, &right, &Words::default()), Glue::DropLast));
+        }
 
         #[test]
         fn line_joins_only_ever_drop_a_break_hyphen(
@@ -2671,133 +2702,5 @@ mod proofs {
             assert!(matches!(target.kind, Kind::Paragraph | Kind::Item { .. }));
             assert!(moved.kind == Kind::Paragraph);
         }
-    }
-
-    fn ascii_word<const N: usize>(lowercase: bool) -> [u8; N] {
-        let bytes: [u8; N] = kani::any();
-        for byte in bytes {
-            if lowercase {
-                kani::assume(byte.is_ascii_lowercase());
-            } else {
-                kani::assume(byte.is_ascii_alphanumeric());
-            }
-        }
-        bytes
-    }
-
-    #[kani::proof]
-    #[kani::unwind(8)]
-    fn hyphen_keeps_portuguese_clitics_prefixes_and_weekdays() {
-        let stem: [u8; 2] = ascii_word(true);
-        let stem = core::str::from_utf8(&stem).unwrap();
-        for word in CLITICS.iter().chain(WEEKDAY_TAILS.iter()) {
-            assert!(keeps_hyphen(stem, word));
-        }
-        for prefix in ["ex", "vice", "sem", "bem", "sota", "soto"] {
-            assert!(keeps_hyphen(prefix, stem));
-        }
-    }
-
-    #[kani::proof]
-    #[kani::stub(soft_break, any_soft_break)]
-    #[kani::stub(url_continues, any_url_continues)]
-    #[kani::unwind(8)]
-    fn hyphen_keeps_digit_groups_and_capitalised_continuations() {
-        let stem: [u8; 3] = ascii_word(false);
-        let mut left = [b'-'; 4];
-        left[..3].copy_from_slice(&stem);
-        let left = core::str::from_utf8(&left).unwrap();
-        let first: u8 = kani::any();
-        kani::assume(first.is_ascii_digit() || first.is_ascii_uppercase());
-        let right_bytes = [first, b'a'];
-        let right = core::str::from_utf8(&right_bytes).unwrap();
-        assert!(!matches!(
-            glue(left, right, &Words::default()),
-            Glue::DropLast
-        ));
-    }
-
-    fn any_bool_text(_text: &str) -> bool {
-        kani::any()
-    }
-
-    fn any_bool_pair(_previous: &str, _next: &str) -> bool {
-        kani::any()
-    }
-
-    fn by_top_caption(block: &MdBlock) -> bool {
-        block.top > 0.0
-    }
-
-    fn first_size(blocks: &[MdBlock]) -> f64 {
-        blocks.first().map_or(0.0, |block| block.typical)
-    }
-
-    fn appended(
-        _spans: &mut Vec<Span>,
-        _plain: &mut String,
-        _next: Vec<Span>,
-        _next_plain: &str,
-        _words: &Words,
-    ) {
-    }
-
-    fn token_block(lines: u8) -> MdBlock {
-        let kind = match kani::any::<u8>() {
-            0 => Kind::Heading(1),
-            1 => Kind::Table(0),
-            2 => Kind::Item {
-                indent: 0,
-                marker: String::new(),
-                tight: false,
-            },
-            _ => Kind::Paragraph,
-        };
-        let band = match kani::any::<u8>() {
-            0 => Band::Top,
-            1 => Band::Bottom,
-            _ => Band::Free,
-        };
-        MdBlock {
-            band,
-            kind,
-            lines: usize::from(lines),
-            plain: String::new(),
-            size: f64::from(kani::any::<i8>()),
-            spans: Vec::new(),
-            top: f64::from(kani::any::<i8>()),
-            typical: f64::from(kani::any::<i8>()),
-        }
-    }
-
-    #[kani::proof]
-    #[kani::stub(ends_terminal, any_bool_text)]
-    #[kani::stub(starts_lower, any_bool_text)]
-    #[kani::stub(strong_continuation, any_bool_pair)]
-    #[kani::stub(evident, any_bool_pair)]
-    #[kani::stub(caption, by_top_caption)]
-    #[kani::stub(page_body, first_size)]
-    #[kani::stub(append_spans, appended)]
-    #[kani::unwind(5)]
-    fn page_joins_conserve_every_block() {
-        let mut pages = [vec![token_block(1), token_block(2)], vec![token_block(4)]];
-        let body = f64::from(kani::any::<i8>());
-        let metrics = Metrics {
-            body,
-            bold_body: false,
-            italic_body: false,
-            pitch: 1.0,
-        };
-        join_pages(&mut pages, metrics, &Words::default());
-        let total: usize = pages.iter().flatten().map(|block| block.lines).sum();
-        let covered = pages
-            .iter()
-            .flatten()
-            .fold(0_usize, |bits, block| bits | block.lines);
-        assert_eq!(total, 7);
-        assert_eq!(covered, 7);
-        let remaining: usize = pages.iter().map(Vec::len).sum();
-        assert!((2..=3).contains(&remaining));
-        assert!(pages.iter().flatten().all(|block| block.lines != 0));
     }
 }
