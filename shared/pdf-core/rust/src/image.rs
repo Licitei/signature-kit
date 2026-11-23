@@ -722,6 +722,10 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Optio
         )
     };
     let fallback = if stencil { 255 } else { unit_to_u8(1.0_f64) };
+    let identity = lut
+        .iter()
+        .enumerate()
+        .all(|(index, value)| usize::from(*value) == index);
     let row_bytes = width.checked_mul(usize::try_from(bits).ok()?)?.div_ceil(8);
     let mut pixels = Vec::with_capacity(width.checked_mul(height)?);
     for y in 0..height {
@@ -729,12 +733,18 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Optio
         let row = data
             .get(start..start.saturating_add(row_bytes))
             .unwrap_or_default();
-        if bits == 8 && row.len() >= width {
-            pixels.extend(
-                row.iter()
-                    .take(width)
-                    .map(|byte| lut.get(usize::from(*byte)).copied().unwrap_or(fallback)),
-            );
+        if bits == 8
+            && let Some(exact) = row.get(..width)
+        {
+            if identity {
+                pixels.extend_from_slice(exact);
+            } else {
+                pixels.extend(
+                    exact
+                        .iter()
+                        .map(|byte| lut.get(usize::from(*byte)).copied().unwrap_or(fallback)),
+                );
+            }
             continue;
         }
         for x in 0..width {
