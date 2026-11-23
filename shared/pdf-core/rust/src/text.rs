@@ -1094,6 +1094,14 @@ impl Interpreter<'_, '_, '_> {
         let effective_size = placement.effective_size;
         let mut pen_x = 0.0_f64;
         let mut pen_y = 0.0_f64;
+        let rise = state.rise;
+        let at = |x: f64, y: f64| (x * a + (y + rise) * c + e, x * b + (y + rise) * d + f);
+        let mut origin = at(pen_x, pen_y);
+        let line = rows(
+            &mapping,
+            rise - entry.descent * size,
+            rise + entry.ascent * size,
+        );
         let style = (entry.bold || state.stroked_fill, entry.italic);
         for glyph in glyphs {
             let replacement = match self.actual.as_ref() {
@@ -1115,45 +1123,38 @@ impl Interpreter<'_, '_, '_> {
                 } else {
                     0.0_f64
                 };
-            let (x0, y0, x1, y1, step_x, step_y);
+            let (bounds, step_x, step_y);
             if vertical {
                 let metrics = entry.font.vertical_metrics(glyph.code);
                 let span = metrics.advance * size;
                 let em = size.abs() * scale;
-                x0 = pen_x - metrics.origin_x * em;
-                x1 = x0 + glyph.advance * em;
-                y1 = pen_y + state.rise;
-                y0 = y1 - span;
+                let x0 = pen_x - metrics.origin_x * em;
+                let y1 = pen_y + rise;
+                bounds = spans(
+                    &mapping,
+                    x0,
+                    x0 + glyph.advance * em,
+                    rows(&mapping, y1 - span, y1),
+                );
                 step_x = 0.0_f64;
                 step_y = -span + spacing;
             } else {
                 let width = glyph.advance * size * scale;
-                x0 = pen_x;
-                x1 = pen_x + width;
-                y0 = state.rise - entry.descent * size;
-                y1 = state.rise + entry.ascent * size;
+                bounds = spans(&mapping, pen_x, pen_x + width, line);
                 step_x = width + spacing * scale;
                 step_y = 0.0_f64;
             }
-            let bounds = || transformed_bounds(&mapping, x0, y0, x1, y1);
-            let in_form = usable && !self.clip.is_some_and(|clip| outside(bounds(), clip));
+            let end = at(pen_x + step_x, pen_y + step_y);
+            let in_form = usable && !self.clip.is_some_and(|clip| outside(bounds, clip));
             if DIAGNOSTICS {
                 self.diagnose_glyph(
                     glyph_text,
                     spanned,
-                    in_form.then(bounds),
+                    in_form.then_some(bounds),
                     state.invisible_text,
                 );
             } else if in_form {
                 let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
-                let origin = (
-                    pen_x * a + (pen_y + state.rise) * c + e,
-                    pen_x * b + (pen_y + state.rise) * d + f,
-                );
-                let end = (
-                    (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
-                    (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
-                );
                 let mut join = self.join(origin, direction, effective_size, entry.space_gap);
                 if repositioned
                     && matches!(join, Join::Same | Join::Spaced)
@@ -1176,7 +1177,7 @@ impl Interpreter<'_, '_, '_> {
                 if matches!(join, Join::Same | Join::Spaced) {
                     self.extend(glyph_text, visible, join == Join::Spaced);
                     if visible {
-                        self.merge_bounds(bounds());
+                        self.merge_bounds(bounds);
                         self.pending.bold &= style.0;
                         self.pending.italic &= style.1;
                         self.pending.ink_end = end;
@@ -1187,12 +1188,13 @@ impl Interpreter<'_, '_, '_> {
                         self.flush()?;
                     }
                     if visible {
-                        self.begin(glyph_text, bounds(), effective_size, direction, end, style);
+                        self.begin(glyph_text, bounds, effective_size, direction, end, style);
                     }
                 }
             }
             pen_x += step_x;
             pen_y += step_y;
+            origin = end;
         }
         matrices.translate(pen_x, pen_y);
         Ok(())
@@ -1693,22 +1695,30 @@ fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
 }
 
 fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
-    let [a, b, c, d, e, f] = *matrix;
-    let mut bounds = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
-        let px = x * a + y * c + e;
-        let py = x * b + y * d + f;
-        bounds[0] = bounds[0].min(px);
-        bounds[1] = bounds[1].min(py);
-        bounds[2] = bounds[2].max(px);
-        bounds[3] = bounds[3].max(py);
+    spans(matrix, x0, x1, rows(matrix, y0, y1))
+}
+
+fn rows(matrix: &Matrix, y0: f64, y1: f64) -> [f64; 4] {
+    let [_, _, c, d, _, _] = *matrix;
+    let (c0, c1) = ordered(y0 * c, y1 * c);
+    let (d0, d1) = ordered(y0 * d, y1 * d);
+    [c0, d0, c1, d1]
+}
+
+fn spans(matrix: &Matrix, x0: f64, x1: f64, rows: [f64; 4]) -> [f64; 4] {
+    let [a, b, _, _, e, f] = *matrix;
+    let (a0, a1) = ordered(x0 * a, x1 * a);
+    let (b0, b1) = ordered(x0 * b, x1 * b);
+    let [c0, d0, c1, d1] = rows;
+    [a0 + c0 + e, b0 + d0 + f, a1 + c1 + e, b1 + d1 + f]
+}
+
+fn ordered(first: f64, second: f64) -> (f64, f64) {
+    if second < first {
+        (second, first)
+    } else {
+        (first, second)
     }
-    bounds
 }
 
 fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
