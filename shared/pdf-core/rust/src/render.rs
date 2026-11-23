@@ -346,7 +346,7 @@ struct Renderer<'doc, 'data> {
     document: &'doc Document<'data>,
     emitted: Emitted,
     emitted_stack: Vec<Emitted>,
-    glyph_ids: HashMap<(u32, u16), Option<u32>>,
+    glyph_ids: Vec<Vec<u32>>,
     glyphs: Vec<Glyph>,
     images: HashMap<ImageKey, ImageRef>,
     limits: &'doc Limits,
@@ -689,8 +689,16 @@ impl Renderer<'_, '_> {
 
     fn define_glyph(&mut self, font: &RenderFont, gid: u16) -> Option<u32> {
         let key = (font.id, gid);
-        if let Some(found) = self.glyph_ids.get(&key) {
-            return *found;
+        let font_slot = usize::try_from(font.id).unwrap_or(0);
+        let gid_slot = usize::from(gid);
+        if let Some(known) = self
+            .glyph_ids
+            .get(font_slot)
+            .and_then(|row| row.get(gid_slot))
+            .copied()
+            .filter(|code| *code != 0)
+        {
+            return known.checked_sub(2);
         }
         let outline = if let Some(cached) = self.session.outlines.get(&key) {
             Rc::clone(cached)
@@ -719,7 +727,18 @@ impl Renderer<'_, '_> {
             self.list.glyph_define(id, &outline);
             Some(id)
         };
-        let _: Option<Option<u32>> = self.glyph_ids.insert(key, id);
+        if self.glyph_ids.len() <= font_slot {
+            self.glyph_ids
+                .resize_with(font_slot.saturating_add(1), Vec::new);
+        }
+        if let Some(row) = self.glyph_ids.get_mut(font_slot) {
+            if row.len() <= gid_slot {
+                row.resize(gid_slot.saturating_add(1), 0);
+            }
+            if let Some(slot) = row.get_mut(gid_slot) {
+                *slot = id.map_or(1, |defined| defined.saturating_add(2));
+            }
+        }
         id
     }
 
@@ -2209,7 +2228,7 @@ fn render_page(target: &PageTarget<'_, '_>, session: &mut RenderSession) -> Outc
         document: target.document,
         emitted: Emitted::default(),
         emitted_stack: Vec::new(),
-        glyph_ids: HashMap::new(),
+        glyph_ids: Vec::new(),
         glyphs: Vec::new(),
         images: HashMap::new(),
         limits: target.limits,
