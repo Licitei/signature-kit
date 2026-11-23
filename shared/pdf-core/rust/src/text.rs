@@ -183,6 +183,7 @@ impl PathBuilder {
 struct Placement {
     direction: (f64, f64),
     effective_size: f64,
+    line: [f64; 4],
     linear: [f64; 4],
     usable: bool,
     vertical: bool,
@@ -199,7 +200,13 @@ impl Placement {
         let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
         let dir_length = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let effective_size = (state.size * (c * c + d * d).sqrt()).abs();
+        let line = rows(
+            &[a, b, c, d, 0.0_f64, 0.0_f64],
+            state.rise - entry.descent * state.size,
+            state.rise + entry.ascent * state.size,
+        );
         Self {
+            line,
             linear: [a, b, c, d],
             direction: (dir_x / dir_length, dir_y / dir_length),
             effective_size,
@@ -358,6 +365,13 @@ impl Scope {
             forms: None,
         }
     }
+}
+
+struct Shown<'shown> {
+    decoded: &'shown mut String,
+    entry: &'shown FontEntry,
+    glyphs: &'shown mut Vec<Glyph>,
+    placement: &'shown Placement,
 }
 
 #[derive(Clone, Copy)]
@@ -1097,11 +1111,7 @@ impl Interpreter<'_, '_, '_> {
         let rise = state.rise;
         let at = |x: f64, y: f64| (x * a + (y + rise) * c + e, x * b + (y + rise) * d + f);
         let mut origin = at(pen_x, pen_y);
-        let line = rows(
-            &mapping,
-            rise - entry.descent * size,
-            rise + entry.ascent * size,
-        );
+        let line = placement.line;
         let style = (entry.bold || state.stroked_fill, entry.italic);
         for glyph in glyphs {
             let replacement = match self.actual.as_ref() {
@@ -1361,23 +1371,61 @@ impl Interpreter<'_, '_, '_> {
         items: &[Operand<'_>],
         scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
-        let prepared = state.font.clone().map(|entry| {
-            let placement = Placement::new(&entry, state, &matrices.tm);
-            (entry, placement)
-        });
-        let vertical = prepared
-            .as_ref()
-            .is_some_and(|(_, placement)| placement.vertical);
+        let Some(entry) = state.font.clone() else {
+            for item in items {
+                if let Some(bytes) = item.string(scratch) {
+                    if let Some(scan) = self.scan.as_deref_mut() {
+                        scan.missing_font(bytes.len());
+                    }
+                } else if let Some(amount) = item.as_number() {
+                    matrices.translate(-amount / 1_000.0_f64 * state.size * state.scale, 0.0);
+                }
+            }
+            return Ok(());
+        };
+        let placement = Placement::new(&entry, state, &matrices.tm);
+        let mut glyphs = mem::take(&mut self.glyphs);
+        let mut decoded = mem::take(&mut self.decoded);
+        let mut shown = Shown {
+            entry: &entry,
+            placement: &placement,
+            glyphs: &mut glyphs,
+            decoded: &mut decoded,
+        };
+        let result = if self.scan.is_some() {
+            self.show_items::<true>(&mut shown, state, matrices, items, scratch)
+        } else {
+            self.show_items::<false>(&mut shown, state, matrices, items, scratch)
+        };
+        self.glyphs = glyphs;
+        self.decoded = decoded;
+        result
+    }
+
+    fn show_items<const DIAGNOSTICS: bool>(
+        &mut self,
+        shown: &mut Shown<'_>,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        items: &[Operand<'_>],
+        scratch: &mut Vec<u8>,
+    ) -> Outcome<()> {
         for item in items {
             if let Some(bytes) = item.string(scratch) {
-                if let Some((entry, placement)) = &prepared {
-                    self.show_with(entry, placement, state, matrices, bytes)?;
-                } else if let Some(scan) = self.scan.as_deref_mut() {
-                    scan.missing_font(bytes.len());
-                }
+                shown.glyphs.clear();
+                shown.decoded.clear();
+                shown.entry.font.decode(bytes, shown.glyphs, shown.decoded);
+                self.place::<DIAGNOSTICS>(
+                    shown.entry,
+                    shown.placement,
+                    state,
+                    matrices,
+                    shown.glyphs,
+                    shown.decoded,
+                )?;
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1_000.0_f64 * state.size;
-                if vertical {
+                if shown.placement.vertical {
                     matrices.translate(0.0, shift);
                 } else {
                     matrices.translate(shift * state.scale, 0.0);
