@@ -166,14 +166,24 @@ impl Downsampler {
             self.out.extend_from_slice(row);
             return;
         }
-        let sums = self.sums.as_chunks_mut::<4>().0;
-        for (index, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
-            if let Some(slot) = sums.get_mut(index.div_euclid(self.factor_x)) {
+        let span = self.factor_x.saturating_mul(4);
+        for (slot, group) in self
+            .sums
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(row.chunks(span))
+        {
+            let mut total = [0_u32; 4];
+            for pixel in group.as_chunks::<4>().0 {
                 let alpha = u32::from(pixel[3]);
-                slot[0] = slot[0].saturating_add(u32::from(pixel[0]).saturating_mul(alpha));
-                slot[1] = slot[1].saturating_add(u32::from(pixel[1]).saturating_mul(alpha));
-                slot[2] = slot[2].saturating_add(u32::from(pixel[2]).saturating_mul(alpha));
-                slot[3] = slot[3].saturating_add(alpha);
+                total[0] = total[0].wrapping_add(u32::from(pixel[0]).wrapping_mul(alpha));
+                total[1] = total[1].wrapping_add(u32::from(pixel[1]).wrapping_mul(alpha));
+                total[2] = total[2].wrapping_add(u32::from(pixel[2]).wrapping_mul(alpha));
+                total[3] = total[3].wrapping_add(alpha);
+            }
+            for (sum, added) in slot.iter_mut().zip(total) {
+                *sum = sum.saturating_add(added);
             }
         }
         self.rows_in_band = self.rows_in_band.saturating_add(1);
