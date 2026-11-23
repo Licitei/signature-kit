@@ -36,7 +36,7 @@ struct Open {
     x1: f64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Gutter {
     bottom: f64,
     first: usize,
@@ -567,69 +567,66 @@ pub(crate) fn regions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_pdf::Shuffle;
-    use core::iter::repeat_with;
+    use proptest::prelude::*;
 
-    fn number(random: &mut Shuffle, bound: u64) -> f64 {
-        f64::from(u32::try_from(random.next(bound)).unwrap())
+    fn frag() -> impl Strategy<Value = Frag<'static>> {
+        (0_u16..600, 0_u16..800, 1_u16..120).prop_map(|(x, y, width)| Frag {
+            bold: false,
+            italic: false,
+            size: 10.0,
+            text: "word",
+            x0: f64::from(x),
+            x1: f64::from(x) + f64::from(width),
+            y0: f64::from(y),
+            y1: f64::from(y) + 10.0,
+        })
     }
 
-    #[test]
-    fn random_partitions_keep_every_item_exactly_once() {
-        let mut random = Shuffle(0x5851_f42d_4c95_7f2d);
-        for _ in 0_u32..5_000_u32 {
-            let count = usize::try_from(random.next(12)).unwrap();
-            let frags: Vec<Frag<'static>> = repeat_with(|| {
-                let x0 = number(&mut random, 500);
-                let y0 = number(&mut random, 700);
-                Frag {
-                    bold: false,
-                    italic: false,
-                    size: 10.0,
-                    text: "word",
-                    x0,
-                    x1: x0 + number(&mut random, 80),
-                    y0,
-                    y1: y0 + 10.0,
-                }
+    fn gutter() -> impl Strategy<Value = Gutter> {
+        (
+            0_u16..600,
+            0_u16..40,
+            0_usize..30,
+            0_usize..30,
+            0_u16..800,
+            0_u16..800,
+        )
+            .prop_map(|(x, width, first, span, top, bottom)| Gutter {
+                bottom: f64::from(bottom),
+                first,
+                last: first.saturating_add(span),
+                top: f64::from(top),
+                x0: f64::from(x),
+                x1: f64::from(x) + f64::from(width),
             })
-            .take(count)
-            .collect();
-            let line_of: Vec<usize> = repeat_with(|| usize::try_from(random.next(10)).unwrap())
-                .take(count)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        #[test]
+        fn partitions_keep_every_item_exactly_once(
+            frags in prop::collection::vec(frag(), 0..48),
+            lines in prop::collection::vec(0_usize..40, 48),
+            gutters in prop::collection::vec(gutter(), 0..6),
+            corners in prop::collection::vec((0_u16..600, 0_u16..800), 0..4),
+        ) {
+            let tables: Vec<[f64; 4]> = corners
+                .iter()
+                .map(|&(x, y)| {
+                    [f64::from(x), f64::from(y), f64::from(x) + 50.0_f64, f64::from(y) + 50.0_f64]
+                })
                 .collect();
-            let gutter_count = usize::try_from(random.next(4)).unwrap();
-            let gutters: Vec<Gutter> = repeat_with(|| {
-                let x0 = number(&mut random, 500);
-                let first = usize::try_from(random.next(10)).unwrap();
-                Gutter {
-                    bottom: number(&mut random, 700),
-                    first,
-                    last: first + usize::try_from(random.next(10)).unwrap(),
-                    top: number(&mut random, 700),
-                    x0,
-                    x1: x0 + number(&mut random, 30),
-                }
-            })
-            .take(gutter_count)
-            .collect();
-            let table_count = usize::try_from(random.next(3)).unwrap();
-            let tables: Vec<[f64; 4]> = repeat_with(|| {
-                let (x, y) = (number(&mut random, 500), number(&mut random, 700));
-                [x, y, x + 50.0_f64, y + 50.0_f64]
-            })
-            .take(table_count)
-            .collect();
             let partition = Partition {
                 frags: &frags,
                 gutters: &gutters,
-                line_of: &line_of,
+                line_of: &lines,
                 tables: &tables,
             };
             let mut out = Vec::new();
             partition.split(
                 Region {
-                    frags: (0..count).collect(),
+                    frags: (0..frags.len()).collect(),
                     tables: (0..tables.len()).collect(),
                 },
                 0,
@@ -637,13 +634,10 @@ mod tests {
             );
             let mut seen: Vec<usize> = out.iter().flat_map(|region| region.frags.clone()).collect();
             seen.sort_unstable();
-            assert_eq!(seen, (0..count).collect::<Vec<_>>());
-            let mut placed: Vec<usize> = out
-                .iter()
-                .flat_map(|region| region.tables.clone())
-                .collect();
+            prop_assert_eq!(seen, (0..frags.len()).collect::<Vec<_>>());
+            let mut placed: Vec<usize> = out.iter().flat_map(|region| region.tables.clone()).collect();
             placed.sort_unstable();
-            assert_eq!(placed, (0..tables.len()).collect::<Vec<_>>());
+            prop_assert_eq!(placed, (0..tables.len()).collect::<Vec<_>>());
         }
     }
 }

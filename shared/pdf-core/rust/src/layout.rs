@@ -71,7 +71,7 @@ const FURNITURE_MIN_PAGES: usize = 3;
 
 const FURNITURE_SHARE: usize = 20;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Frag<'data> {
     pub bold: bool,
     pub italic: bool,
@@ -150,6 +150,7 @@ struct Segment {
     y1: f64,
 }
 
+#[derive(Debug)]
 struct Block {
     bottom: f64,
     last: usize,
@@ -616,13 +617,12 @@ fn build_blocks(segments: &[Segment], ranges: &[(usize, usize)]) -> Vec<Block> {
     blocks
 }
 
-fn cut_bands(
+fn by_start(
     blocks: &[Block],
     ids: &[usize],
-    out: &mut Vec<Vec<usize>>,
     key: fn(&Block) -> (f64, f64),
     descending: bool,
-) {
+) -> Vec<usize> {
     let mut sorted: Vec<usize> = ids.to_vec();
     sorted.sort_unstable_by(|&a, &b| match (blocks.get(a), blocks.get(b)) {
         (Some(left), Some(right)) => {
@@ -636,6 +636,17 @@ fn cut_bands(
         }
         _ => Ordering::Equal,
     });
+    sorted
+}
+
+fn cut_bands(
+    blocks: &[Block],
+    ids: &[usize],
+    out: &mut Vec<Vec<usize>>,
+    key: fn(&Block) -> (f64, f64),
+    descending: bool,
+) {
+    let sorted = by_start(blocks, ids, key, descending);
     let mut band: Vec<usize> = Vec::new();
     let mut frontier = if descending {
         f64::INFINITY
@@ -2574,7 +2585,7 @@ mod structure_tests {
     use crate::test_pdf::{PageSpec, Shuffle, bold, document, grid, page, rule, text};
     use core::fmt::Write as _;
     use core::hint::black_box;
-    use core::iter::repeat_with;
+    use proptest::prelude::*;
 
     const PLAIN: TextOptions = TextOptions {
         markdown: false,
@@ -3803,88 +3814,172 @@ mod structure_tests {
         counts
     }
 
-    #[test]
-    fn random_column_layouts_keep_every_word_exactly_once() {
+    fn column_page(
+        seed: u64,
+        columns: usize,
+        size: u8,
+        gutter: u8,
+        rows: &[u8],
+    ) -> (Vec<u8>, String) {
         const VOCABULARY: [&str; 12] = [
             "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
             "juliet", "kilo", "lima",
         ];
-        let mut random = Shuffle(0x9e37_79b9_7f4a_7c15);
-        for _ in 0_u32..120_u32 {
-            let columns = usize::try_from(random.next(4)).unwrap() + 1;
-            let size = 7.0_f64 + usize_to_f64(usize::try_from(random.next(6)).unwrap());
-            let gutter = 3.0_f64 + usize_to_f64(usize::try_from(random.next(40)).unwrap());
-            let width = 520.0_f64 / usize_to_f64(columns) - gutter;
-            let mut content = String::new();
-            let mut expected = String::new();
-            for column in 0..columns {
-                let x = 40.0_f64 + (width + gutter) * usize_to_f64(column);
-                let lines = usize::try_from(random.next(12)).unwrap() + 1;
-                let top = 720.0_f64 - usize_to_f64(usize::try_from(random.next(60)).unwrap());
-                for row in 0..lines {
-                    let fit = f64_to_i64((width / (size * 0.6_f64)).max(6.0_f64)) - 8_i64;
-                    let mut line = String::new();
-                    while i64::try_from(line.len()).unwrap() < fit {
-                        let pick = usize::try_from(random.next(12)).unwrap();
-                        if !line.is_empty() {
-                            line.push(' ');
-                        }
-                        line.push_str(VOCABULARY[pick]);
+        let mut random = Shuffle(seed | 1);
+        let points = f64::from(size);
+        let gap = f64::from(gutter);
+        let width = 520.0_f64 / usize_to_f64(columns) - gap;
+        let mut content = String::new();
+        let mut expected = String::new();
+        for (column, &lines) in rows.iter().enumerate().take(columns) {
+            let x = 40.0_f64 + (width + gap) * usize_to_f64(column);
+            let top = 740.0_f64 - usize_to_f64(usize::try_from(random.next(60)).unwrap());
+            for row in 0..usize::from(lines) {
+                let fit =
+                    f64_to_i64((width / (points * 0.6_f64)).max(6.0_f64)).saturating_sub(8_i64);
+                let mut line = String::new();
+                while i64::try_from(line.len()).unwrap() < fit {
+                    if !line.is_empty() {
+                        line.push(' ');
                     }
-                    if line.is_empty() {
-                        line.push_str(VOCABULARY[row.rem_euclid(12)]);
-                    }
-                    let y = top - size * 1.2_f64 * usize_to_f64(row);
-                    content.push_str(&text(x, y, size, &line));
-                    expected.push(' ');
-                    expected.push_str(&line);
+                    line.push_str(VOCABULARY[usize::try_from(random.next(12)).unwrap()]);
                 }
-            }
-            let bytes = document(&[page(content)], &[]);
-            let want = word_counts(&expected);
-            for options in [PLAIN, MARKDOWN] {
-                let got = word_counts(&pages_of(&bytes, options).concat());
-                assert_eq!(got, want, "{columns} columns, gutter {gutter}, size {size}");
+                if line.is_empty() {
+                    line.push_str(VOCABULARY[row.rem_euclid(12)]);
+                }
+                let y = top - points * 1.2_f64 * usize_to_f64(row);
+                content.push_str(&text(x, y, points, &line));
+                expected.push(' ');
+                expected.push_str(&line);
             }
         }
+        (document(&[page(content)], &[]), expected)
     }
 
-    #[test]
-    fn random_blocks_are_ordered_as_a_permutation() {
-        let mut random = Shuffle(0x0123_4567_89ab_cdef);
-        let coordinate =
-            |source: &mut Shuffle| f64::from(u32::try_from(source.next(600)).unwrap()) - 50.0_f64;
-        for _ in 0_u32..5_000_u32 {
-            let count = usize::try_from(random.next(9)).unwrap();
-            let blocks: Vec<Block> = repeat_with(|| {
-                let (top, bottom) = (coordinate(&mut random), coordinate(&mut random));
-                let (x0, x1) = (coordinate(&mut random), coordinate(&mut random));
+    fn block_strategy() -> impl Strategy<Value = Block> {
+        (
+            0_u16..800,
+            0_u16..800,
+            0_u16..600,
+            0_u16..600,
+            0_usize..5,
+            any::<bool>(),
+        )
+            .prop_map(|(first, second, left, right, lines, table)| {
+                let (top, bottom) = (f64::from(first.max(second)), f64::from(first.min(second)));
+                let (x0, x1) = (f64::from(left.min(right)), f64::from(left.max(right)));
                 Block {
-                    bottom: bottom.min(top),
+                    bottom,
                     last: 0,
                     last_center: top,
                     last_size: 10.0,
                     last_x0: x0,
                     last_x1: x1,
-                    segments: vec![0; usize::try_from(random.next(5)).unwrap()],
-                    table: (random.next(4) == 0).then_some(0),
-                    top: top.max(bottom),
-                    x0: x0.min(x1),
-                    x1: x0.max(x1),
+                    segments: vec![0; lines],
+                    table: table.then_some(0),
+                    top,
+                    x0,
+                    x1,
                 }
             })
-            .take(count)
-            .collect();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2_000))]
+
+        #[test]
+        fn reading_order_is_a_permutation(
+            blocks in prop::collection::vec(block_strategy(), 0..64),
+            columns_first in any::<bool>(),
+        ) {
             let mut order = Vec::new();
-            reading_order(
-                &blocks,
-                (0..count).collect(),
-                0,
-                random.next(2) == 0,
-                &mut order,
-            );
+            reading_order(&blocks, (0..blocks.len()).collect(), 0, columns_first, &mut order);
             order.sort_unstable();
-            assert_eq!(order, (0..count).collect::<Vec<_>>());
+            prop_assert_eq!(order, (0..blocks.len()).collect::<Vec<_>>());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn column_layouts_keep_every_word_exactly_once(
+            seed in any::<u64>(),
+            columns in 1_usize..=5,
+            size in 6_u8..14,
+            gutter in 2_u8..48,
+            rows in prop::collection::vec(1_u8..40, 5),
+        ) {
+            let (bytes, expected) = column_page(seed, columns, size, gutter, &rows);
+            let want = word_counts(&expected);
+            for options in [PLAIN, MARKDOWN] {
+                prop_assert_eq!(&word_counts(&pages_of(&bytes, options).concat()), &want);
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn small() -> f64 {
+        let value: i8 = kani::any();
+        kani::assume((-8..=8).contains(&value));
+        f64::from(value)
+    }
+
+    fn any_block() -> Block {
+        Block {
+            bottom: small(),
+            last: 0,
+            last_center: 0.0,
+            last_size: 0.0,
+            last_x0: 0.0,
+            last_x1: 0.0,
+            segments: Vec::new(),
+            table: None,
+            top: small(),
+            x0: small(),
+            x1: small(),
+        }
+    }
+
+    fn arbitrary_order(
+        _blocks: &[Block],
+        ids: &[usize],
+        _key: fn(&Block) -> (f64, f64),
+        _descending: bool,
+    ) -> Vec<usize> {
+        let mut sorted = ids.to_vec();
+        if kani::any() {
+            sorted.swap(0, 1);
+        }
+        sorted
+    }
+
+    #[kani::proof]
+    #[kani::stub(by_start, arbitrary_order)]
+    #[kani::unwind(5)]
+    fn xy_cut_step_partitions_blocks_into_smaller_bands() {
+        let blocks = [any_block(), any_block()];
+        let key: fn(&Block) -> (f64, f64) = if kani::any() {
+            vertical_key
+        } else {
+            horizontal_key
+        };
+        let mut bands = Vec::new();
+        cut_bands(&blocks, &[0, 1], &mut bands, key, kani::any());
+        let mut seen = [0_u8; 2];
+        for band in &bands {
+            assert!(!band.is_empty());
+            for &id in band {
+                seen[id] += 1;
+            }
+        }
+        assert!(seen == [1, 1]);
+        if bands.len() >= 2 {
+            assert!(bands.iter().all(|band| band.len() < blocks.len()));
         }
     }
 }

@@ -12,10 +12,13 @@ rust-version = "1.92"
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = 3
@@ -84,7 +87,7 @@ unused_results = "deny"
 variant_size_differences = "deny"
 unfulfilled_lint_expectations = "deny"
 unknown_lints = "warn"
-unexpected_cfgs = { level = "deny", check-cfg = ["cfg(kani)"] }
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"

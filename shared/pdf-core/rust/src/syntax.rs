@@ -1649,3 +1649,43 @@ mod tests {
         assert_eq!(find_bytes(b"abc", 0, b""), None);
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn object_parser_never_panics_on_short_input() {
+        let bytes: [u8; 6] = kani::any();
+        let mut parser = Parser::new(&bytes, 0, 2, kani::any());
+        let parsed = parser.parse_object();
+        assert!(parser.pos <= bytes.len() || parsed.is_err());
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn content_lexer_never_panics_on_short_input() {
+        let bytes: [u8; 6] = kani::any();
+        let mut lexer = ContentLexer::new(&bytes);
+        for _ in 0..3 {
+            if lexer.next().is_none() {
+                break;
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn object_headers_never_panic() {
+        let bytes: [u8; 8] = kani::any();
+        let offset: usize = kani::any();
+        kani::assume(offset <= bytes.len() + 1);
+        if let Some((_, end)) = parse_object_header(&bytes, offset) {
+            assert!(end <= bytes.len());
+        }
+        let mut pos: usize = kani::any();
+        kani::assume(pos <= bytes.len() + 1);
+        let _ = read_unsigned(&bytes, &mut pos);
+    }
+}

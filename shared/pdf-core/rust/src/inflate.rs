@@ -746,3 +746,17 @@ mod tests {
         assert_eq!(out, b"hello world");
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn inflate_never_panics_on_short_input() {
+        let bytes: [u8; 4] = kani::any();
+        if let Ok(out) = inflate(&bytes, 8) {
+            assert!(out.len() <= 8);
+        }
+    }
+}

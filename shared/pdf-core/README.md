@@ -475,7 +475,7 @@ cargo fmt --check
 
 The recursive whole-page paths (reading-order XY-cut, the column split recursion, `join_pages`, line joins with the document vocabulary) allocate and sort, which exceeds what CBMC solves within the 16 GiB job cap; seeded randomized property tests cover them with the real heuristics instead (`random_blocks_are_ordered_as_a_permutation`, `random_partitions_keep_every_item_exactly_once`, `random_page_joins_never_write_into_notes_captions_or_tables`, `random_line_joins_only_ever_drop_a_break_hyphen`, `random_column_layouts_keep_every_word_exactly_once`).
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1160 KiB.
+`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1144 KiB.
 
 ## License
 
