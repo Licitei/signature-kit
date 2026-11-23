@@ -248,17 +248,18 @@ pub(crate) fn parse_decimal(text: &[u8]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::iter;
 
     #[test]
     fn sort_total_matches_the_standard_sort() {
         let mut state = 0x9e37_79b9_u32;
         for len in 0..200_usize {
-            let mut values: Vec<u32> = (0..len)
-                .map(|_| {
-                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    state >> 24_u32
-                })
-                .collect();
+            let mut values: Vec<u32> = iter::repeat_with(|| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                state >> 24_u32
+            })
+            .take(len)
+            .collect();
             let mut expected = values.clone();
             expected.sort_unstable();
             sort_total(&mut values, &Ord::cmp);

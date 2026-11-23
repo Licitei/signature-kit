@@ -304,11 +304,7 @@ impl Store<'_, '_> {
         let key = reader.bytes()?.to_vec();
         let value = parse_value(reader.bytes()?)?;
         let (root, inner) = self.locate(&target, append)?;
-        let current = {
-            let container = navigate_mut(self.object_mut(root)?, &inner)
-                .ok_or_else(|| Failure::request("edit target does not exist"))?;
-            dict_of(container)?.get(&key).cloned()
-        };
+        let current = { self.dict_at(root, &inner)?.get(&key).cloned() };
         match current {
             Some(Object::Ref(reference)) => {
                 let Object::Array(items) = self.object_mut(reference)? else {
@@ -317,21 +313,26 @@ impl Store<'_, '_> {
                 apply_array(items, value, append);
             }
             Some(Object::Array(_)) => {
-                let container = navigate_mut(self.object_mut(root)?, &inner)
-                    .ok_or_else(|| Failure::request("edit target does not exist"))?;
-                if let Some(Object::Array(items)) = dict_entry_mut(dict_of(container)?, &key) {
+                if let Some(Object::Array(items)) =
+                    dict_entry_mut(self.dict_at(root, &inner)?, &key)
+                {
                     apply_array(items, value, append);
                 }
             }
             None if append => {
-                let container = navigate_mut(self.object_mut(root)?, &inner)
-                    .ok_or_else(|| Failure::request("edit target does not exist"))?;
-                dict_of(container)?.insert(&key, Object::Array(vec![value]));
+                self.dict_at(root, &inner)?
+                    .insert(&key, Object::Array(vec![value]));
             }
             None => {}
             Some(_) => return Err(Failure::request("edit target is not an array")),
         }
         Ok(())
+    }
+
+    fn dict_at(&mut self, root: ObjRef, path: &[Step]) -> Outcome<&mut Dict> {
+        let container = navigate_mut(self.object_mut(root)?, path)
+            .ok_or_else(|| Failure::request("edit target does not exist"))?;
+        dict_of(container)
     }
 
     fn dict_edit(&mut self, reader: &mut Reader<'_>, set: bool) -> Outcome<()> {
@@ -365,11 +366,7 @@ impl Store<'_, '_> {
         let key = reader.bytes()?.to_vec();
         let bits = reader.u32()?;
         let (root, inner) = self.locate(&target, true)?;
-        let current = {
-            let container = navigate_mut(self.object_mut(root)?, &inner)
-                .ok_or_else(|| Failure::request("edit target does not exist"))?;
-            dict_of(container)?.get(&key).cloned()
-        };
+        let current = { self.dict_at(root, &inner)?.get(&key).cloned() };
         let resolved = match current {
             Some(Object::Ref(reference)) => self.peek_value(reference, &[])?,
             other => other,
@@ -381,9 +378,8 @@ impl Store<'_, '_> {
             .map_or(0_i64, |value| f64_to_i64(value.trunc()));
         let low = u32::try_from(old.rem_euclid(1_i64 << 32_i32)).unwrap_or(0);
         let combined = i64::from((low | bits).cast_signed());
-        let container = navigate_mut(self.object_mut(root)?, &inner)
-            .ok_or_else(|| Failure::request("edit target does not exist"))?;
-        dict_of(container)?.insert(&key, Object::Integer(combined));
+        self.dict_at(root, &inner)?
+            .insert(&key, Object::Integer(combined));
         Ok(())
     }
 
@@ -430,9 +426,8 @@ impl Store<'_, '_> {
                     let parent = inner
                         .get(..inner.len().saturating_sub(1))
                         .unwrap_or_default();
-                    let container = navigate_mut(self.object_mut(root)?, parent)
-                        .ok_or_else(|| Failure::request("edit target does not exist"))?;
-                    dict_of(container)?.insert(key, Object::Dict(Dict::default()));
+                    self.dict_at(root, parent)?
+                        .insert(key, Object::Dict(Dict::default()));
                 }
             }
         }
@@ -490,9 +485,7 @@ impl Store<'_, '_> {
             path: vec![Step::Key(b"Resources".to_vec()), Step::Key(category)],
         };
         let (root, inner) = self.locate(&target, true)?;
-        let container = navigate_mut(self.object_mut(root)?, &inner)
-            .ok_or_else(|| Failure::request("edit target does not exist"))?;
-        let resources = dict_of(container)?;
+        let resources = self.dict_at(root, &inner)?;
         match resources.get(&name) {
             Some(existing) if *existing != value => Err(Failure::request(
                 "page resource name is already bound to another object",

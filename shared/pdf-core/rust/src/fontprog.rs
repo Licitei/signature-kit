@@ -1187,11 +1187,11 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
     };
     let lookup_count = read_u16(table, lookup_list).map_or(0, usize::from);
     for index in 0..lookup_count.min(MAX_LOOKUPS) {
-        let Some(lookup) = read_u16(
+        let Some(lookup) = relative_offset(
             table,
+            lookup_list,
             (lookup_list.saturating_add(2)).saturating_add(index.saturating_mul(2)),
-        )
-        .map(|offset| lookup_list.saturating_add(usize::from(offset))) else {
+        ) else {
             return;
         };
         let (Some(kind), Some(count)) = (
@@ -1201,11 +1201,11 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
             continue;
         };
         for sub in 0..usize::from(count).min(MAX_LOOKUP_SUBTABLES) {
-            let Some(mut subtable) = read_u16(
+            let Some(mut subtable) = relative_offset(
                 table,
+                lookup,
                 (lookup.saturating_add(6)).saturating_add(sub.saturating_mul(2)),
-            )
-            .map(|offset| lookup.saturating_add(usize::from(offset))) else {
+            ) else {
                 break;
             };
             let subtable_kind = if kind == 7 {
@@ -1237,13 +1237,16 @@ fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
     }
 }
 
+fn relative_offset(table: &[u8], base: usize, slot: usize) -> Option<usize> {
+    read_u16(table, slot).map(|offset| base.saturating_add(usize::from(offset)))
+}
+
 fn read_ligature_subtable(table: &[u8], subtable: usize, out: &mut HashMap<u16, Vec<u16>>) {
     if read_u16(table, subtable) != Some(1) {
         return;
     }
     let (Some(coverage), Some(set_count)) = (
-        read_u16(table, subtable.saturating_add(2))
-            .map(|offset| subtable.saturating_add(usize::from(offset))),
+        relative_offset(table, subtable, subtable.saturating_add(2)),
         read_u16(table, subtable.saturating_add(4)),
     ) else {
         return;
@@ -1252,20 +1255,20 @@ fn read_ligature_subtable(table: &[u8], subtable: usize, out: &mut HashMap<u16, 
         return;
     };
     for (set_index, first) in firsts.iter().enumerate().take(usize::from(set_count)) {
-        let Some(set) = read_u16(
+        let Some(set) = relative_offset(
             table,
+            subtable,
             (subtable.saturating_add(6)).saturating_add(set_index.saturating_mul(2)),
-        )
-        .map(|offset| subtable.saturating_add(usize::from(offset))) else {
+        ) else {
             return;
         };
         let count = read_u16(table, set).map_or(0, usize::from);
         for ligature_index in 0..count.min(MAX_LIGATURES) {
-            let Some(ligature) = read_u16(
+            let Some(ligature) = relative_offset(
                 table,
+                set,
                 (set.saturating_add(2)).saturating_add(ligature_index.saturating_mul(2)),
-            )
-            .map(|offset| set.saturating_add(usize::from(offset))) else {
+            ) else {
                 break;
             };
             let (Some(glyph), Some(component_count)) = (

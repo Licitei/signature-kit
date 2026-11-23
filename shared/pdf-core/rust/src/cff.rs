@@ -1,4 +1,4 @@
-use crate::display::{PathData, multiply};
+use crate::display::{PathData, Pen, multiply};
 use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
 use crate::glyph::charge;
@@ -225,14 +225,11 @@ impl CffFont {
             bytes,
             font: self,
             local: self.private_for(gid).and_then(|private| private.subrs),
-            path,
-            open: false,
+            pen: Pen::new(path),
             stack: Vec::with_capacity(MAX_STACK),
             stems: 0,
             steps: 0,
             width_parsed: false,
-            x: 0.0,
-            y: 0.0,
         };
         let outcome = machine.glyph(gid, 0);
         charge(work, machine.steps)?;
@@ -322,14 +319,11 @@ struct Type2<'run> {
     bytes: &'run [u8],
     font: &'run CffFont,
     local: Option<Index>,
-    open: bool,
-    path: &'run mut PathData,
+    pen: Pen<'run>,
     stack: Vec<f64>,
     stems: usize,
     steps: usize,
     width_parsed: bool,
-    x: f64,
-    y: f64,
 }
 
 impl Type2<'_> {
@@ -350,28 +344,10 @@ impl Type2<'_> {
         self.run(code, depth.saturating_add(1))
     }
 
-    fn close(&mut self) {
-        if self.open {
-            self.path.close();
-            self.open = false;
-        }
-    }
-
-    fn curve(&mut self, dxa: f64, dya: f64, dxb: f64, dyb: f64, dxc: f64, dyc: f64) {
-        let x1 = self.x + dxa;
-        let y1 = self.y + dya;
-        let x2 = x1 + dxb;
-        let y2 = y1 + dyb;
-        self.x = x2 + dxc;
-        self.y = y2 + dyc;
-        self.path.cubic([x1, y1, x2, y2, self.x, self.y]);
-        self.open = true;
-    }
-
     fn curve_at(&mut self, index: usize) {
         let [a, b, c, d, e, f] =
             [0, 1, 2, 3, 4, 5].map(|offset| self.arg(index.saturating_add(offset)));
-        self.curve(a, b, c, d, e, f);
+        self.pen.curve([a, b, c, d, e, f]);
     }
 
     fn escape(&mut self, code: u8) {
@@ -379,29 +355,34 @@ impl Type2<'_> {
         match code {
             35 => {
                 let values: [f64; 12] = array::from_fn(arg);
-                self.curve(
+                self.pen.curve([
                     values[0], values[1], values[2], values[3], values[4], values[5],
-                );
-                self.curve(
+                ]);
+                self.pen.curve([
                     values[6], values[7], values[8], values[9], values[10], values[11],
-                );
+                ]);
             }
             34 => {
                 let values: [f64; 7] = array::from_fn(arg);
-                self.curve(values[0], 0.0, values[1], values[2], values[3], 0.0);
-                self.curve(values[4], 0.0, values[5], -values[2], values[6], 0.0);
+                self.pen
+                    .curve([values[0], 0.0_f64, values[1], values[2], values[3], 0.0_f64]);
+                self.pen.curve([
+                    values[4], 0.0_f64, values[5], -values[2], values[6], 0.0_f64,
+                ]);
             }
             36 => {
                 let values: [f64; 9] = array::from_fn(arg);
-                self.curve(values[0], values[1], values[2], values[3], values[4], 0.0);
-                self.curve(
+                self.pen.curve([
+                    values[0], values[1], values[2], values[3], values[4], 0.0_f64,
+                ]);
+                self.pen.curve([
                     values[5],
-                    0.0,
+                    0.0_f64,
                     values[6],
                     values[7],
                     values[8],
                     -(values[1] + values[3] + values[7]),
-                );
+                ]);
             }
             37 => {
                 let values: [f64; 11] = array::from_fn(arg);
@@ -412,10 +393,11 @@ impl Type2<'_> {
                 } else {
                     (-dx, values[10])
                 };
-                self.curve(
+                self.pen.curve([
                     values[0], values[1], values[2], values[3], values[4], values[5],
-                );
-                self.curve(values[6], values[7], values[8], values[9], dx6, dy6);
+                ]);
+                self.pen
+                    .curve([values[6], values[7], values[8], values[9], dx6, dy6]);
             }
             9 | 14 | 26 => {
                 if let Some(top) = self.stack.last_mut() {
@@ -468,23 +450,8 @@ impl Type2<'_> {
     fn glyph(&mut self, gid: u16, seac: usize) -> Option<()> {
         let code = self.font.charstrings.get(self.bytes, usize::from(gid))?;
         let _: bool = self.run_glyph(code, seac)?;
-        self.close();
+        self.pen.close();
         Some(())
-    }
-
-    fn line(&mut self, dx: f64, dy: f64) {
-        self.x += dx;
-        self.y += dy;
-        self.path.line(self.x, self.y);
-        self.open = true;
-    }
-
-    fn move_by(&mut self, dx: f64, dy: f64) {
-        self.close();
-        self.x += dx;
-        self.y += dy;
-        self.path.move_to(self.x, self.y);
-        self.open = true;
     }
 
     fn number(&mut self, code: &[u8], position: &mut usize, byte: u8) -> Option<()> {
@@ -541,21 +508,22 @@ impl Type2<'_> {
                 let len = self.stack.len();
                 let dx = self.arg(len.saturating_sub(2));
                 let dy = self.arg(len.saturating_sub(1));
-                self.move_by(dx, dy);
+                self.pen.move_by(dx, dy);
             }
             22 | 4 => {
                 self.take_width(1);
                 let delta = self.arg(self.stack.len().saturating_sub(1));
                 if code == 22 {
-                    self.move_by(delta, 0.0);
+                    self.pen.move_by(delta, 0.0);
                 } else {
-                    self.move_by(0.0, delta);
+                    self.pen.move_by(0.0, delta);
                 }
             }
             5 => {
                 let mut index = 0_usize;
                 while index.saturating_add(1) < count {
-                    self.line(self.arg(index), self.arg(index.saturating_add(1)));
+                    self.pen
+                        .line(self.arg(index), self.arg(index.saturating_add(1)));
                     index = index.saturating_add(2);
                 }
             }
@@ -564,9 +532,9 @@ impl Type2<'_> {
                     let horizontal = (index & 1 == 0) == (code == 6);
                     let delta = self.arg(index);
                     if horizontal {
-                        self.line(delta, 0.0);
+                        self.pen.line(delta, 0.0);
                     } else {
-                        self.line(0.0, delta);
+                        self.pen.line(0.0, delta);
                     }
                 }
             }
@@ -582,13 +550,15 @@ impl Type2<'_> {
                     index = index.saturating_add(6);
                 }
                 if code == 24 && index.saturating_add(2) <= count {
-                    self.line(self.arg(index), self.arg(index.saturating_add(1)));
+                    self.pen
+                        .line(self.arg(index), self.arg(index.saturating_add(1)));
                 }
             }
             25 => {
                 let mut index = 0_usize;
                 while index.saturating_add(8) <= count {
-                    self.line(self.arg(index), self.arg(index.saturating_add(1)));
+                    self.pen
+                        .line(self.arg(index), self.arg(index.saturating_add(1)));
                     index = index.saturating_add(2);
                 }
                 if index.saturating_add(6) <= count {
@@ -602,9 +572,9 @@ impl Type2<'_> {
                     let [a, b, c, d] =
                         [0, 1, 2, 3].map(|offset| self.arg(index.saturating_add(offset)));
                     if code == 27 {
-                        self.curve(a, first, b, c, d, 0.0);
+                        self.pen.curve([a, first, b, c, d, 0.0_f64]);
                     } else {
-                        self.curve(first, a, b, c, 0.0, d);
+                        self.pen.curve([first, a, b, c, 0.0_f64, d]);
                     }
                     first = 0.0_f64;
                     index = index.saturating_add(4);
@@ -622,9 +592,9 @@ impl Type2<'_> {
                         0.0_f64
                     };
                     if horizontal {
-                        self.curve(a, 0.0, b, c, last, d);
+                        self.pen.curve([a, 0.0_f64, b, c, last, d]);
                     } else {
-                        self.curve(0.0, a, b, c, d, last);
+                        self.pen.curve([0.0_f64, a, b, c, d, last]);
                     }
                     horizontal = !horizontal;
                     index = index.saturating_add(4);
@@ -667,7 +637,7 @@ impl Type2<'_> {
                         self.stack.clear();
                         self.seac(base, accent, dx, dy)?;
                     }
-                    self.close();
+                    self.pen.close();
                     return Some(true);
                 }
                 12 => {
@@ -697,28 +667,26 @@ impl Type2<'_> {
     fn seac(&mut self, base: f64, accent: f64, dx: f64, dy: f64) -> Option<()> {
         let base_gid = self.font.gid_for_standard_code(base)?;
         let accent_gid = self.font.gid_for_standard_code(accent)?;
-        self.close();
+        self.pen.close();
         let mut nested = Type2 {
             bytes: self.bytes,
             font: self.font,
             local: self.local,
-            open: false,
-            path: &mut *self.path,
+            pen: Pen::new(&mut *self.pen.path),
             stack: Vec::with_capacity(MAX_STACK),
             stems: 0,
             steps: self.steps,
             width_parsed: true,
-            x: 0.0,
-            y: 0.0,
         };
         nested.glyph(base_gid, 1)?;
-        let start = nested.path.coords.len();
-        nested.x = 0.0_f64;
-        nested.y = 0.0_f64;
+        let start = nested.pen.path.coords.len();
+        nested.pen.x = 0.0_f64;
+        nested.pen.y = 0.0_f64;
         nested.stems = 0;
         nested.glyph(accent_gid, 1)?;
         let offsets = [dx, dy];
         for (index, value) in nested
+            .pen
             .path
             .coords
             .get_mut(start..)

@@ -1744,9 +1744,6 @@ pub(crate) fn document_text(
     limits: &Limits,
     options: TextOptions,
 ) -> Outcome<Vec<String>> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.selected_page_entries(page_indexes)?;
     opened_text(&document, &borrow_pages(&pages), limits, options)
@@ -2077,9 +2074,6 @@ pub(crate) fn document_tables(
     merge_across_pages: bool,
     drop_running: bool,
 ) -> Outcome<Vec<Table>> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.selected_page_entries(page_indexes)?;
     opened_tables(

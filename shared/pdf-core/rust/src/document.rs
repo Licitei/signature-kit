@@ -1711,9 +1711,6 @@ pub(crate) fn inspect(
     options: &InspectOptions,
     limits: &Limits,
 ) -> Outcome<Inspection> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let mut inspection = Inspection {
