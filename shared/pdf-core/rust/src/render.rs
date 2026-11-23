@@ -13,7 +13,7 @@ use crate::inspection::Limits;
 use crate::num::{bounded, f64_to_i64, f64_to_usize, unit_to_u8};
 use crate::object::{Dict, ObjRef, Object, Resolver as _, Stream, object_numbers};
 use crate::shading::{GradientPaint, Shading, parse_shading};
-use crate::syntax::{ContentLexer, ContentToken, Operand};
+use crate::syntax::{ContentLexer, Operand};
 use crate::text::tail_numbers;
 use alloc::rc::Rc;
 use core::mem;
@@ -1282,20 +1282,7 @@ impl Renderer<'_, '_> {
         };
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
-        while let Some(token) = lexer.next() {
-            let code = match token {
-                Err(_) => break,
-                Ok(ContentToken::Operand(operand)) => {
-                    if operands.len() >= MAX_OPERANDS {
-                        while let Some(stale) = operands.pop() {
-                            lexer.recycle(stale);
-                        }
-                    }
-                    operands.push(operand);
-                    continue;
-                }
-                Ok(ContentToken::Operator(name)) => name,
-            };
+        while let Some(Ok(code)) = lexer.operator(&mut operands, MAX_OPERANDS) {
             if !self.count_operator() {
                 break;
             }
@@ -1560,9 +1547,6 @@ impl Renderer<'_, '_> {
                 _ => {
                     let _: bool = Self::path_operator(code, &operands, &mut path, &mut current);
                 }
-            }
-            while let Some(used) = operands.pop() {
-                lexer.recycle(used);
             }
         }
         if text.clip {
@@ -2069,33 +2053,26 @@ fn dict_flag(dict: &Dict, key: &[u8]) -> bool {
 
 fn tile_color(data: &[u8]) -> [u8; 3] {
     let mut lexer = ContentLexer::new(data);
+    let mut operands: Vec<Operand<'_>> = Vec::new();
     let mut values: Vec<f64> = Vec::new();
     let mut scratch = Vec::new();
-    while let Some(Ok(token)) = lexer.next() {
-        match token {
-            ContentToken::Operand(operand) => {
-                if let Some(number) = operand.as_number() {
-                    values.push(number);
-                }
-            }
-            ContentToken::Operator(code) => {
-                let space = match code {
-                    b"g" => Some(ColorSpace::Gray),
-                    b"rg" | b"sc" | b"scn" if values.len() == 3 => Some(ColorSpace::Rgb),
-                    b"k" => Some(ColorSpace::Cmyk),
-                    _ => None,
-                };
-                if let Some(found) = space {
-                    let count = found.components();
-                    let start = values.len().saturating_sub(count);
-                    let rgb = found
-                        .rgb(values.get(start..).unwrap_or_default(), &mut scratch)
-                        .map(unit_to_u8);
-                    if rgb != [255, 255, 255] {
-                        return rgb;
-                    }
-                }
-                values.clear();
+    while let Some(Ok(code)) = lexer.operator(&mut operands, usize::MAX) {
+        values.clear();
+        values.extend(operands.iter().filter_map(Operand::as_number));
+        let space = match code {
+            b"g" => Some(ColorSpace::Gray),
+            b"rg" | b"sc" | b"scn" if values.len() == 3 => Some(ColorSpace::Rgb),
+            b"k" => Some(ColorSpace::Cmyk),
+            _ => None,
+        };
+        if let Some(found) = space {
+            let count = found.components();
+            let start = values.len().saturating_sub(count);
+            let rgb = found
+                .rgb(values.get(start..).unwrap_or_default(), &mut scratch)
+                .map(unit_to_u8);
+            if rgb != [255, 255, 255] {
+                return rgb;
             }
         }
     }

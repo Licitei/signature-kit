@@ -13,7 +13,7 @@ use crate::font::{Font, Glyph, embedded_style};
 use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
-use crate::syntax::{ContentLexer, ContentToken, Operand};
+use crate::syntax::{ContentLexer, Operand};
 
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
@@ -1262,20 +1262,7 @@ impl Interpreter<'_, '_, '_> {
         let mut marked: Vec<bool> = Vec::new();
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
-        while let Some(token) = lexer.next() {
-            let name = match token {
-                Err(_) => break,
-                Ok(ContentToken::Operand(operand)) => {
-                    if operands.len() >= MAX_OPERANDS {
-                        while let Some(stale) = operands.pop() {
-                            lexer.recycle(stale);
-                        }
-                    }
-                    operands.push(operand);
-                    continue;
-                }
-                Ok(ContentToken::Operator(name)) => name,
-            };
+        while let Some(Ok(name)) = lexer.operator(&mut operands, MAX_OPERANDS) {
             let code = op(name);
             match code {
                 OP_END_IMAGE if self.scan.is_some() => {
@@ -1316,9 +1303,6 @@ impl Interpreter<'_, '_, '_> {
                         self.show_operator(code, shown, scope, state, matrices, &mut scratch)?;
                     }
                 }
-            }
-            while let Some(used) = operands.pop() {
-                lexer.recycle(used);
             }
         }
         if marked.contains(&true) {
