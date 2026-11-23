@@ -616,7 +616,8 @@ fn png_predict(data: &mut Vec<u8>, layout: Samples, max_output: usize) -> Outcom
     Ok(())
 }
 
-pub(crate) fn unfilter_row(filter: u8, row: &mut [u8], above: Option<&[u8]>, pixel: usize) {
+pub(crate) fn unfilter_row(filter: u8, row: &mut [u8], prior: Option<&[u8]>, pixel: usize) {
+    let above = prior.and_then(|up_row| up_row.get(..row.len()));
     match (filter, above) {
         (1, _) | (4, None) => {
             for index in pixel..row.len() {
@@ -682,12 +683,16 @@ fn avg(left: u8, up: u8) -> u8 {
 }
 
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
-    let estimate = i16::from(a)
-        .saturating_add(i16::from(b))
-        .saturating_sub(i16::from(c));
-    let pa = (estimate.saturating_sub(i16::from(a))).abs();
-    let pb = (estimate.saturating_sub(i16::from(b))).abs();
-    let pc = (estimate.saturating_sub(i16::from(c))).abs();
+    let left = i32::from(a);
+    let up = i32::from(b);
+    let corner = i32::from(c);
+    let pa = up.wrapping_sub(corner).abs();
+    let pb = left.wrapping_sub(corner).abs();
+    let pc = left
+        .wrapping_add(up)
+        .wrapping_sub(corner)
+        .wrapping_sub(corner)
+        .abs();
     if pa <= pb && pa <= pc {
         a
     } else if pb <= pc {
