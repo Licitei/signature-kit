@@ -202,7 +202,7 @@ jobs:
         working-directory: shared/pdf-core/rust
         env:
           RUSTFLAGS: --cap-lints=warn
-        run: cargo-kani -Z stubbing
+        run: cargo-kani -Z stubbing -j 4 --output-format=terse
 
   ci:
     name: CI
