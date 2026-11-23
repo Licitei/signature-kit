@@ -346,6 +346,7 @@ impl Words {
         }
         sort_total(&mut wanted, &Ord::cmp);
         wanted.dedup();
+        let mut counts = vec![0_u8; wanted.len()];
         for line in md_lines(pages) {
             let last = line.runs.len().saturating_sub(1);
             for (position, run) in line.runs.iter().enumerate() {
@@ -362,29 +363,26 @@ impl Words {
                     let fits_length = shapes
                         .get(bit >> 6_u32)
                         .is_some_and(|slot| slot & (1_u64 << (bit & 63)) != 0);
-                    if !fits_length {
+                    if !fits_length || core.len() < 2 {
                         continue;
                     }
-                    let hash = word_hash(&[core]);
-                    if wanted.binary_search(&hash).is_ok()
-                        && core.len() >= 2
+                    if let Ok(slot) = wanted.binary_search(&word_hash(&[core]))
                         && core.chars().all(|ch| ch.is_alphabetic() || ch == '-')
+                        && let Some(count) = counts.get_mut(slot)
                     {
-                        words.seen.push(hash);
+                        *count = count.saturating_add(1);
                     }
                 }
             }
         }
-        sort_total(&mut words.seen, &Ord::cmp);
-        for pair in words.seen.windows(2) {
-            if let [first, second] = pair
-                && first == second
-                && words.repeated.last() != Some(first)
-            {
-                words.repeated.push(*first);
+        for (&hash, &count) in wanted.iter().zip(&counts) {
+            if count >= 1 {
+                words.seen.push(hash);
+            }
+            if count >= 2 {
+                words.repeated.push(hash);
             }
         }
-        words.seen.dedup();
         words
     }
 
