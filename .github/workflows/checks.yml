@@ -81,7 +81,12 @@ jobs:
         with:
           kani-version: "0.68.0"
           working-directory: shared/pdf-core/rust
-          args: "-Z stubbing"
+          args: >-
+            -Z stubbing
+            --harness glue_only_drops_a_trailing_break_hyphen
+            --harness page_joins_pair_body_with_body_and_notes_with_notes
+            --harness column_slots_cover_every_item_and_split_both_sides
+            --harness object_headers_never_panic
         env:
           RUSTFLAGS: --cap-lints=warn
 
