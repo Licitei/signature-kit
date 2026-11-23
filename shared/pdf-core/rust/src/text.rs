@@ -7,7 +7,7 @@ use core::mem;
 use core::ops::Range;
 use std::collections::{HashMap, HashSet};
 
-use crate::document::{Document, Page};
+use crate::document::{Document, Page, Transient};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::font::{Font, Glyph, embedded_style};
 use crate::fontprog::FontStyle;
@@ -19,8 +19,10 @@ const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 const MAX_OPERANDS: usize = 512;
 const MAX_FORM_DEPTH: usize = 24;
-const MAX_CACHED_FONTS: usize = 2048;
+const MAX_CACHED_FONTS: usize = 32;
+const FONT_HORIZON: u32 = 2;
 const MAX_CACHED_FORM_BYTES: usize = 16 << 20;
+const MAX_CACHED_FORM_ENTRY_BYTES: usize = 1 << 20;
 const SPACE_GAP: f64 = 0.2;
 const MIN_SPACE_GAP: f64 = 0.1;
 const SPACE_WIDTH_SHARE: f64 = 0.5;
@@ -591,13 +593,16 @@ impl Interpreter<'_, '_, '_> {
     }
 
     fn descendant(&self, font: &Dict) -> Option<Rc<Object>> {
-        let array = self.document.follow(font.get(b"DescendantFonts")?).ok()?;
+        let array = self
+            .document
+            .follow_transient(font.get(b"DescendantFonts")?)
+            .ok()?;
         let first = array.as_array()?.first()?;
-        self.document.follow(first).ok()
+        self.document.follow_transient(first).ok()
     }
 
     fn descriptor_metrics(&self, descriptor: &Object) -> Option<(f64, f64)> {
-        let resolved = self.document.follow(descriptor).ok()?;
+        let resolved = self.document.follow_transient(descriptor).ok()?;
         let dict = resolved.as_dict()?;
         let ascent = dict.get(b"Ascent").and_then(Object::as_number)? / 1_000.0_f64;
         let descent = dict.get(b"Descent").and_then(Object::as_number)?.abs() / 1_000.0_f64;
@@ -608,7 +613,7 @@ impl Interpreter<'_, '_, '_> {
     fn descriptor_style(&self, font: &Dict) -> FontStyle {
         let Some(descriptor) = font
             .get(b"FontDescriptor")
-            .and_then(|descriptor| self.document.follow(descriptor).ok())
+            .and_then(|descriptor| self.document.follow_transient(descriptor).ok())
         else {
             return FontStyle::default();
         };
@@ -672,7 +677,7 @@ impl Interpreter<'_, '_, '_> {
         {
             return Ok(());
         }
-        let Ok(resolved) = self.document.follow(entry) else {
+        let Ok(resolved) = self.document.follow_transient(entry) else {
             return Ok(());
         };
         let Object::Stream(stream) = &*resolved else {
@@ -695,24 +700,26 @@ impl Interpreter<'_, '_, '_> {
             return Ok(());
         }
         let cached = reference.and_then(|known| self.forms.get(known, self.generation));
-        let data: Rc<[u8]> = match cached {
-            Some(data) => data,
+        let (shared, owned): (Option<Rc<[u8]>>, Vec<u8>) = match cached {
+            Some(data) => (Some(data), Vec::new()),
             None => match self.document.stream_data(stream) {
-                Ok(data) => {
-                    let shared_data: Rc<[u8]> = data.into();
-                    if let Some(known) = reference {
-                        if self.scan.is_none() && scan_shows(&shared_data) == Shows::Nothing {
-                            let _: bool = self.skipped.insert(known);
-                        } else {
-                            self.forms.insert(known, &shared_data, self.generation);
-                        }
+                Ok(data) => match reference {
+                    Some(known) if self.scan.is_none() && scan_shows(&data) == Shows::Nothing => {
+                        let _: bool = self.skipped.insert(known);
+                        (None, data)
                     }
-                    shared_data
-                }
+                    Some(known) if data.len() <= MAX_CACHED_FORM_ENTRY_BYTES => {
+                        let shared_data: Rc<[u8]> = data.into();
+                        self.forms.insert(known, &shared_data, self.generation);
+                        (Some(shared_data), Vec::new())
+                    }
+                    Some(_) | None => (None, data),
+                },
                 Err(failure) if failure.code == FailureCode::LimitExceeded => return Err(failure),
                 Err(_) => return Ok(()),
             },
         };
+        let data: &[u8] = shared.as_deref().unwrap_or(&owned);
         let form_matrix = matrix_from(stream.dict.get(b"Matrix")).unwrap_or(IDENTITY);
         let own = stream.dict.get(b"Resources");
         let (resources, origin) = match own
@@ -758,7 +765,7 @@ impl Interpreter<'_, '_, '_> {
             self.active.push(inner_reference);
         }
         let result = self.run(
-            &data,
+            data,
             &mut inner_scope,
             &mut inner_state,
             &mut inner_matrices,
@@ -836,10 +843,10 @@ impl Interpreter<'_, '_, '_> {
                 .into_iter()
                 .flatten()
                 .filter_map(|dict| dict.get(b"FontDescriptor"))
-                .filter_map(|descriptor| self.document.follow(descriptor).ok())
+                .filter_map(|descriptor| self.document.follow_transient(descriptor).ok())
                 .find_map(|descriptor| {
                     let dict = descriptor.as_dict()?;
-                    embedded_style(dict, self.document, self.limits)
+                    embedded_style(dict, &Transient(self.document), self.limits)
                 })
                 .unwrap_or_default()
         });
@@ -881,9 +888,9 @@ impl Interpreter<'_, '_, '_> {
     }
 
     fn load_font(&self, object: &Object) -> Option<Rc<FontEntry>> {
-        let resolved = self.document.follow(object).ok()?;
+        let resolved = self.document.follow_transient(object).ok()?;
         let dict = resolved.as_dict()?;
-        let font = Font::load(self.document, dict, self.limits).ok()?;
+        let font = Font::load(&Transient(self.document), dict, self.limits).ok()?;
         let (ascent, descent) = self.vertical_metrics(dict);
         let FontStyle { bold, italic } = self.font_style(dict, &font);
         let space_gap = space_gap(&font);
@@ -1568,10 +1575,10 @@ impl Interpreter<'_, '_, '_> {
         }
         let descendant = font
             .get(b"DescendantFonts")
-            .and_then(|object| self.document.follow(object).ok())
+            .and_then(|object| self.document.follow_transient(object).ok())
             .and_then(|resolved| {
                 let first = resolved.as_array().and_then(|items| items.first())?;
-                self.document.follow(first).ok()
+                self.document.follow_transient(first).ok()
             });
         let nested = descendant
             .as_deref()
@@ -1800,7 +1807,9 @@ fn extract_page(
     let previous = session.generation;
     session.generation = previous.wrapping_add(1);
     if session.fonts.len() > MAX_CACHED_FONTS {
-        session.fonts.retain(|_, (_, used)| *used == previous);
+        session
+            .fonts
+            .retain(|_, (_, used)| previous.wrapping_sub(*used) <= FONT_HORIZON);
     }
     let mut interpreter = Interpreter {
         document,
@@ -2755,6 +2764,8 @@ mod tests {
         drop(extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap());
         let (&hot_key, (hot, _)) = session.fonts.iter().next().unwrap();
         let shared_hot = Rc::clone(hot.as_ref().unwrap());
+        session.generation = 100;
+        session.fonts.get_mut(&hot_key).unwrap().1 = 100;
         for index in 0..=u32::try_from(MAX_CACHED_FONTS).unwrap() {
             drop(
                 session
@@ -2767,6 +2778,43 @@ mod tests {
         assert_eq!(session.fonts.len(), 1);
         let (kept, _) = &session.fonts[&hot_key];
         assert!(Rc::ptr_eq(kept.as_ref().unwrap(), &shared_hot));
+    }
+
+    #[test]
+    fn font_cache_eviction_keeps_fonts_inside_the_horizon() {
+        let bytes = simple_pdf("BT /F1 10 Tf 20 100 Td (Hot) Tj ET");
+        let limits = Limits::default();
+        let document = Document::open(&bytes, &limits).unwrap();
+        let pages = document.pages().unwrap();
+        let mut session = Session::default();
+        drop(extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap());
+        session.generation = 100;
+        for (age, index) in (0..=FONT_HORIZON + 1).zip(0_u32..) {
+            drop(session.fonts.insert(
+                FontKey::Inline(u32::MAX, index),
+                (None, 100_u32.wrapping_sub(age)),
+            ));
+        }
+        for index in 0..=u32::try_from(MAX_CACHED_FONTS).unwrap() {
+            drop(
+                session
+                    .fonts
+                    .insert(FontKey::Inline(u32::MAX - 1, index), (None, 0)),
+            );
+        }
+        drop(extract_runs(&document, &pages[0], &limits, true, &mut session).unwrap());
+        let survivors = session
+            .fonts
+            .keys()
+            .filter(|key| matches!(key, FontKey::Inline(id, _) if *id == u32::MAX))
+            .count();
+        assert_eq!(survivors, usize::try_from(FONT_HORIZON).unwrap() + 1);
+        assert!(
+            !session
+                .fonts
+                .keys()
+                .any(|key| matches!(key, FontKey::Inline(id, _) if *id == u32::MAX - 1))
+        );
     }
 
     #[test]
