@@ -2,6 +2,7 @@ use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inflate;
 use crate::object::{Dict, Object};
 
+const MAX_LZW_CODES: usize = 4096;
 const IMAGE_FILTERS: [&[u8]; 4] = [
     b"DCTDecode",
     b"JPXDecode",
@@ -10,6 +11,26 @@ const IMAGE_FILTERS: [&[u8]; 4] = [
 ];
 
 type FilterChain<'data> = (Vec<&'data [u8]>, Vec<Option<&'data Dict>>);
+
+#[derive(Clone, Copy)]
+struct Samples {
+    bits: usize,
+    colors: usize,
+    columns: usize,
+}
+
+impl Samples {
+    fn pixel_bytes(self) -> usize {
+        self.colors.saturating_mul(self.bits).div_ceil(8).max(1)
+    }
+
+    const fn row_bytes(self) -> usize {
+        self.columns
+            .saturating_mul(self.colors)
+            .saturating_mul(self.bits)
+            .div_ceil(8)
+    }
+}
 
 pub(crate) fn decode_stream(
     dict: &Dict,
@@ -356,7 +377,7 @@ fn run_length_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
 }
 
 fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec<u8>> {
-    let mut dict: Vec<Vec<u8>> = Vec::with_capacity(4096);
+    let mut dict: Vec<Vec<u8>> = Vec::with_capacity(MAX_LZW_CODES);
     for byte in 0..=u8::MAX {
         dict.push(vec![byte]);
     }
@@ -381,13 +402,13 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
                 };
             };
             pos = pos.saturating_add(1);
-            bit_buf |= u32::from(*byte) << bit_count;
+            bit_buf = (bit_buf << 8_u32) | u32::from(*byte);
             bit_count = bit_count.saturating_add(8);
         }
         let mask = (1_u32 << code_bits).wrapping_sub(1);
-        let code = u16::try_from(bit_buf & mask).unwrap_or(u16::MAX);
-        bit_buf >>= code_bits;
         bit_count = bit_count.saturating_sub(code_bits);
+        let code = u16::try_from((bit_buf >> bit_count) & mask).unwrap_or(u16::MAX);
+        bit_buf &= (1_u32 << bit_count).wrapping_sub(1);
         if code == clear_code {
             dict.truncate(258);
             code_bits = 9;
@@ -419,7 +440,9 @@ fn lzw_expand(data: &[u8], early_change: bool, max_output: usize) -> Outcome<Vec
             return Err(Failure::limit("decoded stream exceeds limit"));
         }
         out.extend_from_slice(&bytes);
-        if let Some(prev) = previous {
+        if let Some(prev) = previous
+            && usize::from(next_code) < MAX_LZW_CODES
+        {
             let prev_entry = dict
                 .get(usize::from(prev))
                 .ok_or_else(|| Failure::invalid("lzw previous entry"))?;
@@ -462,17 +485,15 @@ fn apply_predictor(parms: Option<&Dict>, data: &mut Vec<u8>, max_output: usize) 
         }
         return Ok(());
     }
-    let colors = usize_from(parms, b"Colors", 1)?;
-    let bpc = usize_from(parms, b"BitsPerComponent", 8)?;
-    let columns = usize_from(parms, b"Columns", 1)?;
-    let row_bytes = columns
-        .saturating_mul(colors)
-        .saturating_mul(bpc)
-        .div_ceil(8);
+    let layout = Samples {
+        bits: usize_from(parms, b"BitsPerComponent", 8)?,
+        colors: usize_from(parms, b"Colors", 1)?,
+        columns: usize_from(parms, b"Columns", 1)?,
+    };
     if predictor == 2 {
-        tiff_predict(data, row_bytes, max_output)?;
+        tiff_predict(data, layout);
     } else if (10..=15).contains(&predictor) {
-        png_predict(data, row_bytes, predictor, max_output)?;
+        png_predict(data, layout, max_output)?;
     } else if predictor != 1 {
         return Err(Failure::new(
             FailureCode::UnsupportedFeature,
@@ -500,38 +521,66 @@ fn usize_from(parms: Option<&Dict>, key: &[u8], default: usize) -> Outcome<usize
         .ok_or_else(|| Failure::invalid("predictor parameter overflow"))
 }
 
-fn tiff_predict(data: &mut [u8], row_bytes: usize, max_output: usize) -> Outcome<()> {
-    if row_bytes == 0 || data.is_empty() {
-        return Ok(());
+fn tiff_predict(data: &mut [u8], layout: Samples) {
+    let row_bytes = layout.row_bytes();
+    if row_bytes == 0 {
+        return;
     }
-    let mut index = 0_usize;
-    while index < data.len() {
-        for col in 1..row_bytes {
-            let cur_idx = index.saturating_add(col);
-            if cur_idx >= max_output {
-                return Err(Failure::limit("decoded stream exceeds limit"));
+    for row in data.chunks_mut(row_bytes) {
+        if layout.bits == 8 {
+            for col in layout.colors..row.len() {
+                let left = row
+                    .get(col.saturating_sub(layout.colors))
+                    .copied()
+                    .unwrap_or(0);
+                if let Some(slot) = row.get_mut(col) {
+                    *slot = slot.wrapping_add(left);
+                }
             }
-            let left = data.get(cur_idx.saturating_sub(1)).copied().unwrap_or(0);
-            let cur = data.get(cur_idx).copied().unwrap_or(0);
-            if let Some(slot) = data.get_mut(cur_idx) {
-                *slot = cur.wrapping_add(left);
-            }
+            continue;
         }
-        index = index.saturating_add(row_bytes);
+        let samples = layout.columns.saturating_mul(layout.colors).min(
+            row.len()
+                .saturating_mul(8)
+                .checked_div(layout.bits)
+                .unwrap_or(0),
+        );
+        for sample in layout.colors..samples {
+            let left = read_sample(row, sample.saturating_sub(layout.colors), layout.bits);
+            let current = read_sample(row, sample, layout.bits);
+            write_sample(row, sample, layout.bits, current.wrapping_add(left));
+        }
     }
-    Ok(())
 }
 
-fn png_predict(
-    data: &mut Vec<u8>,
-    row_bytes: usize,
-    predictor: i64,
-    max_output: usize,
-) -> Outcome<()> {
+fn read_sample(row: &[u8], sample: usize, bits: usize) -> u32 {
+    let first = sample.saturating_mul(bits);
+    (first..first.saturating_add(bits)).fold(0_u32, |value, bit| {
+        let byte = row.get(bit >> 3_u32).copied().unwrap_or(0);
+        let shift = 7_usize.saturating_sub(bit & 7);
+        (value << 1_u32) | u32::from((byte >> shift) & 1)
+    })
+}
+
+fn write_sample(row: &mut [u8], sample: usize, bits: usize, value: u32) {
+    let first = sample.saturating_mul(bits);
+    for (index, bit) in (first..first.saturating_add(bits)).enumerate() {
+        let shift = 7_usize.saturating_sub(bit & 7);
+        let from = bits.saturating_sub(1).saturating_sub(index);
+        let set = (value >> from) & 1 == 1;
+        if let Some(byte) = row.get_mut(bit >> 3_u32) {
+            *byte = (*byte & !(1_u8 << shift)) | (u8::from(set) << shift);
+        }
+    }
+}
+
+fn png_predict(data: &mut Vec<u8>, layout: Samples, max_output: usize) -> Outcome<()> {
+    let row_bytes = layout.row_bytes();
     if row_bytes == 0 {
         data.clear();
         return Ok(());
     }
+    let pixel = layout.pixel_bytes();
     let mut out = Vec::with_capacity(data.len());
     let mut pos = 0_usize;
     while pos < data.len() {
@@ -553,33 +602,24 @@ fn png_predict(
         let row = data
             .get(pos..row_end)
             .ok_or_else(|| Failure::invalid("png row"))?;
-        let prev_start = out.len().saturating_sub(row_bytes);
+        let row_start = out.len();
+        let above = row_start.checked_sub(row_bytes);
         for (col, &raw) in row.iter().enumerate() {
-            let up = if prev_start.saturating_add(col) < out.len() {
-                out.get(prev_start.saturating_add(col))
-                    .copied()
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let left = if col > 0 {
-                out.last().copied().unwrap_or(0)
-            } else {
-                0
-            };
-            let up_left = if col > 0 && prev_start.saturating_add(col) > prev_start {
-                out.get(prev_start.saturating_add(col).saturating_sub(1))
-                    .copied()
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let filter_type = if predictor == 15 {
-                filter
-            } else {
-                u8::try_from(predictor.saturating_sub(10)).unwrap_or(u8::MAX)
-            };
-            let value = paeth_filter(filter_type, raw, left, up, up_left);
+            let back = col.checked_sub(pixel);
+            let left = back
+                .and_then(|at| out.get(row_start.saturating_add(at)))
+                .copied()
+                .unwrap_or(0);
+            let up = above
+                .and_then(|start| out.get(start.saturating_add(col)))
+                .copied()
+                .unwrap_or(0);
+            let up_left = above
+                .zip(back)
+                .and_then(|(start, at)| out.get(start.saturating_add(at)))
+                .copied()
+                .unwrap_or(0);
+            let value = paeth_filter(filter, raw, left, up, up_left);
             if out.len() >= max_output {
                 return Err(Failure::limit("decoded stream exceeds limit"));
             }
@@ -642,9 +682,15 @@ const fn is_ws(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deflate::zlib_compress;
     use core::hint::black_box;
     use core::time::Duration;
     use std::time::Instant;
+
+    const LZW_EARLY_CHANGE: &[u8] = include_bytes!("../tests/fixtures/lzw_early_change.lzw");
+    const LZW_LATE_CHANGE: &[u8] = include_bytes!("../tests/fixtures/lzw_late_change.lzw");
+    const LZW_PLAIN: &[u8] = include_bytes!("../tests/fixtures/lzw_plain.bin");
+
     fn dict_filter(filter: &[u8], parms: Option<Object>) -> Dict {
         let mut dict = Dict::default();
         dict.insert(b"Filter", Object::Name(filter.to_vec()));
@@ -785,9 +831,12 @@ mod tests {
     fn lzw_roundtrip() {
         let mut dict = Dict::default();
         dict.insert(b"Filter", Object::Name(b"LZWDecode".to_vec()));
-        let data = [0x00_u8, 0x83, 0x08, 0x09, 0x08];
+        let data = [0x80_u8, 0x10, 0x48, 0x50, 0x10];
         let out = decode_stream(&dict, &data, 1024, None).expect("lzw");
         assert_eq!(out, b"AB");
+        let specification = [0x80_u8, 0x0B, 0x60, 0x50, 0x22, 0x0C, 0x0C, 0x85, 0x01];
+        let example = decode_stream(&dict, &specification, 1024, None).expect("lzw");
+        assert_eq!(example, b"-----A---B");
     }
 
     fn png_decode_stored(stored: &[u8], predictor: i64) -> Vec<u8> {
@@ -811,7 +860,7 @@ mod tests {
         let average = [
             0x78_u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe6, 0xe2, 0x00, 0x00, 0x00, 0xad, 0x00, 0x34,
         ];
-        assert_eq!(png_decode_stored(&average, 13), vec![10_u8, 25, 15, 28]);
+        assert_eq!(png_decode_stored(&average, 13), vec![10_u8, 20, 15, 25]);
         let paeth = [
             0x78_u8, 0x9c, 0x63, 0xe0, 0x12, 0x61, 0xe1, 0xe2, 0x06, 0x00, 0x00, 0xb3, 0x00, 0x38,
         ];
@@ -824,19 +873,76 @@ mod tests {
         assert_eq!(mixed_out, vec![10_u8, 20, 2, 10, 3, 16]);
     }
 
+    fn predicted(raw: &[u8], predictor: i64, colors: i64, bits: i64, columns: i64) -> Vec<u8> {
+        let mut dict = Dict::default();
+        dict.insert(b"Filter", Object::Name(b"FlateDecode".to_vec()));
+        let mut parms = Dict::default();
+        parms.insert(b"Predictor", Object::Integer(predictor));
+        parms.insert(b"Colors", Object::Integer(colors));
+        parms.insert(b"BitsPerComponent", Object::Integer(bits));
+        parms.insert(b"Columns", Object::Integer(columns));
+        dict.insert(b"DecodeParms", Object::Dict(parms));
+        decode_stream(&dict, &zlib_compress(raw), 1024, None).expect("predicted stream")
+    }
+
+    #[test]
+    fn png_predictor_steps_back_a_whole_pixel() {
+        let sub = [1_u8, 10, 20, 30, 1, 2, 3];
+        assert_eq!(
+            predicted(&sub, 11, 3, 8, 2),
+            vec![10_u8, 20, 30, 11, 22, 33]
+        );
+        let paeth = [0_u8, 10, 20, 30, 40, 50, 60, 4, 1, 1, 1, 1, 1, 1];
+        assert_eq!(
+            predicted(&paeth, 15, 3, 8, 2),
+            vec![10_u8, 20, 30, 40, 50, 60, 11, 21, 31, 41, 51, 61]
+        );
+    }
+
+    #[test]
+    fn png_paeth_first_row_has_no_upper_left_neighbour() {
+        assert_eq!(predicted(&[4, 5, 1, 1], 14, 1, 8, 3), vec![5_u8, 6, 7]);
+    }
+
+    #[test]
+    fn png_predictor_follows_each_row_tag() {
+        let rows = [1_u8, 5, 1, 2, 1, 1];
+        assert_eq!(predicted(&rows, 12, 1, 8, 2), vec![5_u8, 6, 6, 7]);
+    }
+
+    #[test]
+    fn tiff_predictor_adds_the_same_colour_component() {
+        let rgb = [10_u8, 20, 30, 1, 2, 3];
+        assert_eq!(predicted(&rgb, 2, 3, 8, 2), vec![10_u8, 20, 30, 11, 22, 33]);
+        let wide = [0x01_u8, 0xff, 0x00, 0x02];
+        assert_eq!(
+            predicted(&wide, 2, 1, 16, 2),
+            vec![0x01_u8, 0xff, 0x02, 0x01]
+        );
+        let nibbles = [0x31_u8, 0x11];
+        assert_eq!(predicted(&nibbles, 2, 1, 4, 4), vec![0x34_u8, 0x56]);
+    }
+
     #[test]
     fn lzw_early_change_and_code_width_transitions() {
-        let decode = |early: i64, data: &[u8]| -> Vec<u8> {
+        let attempt = |early: i64, data: &[u8]| -> Outcome<Vec<u8>> {
             let mut dict = Dict::default();
             dict.insert(b"Filter", Object::Name(b"LZWDecode".to_vec()));
             let mut parms = Dict::default();
             parms.insert(b"EarlyChange", Object::Integer(early));
             dict.insert(b"DecodeParms", Object::Dict(parms));
-            decode_stream(&dict, data, 1024, None).expect("lzw")
+            decode_stream(&dict, data, 1 << 16_u32, None)
         };
-        let short = [0x00_u8, 0x83, 0x08, 0x09, 0x08];
+        let decode = |early: i64, data: &[u8]| attempt(early, data).expect("lzw");
+        let short = [0x80_u8, 0x10, 0x48, 0x50, 0x10];
         assert_eq!(decode(1, &short), b"AB");
         assert_eq!(decode(0, &short), b"AB");
+        assert_eq!(decode(1, LZW_EARLY_CHANGE), LZW_PLAIN);
+        assert_eq!(decode(0, LZW_LATE_CHANGE), LZW_PLAIN);
+        assert_ne!(
+            attempt(0, LZW_EARLY_CHANGE).ok().as_deref(),
+            Some(LZW_PLAIN)
+        );
     }
 
     #[test]
@@ -866,5 +972,245 @@ mod tests {
         ));
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_secs(5), "inflate took {elapsed:?}");
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use crate::deflate::zlib_compress;
+    use proptest::prelude::*;
+
+    fn reference_paeth(a: u8, b: u8, c: u8) -> u8 {
+        let estimate = i32::from(a)
+            .wrapping_add(i32::from(b))
+            .wrapping_sub(i32::from(c));
+        let pa = estimate.wrapping_sub(i32::from(a)).unsigned_abs();
+        let pb = estimate.wrapping_sub(i32::from(b)).unsigned_abs();
+        let pc = estimate.wrapping_sub(i32::from(c)).unsigned_abs();
+        if pa <= pb && pa <= pc {
+            a
+        } else if pb <= pc {
+            b
+        } else {
+            c
+        }
+    }
+
+    fn predictor_dict(predictor: i64, colors: usize, bits: usize, columns: usize) -> Dict {
+        let mut parms = Dict::default();
+        parms.insert(b"Predictor", Object::Integer(predictor));
+        parms.insert(b"Colors", Object::Integer(i64::try_from(colors).unwrap()));
+        parms.insert(
+            b"BitsPerComponent",
+            Object::Integer(i64::try_from(bits).unwrap()),
+        );
+        parms.insert(b"Columns", Object::Integer(i64::try_from(columns).unwrap()));
+        let mut dict = Dict::default();
+        dict.insert(b"Filter", Object::Name(b"FlateDecode".to_vec()));
+        dict.insert(b"DecodeParms", Object::Dict(parms));
+        dict
+    }
+
+    fn png_encode(rows: &[Vec<u8>], tags: &[u8], pixel: usize) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        let empty = Vec::new();
+        for (index, (row, &tag)) in rows.iter().zip(tags).enumerate() {
+            let above = index
+                .checked_sub(1)
+                .map_or(&empty, |previous| &rows[previous]);
+            encoded.push(tag);
+            for (col, &value) in row.iter().enumerate() {
+                let back = col.checked_sub(pixel);
+                let left = back.map_or(0, |at| row[at]);
+                let up = above.get(col).copied().unwrap_or(0);
+                let up_left = back.and_then(|at| above.get(at)).copied().unwrap_or(0);
+                let prediction = match tag {
+                    1 => left,
+                    2 => up,
+                    3 => left.midpoint(up),
+                    4 => reference_paeth(left, up, up_left),
+                    _ => 0,
+                };
+                encoded.push(value.wrapping_sub(prediction));
+            }
+        }
+        encoded
+    }
+
+    fn get_sample(row: &[u8], index: usize, bits: usize) -> u32 {
+        let first = index.saturating_mul(bits);
+        (first..first.saturating_add(bits)).fold(0, |value, at| {
+            (value << 1_u32) | u32::from((row[at >> 3_u32] >> (7_usize.saturating_sub(at & 7))) & 1)
+        })
+    }
+
+    fn put_sample(row: &mut [u8], index: usize, bits: usize, value: u32) {
+        let first = index.saturating_mul(bits);
+        for (offset, at) in (first..first.saturating_add(bits)).enumerate() {
+            let shift = 7_usize.saturating_sub(at & 7);
+            let from = bits.saturating_sub(1).saturating_sub(offset);
+            let set = u8::from((value >> from) & 1 == 1);
+            row[at >> 3_u32] = (row[at >> 3_u32] & !(1_u8 << shift)) | (set << shift);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1_000))]
+
+        #[test]
+        fn png_predictors_invert_png_filtering(
+            colors in 1_usize..5,
+            columns in 1_usize..9,
+            seed in prop::collection::vec((0_u8..5, prop::collection::vec(any::<u8>(), 32)), 0..7),
+            predictor in 10_i64..16,
+        ) {
+            let width = colors.saturating_mul(columns);
+            let rows: Vec<Vec<u8>> = seed.iter().map(|(_, row)| row[..width].to_vec()).collect();
+            let tags: Vec<u8> = seed.iter().map(|(tag, _)| *tag).collect();
+            let encoded = png_encode(&rows, &tags, colors);
+            let dict = predictor_dict(predictor, colors, 8, columns);
+            let decoded = decode_stream(&dict, &zlib_compress(&encoded), 1 << 20_u32, None);
+            if rows.is_empty() {
+                prop_assert!(decoded.unwrap_or_default().is_empty());
+            } else {
+                prop_assert_eq!(decoded.unwrap(), rows.concat());
+            }
+        }
+
+        #[test]
+        fn tiff_predictor_inverts_tiff_differencing(
+            colors in 1_usize..5,
+            columns in 1_usize..9,
+            bits in prop::sample::select(vec![1_usize, 2, 4, 8, 16]),
+            seed in prop::collection::vec(prop::collection::vec(any::<u16>(), 32), 1..5),
+        ) {
+            let samples = colors.saturating_mul(columns);
+            let row_bytes = samples.saturating_mul(bits).div_ceil(8);
+            let mask = u32::try_from((1_u64 << bits).wrapping_sub(1)).unwrap();
+            let mut original = Vec::new();
+            let mut encoded = Vec::new();
+            for row_seed in &seed {
+                let mut plain = vec![0_u8; row_bytes];
+                let mut deltas = vec![0_u8; row_bytes];
+                for (index, &raw) in row_seed.iter().take(samples).enumerate() {
+                    let value = u32::from(raw) & mask;
+                    let left = index
+                        .checked_sub(colors)
+                        .map_or(0, |at| u32::from(row_seed[at]) & mask);
+                    put_sample(&mut plain, index, bits, value);
+                    put_sample(&mut deltas, index, bits, value.wrapping_sub(left) & mask);
+                }
+                original.push(plain);
+                encoded.extend(deltas);
+            }
+            let dict = predictor_dict(2, colors, bits, columns);
+            let decoded = decode_stream(&dict, &zlib_compress(&encoded), 1 << 20_u32, None).unwrap();
+            for (row, plain) in decoded.chunks(row_bytes).zip(&original) {
+                for index in 0..samples {
+                    prop_assert_eq!(get_sample(row, index, bits), get_sample(plain, index, bits));
+                }
+            }
+            prop_assert_eq!(decoded.len(), encoded.len());
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn reference_paeth(a: u8, b: u8, c: u8) -> u8 {
+        let estimate = i32::from(a) + i32::from(b) - i32::from(c);
+        let pa = (estimate - i32::from(a)).abs();
+        let pb = (estimate - i32::from(b)).abs();
+        let pc = (estimate - i32::from(c)).abs();
+        if pa <= pb && pa <= pc {
+            a
+        } else if pb <= pc {
+            b
+        } else {
+            c
+        }
+    }
+
+    #[kani::proof]
+    fn png_reconstruction_matches_the_png_specification() {
+        let (filter, raw, left, up, up_left): (u8, u8, u8, u8, u8) = kani::any();
+        let prediction = match filter {
+            1 => left,
+            2 => up,
+            3 => u8::try_from((u16::from(left) + u16::from(up)) / 2).unwrap(),
+            4 => reference_paeth(left, up, up_left),
+            _ => 0,
+        };
+        assert_eq!(
+            paeth_filter(filter, raw, left, up, up_left),
+            raw.wrapping_add(prediction)
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn packed_samples_round_trip_and_leave_neighbours_alone() {
+        let mut row: [u8; 3] = kani::any();
+        let before = row;
+        let bits = match kani::any::<u8>() {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            3 => 8,
+            _ => 16,
+        };
+        let sample: usize = kani::any();
+        kani::assume(sample < 24 / bits);
+        let value: u32 = kani::any();
+        write_sample(&mut row, sample, bits, value);
+        let mask = (1_u32 << bits) - 1;
+        assert_eq!(read_sample(&row, sample, bits), value & mask);
+        let other: usize = kani::any();
+        kani::assume(other < 24 / bits && other != sample);
+        assert_eq!(
+            read_sample(&row, other, bits),
+            read_sample(&before, other, bits)
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn ascii_hex_output_respects_its_budget() {
+        let data: [u8; 5] = kani::any();
+        let max_output: usize = kani::any();
+        kani::assume(max_output <= 4);
+        if let Ok(out) = ascii_hex_decode(&data, max_output) {
+            assert!(out.len() <= max_output);
+            assert!(out.len() <= 3);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn run_length_output_respects_its_budget() {
+        let data: [u8; 3] = kani::any();
+        let max_output: usize = kani::any();
+        kani::assume(max_output <= 3);
+        if let Ok(out) = run_length_decode(&data, max_output) {
+            assert!(out.len() <= max_output);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn ascii85_full_groups_decode_to_big_endian_words() {
+        let group: [u8; 5] = kani::any();
+        let mut expected = 0_u64;
+        for byte in group {
+            kani::assume((0x21..=0x75).contains(&byte));
+            expected = expected * 85 + u64::from(byte - 0x21);
+        }
+        kani::assume(expected <= u64::from(u32::MAX));
+        let mut out = Vec::new();
+        assert!(push_ascii85_group(&mut out, &group, false, 4).is_ok());
+        assert_eq!(out, u32::try_from(expected).unwrap().to_be_bytes());
     }
 }

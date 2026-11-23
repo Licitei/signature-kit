@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    signature_kit_pdf_core::fuzz_markdown(data);
+    signature_kit_pdf_core::fuzzing::markdown(data);
 });
