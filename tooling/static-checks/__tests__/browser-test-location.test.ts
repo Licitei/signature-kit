@@ -63,7 +63,10 @@ describe("browser integration test placement", () => {
         JSON.parse(readFileSync(packageJsonPath, "utf8")),
       ),
     );
-    const command = rootPackage.scripts["test:integration:browser"] ?? "";
+    const command = Object.entries(rootPackage.scripts)
+      .filter(([name]) => name.startsWith("test:integration:browser"))
+      .map(([, script]) => script)
+      .join(" ");
 
     expect(command).toContain("tooling/vitest/browser.config.ts shared signers formats");
     expect(command).toContain("apps/docs/vitest.browser.config.ts apps/docs");

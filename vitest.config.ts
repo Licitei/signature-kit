@@ -27,6 +27,7 @@ export default defineConfig({
     },
   },
   test: {
+    teardownTimeout: 2000,
     exclude: [...configDefaults.exclude, "**/*.live.test.*"],
   },
 });
