@@ -64,6 +64,7 @@ pub(crate) struct RenderSession {
     images: HashMap<ImageKey, Rc<Decoded>>,
     next_font: u32,
     outlines: HashMap<(u32, u16), Rc<PathData>>,
+    seen: HashSet<ImageKey>,
     spaces: HashMap<ObjRef, Rc<ColorSpace>>,
     stream_bytes: usize,
     streams: HashMap<ObjRef, Rc<[u8]>>,
@@ -412,25 +413,26 @@ impl GState {
 }
 
 impl Renderer<'_, '_> {
-    fn add_image(&mut self, decoded: &Decoded, interpolate: bool) -> ImageRef {
-        let (jpeg, raster) = match &decoded.image {
+    fn add_image(&mut self, decoded: Decoded, interpolate: bool) -> ImageRef {
+        let Decoded {
+            image,
+            mask: mask_pixels,
+            matte,
+        } = decoded;
+        let (jpeg, raster) = match image {
             Pixels::Jpeg(raster) => (true, raster),
             Pixels::Raster(raster) => (false, raster),
         };
-        let (mask_jpeg, mask_raster) = match &decoded.mask {
+        let (mask_jpeg, mask_raster) = match mask_pixels {
             Some(Pixels::Jpeg(inner)) => (true, Some(inner)),
             Some(Pixels::Raster(inner)) => (false, Some(inner)),
             None => (false, None),
         };
         let (mask, mask_width, mask_height) = mask_raster.map_or((NO_BLOB, 0, 0), |inner| {
-            (
-                self.list.blob(inner.pixels.clone()),
-                inner.width,
-                inner.height,
-            )
+            (self.list.blob(inner.pixels), inner.width, inner.height)
         });
         ImageRef {
-            blob: self.list.blob(raster.pixels.clone()),
+            blob: self.list.blob(raster.pixels),
             height: raster.height,
             interpolate,
             jpeg,
@@ -438,7 +440,7 @@ impl Renderer<'_, '_> {
             mask_height,
             mask_jpeg,
             mask_width,
-            matte: decoded.matte,
+            matte,
             width: raster.width,
         }
     }
@@ -769,7 +771,7 @@ impl Renderer<'_, '_> {
         if let Some(inner) = key
             && let Some(cached) = self.session.images.get(&inner).map(Rc::clone)
         {
-            let image = self.add_image(&cached, interpolate);
+            let image = self.add_image(Decoded::clone(&cached), interpolate);
             let _: Option<ImageRef> = self.images.insert(inner, image);
             self.list.image(&image, alpha);
             return;
@@ -812,15 +814,18 @@ impl Renderer<'_, '_> {
             self.list.op_u8(OP_FILL, RULE_NONZERO);
             return;
         };
-        let shared = Rc::new(found);
-        let image = self.add_image(&shared, interpolate);
+        let repeated = key.is_some_and(|inner| !self.session.seen.insert(inner));
+        let size = decoded_bytes(&found);
+        if let Some(inner) = key
+            && repeated
+            && self.session.image_bytes.saturating_add(size) <= MAX_CACHED_IMAGE_BYTES
+        {
+            self.session.image_bytes = self.session.image_bytes.saturating_add(size);
+            drop(self.session.images.insert(inner, Rc::new(found.clone())));
+        }
+        let image = self.add_image(found, interpolate);
         if let Some(inner) = key {
             let _: Option<ImageRef> = self.images.insert(inner, image);
-            let size = decoded_bytes(&shared);
-            if self.session.image_bytes.saturating_add(size) <= MAX_CACHED_IMAGE_BYTES {
-                self.session.image_bytes = self.session.image_bytes.saturating_add(size);
-                drop(self.session.images.insert(inner, shared));
-            }
         }
         self.list.image(&image, alpha);
     }

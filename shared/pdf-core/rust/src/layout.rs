@@ -10,7 +10,7 @@ use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
 use crate::markdown::{
     MdBlock, MdItem, MdLine, MdRun, Words, body_size, document_metrics, join_pages, page_blocks,
-    render_page,
+    push_run_text, render_page,
 };
 use crate::table::{
     Cell, Rule, Table, TableEdges, append_continuation, column_of, merge_row, render_text,
@@ -257,6 +257,23 @@ struct PageLayout {
     md: Vec<MdItem>,
     pieces: Vec<Piece>,
     tables: Vec<Table>,
+}
+
+impl PageLayout {
+    fn compact(&mut self) {
+        for item in &mut self.md {
+            if let MdItem::Line(line) = item {
+                line.runs.shrink_to_fit();
+                line.text.shrink_to_fit();
+            }
+        }
+        for piece in &mut self.pieces {
+            piece.text.shrink_to_fit();
+        }
+        self.md.shrink_to_fit();
+        self.pieces.shrink_to_fit();
+        self.tables.shrink_to_fit();
+    }
 }
 
 type LinkRect = ([f64; 4], usize);
@@ -1180,7 +1197,7 @@ fn push_md_line(items: &mut Vec<MdItem>, line: MdLine) {
     {
         last.x1 = line.x1;
         last.size = last.size.max(line.size);
-        last.runs.extend(line.runs);
+        last.append(line);
         return;
     }
     items.push(MdItem::Line(line));
@@ -1192,12 +1209,13 @@ fn md_line(
     extent: Option<[f64; 4]>,
     links: &[LinkRect],
 ) -> MdLine {
+    let mut text = String::new();
     let runs = segment
         .members
         .iter()
         .filter_map(|&index| frags.get(index))
         .map(|frag| MdRun {
-            text: frag.text.to_owned(),
+            text: push_run_text(&mut text, frag.text),
             x0: frag.x0,
             x1: frag.x1,
             size: frag.size,
@@ -1215,6 +1233,7 @@ fn md_line(
         .fold(0.0_f64, f64::max);
     MdLine {
         runs,
+        text,
         x0: segment.x0,
         x1: segment.x1,
         center: segment.center,
@@ -1728,6 +1747,7 @@ fn single_page(
                 }
             }
             layout.height = page.info.crop_box[3] - page.info.crop_box[1];
+            layout.compact();
             Ok(layout)
         }
         Err(failure) if failure.code == FailureCode::LimitExceeded => Err(failure),
@@ -2010,8 +2030,12 @@ fn markdown_pages(
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
     let words = Words::collect(layouts.iter().map(|layout| layout.md.as_slice()));
     let mut pages: Vec<Vec<MdBlock>> = layouts
-        .iter()
-        .map(|layout| page_blocks(&layout.md, Some(&layout.tables), metrics, &words))
+        .iter_mut()
+        .map(|layout| {
+            let blocks = page_blocks(&layout.md, Some(&layout.tables), metrics, &words);
+            layout.md = Vec::new();
+            blocks
+        })
         .collect();
     if options.merge_across_pages && pages.len() >= 2 {
         merge_tables(layouts, &pages, options.drop_running);

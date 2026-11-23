@@ -49,6 +49,7 @@ pub(crate) struct Tuning {
 
 #[derive(Debug)]
 pub(crate) struct Sparse {
+    complete: bool,
     missing: RefCell<Vec<Range<usize>>>,
     offsets: Vec<usize>,
     segments: Vec<Segment>,
@@ -87,25 +88,23 @@ impl Sparse {
         {
             return true;
         }
-        let mut segments = self.segments.drain(first..after);
-        let mut merged = match segments.next() {
-            Some(segment) if segment.start <= offset => segment,
-            Some(segment) => {
-                let mut merged = Segment {
-                    bytes: bytes.to_vec(),
-                    start: offset,
-                };
-                let overlap = end.saturating_sub(segment.start);
-                merged
-                    .bytes
-                    .extend_from_slice(segment.bytes.get(overlap..).unwrap_or_default());
-                merged
-            }
-            None => Segment {
+        let absorbed: Vec<Segment> = self.segments.drain(first..after).collect();
+        let last_end = absorbed.last().map_or(end, Segment::end).max(end);
+        let mut segments = absorbed.into_iter().peekable();
+        let mut merged = segments
+            .next_if(|segment| segment.start <= offset)
+            .unwrap_or(Segment {
                 bytes: Vec::new(),
                 start: offset,
-            },
+            });
+        let target = if self.complete && merged.start == 0 {
+            self.size
+        } else {
+            last_end
         };
+        merged
+            .bytes
+            .reserve_exact(target.saturating_sub(merged.end()));
         let overlap = merged.end().saturating_sub(offset);
         merged
             .bytes
@@ -239,7 +238,7 @@ impl Frontier {
                 continue;
             }
             let before = sparse.misses();
-            let object = document.load(reference)?;
+            let object = document.load_transient(reference)?;
             if sparse.misses() == before {
                 collect(&object, &mut self.pending);
             } else {
@@ -510,6 +509,7 @@ impl Lazy {
             next_section: None,
             render: false,
             sparse: Sparse {
+                complete: false,
                 missing: RefCell::new(Vec::new()),
                 offsets: Vec::new(),
                 segments: Vec::new(),
@@ -607,6 +607,7 @@ impl Lazy {
                 }
             }
             self.fallback = true;
+            self.sparse.complete = true;
             self.cache = DocumentCache::new();
             self.frontier = None;
             self.index = Index::default();
@@ -725,6 +726,37 @@ mod tests {
     use crate::failure::FailureCode;
     use crate::inspection::Limits;
     use crate::test_pdf::build;
+
+    #[test]
+    fn out_of_order_feeds_merge_into_one_exact_segment() {
+        let bytes: Vec<u8> = (0_u32..10_000)
+            .map(|index| u8::try_from(index.rem_euclid(251)).unwrap())
+            .collect();
+        let tuning = Tuning {
+            gap: 0,
+            probe: 128,
+            round_bytes: 2048,
+        };
+        for complete in [false, true] {
+            let mut lazy = Lazy::new(bytes.len(), tuning);
+            lazy.sparse.complete = complete;
+            for range in [
+                0..100,
+                5_000..6_000,
+                100..2_500,
+                9_000..10_000,
+                2_400..5_100,
+            ] {
+                assert!(lazy.feed(range.start, &bytes[range.clone()]));
+            }
+            assert_eq!(lazy.sparse.segments.len(), 2);
+            assert_eq!(lazy.sparse.bytes(0..6_000), Some(&bytes[..6_000]));
+            assert!(lazy.feed(6_000, &bytes[6_000..9_000]));
+            assert_eq!(lazy.sparse.segments.len(), 1);
+            assert_eq!(lazy.sparse.bytes(0..bytes.len()), Some(bytes.as_slice()));
+            assert!(lazy.sparse.segments[0].bytes.capacity() >= bytes.len());
+        }
+    }
 
     #[test]
     fn exact_selection_skips_unselected_leaf_resources() {

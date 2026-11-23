@@ -1,7 +1,8 @@
 use crate::inspection::LinkInfo;
 use crate::layout::Band;
-use crate::num::fold_string;
+use crate::num::{fold_string, widen};
 use crate::table::{Table, render_markdown};
+use core::ops::Range;
 
 const WORD_GAP: f64 = 0.12;
 const SPACE_EM: f64 = 0.28;
@@ -119,7 +120,7 @@ pub(crate) struct MdRun {
     pub italic: bool,
     pub link: Option<usize>,
     pub size: f64,
-    pub text: String,
+    pub text: Range<u32>,
     pub x0: f64,
     pub x1: f64,
 }
@@ -130,8 +131,26 @@ pub(crate) struct MdLine {
     pub center: f64,
     pub runs: Vec<MdRun>,
     pub size: f64,
+    pub text: String,
     pub x0: f64,
     pub x1: f64,
+}
+
+impl MdLine {
+    pub(crate) fn append(&mut self, other: Self) {
+        let shift = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
+        self.text.push_str(&other.text);
+        self.runs.extend(other.runs.into_iter().map(|run| MdRun {
+            text: run.text.start.saturating_add(shift)..run.text.end.saturating_add(shift),
+            ..run
+        }));
+    }
+
+    pub(crate) fn text_of(&self, run: &MdRun) -> &str {
+        self.text
+            .get(widen(run.text.start)..widen(run.text.end))
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -298,7 +317,7 @@ impl Words {
                 let right = line
                     .runs
                     .iter()
-                    .flat_map(|run| run.text.split_ascii_whitespace())
+                    .flat_map(|run| line.text_of(run).split_ascii_whitespace())
                     .next()
                     .map(word_core)
                     .unwrap_or_default();
@@ -317,7 +336,7 @@ impl Words {
             pending = line
                 .runs
                 .last()
-                .and_then(|run| run.text.split_ascii_whitespace().next_back())
+                .and_then(|run| line.text_of(run).split_ascii_whitespace().next_back())
                 .filter(|token| hyphen_end(token))
                 .map(word_core);
         }
@@ -329,7 +348,7 @@ impl Words {
         for line in md_lines(pages) {
             let last = line.runs.len().saturating_sub(1);
             for (position, run) in line.runs.iter().enumerate() {
-                let mut tokens = run.text.split_ascii_whitespace().peekable();
+                let mut tokens = line.text_of(run).split_ascii_whitespace().peekable();
                 while let Some(token) = tokens.next() {
                     if position == last
                         && tokens.peek().is_none()
@@ -484,7 +503,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
             above = Some(line);
             let mut chars = 0_usize;
             for run in &line.runs {
-                let count = run.text.len();
+                let count = line.text_of(run).len();
                 chars = chars.saturating_add(count);
                 for (slot, flag) in styled.iter_mut().zip([true, run.bold, run.italic]) {
                     if flag {
@@ -532,15 +551,15 @@ fn note_marker(line: &MdLine) -> bool {
     let (Some(first), Some(second)) = (line.runs.first(), line.runs.get(1)) else {
         return false;
     };
-    let mark = first.text.trim();
+    let mark = line.text_of(first).trim();
     let count = mark.chars().count();
     first.size <= SCRIPT_RATIO * second.size
         && (1..=MARKER_CHARS).contains(&count)
         && mark
             .chars()
             .all(|ch| ch.is_ascii_digit() || NOTE_MARKS.contains(&ch))
-        && second
-            .text
+        && line
+            .text_of(second)
             .trim_start()
             .chars()
             .next()
@@ -554,7 +573,7 @@ fn line_spans(line: &MdLine) -> Vec<Span> {
     for (position, run) in line.runs.iter().enumerate() {
         if let (Some(right), Some(last)) = (edge, spans.last_mut()) {
             let boundary = last.text.ends_with(char::is_whitespace)
-                || run.text.starts_with(char::is_whitespace);
+                || line.text_of(run).starts_with(char::is_whitespace);
             let gapped = run.x0 - right > WORD_GAP * run.size || (marked && position == 1);
             if gapped && !boundary {
                 last.text.push(' ');
@@ -564,10 +583,10 @@ fn line_spans(line: &MdLine) -> Vec<Span> {
             Some(last)
                 if (last.bold, last.italic, last.link) == (run.bold, run.italic, run.link) =>
             {
-                last.text.push_str(&run.text);
+                last.text.push_str(line.text_of(run));
             }
             _ => spans.push(Span {
-                text: run.text.clone(),
+                text: line.text_of(run).to_owned(),
                 bold: run.bold,
                 italic: run.italic,
                 link: run.link,
@@ -581,10 +600,10 @@ fn line_spans(line: &MdLine) -> Vec<Span> {
 fn x_after(line: &MdLine, chars: usize) -> f64 {
     let mut remaining = chars;
     for run in &line.runs {
-        if remaining == 0 && !run.text.is_empty() {
+        if remaining == 0 && !line.text_of(run).is_empty() {
             return run.x0;
         }
-        let count = run.text.chars().count();
+        let count = line.text_of(run).chars().count();
         if remaining < count {
             let share = f64::from(u32::try_from(remaining).unwrap_or(u32::MAX))
                 / f64::from(u32::try_from(count.max(1)).unwrap_or(u32::MAX));
@@ -862,7 +881,7 @@ fn first_word_width(line: &Prepared<'_>) -> f64 {
     let Some(run) = line.line.runs.first() else {
         return 0.0;
     };
-    let total = run.text.chars().count().max(1);
+    let total = line.line.text_of(run).chars().count().max(1);
     let word = line
         .plain
         .trim_start()
@@ -1531,7 +1550,11 @@ fn prepare(item: &MdItem, metrics: Metrics) -> Option<Prepared<'_>> {
     let mut weight = 0_usize;
     let mut typical = (line.size, 0_usize);
     for run in &line.runs {
-        let count = run.text.chars().filter(|ch| !ch.is_whitespace()).count();
+        let count = line
+            .text_of(run)
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .count();
         weight = weight.saturating_add(count);
         if count > typical.1 {
             typical = (run.size, count);
@@ -1986,6 +2009,12 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
     }
 }
 
+pub(crate) fn push_run_text(text: &mut String, piece: &str) -> Range<u32> {
+    let start = u32::try_from(text.len()).unwrap_or(u32::MAX);
+    text.push_str(piece);
+    start..u32::try_from(text.len()).unwrap_or(u32::MAX)
+}
+
 pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
     let mut out = String::new();
     let mut rendered = String::new();
@@ -2008,9 +2037,19 @@ pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
 mod tests {
     use super::*;
 
-    fn run(text: &str, x0: f64, bold: bool) -> MdRun {
+    struct TestRun {
+        bold: bool,
+        italic: bool,
+        link: Option<usize>,
+        size: f64,
+        text: String,
+        x0: f64,
+        x1: f64,
+    }
+
+    fn run(text: &str, x0: f64, bold: bool) -> TestRun {
         let width = 5.0_f64 * f64::from(u32::try_from(text.chars().count()).unwrap());
-        MdRun {
+        TestRun {
             text: text.to_owned(),
             x0,
             x1: x0 + width,
@@ -2021,17 +2060,35 @@ mod tests {
         }
     }
 
-    fn line(runs: Vec<MdRun>, center: f64) -> MdItem {
-        let x0 = runs.first().unwrap().x0;
-        let x1 = runs.last().unwrap().x1;
-        MdItem::Line(MdLine {
+    fn md_line_of(parts: Vec<TestRun>, center: f64, size: f64) -> MdLine {
+        let x0 = parts.first().unwrap().x0;
+        let x1 = parts.last().unwrap().x1;
+        let mut text = String::new();
+        let runs = parts
+            .into_iter()
+            .map(|part| MdRun {
+                text: push_run_text(&mut text, &part.text),
+                x0: part.x0,
+                x1: part.x1,
+                size: part.size,
+                bold: part.bold,
+                italic: part.italic,
+                link: part.link,
+            })
+            .collect();
+        MdLine {
             runs,
+            text,
             x0,
             x1,
             center,
-            size: 10.0,
+            size,
             band: Band::Free,
-        })
+        }
+    }
+
+    fn line(runs: Vec<TestRun>, center: f64) -> MdItem {
+        MdItem::Line(md_line_of(runs, center, 10.0))
     }
 
     fn render(items: &[MdItem]) -> String {
@@ -2355,17 +2412,14 @@ mod tests {
     fn body_size_is_the_weighted_median() {
         let items = [
             line(vec![run("corpo de texto longo", 0.0, false)], 100.0),
-            MdItem::Line(MdLine {
-                runs: vec![MdRun {
+            MdItem::Line(md_line_of(
+                vec![TestRun {
                     size: 20.0,
                     ..run("T", 0.0, true)
                 }],
-                x0: 0.0,
-                x1: 5.0,
-                center: 120.0,
-                size: 20.0,
-                band: Band::Free,
-            }),
+                120.0,
+                20.0,
+            )),
         ];
         assert!((document_metrics([items.as_slice()]).body - 10.0).abs() < 1e-9_f64);
         let empty = document_metrics([[].as_slice()]);
@@ -2431,11 +2485,12 @@ mod properties {
                 italic: false,
                 link: None,
                 size: 10.0,
-                text: text.to_owned(),
+                text: 0..u32::try_from(text.len()).unwrap(),
                 x0: 0.0,
                 x1: 100.0,
             }],
             size: 10.0,
+            text: text.to_owned(),
             x0: 0.0,
             x1: 100.0,
         })
