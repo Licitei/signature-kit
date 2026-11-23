@@ -582,7 +582,7 @@ fn png_predict(data: &mut Vec<u8>, layout: Samples, max_output: usize) -> Outcom
         return Ok(());
     }
     let pixel = layout.pixel_bytes();
-    let mut out = Vec::with_capacity(data.len());
+    let mut written = 0_usize;
     let mut pos = 0_usize;
     while pos < data.len() {
         let filter = *data
@@ -591,48 +591,78 @@ fn png_predict(data: &mut Vec<u8>, layout: Samples, max_output: usize) -> Outcom
         pos = pos.saturating_add(1);
         let row_end = pos.saturating_add(row_bytes);
         if row_end > data.len() {
-            return if out.is_empty() {
-                Err(Failure::invalid("truncated png predictor row"))
-            } else if out.len() > max_output {
-                Err(Failure::limit("decoded stream exceeds limit"))
-            } else {
-                *data = out;
-                Ok(())
-            };
-        }
-        let row = data
-            .get(pos..row_end)
-            .ok_or_else(|| Failure::invalid("png row"))?;
-        let row_start = out.len();
-        let above = row_start.checked_sub(row_bytes);
-        for (col, &raw) in row.iter().enumerate() {
-            let back = col.checked_sub(pixel);
-            let left = back
-                .and_then(|at| out.get(row_start.saturating_add(at)))
-                .copied()
-                .unwrap_or(0);
-            let up = above
-                .and_then(|start| out.get(start.saturating_add(col)))
-                .copied()
-                .unwrap_or(0);
-            let up_left = above
-                .zip(back)
-                .and_then(|(start, at)| out.get(start.saturating_add(at)))
-                .copied()
-                .unwrap_or(0);
-            let value = paeth_filter(filter, raw, left, up, up_left);
-            if out.len() >= max_output {
-                return Err(Failure::limit("decoded stream exceeds limit"));
+            if written == 0 {
+                return Err(Failure::invalid("truncated png predictor row"));
             }
-            out.push(value);
+            break;
         }
+        let next = written.saturating_add(row_bytes);
+        if next > max_output {
+            return Err(Failure::limit("decoded stream exceeds limit"));
+        }
+        data.copy_within(pos..row_end, written);
+        let (done, rest) = data.split_at_mut(written);
+        let row = rest
+            .get_mut(..row_bytes)
+            .ok_or_else(|| Failure::invalid("png row"))?;
+        let above = done
+            .get(written.saturating_sub(row_bytes)..)
+            .filter(|_| written > 0);
+        unfilter_row(filter, row, above, pixel);
+        written = next;
         pos = row_end;
     }
-    if out.len() > max_output {
-        return Err(Failure::limit("decoded stream exceeds limit"));
-    }
-    *data = out;
+    data.truncate(written);
     Ok(())
+}
+
+pub(crate) fn unfilter_row(filter: u8, row: &mut [u8], above: Option<&[u8]>, pixel: usize) {
+    match (filter, above) {
+        (1, _) | (4, None) => {
+            for index in pixel..row.len() {
+                let left = row.get(index.saturating_sub(pixel)).copied().unwrap_or(0);
+                if let Some(cell) = row.get_mut(index) {
+                    *cell = cell.wrapping_add(left);
+                }
+            }
+        }
+        (2, Some(up_row)) => {
+            for (cell, &up) in row.iter_mut().zip(up_row) {
+                *cell = cell.wrapping_add(up);
+            }
+        }
+        (3, _) => {
+            for index in 0..row.len() {
+                let left = index
+                    .checked_sub(pixel)
+                    .and_then(|at| row.get(at))
+                    .copied()
+                    .unwrap_or(0);
+                let up = above
+                    .and_then(|up_row| up_row.get(index))
+                    .copied()
+                    .unwrap_or(0);
+                if let Some(cell) = row.get_mut(index) {
+                    *cell = cell.wrapping_add(avg(left, up));
+                }
+            }
+        }
+        (4, Some(up_row)) => {
+            for (cell, &up) in row.iter_mut().zip(up_row).take(pixel) {
+                *cell = cell.wrapping_add(paeth(0, up, 0));
+            }
+            for index in pixel..row.len() {
+                let back = index.saturating_sub(pixel);
+                let left = row.get(back).copied().unwrap_or(0);
+                let up = up_row.get(index).copied().unwrap_or(0);
+                let up_left = up_row.get(back).copied().unwrap_or(0);
+                if let Some(cell) = row.get_mut(index) {
+                    *cell = cell.wrapping_add(paeth(left, up, up_left));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(crate) fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -> u8 {
