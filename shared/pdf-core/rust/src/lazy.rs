@@ -320,13 +320,9 @@ impl Frontier {
         reference: ObjRef,
         parent: Rc<Object>,
     ) -> Outcome<Option<(ObjRef, Rc<Object>)>> {
-        if !self.scanned.insert(reference.number) {
-            return Ok(None);
-        }
         let before = sparse.misses();
         let object = document.load_transient(reference)?;
         if sparse.misses() != before {
-            let _: bool = self.scanned.remove(&reference.number);
             return Ok(Some((reference, parent)));
         }
         if let Object::Stream(stream) = &*object
@@ -414,8 +410,7 @@ impl Frontier {
         let Some(content) = data else {
             return Ok(true);
         };
-        let names = invoked_names(&content);
-        if names.is_empty() {
+        if find_bytes(&content, 0, b"Do").is_none() {
             return Ok(true);
         }
         let resources = match &job.source {
@@ -444,13 +439,13 @@ impl Frontier {
         let Some(dict) = table.as_dict() else {
             return Ok(true);
         };
-        for name in names {
+        invoked_names(&content, |name| {
             if let Some(&Object::Ref(reference)) = dict.get(name)
-                && !self.scanned.contains(&reference.number)
+                && self.scanned.insert(reference.number)
             {
                 self.xobjects.push((reference, Rc::clone(&resources)));
             }
-        }
+        });
         Ok(true)
     }
 
@@ -931,8 +926,7 @@ fn linearized_first_page(bytes: &[u8], size: usize, limits: &Limits) -> Option<(
     Some((end, page))
 }
 
-fn invoked_names(data: &[u8]) -> Vec<&[u8]> {
-    let mut names = Vec::new();
+fn invoked_names(data: &[u8], mut visit: impl FnMut(&[u8])) {
     let mut at = 0_usize;
     while let Some(found) = find_bytes(data, at, b"Do") {
         at = found.saturating_add(2);
@@ -958,10 +952,9 @@ fn invoked_names(data: &[u8]) -> Vec<&[u8]> {
         if let Some((&b'/', name)) = word.get(slash..).and_then(<[u8]>::split_first)
             && !name.is_empty()
         {
-            names.push(name);
+            visit(name);
         }
     }
-    names
 }
 
 fn references(dict: &Dict, refs: &mut Vec<ObjRef>) {
@@ -1192,12 +1185,17 @@ mod tests {
 
     #[test]
     fn invoked_names_reads_names_before_do_operators() {
+        let names = |data: &[u8]| {
+            let mut found: Vec<Vec<u8>> = Vec::new();
+            invoked_names(data, |name| found.push(name.to_vec()));
+            found
+        };
         assert_eq!(
-            invoked_names(b"q /Im0 Do Q\n/Fm1\nDo /Domain 1 Tf (Do) Tj /Fm2 Do"),
-            vec![b"Im0".as_slice(), b"Fm1", b"Fm2"]
+            names(b"q /Im0 Do Q\n/Fm1\nDo /Domain 1 Tf (Do) Tj /Fm2 Do"),
+            vec![b"Im0".to_vec(), b"Fm1".to_vec(), b"Fm2".to_vec()]
         );
-        assert_eq!(invoked_names(b"Do /A Do Do"), vec![b"A".as_slice()]);
-        assert_eq!(invoked_names(b"BT (x) Tj ET"), Vec::<&[u8]>::new());
+        assert_eq!(names(b"Do /A Do Do"), vec![b"A".to_vec()]);
+        assert_eq!(names(b"BT (x) Tj ET"), Vec::<Vec<u8>>::new());
     }
 
     #[test]
