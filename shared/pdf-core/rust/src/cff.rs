@@ -1,9 +1,9 @@
-use crate::display::PathData;
+use crate::display::{PathData, multiply};
 use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
 use crate::glyph::charge;
 use crate::inflate::inflate;
-use crate::num::{f64_to_f32, f64_to_i64, parse_decimal};
+use crate::num::{f64_to_f32, f64_to_i64, parse_decimal, read_u16, read_u32};
 use core::array;
 use core::mem;
 use std::sync::OnceLock;
@@ -1051,19 +1051,6 @@ fn read_fd_select(bytes: &[u8], offset: usize, glyph_count: usize) -> Option<Vec
     }
 }
 
-fn multiply(first: &[f64; 6], second: &[f64; 6]) -> [f64; 6] {
-    let [a1, b1, c1, d1, e1, f1] = *first;
-    let [a2, b2, c2, d2, e2, f2] = *second;
-    [
-        a1 * a2 + b1 * c2,
-        a1 * b2 + b1 * d2,
-        c1 * a2 + d1 * c2,
-        c1 * b2 + d1 * d2,
-        e1 * a2 + f1 * c2 + e2,
-        e1 * b2 + f1 * d2 + f2,
-    ]
-}
-
 const fn subr_bias(count: usize) -> usize {
     if count < 1240 {
         107
@@ -1086,18 +1073,6 @@ fn read_offset(bytes: &[u8], position: usize, size: usize) -> Option<usize> {
         value = (value << 8_i32) | usize::from(*bytes.get(position.checked_add(step)?)?);
     }
     Some(value)
-}
-
-fn read_u16(bytes: &[u8], position: usize) -> Option<u16> {
-    let high = u16::from(*bytes.get(position)?);
-    let low = u16::from(*bytes.get(position.checked_add(1)?)?);
-    Some((high << 8) | low)
-}
-
-fn read_u32(bytes: &[u8], position: usize) -> Option<u32> {
-    let high = u32::from(read_u16(bytes, position)?);
-    let low = u32::from(read_u16(bytes, position.checked_add(2)?)?);
-    Some((high << 16) | low)
 }
 
 #[cfg(test)]

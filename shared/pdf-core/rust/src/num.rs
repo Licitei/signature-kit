@@ -1,3 +1,5 @@
+use core::cmp::Ordering;
+
 const _: () = assert!(
     usize::BITS >= u32::BITS,
     "usize must be at least 32 bits wide"
@@ -118,6 +120,23 @@ pub(crate) const fn unit_to_u8(value: f64) -> u8 {
 
 pub(crate) const fn bounded(value: f64, low: f64, high: f64) -> f64 {
     value.max(low).min(high)
+}
+
+pub(crate) fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let high = u16::from(*bytes.get(offset)?);
+    let low = u16::from(*bytes.get(offset.checked_add(1)?)?);
+    Some((high << 8) | low)
+}
+
+pub(crate) fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let high = u32::from(read_u16(bytes, offset)?);
+    let low = u32::from(read_u16(bytes, offset.checked_add(2)?)?);
+    Some((high << 16) | low)
+}
+
+#[inline(never)]
+pub(crate) fn sort_unstable_with<T>(items: &mut [T], compare: &dyn Fn(&T, &T) -> Ordering) {
+    items.sort_unstable_by(|left, right| compare(left, right));
 }
 
 pub(crate) fn parse_decimal(text: &[u8]) -> Option<f64> {

@@ -6,7 +6,7 @@ use crate::deflate::zlib_compress;
 use crate::document::{Document, Page, decode_text_string};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::{Limits, PageInfo};
-use crate::num::{f64_to_i64, unsigned_decimal, widen};
+use crate::num::{f64_to_i64, sort_unstable_with, unsigned_decimal, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
 use crate::png::{self, Image};
 use crate::revision::revision_complete;
@@ -901,7 +901,7 @@ fn first_unused_field_name(
             }
         }
     }
-    taken.sort_unstable();
+    sort_unstable_with(&mut taken, &Ord::cmp);
     let mut suffix = 1_u64;
     for [value, ..] in taken {
         if value == suffix {

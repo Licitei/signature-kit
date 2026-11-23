@@ -1,7 +1,7 @@
 use crate::failure::{Failure, Outcome};
 use crate::filters::paeth_filter;
 use crate::inflate::inflate;
-use crate::num::widen;
+use crate::num::{read_u32, widen};
 
 const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 const MAX_INPUT: usize = 16 * 1024 * 1024;
@@ -438,9 +438,7 @@ fn be_u16(data: &[u8], at: usize) -> u16 {
 }
 
 fn be_u32(data: &[u8], at: usize) -> u32 {
-    data.get(at..at.saturating_add(4))
-        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-        .map_or(0, u32::from_be_bytes)
+    read_u32(data, at).unwrap_or(0)
 }
 
 fn extent(length: u32, start: u32, step: u32) -> u32 {

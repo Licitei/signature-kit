@@ -121,6 +121,9 @@ impl PageRequest<Vec<u32>> {
     }
 }
 
+type PageVisitor<'visit> =
+    dyn FnMut(usize, Option<ObjRef>, &Dict, &Inherited) -> Outcome<()> + 'visit;
+
 #[derive(Clone, Default)]
 struct Inherited {
     crop_box: Option<Rc<Object>>,
@@ -721,7 +724,7 @@ impl<'data> Document<'data> {
             && !self.repaired.get()
             && self.rebuild().is_ok()
         {
-            let _: usize = self.walk_pages(None, collect)?;
+            let _: usize = self.walk_pages(None, &mut collect)?;
         }
         Ok(pages)
     }
@@ -1019,7 +1022,7 @@ impl<'data> Document<'data> {
         stop_after: Option<usize>,
     ) -> Outcome<(usize, Vec<(usize, Page)>)> {
         let mut chosen: HashMap<_, _> = indexes.iter().map(|&index| (widen(index), None)).collect();
-        let count = self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
             if let Some(page) = chosen.get_mut(&index) {
                 *page = Some(self.page(obj_ref, dict, inherited)?);
             }
@@ -1306,11 +1309,7 @@ impl<'data> Document<'data> {
         self.pending_reads() != 0
     }
 
-    fn walk_pages(
-        &self,
-        stop_after: Option<usize>,
-        mut visit: impl FnMut(usize, Option<ObjRef>, &Dict, &Inherited) -> Outcome<()>,
-    ) -> Outcome<usize> {
+    fn walk_pages(&self, stop_after: Option<usize>, visit: &mut PageVisitor<'_>) -> Outcome<usize> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
@@ -1399,7 +1398,7 @@ impl<'data> Document<'data> {
             return self.requested_pages(indexes, stop_after);
         }
         let mut pages = Vec::new();
-        let count = self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
             if stop_after.is_none_or(|limit| index < limit) {
                 pages.push((index, self.page(obj_ref, dict, inherited)?));
             }

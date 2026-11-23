@@ -258,3 +258,16 @@ impl DisplayList {
         self.ops.extend_from_slice(&value.to_le_bytes());
     }
 }
+
+pub(crate) fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
+    let [a1, b1, c1, d1, e1, f1] = *first;
+    let [a2, b2, c2, d2, e2, f2] = *second;
+    [
+        a1 * a2 + b1 * c2,
+        a1 * b2 + b1 * d2,
+        c1 * a2 + d1 * c2,
+        c1 * b2 + d1 * d2,
+        e1 * a2 + f1 * c2 + e2,
+        e1 * b2 + f1 * d2 + f2,
+    ]
+}

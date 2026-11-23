@@ -12,7 +12,7 @@ use crate::document::{
 };
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::num::widen;
+use crate::num::{sort_unstable_with, widen};
 use crate::object::{Dict, ObjRef, Object};
 use crate::syntax::{keyword_at, parse_indirect_object, parse_object_header, skip_whitespace_at};
 
@@ -132,7 +132,7 @@ impl Sparse {
     }
 
     fn plan_ranges(&self, mut wanted: Vec<Range<usize>>, read_ahead: bool) -> Plan {
-        wanted.sort_unstable_by_key(|range| range.start);
+        sort_unstable_with(&mut wanted, &|left, right| left.start.cmp(&right.start));
         let gap = self
             .tuning
             .gap
@@ -489,7 +489,7 @@ impl Lazy {
         if self.index.table.is_empty() {
             return Some(Plan::Fallback);
         }
-        self.sparse.offsets.sort_unstable();
+        sort_unstable_with(&mut self.sparse.offsets, &Ord::cmp);
         self.sparse.offsets.dedup();
         self.indexed = true;
         None

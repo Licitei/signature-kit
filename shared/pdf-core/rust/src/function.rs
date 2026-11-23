@@ -1,5 +1,5 @@
 use crate::num::{bounded, f64_to_i64, f64_to_usize, i64_to_f64, parse_decimal, usize_to_f64};
-use crate::object::{Dict, Object, Resolver};
+use crate::object::{Dict, Object, Resolver, numbers};
 use core::f64::consts::{FRAC_PI_2, LN_10, PI};
 use core::ops::{Deref, DerefMut};
 
@@ -391,17 +391,6 @@ impl BitReader<'_> {
 fn pair(values: &[f64], index: usize) -> Option<(f64, f64)> {
     let start = index.checked_mul(2)?;
     Some((*values.get(start)?, *values.get(start.checked_add(1)?)?))
-}
-
-fn numbers(resolver: &dyn Resolver, dict: &Dict, key: &[u8]) -> Vec<f64> {
-    dict.get(key)
-        .and_then(|value| resolver.resolve(value).ok())
-        .and_then(|value| {
-            value
-                .as_array()
-                .map(|items| items.iter().filter_map(Object::as_number).collect())
-        })
-        .unwrap_or_default()
 }
 
 fn number(resolver: &dyn Resolver, dict: &Dict, key: &[u8]) -> Option<f64> {

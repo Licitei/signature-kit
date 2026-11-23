@@ -6,7 +6,7 @@ use crate::deflate::zlib_compress;
 use crate::document::{Document, Page};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::num::{f64_to_i64, widen};
+use crate::num::{f64_to_i64, sort_unstable_with, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
 use crate::syntax::{is_delimiter, is_whitespace};
 
@@ -137,7 +137,7 @@ impl Written {
                 ]
             })
             .collect();
-        order.sort_unstable();
+        sort_unstable_with(&mut order, &Ord::cmp);
         self.entries = order
             .iter()
             .filter_map(|key| self.entries.get(usize::try_from(key[1]).ok()?).copied())

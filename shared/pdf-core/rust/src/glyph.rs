@@ -1,6 +1,6 @@
-use crate::display::{Matrix, PathData};
+use crate::display::{Matrix, PathData, multiply};
 use crate::font_tables::{BuiltinEncoding, encoding_glyph_name};
-use crate::num::{f64_to_f32, f64_to_usize, parse_decimal, widen};
+use crate::num::{f64_to_f32, f64_to_usize, parse_decimal, read_u16, widen};
 use core::str;
 
 const MAX_COMPONENT_DEPTH: usize = 8;
@@ -155,7 +155,11 @@ impl Outline<'_> {
                 local[3] = f2dot14(data, position.checked_add(6)?)?;
                 position = position.checked_add(8)?;
             }
-            self.glyph(component, &compose(&local, matrix), depth.saturating_add(1))?;
+            self.glyph(
+                component,
+                &multiply(&local, matrix),
+                depth.saturating_add(1),
+            )?;
             if flags & 0x0020 == 0 {
                 break;
             }
@@ -539,13 +543,6 @@ pub(crate) const fn charge(work: &mut usize, amount: usize) -> Option<()> {
     Some(())
 }
 
-fn read_u16(data: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([
-        *data.get(at)?,
-        *data.get(at.checked_add(1)?)?,
-    ]))
-}
-
 fn read_i16(data: &[u8], at: usize) -> Option<i16> {
     read_u16(data, at).map(u16::cast_signed)
 }
@@ -559,19 +556,6 @@ fn transform(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
         x * matrix[0] + y * matrix[2] + matrix[4],
         x * matrix[1] + y * matrix[3] + matrix[5],
     )
-}
-
-fn compose(inner: &Matrix, outer: &Matrix) -> Matrix {
-    let [a1, b1, c1, d1, e1, f1] = *inner;
-    let [a2, b2, c2, d2, e2, f2] = *outer;
-    [
-        a1 * a2 + b1 * c2,
-        a1 * b2 + b1 * d2,
-        c1 * a2 + d1 * c2,
-        c1 * b2 + d1 * d2,
-        e1 * a2 + f1 * c2 + e2,
-        e1 * b2 + f1 * d2 + f2,
-    ]
 }
 
 fn read_coordinates(

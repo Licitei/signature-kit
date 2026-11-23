@@ -157,3 +157,15 @@ pub(crate) trait Resolver {
         self.stream_data(stream)
     }
 }
+
+pub(crate) fn object_numbers(object: Option<&Object>) -> Vec<f64> {
+    object
+        .and_then(Object::as_array)
+        .map(|items| items.iter().filter_map(Object::as_number).collect())
+        .unwrap_or_default()
+}
+
+pub(crate) fn numbers(resolver: &dyn Resolver, dict: &Dict, key: &[u8]) -> Vec<f64> {
+    let found = dict.get(key).and_then(|value| resolver.resolve(value).ok());
+    object_numbers(found.as_deref())
+}

@@ -1,6 +1,6 @@
 use crate::markdown::reflow_lines;
-use crate::num::usize_to_f64;
 use crate::num::widen;
+use crate::num::{sort_unstable_with, usize_to_f64};
 use core::mem::take;
 use std::collections::HashMap;
 
@@ -230,15 +230,15 @@ impl Edges<'_> {
 }
 
 fn sort_lines_by_major(lines: &mut [[f64; 3]]) {
-    lines.sort_unstable_by(|left, right| left[0].total_cmp(&right[0]));
+    sort_unstable_with(lines, &|left, right| left[0].total_cmp(&right[0]));
 }
 
 fn sort_lines_by_minor(lines: &mut [[f64; 3]]) {
-    lines.sort_unstable_by(|left, right| left[1].total_cmp(&right[1]));
+    sort_unstable_with(lines, &|left, right| left[1].total_cmp(&right[1]));
 }
 
 fn cluster(mut values: Vec<f64>) -> Vec<f64> {
-    values.sort_unstable_by(f64::total_cmp);
+    sort_unstable_with(&mut values, &f64::total_cmp);
     let mut levels: Vec<f64> = Vec::new();
     let mut sum = 0.0_f64;
     let mut count = 0_usize;
@@ -383,7 +383,7 @@ pub(crate) fn ruled_grids(lines: &[Rule]) -> Vec<Grid> {
         }
     }
     let mut ordered: Vec<(Vec<usize>, Vec<usize>)> = groups.into_values().collect();
-    ordered.sort_unstable_by(|a, b| {
+    sort_unstable_with(&mut ordered, &|a, b| {
         let key = |group: &(Vec<usize>, Vec<usize>)| {
             group.0.first().copied().unwrap_or(usize::MAX).min(
                 group.1.first().map_or(usize::MAX, |&vertical_index| {
@@ -510,7 +510,7 @@ pub(crate) fn merge_row(columns: &[(f64, f64)], spans: &[(f64, f64)]) -> Option<
             _ => return None,
         }
     }
-    next.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    sort_unstable_with(&mut next, &|a, b| a.0.total_cmp(&b.0));
     if next.windows(2).any(|pair| match pair {
         [left, right] => left.1 > right.0,
         _ => false,

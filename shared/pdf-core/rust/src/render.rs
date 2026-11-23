@@ -2,7 +2,7 @@ use crate::color::ColorSpace;
 use crate::display::{
     DisplayList, Gradient, ImageRef, Matrix, NO_BLOB, OP_BLEND, OP_CLIP, OP_FILL, OP_FILL_GRADIENT,
     OP_LINE_CAP, OP_LINE_JOIN, OP_LINE_WIDTH, OP_MITER, OP_RESTORE, OP_SAVE, OP_SHADE, OP_STROKE,
-    OP_STROKE_GRADIENT, OP_TEXT_CLIP, PathData,
+    OP_STROKE_GRADIENT, OP_TEXT_CLIP, PathData, multiply,
 };
 use crate::document::{Document, Page, PageRequest, borrow_pages};
 use crate::failure::{Failure, Outcome};
@@ -11,9 +11,10 @@ use crate::font::{Font, Glyph};
 use crate::image::{Decoded, ImageContext, ImageInput, Pixels, decode_image, image_filter};
 use crate::inspection::Limits;
 use crate::num::{bounded, f64_to_i64, f64_to_usize, unit_to_u8};
-use crate::object::{Dict, ObjRef, Object, Resolver as _, Stream};
+use crate::object::{Dict, ObjRef, Object, Resolver as _, Stream, object_numbers};
 use crate::shading::{GradientPaint, Shading, parse_shading};
 use crate::syntax::{ContentLexer, ContentToken, Operand};
+use crate::text::tail_numbers;
 use alloc::rc::Rc;
 use core::mem;
 use core::ops::Deref;
@@ -1124,13 +1125,13 @@ impl Renderer<'_, '_> {
     ) -> bool {
         match code {
             b"m" => {
-                if let Some([x, y]) = numbers::<2>(operands) {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
                     path.move_to(x, y);
                     *current = (x, y);
                 }
             }
             b"l" => {
-                if let Some([x, y]) = numbers::<2>(operands) {
+                if let Some([x, y]) = tail_numbers::<2, _>(operands) {
                     if path.is_empty() {
                         path.move_to(current.0, current.1);
                     }
@@ -1139,7 +1140,7 @@ impl Renderer<'_, '_> {
                 }
             }
             b"c" => {
-                if let Some(points) = numbers::<6>(operands) {
+                if let Some(points) = tail_numbers::<6, _>(operands) {
                     if path.is_empty() {
                         path.move_to(current.0, current.1);
                     }
@@ -1148,7 +1149,7 @@ impl Renderer<'_, '_> {
                 }
             }
             b"v" => {
-                if let Some([x2, y2, x3, y3]) = numbers::<4>(operands) {
+                if let Some([x2, y2, x3, y3]) = tail_numbers::<4, _>(operands) {
                     if path.is_empty() {
                         path.move_to(current.0, current.1);
                     }
@@ -1157,7 +1158,7 @@ impl Renderer<'_, '_> {
                 }
             }
             b"y" => {
-                if let Some([x1, y1, x3, y3]) = numbers::<4>(operands) {
+                if let Some([x1, y1, x3, y3]) = tail_numbers::<4, _>(operands) {
                     if path.is_empty() {
                         path.move_to(current.0, current.1);
                     }
@@ -1167,7 +1168,7 @@ impl Renderer<'_, '_> {
             }
             b"h" => path.close(),
             b"re" => {
-                if let Some([x, y, width, height]) = numbers::<4>(operands) {
+                if let Some([x, y, width, height]) = tail_numbers::<4, _>(operands) {
                     path.rect(x, y, width, height);
                     *current = (x, y);
                 }
@@ -1321,27 +1322,27 @@ impl Renderer<'_, '_> {
                     }
                 }
                 b"cm" => {
-                    if let Some(matrix) = numbers::<6>(&operands) {
+                    if let Some(matrix) = tail_numbers::<6, _>(&operands) {
                         state.ctm = multiply(&matrix, &state.ctm);
                     }
                 }
                 b"w" => {
-                    if let Some([width]) = numbers::<1>(&operands) {
+                    if let Some([width]) = tail_numbers::<1, _>(&operands) {
                         state.line_width = width;
                     }
                 }
                 b"J" => {
-                    if let Some([cap]) = numbers::<1>(&operands) {
+                    if let Some([cap]) = tail_numbers::<1, _>(&operands) {
                         state.cap = u8::try_from(f64_to_i64(cap).clamp(0, 2)).unwrap_or(0);
                     }
                 }
                 b"j" => {
-                    if let Some([join]) = numbers::<1>(&operands) {
+                    if let Some([join]) = tail_numbers::<1, _>(&operands) {
                         state.join = u8::try_from(f64_to_i64(join).clamp(0, 2)).unwrap_or(0);
                     }
                 }
                 b"M" => {
-                    if let Some([miter]) = numbers::<1>(&operands) {
+                    if let Some([miter]) = tail_numbers::<1, _>(&operands) {
                         state.miter = miter;
                     }
                 }
@@ -1410,32 +1411,32 @@ impl Renderer<'_, '_> {
                     }
                 }
                 b"Tc" => {
-                    if let Some([value]) = numbers::<1>(&operands) {
+                    if let Some([value]) = tail_numbers::<1, _>(&operands) {
                         state.char_space = value;
                     }
                 }
                 b"Tw" => {
-                    if let Some([value]) = numbers::<1>(&operands) {
+                    if let Some([value]) = tail_numbers::<1, _>(&operands) {
                         state.word_space = value;
                     }
                 }
                 b"Tz" => {
-                    if let Some([value]) = numbers::<1>(&operands) {
+                    if let Some([value]) = tail_numbers::<1, _>(&operands) {
                         state.scale = value / 100.0_f64;
                     }
                 }
                 b"TL" => {
-                    if let Some([value]) = numbers::<1>(&operands) {
+                    if let Some([value]) = tail_numbers::<1, _>(&operands) {
                         state.leading = value;
                     }
                 }
                 b"Ts" => {
-                    if let Some([value]) = numbers::<1>(&operands) {
+                    if let Some([value]) = tail_numbers::<1, _>(&operands) {
                         state.rise = value;
                     }
                 }
                 b"Tr" => {
-                    if let Some([value]) = numbers::<1>(&operands) {
+                    if let Some([value]) = tail_numbers::<1, _>(&operands) {
                         state.render_mode =
                             u8::try_from(f64_to_i64(value).clamp(0, 7)).unwrap_or(0);
                     }
@@ -1471,20 +1472,20 @@ impl Renderer<'_, '_> {
                     }
                 }
                 b"Td" => {
-                    if let Some([tx, ty]) = numbers::<2>(&operands) {
+                    if let Some([tx, ty]) = tail_numbers::<2, _>(&operands) {
                         text.line = translate(tx, ty, &text.line);
                         text.matrix = text.line;
                     }
                 }
                 b"TD" => {
-                    if let Some([tx, ty]) = numbers::<2>(&operands) {
+                    if let Some([tx, ty]) = tail_numbers::<2, _>(&operands) {
                         state.leading = -ty;
                         text.line = translate(tx, ty, &text.line);
                         text.matrix = text.line;
                     }
                 }
                 b"Tm" => {
-                    if let Some(matrix) = numbers::<6>(&operands) {
+                    if let Some(matrix) = tail_numbers::<6, _>(&operands) {
                         text.line = matrix;
                         text.matrix = matrix;
                     }
@@ -1922,37 +1923,8 @@ impl Renderer<'_, '_> {
     }
 }
 
-fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
-    let [a1, b1, c1, d1, e1, f1] = *first;
-    let [a2, b2, c2, d2, e2, f2] = *second;
-    [
-        a1 * a2 + b1 * c2,
-        a1 * b2 + b1 * d2,
-        c1 * a2 + d1 * c2,
-        c1 * b2 + d1 * d2,
-        e1 * a2 + f1 * c2 + e2,
-        e1 * b2 + f1 * d2 + f2,
-    ]
-}
-
 fn translate(tx: f64, ty: f64, matrix: &Matrix) -> Matrix {
     multiply(&[1.0, 0.0, 0.0, 1.0, tx, ty], matrix)
-}
-
-fn numbers<const N: usize>(operands: &[Operand<'_>]) -> Option<[f64; N]> {
-    let start = operands.len().checked_sub(N)?;
-    let mut out = [0.0_f64; N];
-    for (slot, operand) in out.iter_mut().zip(operands.get(start..)?) {
-        *slot = operand.as_number()?;
-    }
-    Some(out)
-}
-
-fn object_numbers(object: Option<&Object>) -> Vec<f64> {
-    object
-        .and_then(Object::as_array)
-        .map(|items| items.iter().filter_map(Object::as_number).collect())
-        .unwrap_or_default()
 }
 
 fn matrix_of(object: Option<&Object>) -> Option<Matrix> {

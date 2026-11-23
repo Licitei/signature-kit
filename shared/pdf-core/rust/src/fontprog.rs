@@ -1,4 +1,4 @@
-use crate::num::widen;
+use crate::num::{read_u16, read_u32, widen};
 use crate::object::Dict;
 use crate::object::Object;
 use crate::object::Resolver;
@@ -1550,18 +1550,6 @@ pub(crate) fn load_font_file_prefix(
         return Err(Failure::invalid("font program is not a stream"));
     };
     resolver.stream_prefix(stream, len)
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    let high = u16::from(*bytes.get(offset)?);
-    let low = u16::from(*bytes.get(offset.checked_add(1)?)?);
-    Some((high << 8) | low)
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    let high = u32::from(read_u16(bytes, offset)?);
-    let low = u32::from(read_u16(bytes, offset.checked_add(2)?)?);
-    Some((high << 16) | low)
 }
 
 #[cfg(test)]

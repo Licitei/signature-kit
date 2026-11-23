@@ -1,6 +1,7 @@
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inflate;
 use crate::object::{Dict, Object};
+use crate::syntax::hex_value;
 
 const IMAGE_FILTERS: [&[u8]; 4] = [
     b"DCTDecode",
@@ -222,7 +223,7 @@ fn ascii_hex_decode(data: &[u8], max_output: usize) -> Outcome<Vec<u8>> {
         if is_ws(byte) {
             continue;
         }
-        let Some(nibble) = hex_digit(byte) else {
+        let Some(nibble) = hex_value(byte) else {
             return Err(Failure::invalid("invalid ascii hex digit"));
         };
         match hi {
@@ -623,15 +624,6 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
         b
     } else {
         c
-    }
-}
-
-const fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte.saturating_sub(b'0')),
-        b'a'..=b'f' => Some(byte.saturating_sub(b'a').saturating_add(10)),
-        b'A'..=b'F' => Some(byte.saturating_sub(b'A').saturating_add(10)),
-        _ => None,
     }
 }
 
