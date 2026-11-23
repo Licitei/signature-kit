@@ -1,4 +1,4 @@
-use crate::num::{read_u16, read_u32, widen};
+use crate::num::{read_u16, read_u32, sort_total, widen};
 use crate::object::Dict;
 use crate::object::Object;
 use crate::object::Resolver;
@@ -437,7 +437,7 @@ impl FontProgram {
             return None;
         }
         let mut position = 10_usize;
-        let mut parts: Vec<(i32, u16)> = Vec::new();
+        let mut parts: Vec<(i32, usize, u16)> = Vec::new();
         loop {
             let flags = read_u16(glyph, position)?;
             let component = read_u16(glyph, position.checked_add(2)?)?;
@@ -459,13 +459,18 @@ impl FontProgram {
             } else if flags & 0x0080 != 0 {
                 position = position.checked_add(8)?;
             }
-            parts.push((offset_next, component));
+            parts.push((offset_next, parts.len(), component));
             if flags & 0x0020 == 0 || parts.len() >= MAX_COMPONENTS {
                 break;
             }
         }
-        parts.sort_by_key(|(offset, _)| *offset);
-        Some(parts.into_iter().map(|(_, component)| component).collect())
+        sort_total(&mut parts, &Ord::cmp);
+        Some(
+            parts
+                .into_iter()
+                .map(|(_, _, component)| component)
+                .collect(),
+        )
     }
 
     pub(crate) fn font_matrix(&self, gid: u16) -> [f64; 6] {

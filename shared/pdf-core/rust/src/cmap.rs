@@ -2,6 +2,7 @@ use alloc::collections::BinaryHeap;
 use core::slice;
 
 use crate::inspection::Limits;
+use crate::num::sort_total;
 use crate::syntax::{hex_value, is_regular, is_whitespace};
 
 const MAX_ENTRIES: usize = 0x0004_0000;
@@ -778,7 +779,9 @@ pub(crate) fn disjoint(spans: &[(u32, u32)]) -> Vec<(u32, u32, usize)> {
     let mut order: Vec<usize> = (0..spans.len())
         .filter(|&index| start_of(index) <= end_of(index))
         .collect();
-    order.sort_by_key(|&index| start_of(index));
+    sort_total(&mut order, &|&left, &right| {
+        start_of(left).cmp(&start_of(right)).then(left.cmp(&right))
+    });
     let mut active: BinaryHeap<usize> = BinaryHeap::new();
     let mut out: Vec<(u32, u32, usize)> = Vec::new();
     let mut next = 0_usize;

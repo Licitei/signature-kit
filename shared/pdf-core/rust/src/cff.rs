@@ -3,7 +3,7 @@ use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
 use crate::glyph::charge;
 use crate::inflate::inflate;
-use crate::num::{f64_to_f32, f64_to_i64, parse_decimal, read_u16, read_u32};
+use crate::num::{f64_to_f32, f64_to_i64, parse_decimal, read_u16, read_u32, sort_total};
 use core::array;
 use core::mem;
 use std::sync::OnceLock;
@@ -271,7 +271,7 @@ impl CffFont {
                 .enumerate()
                 .filter_map(|(gid, cid)| u16::try_from(gid).ok().map(|inner_gid| (*cid, inner_gid)))
                 .collect();
-            cid_index.sort_by_key(|(cid, _)| *cid);
+            sort_total(&mut cid_index, &Ord::cmp);
         }
         let global_subrs =
             Index::parse(bytes, strings.end).unwrap_or_else(|| Index::empty(strings.end));
