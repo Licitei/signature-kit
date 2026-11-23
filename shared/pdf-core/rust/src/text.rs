@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::document::{Document, Page, Transient};
 use crate::failure::{Failure, FailureCode, Outcome};
-use crate::font::{Font, Glyph, embedded_style};
+use crate::font::{Font, Glyph, embedded_style, push_piece};
 use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
@@ -598,7 +598,7 @@ impl Interpreter<'_, '_, '_> {
         self.pending.bold = style.0;
         self.pending.italic = style.1;
         self.pending.text.clear();
-        self.pending.text.push_str(text);
+        push_piece(&mut self.pending.text, text);
         self.pending.bounds = bounds;
         self.pending.size = size;
         self.pending.dir = direction;
@@ -805,7 +805,7 @@ impl Interpreter<'_, '_, '_> {
                 self.pending.text.push(' ');
             }
         }
-        self.pending.text.push_str(text);
+        push_piece(&mut self.pending.text, text);
     }
 
     fn flush(&mut self) -> Outcome<()> {

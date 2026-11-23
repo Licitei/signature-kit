@@ -513,7 +513,10 @@ impl CompositeFont {
                 }
             }
             let text_start = text.len();
-            text.push_str(table.text.get(slot.start..slot.end).unwrap_or_default());
+            push_piece(
+                text,
+                table.text.get(slot.start..slot.end).unwrap_or_default(),
+            );
             glyphs.push(Glyph {
                 code,
                 advance: slot.advance,
@@ -1321,6 +1324,14 @@ const fn symbolic_fallback(code: u32) -> u32 {
         return code;
     }
     0
+}
+
+pub(crate) fn push_piece(text: &mut String, piece: &str) {
+    if let [byte] = piece.as_bytes() {
+        text.push(char::from(*byte));
+    } else {
+        text.push_str(piece);
+    }
 }
 
 fn push_codepoints(text: &mut String, codepoints: &[u32]) {
