@@ -16,6 +16,7 @@ use crate::shading::{GradientPaint, Shading, parse_shading};
 use crate::syntax::{ContentLexer, ContentToken, Operand};
 use crate::text::tail_numbers;
 use alloc::rc::Rc;
+use core::cell::RefCell;
 use core::mem;
 use core::ops::Deref;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,7 @@ const MAX_OPERATORS: usize = 4_000_000;
 const MAX_OPS_BYTES: usize = 96 << 20;
 const MAX_BLOB_BYTES: usize = 384 << 20;
 const MAX_CACHED_FONTS: usize = 1024;
+const MAX_CACHED_GID_CODES: usize = 1 << 16;
 const MAX_CACHED_OUTLINES: usize = 1 << 16;
 const MAX_CACHED_IMAGE_BYTES: usize = 96 << 20;
 const MAX_CACHED_STREAM_BYTES: usize = 64 << 20;
@@ -101,7 +103,35 @@ struct Type3 {
 struct RenderFont {
     face: Face,
     font: Font,
+    gids: RefCell<Vec<u32>>,
     id: u32,
+}
+
+impl RenderFont {
+    fn render_gid(&self, code: u32) -> Option<u16> {
+        let Some(index) = usize::try_from(code)
+            .ok()
+            .filter(|index| *index < MAX_CACHED_GID_CODES)
+        else {
+            return self.font.render_gid(code);
+        };
+        if let Ok(cache) = self.gids.try_borrow()
+            && let Some(known) = cache.get(index).copied().filter(|entry| *entry != 0)
+        {
+            let gid = known.checked_sub(2)?;
+            return u16::try_from(gid).ok();
+        }
+        let gid = self.font.render_gid(code);
+        if let Ok(mut cache) = self.gids.try_borrow_mut() {
+            if cache.len() <= index {
+                cache.resize(index.saturating_add(1), 0);
+            }
+            if let Some(slot) = cache.get_mut(index) {
+                *slot = gid.map_or(1, |inner| u32::from(inner).saturating_add(2));
+            }
+        }
+        gid
+    }
 }
 
 #[derive(Clone)]
@@ -1024,6 +1054,7 @@ impl Renderer<'_, '_> {
         let render_font = Rc::new(RenderFont {
             face,
             font,
+            gids: RefCell::default(),
             id: self.session.next_font,
         });
         self.session.next_font = self.session.next_font.saturating_add(1);
@@ -1690,7 +1721,7 @@ impl Renderer<'_, '_> {
             if modes != 0 && size != 0.0_f64 {
                 match &font.face {
                     Face::Outline => {
-                        if let Some(gid) = font.font.render_gid(glyph.code)
+                        if let Some(gid) = font.render_gid(glyph.code)
                             && let Some(id) = self.define_glyph(&font, gid)
                             && let Some(program) = font.font.program()
                         {
