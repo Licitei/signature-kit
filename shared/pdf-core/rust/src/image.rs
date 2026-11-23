@@ -371,6 +371,96 @@ fn converter<'space>(space: &'space ColorSpace, decode: &[f64], bits: u32) -> Co
     }
 }
 
+fn convert_bytes(converter: &Converter<'_>, row: &[u8], width: usize, out: &mut [u8]) -> bool {
+    let pixels = out.as_chunks_mut::<4>().0;
+    match converter {
+        Converter::Gray(values) => {
+            let Ok(lut) = <&[u8; 256]>::try_from(values.as_slice()) else {
+                return false;
+            };
+            for (pixel, byte) in pixels.iter_mut().zip(row).take(width) {
+                let gray = lut.get(usize::from(*byte)).copied().unwrap_or(0);
+                *pixel = [gray, gray, gray, 255];
+            }
+            true
+        }
+        Converter::Rgb([red_values, green_values, blue_values]) => {
+            let (Ok(red), Ok(green), Ok(blue)) = (
+                <&[u8; 256]>::try_from(red_values.as_slice()),
+                <&[u8; 256]>::try_from(green_values.as_slice()),
+                <&[u8; 256]>::try_from(blue_values.as_slice()),
+            ) else {
+                return false;
+            };
+            for (pixel, rgb) in pixels.iter_mut().zip(row.as_chunks::<3>().0).take(width) {
+                *pixel = [
+                    red.get(usize::from(rgb[0])).copied().unwrap_or(0),
+                    green.get(usize::from(rgb[1])).copied().unwrap_or(0),
+                    blue.get(usize::from(rgb[2])).copied().unwrap_or(0),
+                    255,
+                ];
+            }
+            true
+        }
+        Converter::Palette(entries) => {
+            let Ok(palette) = <&[[u8; 3]; 256]>::try_from(entries.as_slice()) else {
+                return false;
+            };
+            for (pixel, byte) in pixels.iter_mut().zip(row).take(width) {
+                let [red, green, blue] = palette.get(usize::from(*byte)).copied().unwrap_or([0; 3]);
+                *pixel = [red, green, blue, 255];
+            }
+            true
+        }
+        Converter::Cmyk(_) | Converter::Generic(_) | Converter::Stencil(..) => false,
+    }
+}
+
+fn convert_bitmap(converter: &Converter<'_>, row: &[u8], out: &mut [u8]) -> bool {
+    let table: [[u8; 4]; 2] = match converter {
+        Converter::Gray(lut) => {
+            let (Some(zero), Some(one)) = (lut.first(), lut.get(1)) else {
+                return false;
+            };
+            [[*zero, *zero, *zero, 255], [*one, *one, *one, 255]]
+        }
+        Converter::Palette(palette) => {
+            let (Some(zero), Some(one)) = (palette.first(), palette.get(1)) else {
+                return false;
+            };
+            [
+                [zero[0], zero[1], zero[2], 255],
+                [one[0], one[1], one[2], 255],
+            ]
+        }
+        Converter::Stencil(color, invert) => [
+            [
+                color[0],
+                color[1],
+                color[2],
+                if *invert { 0 } else { color[3] },
+            ],
+            [
+                color[0],
+                color[1],
+                color[2],
+                if *invert { color[3] } else { 0 },
+            ],
+        ],
+        Converter::Cmyk(_) | Converter::Generic(_) | Converter::Rgb(_) => return false,
+    };
+    let pixels = out.as_chunks_mut::<4>().0;
+    for (group, byte) in pixels.chunks_mut(8).zip(row) {
+        for (shift, pixel) in (0_u32..8).rev().zip(group) {
+            *pixel = table
+                .get(usize::from((*byte >> shift) & 1))
+                .copied()
+                .unwrap_or_default();
+        }
+    }
+    true
+}
+
 fn convert_row(
     converter: &mut Converter<'_>,
     row: &[u8],
@@ -379,6 +469,19 @@ fn convert_row(
     scratch: &mut Vec<f64>,
 ) {
     let components = layout.components;
+    if layout.bits == 8
+        && row.len() >= layout.width.saturating_mul(components)
+        && convert_bytes(converter, row, layout.width, out)
+    {
+        return;
+    }
+    if layout.bits == 1
+        && components == 1
+        && row.len() >= layout.width.div_ceil(8)
+        && convert_bitmap(converter, row, out)
+    {
+        return;
+    }
     let bits = layout.bits;
     for (x, pixel) in out
         .as_chunks_mut::<4>()
