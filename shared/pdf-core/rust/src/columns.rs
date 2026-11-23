@@ -57,6 +57,14 @@ struct Side {
     words: usize,
 }
 
+#[derive(Clone, Copy)]
+struct Traits {
+    head: Option<char>,
+    letters: bool,
+    tail: Option<(char, bool)>,
+    words: usize,
+}
+
 #[derive(Default)]
 pub(crate) struct Region {
     pub frags: Vec<usize>,
@@ -81,7 +89,13 @@ impl Gutter {
 }
 
 impl Side {
-    fn add(&mut self, frags: &[Frag<'_>], members: &[usize], center: f64) {
+    fn add(
+        &mut self,
+        frags: &[Frag<'_>],
+        traits: &mut [Option<Traits>],
+        members: &[usize],
+        center: f64,
+    ) {
         let Some(start) = members.first().and_then(|&index| frags.get(index)) else {
             return;
         };
@@ -90,38 +104,30 @@ impl Side {
         self.levels.push(start.x0);
         let mut words = 0_usize;
         let mut letters = false;
-        for frag in members.iter().filter_map(|&index| frags.get(index)) {
-            words = words.saturating_add(
-                frag.text
-                    .split_whitespace()
-                    .filter(|word| {
-                        word.chars().filter(|ch| ch.is_alphabetic()).count() >= WORD_LETTERS
-                    })
-                    .count(),
+        let mut first: Option<char> = None;
+        let mut tail: Option<(char, bool)> = None;
+        for &index in members {
+            let Some(frag) = frags.get(index) else {
+                continue;
+            };
+            let found = traits.get_mut(index).map_or_else(
+                || Traits::of(frag),
+                |slot| *slot.get_or_insert_with(|| Traits::of(frag)),
             );
-            letters |= frag.text.chars().any(char::is_alphabetic);
+            words = words.saturating_add(found.words);
+            letters |= found.letters;
+            if first.is_none() {
+                first = found.head;
+            }
+            if found.tail.is_some() {
+                tail = found.tail;
+            }
         }
         self.words = self.words.saturating_add(words);
         if !letters {
             self.numeric = self.numeric.saturating_add(1);
         }
-        let first = members
-            .iter()
-            .filter_map(|&index| frags.get(index))
-            .find_map(|frag| frag.text.trim_start().chars().next());
-        let mut tail = members
-            .iter()
-            .rev()
-            .filter_map(|&index| frags.get(index))
-            .find_map(|frag| {
-                let trimmed = frag.text.trim_end();
-                (!trimmed.is_empty()).then_some(trimmed)
-            })
-            .unwrap_or_default()
-            .chars()
-            .rev();
-        if let (Some(head), Some(last)) = (first, tail.next()) {
-            let hyphen = last == '-' && tail.next().is_some_and(char::is_alphabetic);
+        if let (Some(head), Some((last, hyphen))) = (first, tail) {
             self.edges.push((head, last, hyphen));
         }
     }
@@ -220,6 +226,29 @@ impl Side {
 
     const fn textual(&self) -> bool {
         self.numeric.saturating_mul(2) < self.lines
+    }
+}
+
+impl Traits {
+    fn of(frag: &Frag<'_>) -> Self {
+        let words = frag
+            .text
+            .split_whitespace()
+            .filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= WORD_LETTERS)
+            .count();
+        let mut ending = frag.text.trim_end().chars().rev();
+        let tail = ending.next().map(|last| {
+            (
+                last,
+                last == '-' && ending.next().is_some_and(char::is_alphabetic),
+            )
+        });
+        Self {
+            head: frag.text.trim_start().chars().next(),
+            letters: frag.text.chars().any(char::is_alphabetic),
+            tail,
+            words,
+        }
     }
 }
 
@@ -462,6 +491,7 @@ fn columnar(
     frags: &[Frag<'_>],
     lines: &[Line],
     ordered: &[&[usize]],
+    traits: &mut [Option<Traits>],
 ) -> bool {
     let (mut left, mut right) = (Side::default(), Side::default());
     let mut size = 0.0_f64;
@@ -496,8 +526,8 @@ fn columnar(
         if end.is_finite() && start.is_finite() {
             holes.push((start - end) / line.size.max(MIN_SIZE));
         }
-        left.add(frags, before, line.center);
-        right.add(frags, after, line.center);
+        left.add(frags, traits, before, line.center);
+        right.add(frags, traits, after, line.center);
     }
     holes.sort_unstable_by(f64::total_cmp);
     let tight = holes
@@ -560,9 +590,10 @@ pub(crate) fn regions(
     if found.is_empty() {
         return None;
     }
+    let mut traits: Vec<Option<Traits>> = vec![None; frags.len()];
     let gutters: Vec<Gutter> = found
         .iter()
-        .filter(|gutter| columnar(gutter, &found, frags, lines, &ordered))
+        .filter(|gutter| columnar(gutter, &found, frags, lines, &ordered, &mut traits))
         .copied()
         .collect();
     if gutters.is_empty() {

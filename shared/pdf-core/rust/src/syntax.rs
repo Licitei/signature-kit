@@ -34,6 +34,12 @@ impl Reject {
 
 type Parsed<T> = Result<T, Reject>;
 
+#[derive(Clone, Copy)]
+enum Numeral {
+    Integer { plain: bool, value: i64 },
+    Real(f64),
+}
+
 pub(crate) struct Parser<'data> {
     data: &'data [u8],
     max_depth: usize,
@@ -346,6 +352,23 @@ impl<'data> Parser<'data> {
     }
 
     fn number(&mut self) -> Object {
+        match self.numeral() {
+            Numeral::Real(value) => Object::Real(value),
+            Numeral::Integer { plain, value } => {
+                if self.refs
+                    && plain
+                    && let Ok(whole) = u64::try_from(value)
+                    && let Some((reference, end)) = self.reference(whole)
+                {
+                    self.pos = end;
+                    return reference;
+                }
+                Object::Integer(value)
+            }
+        }
+    }
+
+    fn numeral(&mut self) -> Numeral {
         let mut negative = false;
         let mut signed = false;
         match self.peek() {
@@ -398,10 +421,13 @@ impl<'data> Parser<'data> {
             }
             let divisor = POW10.get(scale).copied().unwrap_or(1e18_f64);
             let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
-            return Object::Real(if negative { -magnitude } else { magnitude });
+            return Numeral::Real(if negative { -magnitude } else { magnitude });
         }
         if self.pos == start {
-            return Object::Integer(0);
+            return Numeral::Integer {
+                plain: false,
+                value: 0,
+            };
         }
         if overflow || whole > i64::MAX.cast_unsigned() {
             let magnitude = if overflow {
@@ -409,21 +435,17 @@ impl<'data> Parser<'data> {
             } else {
                 u64_to_f64(whole)
             };
-            return Object::Real(if negative { -magnitude } else { magnitude });
+            return Numeral::Real(if negative { -magnitude } else { magnitude });
         }
         let integer = whole.cast_signed();
-        if self.refs
-            && !signed
-            && let Some((reference, end)) = self.reference(whole)
-        {
-            self.pos = end;
-            return reference;
+        Numeral::Integer {
+            plain: !signed,
+            value: if negative {
+                integer.saturating_neg()
+            } else {
+                integer
+            },
         }
-        Object::Integer(if negative {
-            integer.saturating_neg()
-        } else {
-            integer
-        })
     }
 
     pub(crate) fn parse_object(&mut self) -> Outcome<Object> {
@@ -548,7 +570,7 @@ pub(crate) enum Operand<'data> {
     Literal(Cow<'data, [u8]>),
     Name(Cow<'data, [u8]>),
     Null,
-    Object(Object),
+    Object(Box<Object>),
     Real(f64),
 }
 
@@ -709,17 +731,9 @@ impl<'data> ContentLexer<'data> {
     }
 
     fn number(&mut self) -> Operand<'data> {
-        match self.parser.number() {
-            Object::Real(value) => Operand::Real(value),
-            Object::Integer(value) => Operand::Integer(value),
-            Object::Null
-            | Object::Bool(_)
-            | Object::Name(_)
-            | Object::String(_)
-            | Object::Array(_)
-            | Object::Dict(_)
-            | Object::Stream(_)
-            | Object::Ref(_) => Operand::Null,
+        match self.parser.numeral() {
+            Numeral::Real(value) => Operand::Real(value),
+            Numeral::Integer { value, .. } => Operand::Integer(value),
         }
     }
 
@@ -746,9 +760,10 @@ impl<'data> ContentLexer<'data> {
         match byte {
             b'/' => Ok(Operand::Name(self.name())),
             b'(' => Ok(Operand::Literal(self.literal())),
-            b'<' if self.parser.peek_at(1) == Some(b'<') => {
-                self.parser.dictionary(depth).map(Operand::Object)
-            }
+            b'<' if self.parser.peek_at(1) == Some(b'<') => self
+                .parser
+                .dictionary(depth)
+                .map(|object| Operand::Object(Box::new(object))),
             b'<' => Ok(Operand::Hex(self.hex())),
             b'[' => self.array(depth),
             b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
@@ -1552,7 +1567,7 @@ mod tests {
         assert_eq!(tokens.len(), 4);
         assert!(matches!(
             tokens.get(1),
-            Some(ContentToken::Operand(Operand::Object(Object::Dict(_))))
+            Some(ContentToken::Operand(Operand::Object(object))) if matches!(**object, Object::Dict(_))
         ));
         assert_eq!(tokens.get(2), Some(&op(b"BDC")));
     }
