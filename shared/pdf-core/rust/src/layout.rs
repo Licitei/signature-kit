@@ -405,29 +405,18 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
 }
 
 fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
-    let mut gaps: Vec<f64> = Vec::new();
-    let mut ordered = members.to_vec();
-    sort_frag_indices(&mut ordered, frags, FragOrder::X0);
+    let mut compact: Vec<f64> = Vec::new();
     let mut previous: Option<&Frag<'_>> = None;
-    for index in ordered {
-        let Some(frag) = frags.get(index) else {
-            continue;
-        };
+    for frag in members.iter().filter_map(|&index| frags.get(index)) {
         if let Some(left) = previous {
             let gap = frag.x0 - left.x1;
-            if gap > 0.0_f64 {
-                let em = left.size.max(frag.size);
-                if em > 0.0_f64 {
-                    gaps.push(gap / em);
-                }
+            let em = left.size.max(frag.size);
+            if gap > 0.0_f64 && em > 0.0_f64 && gap / em <= COMPACT_GAP_EM {
+                compact.push(gap / em);
             }
         }
         previous = Some(frag);
     }
-    let mut compact: Vec<f64> = gaps
-        .into_iter()
-        .filter(|gap| *gap <= COMPACT_GAP_EM)
-        .collect();
     if compact.is_empty() {
         return CELL_GAP;
     }
@@ -437,12 +426,12 @@ fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     CELL_GAP.max(typical * INTRA_WORD_SCALE)
 }
 
-fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
+fn deduplicated(frags: &[Frag<'_>], members: &[usize]) -> Vec<usize> {
     if members.len() < 2 {
-        return;
+        return members.to_vec();
     }
     let mut kept: Vec<usize> = Vec::with_capacity(members.len());
-    for &index in members.iter() {
+    for &index in members {
         let Some(frag) = frags.get(index) else {
             continue;
         };
@@ -458,12 +447,11 @@ fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
             kept.push(index);
         }
     }
-    *members = kept;
+    kept
 }
 
 fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
-    let mut members = line.members.clone();
-    drop_duplicates(frags, &mut members);
+    let members = deduplicated(frags, &line.members);
     let split_em = line_cell_split_em(frags, &members);
     let mut current: Option<Segment> = None;
     let mut right_edge = f64::NEG_INFINITY;
