@@ -13,13 +13,16 @@ use crate::document::{
 };
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::num::{sort_total, sort_unstable_with, widen};
+use crate::num::{sort_unstable_with, widen};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
 use crate::syntax::{
     find_bytes, is_regular, is_whitespace, keyword_at, parse_indirect_object, parse_object_header,
     skip_whitespace_at,
 };
 
+const DIGIT_BITS: u32 = 11;
+const BUCKETS: usize = 1 << DIGIT_BITS;
+const DIGIT_MASK: usize = BUCKETS - 1;
 const MIN_SELECTIVE_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_PROBE: usize = 128;
 
@@ -687,7 +690,7 @@ impl Lazy {
         if self.index.table.is_empty() {
             return Some(Plan::Fallback);
         }
-        sort_total(&mut self.sparse.offsets, &Ord::cmp);
+        radix_sort(&mut self.sparse.offsets);
         self.sparse.offsets.dedup();
         self.indexed = true;
         None
@@ -855,6 +858,40 @@ impl Lazy {
         }
         retained
     }
+}
+
+fn radix_sort(values: &mut Vec<usize>) {
+    let mut scratch = vec![0_usize; values.len()];
+    let top = values.iter().copied().max().unwrap_or(0);
+    let mut shift = 0_u32;
+    while top.checked_shr(shift).is_some_and(|rest| rest != 0) {
+        let mut starts = [0_usize; BUCKETS];
+        for &value in values.iter() {
+            if let Some(slot) = starts.get_mut(digit(value, shift)) {
+                *slot = slot.saturating_add(1);
+            }
+        }
+        let mut running = 0_usize;
+        for slot in &mut starts {
+            let count = *slot;
+            *slot = running;
+            running = running.saturating_add(count);
+        }
+        for &value in values.iter() {
+            if let Some(slot) = starts.get_mut(digit(value, shift)) {
+                if let Some(target) = scratch.get_mut(*slot) {
+                    *target = value;
+                }
+                *slot = slot.saturating_add(1);
+            }
+        }
+        mem::swap(values, &mut scratch);
+        shift = shift.saturating_add(DIGIT_BITS);
+    }
+}
+
+fn digit(value: usize, shift: u32) -> usize {
+    value.checked_shr(shift).unwrap_or(0) & DIGIT_MASK
 }
 
 fn append_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>, gap: usize) {
@@ -1129,6 +1166,28 @@ mod tests {
             }
         }
         panic!("lazy plan did not settle");
+    }
+
+    #[test]
+    fn radix_sort_matches_the_standard_sort() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut values: Vec<usize> = (0_u32..5_000)
+            .map(|index| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                usize::try_from(state >> (40_u32 + index.min(20))).unwrap()
+            })
+            .collect();
+        values.push(usize::MAX);
+        values.push(0);
+        let mut expected = values.clone();
+        expected.sort_unstable();
+        super::radix_sort(&mut values);
+        assert_eq!(values, expected);
+        let mut empty: Vec<usize> = Vec::new();
+        super::radix_sort(&mut empty);
+        assert_eq!(empty, Vec::<usize>::new());
     }
 
     #[test]
