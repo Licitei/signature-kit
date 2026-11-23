@@ -84,6 +84,7 @@ unused_results = "deny"
 variant_size_differences = "deny"
 unfulfilled_lint_expectations = "deny"
 unknown_lints = "warn"
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(kani)"] }
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"

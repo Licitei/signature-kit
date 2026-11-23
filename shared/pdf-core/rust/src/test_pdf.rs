@@ -1,3 +1,14 @@
+pub(crate) struct Shuffle(pub u64);
+
+impl Shuffle {
+    pub(crate) fn next(&mut self, bound: u64) -> u64 {
+        self.0 ^= self.0 << 13_u32;
+        self.0 ^= self.0 >> 7_u32;
+        self.0 ^= self.0 << 17_u32;
+        self.0.rem_euclid(bound.max(1))
+    }
+}
+
 pub(crate) struct PageSpec {
     pub content: String,
     pub rotate: i32,

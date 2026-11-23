@@ -24,7 +24,27 @@ const BAND_GAP: f64 = 1.15;
 const STYLE_SAMPLE: usize = 500;
 const STRAY_BLOCKS: usize = 3;
 const STRAY_CHARS: usize = 120;
+const NOTE_SIZE: f64 = 0.91;
 const MARGINAL_SIZE: f64 = 0.9;
+const HEAD_SCAN: usize = 8;
+const COMPOUND_LETTERS: usize = 4;
+const SHAPE_LENGTHS: usize = 63;
+const SHAPE_WORDS: usize = 32;
+const SCRIPT_RATIO: f64 = 0.8;
+const MARKER_CHARS: usize = 3;
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+const CAPTIONS: [&str; 8] = [
+    "table",
+    "figure",
+    "fig.",
+    "tabela",
+    "figura",
+    "quadro",
+    "gr\u{e1}fico",
+    "listing",
+];
+const NOTE_MARKS: [char; 6] = ['*', '\u{2217}', '\u{2020}', '\u{2021}', '\u{a7}', '\u{b6}'];
 
 const BULLETS: [char; 22] = [
     '\u{2022}', '\u{25cf}', '\u{25aa}', '\u{25a0}', '\u{25e6}', '\u{25cb}', '\u{25b8}', '\u{25ba}',
@@ -157,6 +177,7 @@ pub(crate) struct MdBlock {
     size: f64,
     spans: Vec<Span>,
     top: f64,
+    typical: f64,
 }
 
 impl MdBlock {
@@ -206,6 +227,8 @@ struct Prepared<'data> {
     line: &'data MdLine,
     plain: String,
     spans: Vec<Span>,
+    typical: f64,
+    weight: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -223,6 +246,7 @@ struct Para {
     lines: usize,
     plain: String,
     size: f64,
+    sizes: Vec<(f64, usize)>,
     spans: Vec<Span>,
     top: f64,
     x0: f64,
@@ -255,6 +279,114 @@ enum Glue {
     Direct,
     DropLast,
     Space,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Words {
+    repeated: Vec<u64>,
+    seen: Vec<u64>,
+}
+
+impl Words {
+    pub(crate) fn collect<'data>(pages: impl IntoIterator<Item = &'data [MdItem]> + Clone) -> Self {
+        let mut words = Self::default();
+        let mut wanted: Vec<u64> = Vec::new();
+        let mut shapes = [0_u64; SHAPE_WORDS];
+        let mut pending: Option<&str> = None;
+        for line in md_lines(pages.clone()) {
+            if let Some(left) = pending.take() {
+                let right = line
+                    .runs
+                    .iter()
+                    .flat_map(|run| run.text.split_ascii_whitespace())
+                    .next()
+                    .map(word_core)
+                    .unwrap_or_default();
+                for parts in [&[left, right][..], &[left, "-", right], &[left], &[right]] {
+                    wanted.push(word_hash(parts));
+                    let length = parts
+                        .iter()
+                        .fold(0_usize, |sum, part| sum.saturating_add(part.len()));
+                    let lead = parts.iter().find_map(|part| part.bytes().next());
+                    let bit = shape(length, lead);
+                    if let Some(slot) = shapes.get_mut(bit >> 6_u32) {
+                        *slot |= 1_u64 << (bit & 63);
+                    }
+                }
+            }
+            pending = line
+                .runs
+                .last()
+                .and_then(|run| run.text.split_ascii_whitespace().next_back())
+                .filter(|token| hyphen_end(token))
+                .map(word_core);
+        }
+        if wanted.is_empty() {
+            return words;
+        }
+        wanted.sort_unstable();
+        wanted.dedup();
+        for line in md_lines(pages) {
+            let last = line.runs.len().saturating_sub(1);
+            for (position, run) in line.runs.iter().enumerate() {
+                let mut tokens = run.text.split_ascii_whitespace().peekable();
+                while let Some(token) = tokens.next() {
+                    if position == last
+                        && tokens.peek().is_none()
+                        && token.ends_with(['-', '\u{ad}'])
+                    {
+                        continue;
+                    }
+                    let core = word_core(token);
+                    let bit = shape(core.len(), core.bytes().next());
+                    let fits_length = shapes
+                        .get(bit >> 6_u32)
+                        .is_some_and(|slot| slot & (1_u64 << (bit & 63)) != 0);
+                    if !fits_length {
+                        continue;
+                    }
+                    let hash = word_hash(&[core]);
+                    if wanted.binary_search(&hash).is_ok()
+                        && core.len() >= 2
+                        && core.chars().all(|ch| ch.is_alphabetic() || ch == '-')
+                    {
+                        words.seen.push(hash);
+                    }
+                }
+            }
+        }
+        words.seen.sort_unstable();
+        for pair in words.seen.windows(2) {
+            if let [first, second] = pair
+                && first == second
+                && words.repeated.last() != Some(first)
+            {
+                words.repeated.push(*first);
+            }
+        }
+        words.seen.dedup();
+        words
+    }
+
+    fn contains(list: &[u64], hash: u64) -> bool {
+        list.binary_search(&hash).is_ok()
+    }
+
+    fn verdict(&self, left: &str, right: &str) -> Option<bool> {
+        if self.seen.is_empty() {
+            return None;
+        }
+        if Self::contains(&self.seen, word_hash(&[left, right])) {
+            return Some(true);
+        }
+        let whole = |part: &str| {
+            part.chars().count() >= COMPOUND_LETTERS
+                && Self::contains(&self.repeated, word_hash(&[part]))
+        };
+        (Self::contains(&self.seen, word_hash(&[left, "-", right]))
+            || (whole(left) && whole(right)))
+        .then_some(false)
+    }
 }
 
 impl ListState {
@@ -297,6 +429,33 @@ impl ListState {
     }
 }
 
+fn word_hash(parts: &[&str]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for byte in parts.iter().flat_map(|part| part.bytes()) {
+        hash ^= u64::from(byte.to_ascii_lowercase());
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn shape(length: usize, lead: Option<u8>) -> usize {
+    let letter = lead.map_or(0, |byte| usize::from(byte.to_ascii_lowercase() & 31));
+    (length.min(SHAPE_LENGTHS) << 5_u32) | letter
+}
+
+fn md_lines<'data>(
+    pages: impl IntoIterator<Item = &'data [MdItem]>,
+) -> impl Iterator<Item = &'data MdLine> {
+    pages.into_iter().flatten().filter_map(|item| match item {
+        MdItem::Line(line) => Some(line),
+        MdItem::Break | MdItem::Table { .. } => None,
+    })
+}
+
+fn word_core(token: &str) -> &str {
+    token.trim_matches(|ch: char| !ch.is_alphabetic())
+}
+
 fn line_gap(above: &MdLine, below: &MdLine) -> Option<f64> {
     let gap = above.center - below.center;
     let size = above.size.max(below.size);
@@ -325,7 +484,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
             above = Some(line);
             let mut chars = 0_usize;
             for run in &line.runs {
-                let count = run.text.chars().filter(|ch| !ch.is_whitespace()).count();
+                let count = run.text.len();
                 chars = chars.saturating_add(count);
                 for (slot, flag) in styled.iter_mut().zip([true, run.bold, run.italic]) {
                     if flag {
@@ -352,7 +511,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
     }
 }
 
-fn body_size(mut weighted: Vec<(f64, usize)>) -> f64 {
+pub(crate) fn body_size(mut weighted: Vec<(f64, usize)>) -> f64 {
     weighted.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
     let total = weighted
         .iter()
@@ -369,14 +528,35 @@ fn body_size(mut weighted: Vec<(f64, usize)>) -> f64 {
     DEFAULT_BODY
 }
 
+fn note_marker(line: &MdLine) -> bool {
+    let (Some(first), Some(second)) = (line.runs.first(), line.runs.get(1)) else {
+        return false;
+    };
+    let mark = first.text.trim();
+    let count = mark.chars().count();
+    first.size <= SCRIPT_RATIO * second.size
+        && (1..=MARKER_CHARS).contains(&count)
+        && mark
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || NOTE_MARKS.contains(&ch))
+        && second
+            .text
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(char::is_alphabetic)
+}
+
 fn line_spans(line: &MdLine) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::with_capacity(line.runs.len());
     let mut edge: Option<f64> = None;
-    for run in &line.runs {
+    let marked = note_marker(line);
+    for (position, run) in line.runs.iter().enumerate() {
         if let (Some(right), Some(last)) = (edge, spans.last_mut()) {
             let boundary = last.text.ends_with(char::is_whitespace)
                 || run.text.starts_with(char::is_whitespace);
-            if run.x0 - right > WORD_GAP * run.size && !boundary {
+            let gapped = run.x0 - right > WORD_GAP * run.size || (marked && position == 1);
+            if gapped && !boundary {
                 last.text.push(' ');
             }
         }
@@ -902,7 +1082,22 @@ fn keeps_hyphen(stem: &str, right: &str) -> bool {
         || WEEKDAY_TAILS.contains(&word.as_str())
 }
 
-fn glue(left: &str, right: &str) -> Glue {
+fn soft_break(stem: &str, right: &str, words: &Words) -> bool {
+    if keeps_hyphen(stem, right) {
+        return false;
+    }
+    let prefix = word_core(left_word(stem));
+    let suffix = word_core(right.split_whitespace().next().unwrap_or_default());
+    if prefix.chars().any(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    if let Some(join) = words.verdict(prefix, suffix) {
+        return join;
+    }
+    prefix.chars().filter(|ch| ch.is_uppercase()).count() < 2
+}
+
+fn glue(left: &str, right: &str, words: &Words) -> Glue {
     if left.is_empty()
         || right.is_empty()
         || left.ends_with(char::is_whitespace)
@@ -927,7 +1122,7 @@ fn glue(left: &str, right: &str) -> Glue {
         {
             if inner_before.is_alphabetic()
                 && inner_after.is_lowercase()
-                && !keeps_hyphen(stem, right)
+                && soft_break(stem, right, words)
             {
                 Glue::DropLast
             } else {
@@ -945,7 +1140,7 @@ pub(crate) fn reflow_lines<'data>(lines: impl IntoIterator<Item = &'data str>) -
         if trimmed_line.is_empty() {
             continue;
         }
-        match glue(&out, trimmed_line) {
+        match glue(&out, trimmed_line, &Words::default()) {
             Glue::Direct => {}
             Glue::Space => out.push(' '),
             Glue::DropLast => {
@@ -957,7 +1152,13 @@ pub(crate) fn reflow_lines<'data>(lines: impl IntoIterator<Item = &'data str>) -
     out
 }
 
-fn append_spans(spans: &mut Vec<Span>, plain: &mut String, mut next: Vec<Span>, next_plain: &str) {
+fn append_spans(
+    spans: &mut Vec<Span>,
+    plain: &mut String,
+    mut next: Vec<Span>,
+    next_plain: &str,
+    words: &Words,
+) {
     if url_continues(plain, next_plain)
         && let Some(link) = spans
             .iter()
@@ -971,7 +1172,7 @@ fn append_spans(spans: &mut Vec<Span>, plain: &mut String, mut next: Vec<Span>, 
             .unwrap_or_default();
         widen_link(&mut next, link, trailer_cut(token));
     }
-    match glue(plain, next_plain) {
+    match glue(plain, next_plain, words) {
         Glue::Direct => {}
         Glue::Space => {
             if let Some(last) = spans.last_mut() {
@@ -1143,6 +1344,11 @@ fn drop_prefix(spans: &mut Vec<Span>, mut count: usize) {
 }
 
 fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
+    let typical = para
+        .sizes
+        .iter()
+        .max_by_key(|entry| entry.1)
+        .map_or(para.size, |entry| entry.0);
     if let Some(level) = heading_level(&para, body) {
         list.open = false;
         out.push(MdBlock {
@@ -1153,6 +1359,7 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
             lines: para.lines,
             size: para.size,
             top: para.top,
+            typical,
         });
         return;
     }
@@ -1187,6 +1394,7 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
             lines: para.lines,
             size: para.size,
             top: para.top,
+            typical,
         });
         return;
     }
@@ -1199,6 +1407,7 @@ fn finish(para: Para, body: f64, list: &mut ListState, out: &mut Vec<MdBlock>) {
         lines: para.lines,
         size: para.size,
         top: para.top,
+        typical,
     });
 }
 
@@ -1213,18 +1422,28 @@ fn start(line: &Prepared<'_>) -> Para {
         band: line.line.band,
         lead: line.lead.clone(),
         top: line.line.center,
+        sizes: vec![(line.typical, line.weight)],
     }
 }
 
-fn extend(para: &mut Para, line: &Prepared<'_>) {
+fn extend(para: &mut Para, line: &Prepared<'_>, words: &Words) {
     append_spans(
         &mut para.spans,
         &mut para.plain,
         line.spans.clone(),
         &line.plain,
+        words,
     );
     para.lines = para.lines.saturating_add(1);
     para.size = para.size.max(line.line.size);
+    match para
+        .sizes
+        .iter_mut()
+        .find(|entry| (entry.0 - line.typical).abs() <= SIZE_STEP * line.typical)
+    {
+        Some(entry) => entry.1 = entry.1.saturating_add(line.weight),
+        None => para.sizes.push((line.typical, line.weight)),
+    }
     if line.line.band == Band::Free {
         para.band = Band::Free;
     }
@@ -1309,12 +1528,23 @@ fn prepare(item: &MdItem, metrics: Metrics) -> Option<Prepared<'_>> {
             .map_or(0, |prefix| prefix.chars().count())
             .saturating_sub(usize::from(spaced))
     });
+    let mut weight = 0_usize;
+    let mut typical = (line.size, 0_usize);
+    for run in &line.runs {
+        let count = run.text.chars().filter(|ch| !ch.is_whitespace()).count();
+        weight = weight.saturating_add(count);
+        if count > typical.1 {
+            typical = (run.size, count);
+        }
+    }
     Some(Prepared {
         line,
         spans,
         plain,
         lead,
         content_x: x_after(line, skip),
+        typical: typical.0,
+        weight,
     })
 }
 
@@ -1322,6 +1552,7 @@ pub(crate) fn page_blocks(
     items: &[MdItem],
     tables: Option<&[Table]>,
     metrics: Metrics,
+    words: &Words,
 ) -> Vec<MdBlock> {
     let body = metrics.body;
     let prepared: Vec<Option<Prepared<'_>>> =
@@ -1353,6 +1584,7 @@ pub(crate) fn page_blocks(
                     lines: 0,
                     size: 0.0,
                     top: *top,
+                    typical: 0.0,
                 });
             } else if matches!(item, MdItem::Break)
                 && let Some((para, _)) = current.take()
@@ -1379,7 +1611,7 @@ pub(crate) fn page_blocks(
             }
         });
         if joins && let Some((para, last)) = current.as_mut() {
-            extend(para, line_next);
+            extend(para, line_next, words);
             *last = index;
             continue;
         }
@@ -1402,15 +1634,50 @@ fn stray(block: &MdBlock) -> bool {
             && !ends_terminal(&block.plain))
 }
 
-fn tail_candidate(blocks: &[MdBlock], body: f64) -> Option<usize> {
+fn note(block: &MdBlock, local: f64) -> bool {
+    block.table_index().is_none() && block.typical < NOTE_SIZE * local
+}
+
+fn page_body(blocks: &[MdBlock]) -> f64 {
+    body_size(
+        blocks
+            .iter()
+            .filter(|block| block.table_index().is_none())
+            .map(|block| (block.typical, block.plain.len()))
+            .collect(),
+    )
+}
+
+fn caption(block: &MdBlock) -> bool {
+    let mut words = block.plain.split_whitespace();
+    let (Some(label), Some(number)) = (words.next(), words.next()) else {
+        return false;
+    };
+    CAPTIONS.contains(&fold_string(label).as_str())
+        && number
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit() || ROMAN.contains(&ch))
+}
+
+fn floating(block: &MdBlock, local: f64, notes: bool) -> bool {
+    note(block, local) != notes || caption(block) || block.table_index().is_some()
+}
+
+fn tail_scan(blocks: &[MdBlock], body: f64, local: f64, notes: bool) -> Option<usize> {
     let mut skipped = 0_usize;
-    for (index, block) in blocks.iter().enumerate().rev() {
+    for (index, block) in blocks.iter().enumerate().rev().take(HEAD_SCAN) {
+        let float = floating(block, local, notes);
         let marginal = block.band != Band::Free && block.size < MARGINAL_SIZE * body;
-        if !marginal
+        if !float
+            && (notes || !marginal)
             && matches!(block.kind, Kind::Paragraph | Kind::Item { .. })
             && !ends_terminal(&block.plain)
         {
             return Some(index);
+        }
+        if !notes && note(block, local) {
+            continue;
         }
         if !stray(block) {
             return None;
@@ -1423,36 +1690,48 @@ fn tail_candidate(blocks: &[MdBlock], body: f64) -> Option<usize> {
     None
 }
 
-fn head_candidate(blocks: &[MdBlock], tail: &MdBlock) -> Option<usize> {
-    for (index, block) in blocks
-        .iter()
-        .enumerate()
-        .take(STRAY_BLOCKS.saturating_add(1))
-    {
+fn head_scan(blocks: &[MdBlock], tail: &MdBlock, local: f64, notes: bool) -> Option<usize> {
+    let mut skipped = 0_usize;
+    for (index, block) in blocks.iter().enumerate().take(HEAD_SCAN) {
+        let float = floating(block, local, notes);
         let evident = evident(&tail.plain, &block.plain);
-        let continues = (block.band == Band::Free || evident)
+        let continues = !float
+            && (block.band == Band::Free || evident)
             && block.kind == Kind::Paragraph
             && strong_continuation(&tail.plain, &block.plain);
         if continues && (index == 0 || evident) {
             return Some(index);
         }
+        if float {
+            continue;
+        }
         if !stray(block) {
+            return None;
+        }
+        skipped = skipped.saturating_add(1);
+        if skipped > STRAY_BLOCKS {
             return None;
         }
     }
     None
 }
 
-pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics) {
+fn join_point(left: &[MdBlock], right: &[MdBlock], body: f64) -> Option<(usize, usize)> {
+    let (near, far) = (page_body(left), page_body(right));
+    [false, true].into_iter().find_map(|notes| {
+        let tail = tail_scan(left, body, near, notes)?;
+        let head = head_scan(right, left.get(tail)?, far, notes)?;
+        Some((tail, head))
+    })
+}
+
+pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics, words: &Words) {
     let mut tail_page: Option<usize> = None;
     for index in 0..pages.len() {
         if let Some(previous) = tail_page
             && let Some((before, after)) = pages.split_at_mut_checked(index)
             && let (Some(left), Some(right)) = (before.get_mut(previous), after.first_mut())
-            && let Some(tail) = tail_candidate(left, metrics.body)
-            && let Some(head) = left
-                .get(tail)
-                .and_then(|block| head_candidate(right, block))
+            && let Some((tail, head)) = join_point(left, right, metrics.body)
         {
             let moved = right.remove(head);
             if let Some(target) = left.get_mut(tail) {
@@ -1462,6 +1741,7 @@ pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics) {
                     &mut target.plain,
                     moved.spans,
                     &moved.plain,
+                    words,
                 );
             }
         }
@@ -1727,6 +2007,8 @@ pub(crate) fn render_page(blocks: &[MdBlock], links: &[LinkInfo]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_pdf::Shuffle;
+    use core::iter::repeat_with;
 
     fn run(text: &str, x0: f64, bold: bool) -> MdRun {
         let width = 5.0_f64 * f64::from(u32::try_from(text.chars().count()).unwrap());
@@ -1755,7 +2037,10 @@ mod tests {
     }
 
     fn render(items: &[MdItem]) -> String {
-        render_page(&page_blocks(items, None, document_metrics([items])), &[])
+        render_page(
+            &page_blocks(items, None, document_metrics([items]), &Words::default()),
+            &[],
+        )
     }
 
     fn joined(left: &str, right: &str) -> (String, String) {
@@ -1767,7 +2052,13 @@ mod tests {
         };
         let mut spans = vec![span(left)];
         let mut plain = left.to_owned();
-        append_spans(&mut spans, &mut plain, vec![span(right)], right);
+        append_spans(
+            &mut spans,
+            &mut plain,
+            vec![span(right)],
+            right,
+            &Words::default(),
+        );
         (plain, concat(&spans))
     }
 
@@ -1787,6 +2078,227 @@ mod tests {
             let (plain, rendered) = joined(left, right);
             assert_eq!(plain, expected);
             assert_eq!(rendered, expected);
+        }
+    }
+
+    #[test]
+    fn hyphenation_follows_document_evidence() {
+        let cases = [
+            ("the informa-", "tion we need", "the information we need"),
+            ("a well-", "known result", "a well-known result"),
+            ("the high-", "level view", "the high-level view"),
+            ("an experi-", "ence report", "an experience report"),
+            ("a GPU-", "based kernel", "a GPU-based kernel"),
+            ("the Trace-", "Monkey engine", "the Trace-Monkey engine"),
+            ("Instruc-", "tions for", "Instructions for"),
+        ];
+        let mut texts = vec![
+            "the information we need and a well-known result",
+            "high level views and a level of high quality",
+            "read the instructions twice",
+        ];
+        for (left, right, _) in cases {
+            texts.push(left);
+            texts.push(right);
+        }
+        let items: Vec<MdItem> = texts
+            .iter()
+            .zip(0_u32..)
+            .map(|(text, row)| line(vec![run(text, 0.0, false)], 700.0 - 12.0 * f64::from(row)))
+            .collect();
+        let words = Words::collect([items.as_slice()]);
+        let glued = |left: &str, right: &str| {
+            let mut spans = vec![Span {
+                text: left.to_owned(),
+                bold: false,
+                italic: false,
+                link: None,
+            }];
+            let mut plain = left.to_owned();
+            append_spans(&mut spans, &mut plain, Vec::new(), right, &words);
+            plain
+        };
+        for (left, right, expected) in cases {
+            assert_eq!(glued(left, right), expected);
+        }
+        assert_eq!(
+            Words::collect([[].as_slice()]).verdict("informa", "tion"),
+            None
+        );
+    }
+
+    #[test]
+    fn random_line_joins_only_ever_drop_a_break_hyphen() {
+        const PIECES: [&str; 12] = [
+            "a", "B", "-", "\u{ad}", " ", "\u{e9}", "1", "/", "http://", "x.", "lo", "ex",
+        ];
+        let mut random = Shuffle(0x2545_f491_4f6c_dd1d);
+        let text = |source: &mut Shuffle| {
+            let mut out = String::new();
+            for _ in 0..source.next(5) {
+                out.push_str(PIECES[usize::try_from(source.next(12)).unwrap()]);
+            }
+            out
+        };
+        for _ in 0_u32..20_000_u32 {
+            let left = text(&mut random);
+            let right = text(&mut random);
+            let evidence = text(&mut random);
+            let items: Vec<MdItem> = [left.as_str(), right.as_str(), evidence.as_str()]
+                .iter()
+                .filter(|piece| !piece.is_empty())
+                .zip(0_u32..)
+                .map(|(piece, row)| {
+                    line(vec![run(piece, 0.0, false)], 700.0 - 12.0 * f64::from(row))
+                })
+                .collect();
+            let words = Words::collect([items.as_slice()]);
+            let mut spans = vec![span(&left)];
+            let mut plain = left.clone();
+            append_spans(&mut spans, &mut plain, vec![span(&right)], &right, &words);
+            let direct = format!("{left}{right}");
+            let spaced = format!("{left} {right}");
+            let mut dropped = left.clone();
+            let removed = dropped.pop();
+            dropped.push_str(&right);
+            let hyphen = matches!(removed, Some('-' | '\u{ad}'));
+            assert!(
+                plain == direct || plain == spaced || (hyphen && plain == dropped),
+                "{left:?} + {right:?} -> {plain:?}"
+            );
+            assert_eq!(concat(&spans), plain);
+        }
+    }
+
+    fn span(text: &str) -> Span {
+        Span {
+            text: text.to_owned(),
+            bold: false,
+            italic: false,
+            link: None,
+        }
+    }
+
+    #[test]
+    fn random_page_joins_never_write_into_notes_captions_or_tables() {
+        const PLAINS: [&str; 8] = [
+            "the change on the",
+            "development set, newstest2013.",
+            "Table 3: Variations on the model",
+            "4 To illustrate why the products",
+            "Upper case start of a sentence.",
+            "continues in lowercase here",
+            "informa-",
+            "tion we need",
+        ];
+        let mut random = Shuffle(0x9e37_79b9_7f4a_7c15);
+        let block = |source: &mut Shuffle| {
+            let kind = match source.next(5) {
+                0 => Kind::Heading(1),
+                1 => Kind::Table(0),
+                2 => Kind::Item {
+                    indent: 0,
+                    marker: "-".to_owned(),
+                    tight: false,
+                },
+                _ => Kind::Paragraph,
+            };
+            let band = match source.next(4) {
+                0 => Band::Top,
+                1 => Band::Bottom,
+                _ => Band::Free,
+            };
+            let plain = PLAINS[usize::try_from(source.next(8)).unwrap()].to_owned();
+            let typical = 7.0_f64 + f64::from(u32::try_from(source.next(5)).unwrap());
+            MdBlock {
+                band,
+                kind,
+                lines: 1 + usize::try_from(source.next(3)).unwrap(),
+                spans: vec![span(&plain)],
+                plain,
+                size: typical,
+                top: 0.0,
+                typical,
+            }
+        };
+        for _ in 0_u32..20_000_u32 {
+            let mut pages: Vec<Vec<MdBlock>> = Vec::new();
+            for _ in 0_u32..2_u32 {
+                let count = usize::try_from(random.next(4)).unwrap() + 1;
+                pages.push(repeat_with(|| block(&mut random)).take(count).collect());
+            }
+            let before = pages.clone();
+            let metrics = Metrics {
+                body: 8.0 + f64::from(u32::try_from(random.next(4)).unwrap()),
+                bold_body: false,
+                italic_body: false,
+                pitch: 1.2,
+            };
+            join_pages(&mut pages, metrics, &Words::default());
+            let (left, right) = (&pages[0], &pages[1]);
+            let (old_left, old_right) = (&before[0], &before[1]);
+            assert_eq!(left.len(), old_left.len());
+            let removed = old_right.len() - right.len();
+            assert!(removed <= 1);
+            let grown: Vec<usize> = (0..left.len())
+                .filter(|&index| left[index].lines != old_left[index].lines)
+                .collect();
+            assert_eq!(grown.len(), removed);
+            for (now, then) in left.iter().zip(old_left) {
+                if now.lines == then.lines {
+                    assert_eq!(now.plain, then.plain);
+                }
+            }
+            let Some(&tail_index) = grown.first() else {
+                continue;
+            };
+            let head = (0..old_right.len())
+                .find(|&skip| {
+                    old_right
+                        .iter()
+                        .enumerate()
+                        .filter(|&(index, _)| index != skip)
+                        .zip(right.iter())
+                        .all(|((_, old), kept)| {
+                            kept.plain == old.plain
+                                && kept.lines == old.lines
+                                && kept.kind == old.kind
+                                && kept.band == old.band
+                                && kept.typical.total_cmp(&old.typical).is_eq()
+                        })
+                })
+                .unwrap();
+            let (moved, tail) = (&old_right[head], &old_left[tail_index]);
+            let (near, far) = (page_body(old_left), page_body(old_right));
+            let candidates = (0..old_right.len()).filter(|&skip| {
+                old_right
+                    .iter()
+                    .enumerate()
+                    .filter(|&(index, _)| index != skip)
+                    .zip(right.iter())
+                    .all(|((_, old), kept)| {
+                        kept.plain == old.plain
+                            && kept.lines == old.lines
+                            && kept.kind == old.kind
+                            && kept.band == old.band
+                            && kept.typical.total_cmp(&old.typical).is_eq()
+                    })
+            });
+            assert!(
+                candidates
+                    .into_iter()
+                    .any(|skip| note(tail, near) == note(&old_right[skip], far)),
+                "{tail:?} {moved:?} near {near} far {far}"
+            );
+            assert!(!caption(tail) && !caption(moved));
+            assert!(tail.table_index().is_none() && moved.table_index().is_none());
+            assert!(matches!(tail.kind, Kind::Paragraph | Kind::Item { .. }));
+            assert_eq!(moved.kind, Kind::Paragraph);
+            assert!(
+                left[tail_index]
+                    .plain
+                    .starts_with(tail.plain.trim_end_matches(['-', '\u{ad}']))
+            );
         }
     }
 
@@ -1859,7 +2371,13 @@ mod tests {
             italic: false,
             link: None,
         };
-        append_spans(&mut spans, &mut plain, vec![next], "/empreendedor; ver");
+        append_spans(
+            &mut spans,
+            &mut plain,
+            vec![next],
+            "/empreendedor; ver",
+            &Words::default(),
+        );
         let links = [LinkInfo {
             page_index: 0,
             rect: [0.0_f64; 4],
@@ -2030,5 +2548,117 @@ mod tests {
         let empty = document_metrics([[].as_slice()]);
         assert!((empty.body - DEFAULT_BODY).abs() < 1e-9_f64);
         assert!((empty.pitch - DEFAULT_PITCH).abs() < 1e-9_f64);
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn any_soft_break(_stem: &str, _right: &str, _words: &Words) -> bool {
+        kani::any()
+    }
+
+    fn any_url_continues(_left: &str, _right: &str) -> bool {
+        kani::any()
+    }
+
+    fn any_class(_ch: char) -> bool {
+        kani::any()
+    }
+
+    #[kani::proof]
+    #[kani::stub(soft_break, any_soft_break)]
+    #[kani::stub(url_continues, any_url_continues)]
+    #[kani::stub(char::is_alphanumeric, any_class)]
+    #[kani::stub(char::is_alphabetic, any_class)]
+    #[kani::stub(char::is_lowercase, any_class)]
+    #[kani::stub(char::is_whitespace, any_class)]
+    #[kani::unwind(6)]
+    fn glue_only_drops_a_trailing_break_hyphen() {
+        let left_bytes: [u8; 4] = kani::any();
+        let right_bytes: [u8; 2] = kani::any();
+        let (Ok(left), Ok(right)) = (
+            core::str::from_utf8(&left_bytes),
+            core::str::from_utf8(&right_bytes),
+        ) else {
+            return;
+        };
+        let decision = glue(left, right, &Words::default());
+        if matches!(decision, Glue::DropLast) {
+            assert!(left.ends_with('-') || left.ends_with('\u{ad}'));
+            let last = left.chars().next_back().map_or(0, char::len_utf8);
+            let stem = left.get(..left.len() - last);
+            assert!(stem.is_some_and(|kept| !kept.is_empty()));
+        }
+    }
+
+    fn any_terminal(_text: &str) -> bool {
+        kani::any()
+    }
+
+    fn any_continuation(_previous: &str, _next: &str) -> bool {
+        kani::any()
+    }
+
+    fn by_lines_caption(block: &MdBlock) -> bool {
+        block.lines == 2
+    }
+
+    fn first_typical(blocks: &[MdBlock]) -> f64 {
+        blocks.first().map_or(0.0, |block| block.typical)
+    }
+
+    fn any_block() -> MdBlock {
+        let kind = match kani::any::<u8>() {
+            0 => Kind::Paragraph,
+            1 => Kind::Heading(1),
+            2 => Kind::Table(0),
+            _ => Kind::Item {
+                indent: 0,
+                marker: String::new(),
+                tight: false,
+            },
+        };
+        let band = match kani::any::<u8>() {
+            0 => Band::Top,
+            1 => Band::Bottom,
+            _ => Band::Free,
+        };
+        let lines: u8 = kani::any();
+        kani::assume(lines <= 3);
+        MdBlock {
+            band,
+            kind,
+            lines: usize::from(lines),
+            plain: String::new(),
+            size: f64::from(kani::any::<i8>()),
+            spans: Vec::new(),
+            top: 0.0,
+            typical: f64::from(kani::any::<i8>()),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::stub(ends_terminal, any_terminal)]
+    #[kani::stub(strong_continuation, any_continuation)]
+    #[kani::stub(evident, any_continuation)]
+    #[kani::stub(caption, by_lines_caption)]
+    #[kani::stub(page_body, first_typical)]
+    #[kani::unwind(4)]
+    fn page_joins_pair_body_with_body_and_notes_with_notes() {
+        let left = [any_block(), any_block()];
+        let right = [any_block(), any_block()];
+        let body = f64::from(kani::any::<i8>());
+        if let Some((tail, head)) = join_point(&left, &right, body) {
+            let (Some(target), Some(moved)) = (left.get(tail), right.get(head)) else {
+                panic!("join point out of bounds");
+            };
+            assert!(note(target, first_typical(&left)) == note(moved, first_typical(&right)));
+            assert!(!by_lines_caption(target) && !by_lines_caption(moved));
+            assert!(target.table_index().is_none() && moved.table_index().is_none());
+            assert!(matches!(target.kind, Kind::Paragraph | Kind::Item { .. }));
+            assert!(moved.kind == Kind::Paragraph);
+        }
     }
 }

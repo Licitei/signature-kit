@@ -3,12 +3,14 @@ use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
 
+use crate::columns::regions;
 use crate::document::{Document, Page, PageRequest, borrow_pages};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::Limits;
 use crate::inspection::LinkInfo;
 use crate::markdown::{
-    MdBlock, MdItem, MdLine, MdRun, document_metrics, join_pages, page_blocks, render_page,
+    MdBlock, MdItem, MdLine, MdRun, Words, body_size, document_metrics, join_pages, page_blocks,
+    render_page,
 };
 use crate::table::{
     Cell, Rule, Table, TableEdges, append_continuation, column_of, merge_row, render_text,
@@ -30,6 +32,14 @@ const CORE_BOTTOM: f64 = 0.2;
 const DUPLICATE_OVERLAP: f64 = 0.5;
 const MAX_CUT_DEPTH: usize = 48;
 const FLOWING_LINES: usize = 3;
+const SCRIPT_RATIO: f64 = 0.8;
+const SCRIPT_REACH: f64 = 0.3;
+const SCRIPT_GAP: f64 = 0.5;
+const SCRIPT_OVERLAP: f64 = 0.2;
+const SCRIPT_CHARS: usize = 6;
+const SCRIPT_FLOOR: f64 = 0.45;
+const FOOTNOTE_SIZE: f64 = 0.91;
+const PROSE_JOINS: usize = 3;
 
 const ROW_GAP: f64 = 2.6;
 
@@ -62,15 +72,15 @@ const FURNITURE_MIN_PAGES: usize = 3;
 const FURNITURE_SHARE: usize = 20;
 
 #[derive(Clone, Copy)]
-struct Frag<'data> {
-    bold: bool,
-    italic: bool,
-    size: f64,
-    text: &'data str,
-    x0: f64,
-    x1: f64,
-    y0: f64,
-    y1: f64,
+pub(crate) struct Frag<'data> {
+    pub bold: bool,
+    pub italic: bool,
+    pub size: f64,
+    pub text: &'data str,
+    pub x0: f64,
+    pub x1: f64,
+    pub y0: f64,
+    pub y1: f64,
 }
 
 impl Frag<'_> {
@@ -83,10 +93,48 @@ impl Frag<'_> {
     }
 }
 
-struct Line {
-    center: f64,
-    height: f64,
-    members: Vec<usize>,
+pub(crate) struct Line {
+    pub center: f64,
+    pub height: f64,
+    pub least: f64,
+    pub members: Vec<usize>,
+    pub size: f64,
+}
+
+impl Line {
+    fn accepts(&self, frags: &[Frag<'_>], frag: &Frag<'_>) -> Option<bool> {
+        if (self.center - frag.center()).abs() <= SAME_LINE * self.height.min(frag.height()) {
+            return Some(false);
+        }
+        let mixed = frag.size <= SCRIPT_RATIO * self.size || self.least <= SCRIPT_RATIO * frag.size;
+        (mixed
+            && self
+                .members
+                .iter()
+                .filter_map(|&member| frags.get(member))
+                .any(|member| scripted(member, frag) || scripted(frag, member)))
+        .then_some(true)
+    }
+
+    fn admit(&mut self, index: usize, frag: &Frag<'_>, scripted: bool) {
+        self.members.push(index);
+        self.height = self.height.min(frag.height());
+        if scripted && self.size <= SCRIPT_RATIO * frag.size {
+            self.center = frag.center();
+        }
+        self.size = self.size.max(frag.size);
+        self.least = self.least.min(frag.size);
+    }
+
+    fn new(index: usize, frag: &Frag<'_>) -> Self {
+        Self {
+            center: frag.center(),
+            height: frag.height(),
+            least: frag.size,
+            members: vec![index],
+            size: frag.size,
+        }
+    }
 }
 
 struct Segment {
@@ -180,6 +228,21 @@ struct Mode {
     text: bool,
 }
 
+#[derive(Clone, Copy)]
+struct Context<'ctx> {
+    extent: Option<[f64; 4]>,
+    links: &'ctx [LinkRect],
+    mode: Mode,
+}
+
+struct View<'ctx, 'data> {
+    extent: Option<[f64; 4]>,
+    frags: &'ctx [Frag<'data>],
+    links: &'ctx [LinkRect],
+    mode: Mode,
+    segments: &'ctx [Segment],
+}
+
 #[derive(Default)]
 struct PoolOut {
     md: Vec<MdItem>,
@@ -217,6 +280,22 @@ struct Recurring {
     share: usize,
 }
 type FurnitureKey = (String, i64, i64);
+fn scripted(base: &Frag<'_>, script: &Frag<'_>) -> bool {
+    if script.size > SCRIPT_RATIO * base.size
+        || script.size < SCRIPT_FLOOR * base.size
+        || script.text.chars().filter(|ch| !ch.is_whitespace()).count() > SCRIPT_CHARS
+    {
+        return false;
+    }
+    let reach = SCRIPT_REACH * base.height();
+    let nested = script.y0 >= base.y0 - reach && script.y1 <= base.y1 + reach;
+    let slack = SCRIPT_GAP * base.size;
+    let overlap = SCRIPT_OVERLAP * script.size;
+    let after = script.x0 >= base.x1 - overlap && script.x0 <= base.x1 + slack;
+    let before = script.x1 <= base.x0 + overlap && script.x1 >= base.x0 - slack;
+    nested && (after || before)
+}
+
 fn turn(quarter: usize, x: f64, y: f64) -> (f64, f64) {
     match quarter & 3 {
         0 => (x, y),
@@ -278,27 +357,24 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
         let Some(frag) = frags.get(index) else {
             continue;
         };
-        let center = frag.center();
-        let height = frag.height();
         let start = lines.len().saturating_sub(LOOKBACK);
-        let mut target = None;
-        for (position, line) in lines.iter().enumerate().skip(start).rev() {
-            if (line.center - center).abs() <= SAME_LINE * line.height.min(height) {
-                target = Some(position);
-                break;
-            }
+        let target = lines
+            .iter()
+            .enumerate()
+            .skip(start)
+            .rev()
+            .find_map(|(position, line)| {
+                line.accepts(frags, frag).map(|script| (position, script))
+            });
+        match target
+            .and_then(|(position, script)| lines.get_mut(position).map(|line| (line, script)))
+        {
+            Some((line, script)) => line.admit(index, frag, script),
+            None => lines.push(Line::new(index, frag)),
         }
-        match target.and_then(|position| lines.get_mut(position)) {
-            Some(line) => {
-                line.members.push(index);
-                line.height = line.height.min(height);
-            }
-            None => lines.push(Line {
-                center,
-                height,
-                members: vec![index],
-            }),
-        }
+    }
+    for line in &mut lines {
+        sort_frag_indices_by_x0(&mut line.members, frags);
     }
     lines
 }
@@ -362,7 +438,6 @@ fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
 
 fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
     let mut members = line.members.clone();
-    sort_frag_indices_by_x0(&mut members, frags);
     drop_duplicates(frags, &mut members);
     let split_em = line_cell_split_em(frags, &members);
     let mut current: Option<Segment> = None;
@@ -730,6 +805,50 @@ fn is_list(cells: &[Cell], columns: usize) -> bool {
     markers >= 2
 }
 
+fn flows_into(upper: &str, lower: &str) -> bool {
+    let above = upper.lines().next_back().unwrap_or_default().trim_end();
+    let below = lower.lines().next().unwrap_or_default().trim_start();
+    let mut tail = above.chars().rev();
+    let (Some(last), Some(first)) = (tail.next(), below.chars().next()) else {
+        return false;
+    };
+    let hyphenated = last == '-' && tail.next().is_some_and(char::is_alphabetic);
+    first.is_lowercase() && (hyphenated || last.is_alphabetic() || last == ',')
+}
+
+fn prose_columns(cells: &[Cell], columns: usize) -> bool {
+    let filled = cells
+        .iter()
+        .filter(|cell| !cell.text.trim().is_empty())
+        .count();
+    if columns < 2 || filled.saturating_mul(20) < cells.len().saturating_mul(17) {
+        return false;
+    }
+    let mut flowing = 0_usize;
+    for column in 0..columns {
+        let mut pairs = 0_usize;
+        let mut joins = 0_usize;
+        let texts = cells
+            .iter()
+            .skip(column)
+            .step_by(columns)
+            .map(|cell| cell.text.as_str());
+        for (upper, lower) in texts.clone().zip(texts.skip(1)) {
+            if upper.trim().is_empty() || lower.trim().is_empty() {
+                continue;
+            }
+            pairs = pairs.saturating_add(1);
+            if flows_into(upper, lower) {
+                joins = joins.saturating_add(1);
+            }
+        }
+        if joins >= PROSE_JOINS && joins.saturating_mul(5) >= pairs.saturating_mul(2) {
+            flowing = flowing.saturating_add(1);
+        }
+    }
+    flowing >= 2
+}
+
 fn truncate_unmappable<'seg, F>(rows: &mut Vec<Vec<usize>>, columns: &[(f64, f64)], line_at: F)
 where
     F: Fn(usize) -> Option<&'seg [Segment]>,
@@ -885,7 +1004,7 @@ fn aligned_tables(
             continue;
         }
         let (cells, bounds) = aligned_cells(frags, &rows, &columns, line_at);
-        if is_list(&cells, columns.len()) {
+        if is_list(&cells, columns.len()) || prose_columns(&cells, columns.len()) {
             index = last.saturating_add(1);
             continue;
         }
@@ -923,7 +1042,12 @@ fn cell_text(frags: &[Frag<'_>]) -> String {
         aligned: false,
         text: true,
     };
-    layout_pool(frags, &[], None, mode, &[], &mut sink);
+    let context = Context {
+        extent: None,
+        links: &[],
+        mode,
+    };
+    layout_pool(frags, &[], context, &mut sink);
     assemble(&sink.pieces, &HashMap::new(), 0).replace("\n\n", "\n")
 }
 
@@ -1071,24 +1195,193 @@ fn md_line(
             link: link_at(links, frag),
         })
         .collect();
+    let lettered = segment
+        .members
+        .iter()
+        .filter_map(|&index| frags.get(index))
+        .filter(|frag| frag.text.chars().any(char::is_alphanumeric))
+        .map(|frag| frag.size)
+        .fold(0.0_f64, f64::max);
     MdLine {
         runs,
         x0: segment.x0,
         x1: segment.x1,
         center: segment.center,
-        size: segment.size,
+        size: if lettered > 0.0_f64 {
+            lettered
+        } else {
+            segment.size
+        },
         band: band_of(extent, segment.center, segment.center),
     }
 }
 
-fn layout_pool(
-    frags: &[Frag<'_>],
-    rulings: &[Rule],
-    extent: Option<[f64; 4]>,
-    mode: Mode,
-    links: &[LinkRect],
+fn dominant_size(frags: &[Frag<'_>]) -> f64 {
+    body_size(
+        frags
+            .iter()
+            .map(|frag| (frag.size, frag.text.len()))
+            .collect(),
+    )
+}
+
+fn emit(
+    view: &View<'_, '_>,
+    blocks: &[Block],
+    ids: &[usize],
+    tables: &[Table],
+    opening: &'static str,
     out: &mut PoolOut,
 ) {
+    let mut previous: Option<&Block> = None;
+    for &id in ids {
+        let Some(block) = blocks.get(id) else {
+            continue;
+        };
+        if let Some(index) = block.table
+            && let Some(table) = tables.get(index)
+        {
+            let band = band_of(view.extent, table.bbox[1], table.bbox[3]);
+            if view.mode.markdown {
+                out.md.push(MdItem::Table {
+                    index,
+                    band,
+                    top: table.bbox[3],
+                });
+            } else {
+                out.pieces.push(Piece {
+                    text: render_text(table),
+                    lead: if previous.is_some() { "\n\n" } else { opening },
+                    band,
+                });
+            }
+            previous = Some(block);
+            continue;
+        }
+        if view.mode.markdown {
+            for &segment_index in &block.segments {
+                if let Some(segment) = view.segments.get(segment_index) {
+                    push_md_line(
+                        &mut out.md,
+                        md_line(view.frags, segment, view.extent, view.links),
+                    );
+                }
+            }
+            previous = Some(block);
+            continue;
+        }
+        let leading = previous.map_or(opening, |before| separator(view.segments, before, block));
+        for (row, &segment_index) in block.segments.iter().enumerate() {
+            let Some(segment) = view.segments.get(segment_index) else {
+                continue;
+            };
+            let mut text = String::new();
+            write_segment(view.frags, segment, &mut text);
+            out.pieces.push(Piece {
+                text,
+                lead: if row == 0 { leading } else { "\n" },
+                band: band_of(view.extent, segment.center, segment.center),
+            });
+        }
+        previous = Some(block);
+    }
+}
+
+fn footnote_cut(blocks: &[Block], segments: &[Segment], order: &[usize], limit: f64) -> usize {
+    let small = |id: &usize| {
+        blocks.get(*id).is_some_and(|block| {
+            block.table.is_none()
+                && block
+                    .segments
+                    .iter()
+                    .filter_map(|&index| segments.get(index))
+                    .all(|segment| segment.size < limit)
+        })
+    };
+    let trailing = order.iter().rev().take_while(|id| small(id)).count();
+    if trailing == order.len() {
+        return order.len();
+    }
+    order.len().saturating_sub(trailing)
+}
+
+fn flow_region(
+    frags: &[Frag<'_>],
+    lines: &[Line],
+    mut table_ids: Vec<usize>,
+    tables: &mut Vec<Table>,
+    context: Context<'_>,
+    out: &mut PoolOut,
+    late: Option<(f64, &mut PoolOut)>,
+) {
+    let mut segments: Vec<Segment> = Vec::with_capacity(lines.len());
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(lines.len());
+    for line in lines {
+        let before = segments.len();
+        split_segments(frags, line, &mut segments);
+        if segments.len() > before {
+            ranges.push((before, segments.len()));
+        }
+    }
+    if context.mode.aligned {
+        let (found, consumed) = aligned_tables(frags, &segments, &ranges);
+        if !found.is_empty() {
+            for table in found {
+                table_ids.push(tables.len());
+                tables.push(table);
+            }
+            let mut taken = consumed.into_iter();
+            ranges.retain(|_| !taken.next().unwrap_or(false));
+        }
+    }
+    if !context.mode.text {
+        return;
+    }
+    let mut blocks = build_blocks(&segments, &ranges);
+    for &index in &table_ids {
+        let Some(table) = tables.get(index) else {
+            continue;
+        };
+        let [x0, y0, x1, y1] = table.bbox;
+        blocks.push(Block {
+            table: Some(index),
+            segments: Vec::new(),
+            x0,
+            x1,
+            top: y1,
+            bottom: y0,
+            last: 0,
+            last_x0: x0,
+            last_x1: x1,
+            last_center: y1,
+            last_size: 0.0,
+        });
+    }
+    let ids: Vec<usize> = (0..blocks.len()).collect();
+    let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
+    reading_order(&blocks, ids, 0, context.mode.markdown, &mut order);
+    let view = View {
+        frags,
+        segments: &segments,
+        extent: context.extent,
+        links: context.links,
+        mode: context.mode,
+    };
+    let opening = if out.pieces.is_empty() { "" } else { "\n" };
+    let cut = late.as_ref().map_or(order.len(), |&(limit, _)| {
+        footnote_cut(&blocks, &segments, &order, limit)
+    });
+    let (body, notes) = order.split_at(cut.min(order.len()));
+    emit(&view, &blocks, body, tables, opening, out);
+    if let Some((_, sink)) = late
+        && !notes.is_empty()
+    {
+        let lead = if sink.pieces.is_empty() { "" } else { "\n\n" };
+        emit(&view, &blocks, notes, tables, lead, sink);
+    }
+}
+
+fn layout_pool(frags: &[Frag<'_>], rulings: &[Rule], context: Context<'_>, out: &mut PoolOut) {
     if frags.is_empty() {
         return;
     }
@@ -1102,96 +1395,46 @@ fn layout_pool(
         None => (None, Vec::new()),
     };
     let free: &[Frag<'_>] = owned.as_deref().unwrap_or(frags);
-    let text_lines = cluster_lines(free);
-    let mut segments: Vec<Segment> = Vec::with_capacity(text_lines.len());
-    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(text_lines.len());
-    for line in &text_lines {
-        let before = segments.len();
-        split_segments(free, line, &mut segments);
-        if segments.len() > before {
-            ranges.push((before, segments.len()));
+    let lines = cluster_lines(free);
+    let rects: Vec<[f64; 4]> = tables.iter().map(|table| table.bbox).collect();
+    match regions(free, &lines, &rects) {
+        None => {
+            let ids = (0..tables.len()).collect();
+            flow_region(free, &lines, ids, &mut tables, context, out, None);
         }
-    }
-    if mode.aligned {
-        let (found, consumed) = aligned_tables(free, &segments, &ranges);
-        if !found.is_empty() {
-            tables.extend(found);
-            let mut taken = consumed.into_iter();
-            ranges.retain(|_| !taken.next().unwrap_or(false));
-        }
-    }
-    if mode.text {
-        let mut blocks = build_blocks(&segments, &ranges);
-        for (index, table) in tables.iter().enumerate() {
-            let [x0, y0, x1, y1] = table.bbox;
-            blocks.push(Block {
-                table: Some(index),
-                segments: Vec::new(),
-                x0,
-                x1,
-                top: y1,
-                bottom: y0,
-                last: 0,
-                last_x0: x0,
-                last_x1: x1,
-                last_center: y1,
-                last_size: 0.0,
-            });
-        }
-        let ids: Vec<usize> = (0..blocks.len()).collect();
-        let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
-        reading_order(&blocks, ids, 0, mode.markdown, &mut order);
-        let mut previous: Option<&Block> = None;
-        for id in order {
-            let Some(block) = blocks.get(id) else {
-                continue;
-            };
-            if let Some(index) = block.table
-                && let Some(table) = tables.get(index)
+        Some(found) => {
+            let limit = FOOTNOTE_SIZE * dominant_size(free);
+            let mut late = PoolOut::default();
+            let count = found.len();
+            for (position, region) in found.into_iter().enumerate() {
+                let local: Vec<Frag<'_>> = region
+                    .frags
+                    .iter()
+                    .filter_map(|&index| free.get(index))
+                    .copied()
+                    .collect();
+                let local_lines = cluster_lines(&local);
+                let deferred = (position.saturating_add(1) < count).then_some((limit, &mut late));
+                flow_region(
+                    &local,
+                    &local_lines,
+                    region.tables,
+                    &mut tables,
+                    context,
+                    out,
+                    deferred,
+                );
+            }
+            if let Some(first) = late.pieces.first_mut()
+                && !out.pieces.is_empty()
             {
-                let band = band_of(extent, table.bbox[1], table.bbox[3]);
-                if mode.markdown {
-                    out.md.push(MdItem::Table {
-                        index,
-                        band,
-                        top: table.bbox[3],
-                    });
-                } else {
-                    out.pieces.push(Piece {
-                        text: render_text(table),
-                        lead: if previous.is_some() { "\n\n" } else { "" },
-                        band,
-                    });
-                }
-                previous = Some(block);
-                continue;
+                first.lead = "\n\n";
             }
-            if mode.markdown {
-                for &segment_index in &block.segments {
-                    if let Some(segment) = segments.get(segment_index) {
-                        push_md_line(&mut out.md, md_line(free, segment, extent, links));
-                    }
-                }
-                previous = Some(block);
-                continue;
-            }
-            let leading = previous.map_or("", |before| separator(&segments, before, block));
-            for (row, &segment_index) in block.segments.iter().enumerate() {
-                let Some(segment) = segments.get(segment_index) else {
-                    continue;
-                };
-                let mut text = String::new();
-                write_segment(free, segment, &mut text);
-                out.pieces.push(Piece {
-                    text,
-                    lead: if row == 0 { leading } else { "\n" },
-                    band: band_of(extent, segment.center, segment.center),
-                });
-            }
-            previous = Some(block);
+            out.pieces.append(&mut late.pieces);
+            out.md.append(&mut late.md);
         }
     }
-    if !mode.text || mode.markdown {
+    if !context.mode.text || context.mode.markdown {
         out.tables.extend(tables);
     }
 }
@@ -1393,7 +1636,12 @@ fn page_layout(
             .map(|&(rect, index)| (turn_rect(turns, rect), index))
             .collect();
         let mut sink = PoolOut::default();
-        layout_pool(pool, &ruled_lines, pool_extent, mode, &turned, &mut sink);
+        let pool_context = Context {
+            extent: pool_extent,
+            links: &turned,
+            mode,
+        };
+        layout_pool(pool, &ruled_lines, pool_context, &mut sink);
         if !layout.md.is_empty() && !sink.md.is_empty() {
             layout.md.push(MdItem::Break);
         }
@@ -1732,7 +1980,7 @@ fn merged_document_tables(
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
     let blocks: Vec<_> = layouts
         .iter()
-        .map(|layout| page_blocks(&layout.md, None, metrics))
+        .map(|layout| page_blocks(&layout.md, None, metrics, &Words::default()))
         .collect();
     merge_tables(&mut layouts, &blocks, drop_running);
     Ok(layouts
@@ -1749,9 +1997,10 @@ fn markdown_pages(
     limits: &Limits,
 ) -> Outcome<Vec<String>> {
     let metrics = document_metrics(layouts.iter().map(|layout| layout.md.as_slice()));
+    let words = Words::collect(layouts.iter().map(|layout| layout.md.as_slice()));
     let mut pages: Vec<Vec<MdBlock>> = layouts
         .iter()
-        .map(|layout| page_blocks(&layout.md, Some(&layout.tables), metrics))
+        .map(|layout| page_blocks(&layout.md, Some(&layout.tables), metrics, &words))
         .collect();
     if options.merge_across_pages && pages.len() >= 2 {
         merge_tables(layouts, &pages, options.drop_running);
@@ -1792,7 +2041,7 @@ fn markdown_pages(
         }
     }
     if pages.len() >= 2 {
-        join_pages(&mut pages, metrics);
+        join_pages(&mut pages, metrics, &words);
     }
     let mut texts: Vec<String> = Vec::with_capacity(pages.len());
     let mut total_bytes = 0_usize;
@@ -2322,9 +2571,10 @@ mod structure_tests {
     use crate::num::usize_to_f64;
     use crate::test_pdf::build;
     use crate::test_pdf::stream_object;
-    use crate::test_pdf::{PageSpec, bold, document, grid, page, rule, text};
+    use crate::test_pdf::{PageSpec, Shuffle, bold, document, grid, page, rule, text};
     use core::fmt::Write as _;
     use core::hint::black_box;
+    use core::iter::repeat_with;
 
     const PLAIN: TextOptions = TextOptions {
         markdown: false,
@@ -2341,6 +2591,54 @@ mod structure_tests {
         merge_across_pages: false,
         drop_running: true,
     };
+
+    const LEFT_COLUMN: [&str; 8] = [
+        "Dynamic languages such as JavaScript are hard",
+        "to compile because no concrete type information",
+        "is available, so traditional compilers emit code",
+        "that handles every possible type combination at",
+        "runtime and they are slower than they could be,",
+        "which is why we present a new alternative that",
+        "records hot loops while the program is running",
+        "and is now the de facto standard for client-",
+    ];
+
+    const RIGHT_COLUMN: [&str; 7] = [
+        "side web programming and it is used for the",
+        "application logic of browser based productivity",
+        "applications such as mail, documents and many",
+        "collaboration suites that need fast startup and",
+        "high performance, so virtual machines must keep",
+        "both a low startup time and a good steady state",
+        "for every client-side page the user may load.",
+    ];
+
+    const NARROW_COLUMNS: [[&str; 6]; 3] = [
+        [
+            "Bona fide residents of Puerto",
+            "Rico are no longer required to",
+            "have three or more qualifying",
+            "children to be eligible for the",
+            "credit under the new rules and",
+            "may claim it if they have one.",
+        ],
+        [
+            "Most paid preparers must file",
+            "returns electronically when they",
+            "prepare and file them, and your",
+            "preparer may make you aware of",
+            "this requirement and the options",
+            "that are available to you now.",
+        ],
+        [
+            "You can pay your taxes by making",
+            "electronic payments online from",
+            "a mobile device using the app or",
+            "in cash, or by check or money",
+            "order, and paying electronically",
+            "is quick, easy and much faster.",
+        ],
+    ];
 
     fn tables_of(bytes: &[u8]) -> Vec<Table> {
         document_tables(
@@ -3300,5 +3598,293 @@ mod structure_tests {
             .unwrap(),
         );
         drop(document_text(&bytes, PageRequest::Indexes(None), &text_limits(), MARKDOWN).unwrap());
+    }
+
+    fn column_lines(x: f64, top: f64, size: f64, pitch: f64, lines: &[&str]) -> String {
+        let mut out = String::new();
+        for (index, line) in lines.iter().enumerate() {
+            out.push_str(&text(x, top - pitch * usize_to_f64(index), size, line));
+        }
+        out
+    }
+
+    fn position(haystack: &str, needle: &str) -> usize {
+        haystack
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} missing from {haystack:?}"))
+    }
+
+    fn two_column_article() -> Vec<u8> {
+        let mut content = bold(
+            150.0,
+            760.0,
+            16.0,
+            "Trace Based Compilation For Dynamic Code",
+        );
+        content.push_str(&text(
+            160.0,
+            735.0,
+            10.0,
+            "Someone Example and Another Person Example",
+        ));
+        content.push_str(&bold(50.0, 690.0, 11.0, "Abstract"));
+        content.push_str(&column_lines(50.0, 672.0, 10.0, 12.0, &LEFT_COLUMN));
+        content.push_str(&column_lines(305.0, 690.0, 10.0, 12.0, &RIGHT_COLUMN));
+        content.push_str(&text(
+            50.0,
+            120.0,
+            7.0,
+            "Permission to make copies of this work is granted for classroom use.",
+        ));
+        document(&[page(content)], &[])
+    }
+
+    #[test]
+    fn two_column_article_reads_the_whole_left_column_first() {
+        let bytes = two_column_article();
+        for options in [MARKDOWN, PLAIN] {
+            let pages = pages_of(&bytes, options);
+            let out = pages.first().unwrap();
+            let title = position(out, "Trace Based Compilation");
+            let left_start = position(out, "Dynamic languages such as JavaScript");
+            let left_end = position(out, "records hot loops while the program");
+            let right_start = position(out, "web programming and it is used");
+            let right_end = position(out, "page the user may load");
+            let note = position(out, "Permission to make copies");
+            assert!(title < left_start, "{out}");
+            assert!(left_start < left_end && left_end < right_start, "{out}");
+            assert!(right_start < right_end && right_end < note, "{out}");
+        }
+        let markdown = pages_of(&bytes, MARKDOWN).concat();
+        assert!(
+            markdown.contains("the de facto standard for client-side web programming"),
+            "{markdown}"
+        );
+    }
+
+    fn narrow_columns() -> Vec<u8> {
+        let mut content = String::new();
+        for (column, lines) in NARROW_COLUMNS.iter().enumerate() {
+            let x = 42.0_f64 + 135.0_f64 * usize_to_f64(column);
+            content.push_str(&column_lines(x, 700.0, 8.0, 9.5, lines));
+        }
+        document(&[page(content)], &[])
+    }
+
+    #[test]
+    fn tight_three_column_pages_read_column_by_column() {
+        let bytes = narrow_columns();
+        for options in [MARKDOWN, PLAIN] {
+            let out = pages_of(&bytes, options).concat();
+            let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                flat.contains("Bona fide residents of Puerto Rico are no longer required to have"),
+                "{out}"
+            );
+            let first = position(&flat, "may claim it if they have one.");
+            let second = position(&flat, "Most paid preparers must file");
+            let third = position(&flat, "You can pay your taxes");
+            assert!(first < second && second < third, "{out}");
+            assert!(!out.contains('|'), "{out}");
+        }
+        assert_eq!(tables_of(&bytes).len(), 0);
+    }
+
+    #[test]
+    fn index_columns_are_lists_not_tables() {
+        let entries = |label: &str| -> Vec<String> {
+            (0_usize..7_usize)
+                .flat_map(|index| {
+                    [
+                        format!("{label} heading number {index} 12"),
+                        format!("Subentry about {label} topic 34"),
+                    ]
+                })
+                .collect()
+        };
+        let (left, right) = (entries("Alpha"), entries("Omega"));
+        let mut content = String::new();
+        for (row, (first, second)) in left.iter().zip(&right).enumerate() {
+            let y = 700.0_f64 - 9.0_f64 * usize_to_f64(row);
+            let indent = if row.rem_euclid(2) == 0 {
+                0.0_f64
+            } else {
+                11.0_f64
+            };
+            content.push_str(&text(42.0 + indent, y, 8.0, first));
+            content.push_str(&text(178.0 + indent, y, 8.0, second));
+        }
+        let bytes = document(&[page(content)], &[]);
+        assert_eq!(tables_of(&bytes).len(), 0);
+        let out = pages_of(&bytes, MARKDOWN).concat();
+        assert!(
+            position(&out, "Alpha heading number 6") < position(&out, "Omega heading number 0"),
+            "{out}"
+        );
+    }
+
+    fn continued_paper() -> Vec<u8> {
+        let mut first = column_lines(
+            50.0,
+            700.0,
+            10.0,
+            12.0,
+            &[
+                "To evaluate the importance of each component we varied",
+                "the base model in different ways, measuring the change",
+                "in performance on English to German translation on the",
+            ],
+        );
+        first.push_str(&text(50.0, 64.5, 6.0, "\\206"));
+        first.push_str(&text(
+            53.6,
+            60.0,
+            8.0,
+            "Work performed while at the research lab.",
+        ));
+        first.push_str(&text(
+            50.0,
+            48.0,
+            8.0,
+            "We used values of 2.8 and 3.7 TFLOPS for each GPU and",
+        ));
+        let mut second = text(
+            50.0,
+            760.0,
+            10.0,
+            "Table 3: Variations on the base model and their scores.",
+        );
+        second.push_str(&column_lines(
+            50.0,
+            700.0,
+            10.0,
+            12.0,
+            &[
+                "development set, which we report in the table above.",
+                "We used beam search as described in the previous section.",
+            ],
+        ));
+        document(&[page(first), page(second)], &[])
+    }
+
+    #[test]
+    fn page_continuations_skip_footnotes_and_captions() {
+        let pages = pages_of(&continued_paper(), MARKDOWN);
+        let all = pages.join("\n\n");
+        assert!(
+            all.contains(
+                "on English to German translation on the development set, which we report"
+            ),
+            "{all}"
+        );
+        assert!(
+            all.contains("\u{2020} Work performed while at the research lab."),
+            "{all}"
+        );
+        assert!(
+            all.contains("TFLOPS for each GPU and\n") || all.ends_with("TFLOPS for each GPU and"),
+            "{all}"
+        );
+        assert!(
+            all.contains("Table 3: Variations on the base model and their scores."),
+            "{all}"
+        );
+        assert!(!all.contains("translation on the Table 3"), "{all}");
+    }
+
+    fn word_counts(text: &str) -> HashMap<String, usize> {
+        let mut counts = HashMap::new();
+        for word in text.split(|ch: char| !ch.is_ascii_alphabetic()) {
+            if !word.is_empty() {
+                let count = counts.entry(word.to_owned()).or_insert(0_usize);
+                *count = count.saturating_add(1);
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn random_column_layouts_keep_every_word_exactly_once() {
+        const VOCABULARY: [&str; 12] = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+            "juliet", "kilo", "lima",
+        ];
+        let mut random = Shuffle(0x9e37_79b9_7f4a_7c15);
+        for _ in 0_u32..120_u32 {
+            let columns = usize::try_from(random.next(4)).unwrap() + 1;
+            let size = 7.0_f64 + usize_to_f64(usize::try_from(random.next(6)).unwrap());
+            let gutter = 3.0_f64 + usize_to_f64(usize::try_from(random.next(40)).unwrap());
+            let width = 520.0_f64 / usize_to_f64(columns) - gutter;
+            let mut content = String::new();
+            let mut expected = String::new();
+            for column in 0..columns {
+                let x = 40.0_f64 + (width + gutter) * usize_to_f64(column);
+                let lines = usize::try_from(random.next(12)).unwrap() + 1;
+                let top = 720.0_f64 - usize_to_f64(usize::try_from(random.next(60)).unwrap());
+                for row in 0..lines {
+                    let fit = f64_to_i64((width / (size * 0.6_f64)).max(6.0_f64)) - 8_i64;
+                    let mut line = String::new();
+                    while i64::try_from(line.len()).unwrap() < fit {
+                        let pick = usize::try_from(random.next(12)).unwrap();
+                        if !line.is_empty() {
+                            line.push(' ');
+                        }
+                        line.push_str(VOCABULARY[pick]);
+                    }
+                    if line.is_empty() {
+                        line.push_str(VOCABULARY[row.rem_euclid(12)]);
+                    }
+                    let y = top - size * 1.2_f64 * usize_to_f64(row);
+                    content.push_str(&text(x, y, size, &line));
+                    expected.push(' ');
+                    expected.push_str(&line);
+                }
+            }
+            let bytes = document(&[page(content)], &[]);
+            let want = word_counts(&expected);
+            for options in [PLAIN, MARKDOWN] {
+                let got = word_counts(&pages_of(&bytes, options).concat());
+                assert_eq!(got, want, "{columns} columns, gutter {gutter}, size {size}");
+            }
+        }
+    }
+
+    #[test]
+    fn random_blocks_are_ordered_as_a_permutation() {
+        let mut random = Shuffle(0x0123_4567_89ab_cdef);
+        let coordinate =
+            |source: &mut Shuffle| f64::from(u32::try_from(source.next(600)).unwrap()) - 50.0_f64;
+        for _ in 0_u32..5_000_u32 {
+            let count = usize::try_from(random.next(9)).unwrap();
+            let blocks: Vec<Block> = repeat_with(|| {
+                let (top, bottom) = (coordinate(&mut random), coordinate(&mut random));
+                let (x0, x1) = (coordinate(&mut random), coordinate(&mut random));
+                Block {
+                    bottom: bottom.min(top),
+                    last: 0,
+                    last_center: top,
+                    last_size: 10.0,
+                    last_x0: x0,
+                    last_x1: x1,
+                    segments: vec![0; usize::try_from(random.next(5)).unwrap()],
+                    table: (random.next(4) == 0).then_some(0),
+                    top: top.max(bottom),
+                    x0: x0.min(x1),
+                    x1: x0.max(x1),
+                }
+            })
+            .take(count)
+            .collect();
+            let mut order = Vec::new();
+            reading_order(
+                &blocks,
+                (0..count).collect(),
+                0,
+                random.next(2) == 0,
+                &mut order,
+            );
+            order.sort_unstable();
+            assert_eq!(order, (0..count).collect::<Vec<_>>());
+        }
     }
 }

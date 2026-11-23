@@ -25,6 +25,7 @@
     "test:integration:server": "nx run @tooling/integration-tests:test:server",
     "test:integration:browser": "vitest run --no-file-parallelism --config tooling/vitest/browser.config.ts shared signers formats && vitest run --no-file-parallelism --config apps/docs/vitest.browser.config.ts apps/docs",
     "test:performance": "vitest run .performance.test",
+    "test:live:pdf-corpus": "SIGNATURE_KIT_PDF_CORPUS=1 vitest run --config tooling/vitest/live.config.ts shared/pdf-core",
     "test:live:remote-signers": "SIGNATURE_KIT_LIVE_REMOTE_SIGNERS=1 vitest run --config tooling/vitest/live.config.ts signers",
     "site:dev": "bun --cwd apps/docs dev",
     "site:build": "nx run @signature-kit/docs:build",

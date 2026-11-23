@@ -5,6 +5,7 @@ mod ccitt;
 mod cff;
 mod cmap;
 mod color;
+mod columns;
 mod deflate;
 mod diagnostics;
 mod display;
