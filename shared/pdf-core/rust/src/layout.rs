@@ -1047,6 +1047,11 @@ fn aligned_tables(
 }
 
 fn cell_text(frags: &[Frag<'_>]) -> String {
+    match frags {
+        [] => return String::new(),
+        [only] => return only.text.replace("\n\n", "\n"),
+        [_, _, ..] => {}
+    }
     let mut sink = PoolOut::default();
     let mode = Mode {
         markdown: false,
