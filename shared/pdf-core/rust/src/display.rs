@@ -202,10 +202,16 @@ impl DisplayList {
     }
 
     pub(crate) fn glyph(&mut self, modes: u8, id: u32, matrix: &Matrix) {
-        self.ops.push(OP_GLYPH);
-        self.ops.push(modes);
-        self.u32(id);
-        self.matrix(matrix);
+        let [id0, id1, id2, id3] = id.to_le_bytes();
+        let mut record = [
+            OP_GLYPH, modes, id0, id1, id2, id3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
+        record
+            .split_at_mut(6)
+            .1
+            .copy_from_slice(&matrix_bytes(matrix));
+        self.ops.extend_from_slice(&record);
     }
 
     pub(crate) fn glyph_define(&mut self, id: u32, path: &PathData) {
@@ -258,9 +264,7 @@ impl DisplayList {
     }
 
     pub(crate) fn matrix(&mut self, matrix: &Matrix) {
-        for value in matrix {
-            self.f32(*value);
-        }
+        self.ops.extend_from_slice(&matrix_bytes(matrix));
     }
 
     pub(crate) fn op(&mut self, code: u8) {
@@ -287,9 +291,8 @@ impl DisplayList {
         self.ops.extend_from_slice(&path.verbs);
         self.u32(u32::try_from(path.coords.len()).unwrap_or(0));
         self.ops.reserve(path.coords.len().saturating_mul(4));
-        for value in &path.coords {
-            self.ops.extend_from_slice(&value.to_le_bytes());
-        }
+        self.ops
+            .extend(path.coords.iter().flat_map(|value| value.to_le_bytes()));
     }
 
     pub(crate) fn text(&mut self, flags: u8, matrix: &Matrix, width: f64, text: &str) {
@@ -309,6 +312,14 @@ impl DisplayList {
     pub(crate) fn u32(&mut self, value: u32) {
         self.ops.extend_from_slice(&value.to_le_bytes());
     }
+}
+
+fn matrix_bytes(matrix: &Matrix) -> [u8; 24] {
+    let mut bytes = [0_u8; 24];
+    for (chunk, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(matrix) {
+        *chunk = f64_to_f32(*value).to_le_bytes();
+    }
+    bytes
 }
 
 pub(crate) fn multiply(first: &Matrix, second: &Matrix) -> Matrix {
