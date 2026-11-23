@@ -1,6 +1,6 @@
 use crate::markdown::reflow_lines;
 use crate::num::widen;
-use crate::num::{sort_unstable_with, usize_to_f64};
+use crate::num::{sort_total, sort_unstable_with, usize_to_f64};
 use core::mem::take;
 use std::collections::HashMap;
 
@@ -238,7 +238,7 @@ fn sort_lines_by_minor(lines: &mut [[f64; 3]]) {
 }
 
 fn cluster(mut values: Vec<f64>) -> Vec<f64> {
-    sort_unstable_with(&mut values, &f64::total_cmp);
+    sort_total(&mut values, &f64::total_cmp);
     let mut levels: Vec<f64> = Vec::new();
     let mut sum = 0.0_f64;
     let mut count = 0_usize;

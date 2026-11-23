@@ -83,10 +83,33 @@ impl Object {
         }
     }
 
+    pub(crate) fn as_array_mut(&mut self) -> Option<&mut [Self]> {
+        if let Self::Array(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
     pub(crate) const fn as_dict(&self) -> Option<&Dict> {
         match self {
             Self::Dict(value) => Some(value),
             Self::Stream(stream) => Some(&stream.dict),
+            Self::Null
+            | Self::Bool(_)
+            | Self::Integer(_)
+            | Self::Real(_)
+            | Self::Name(_)
+            | Self::String(_)
+            | Self::Array(_)
+            | Self::Ref(_) => None,
+        }
+    }
+
+    pub(crate) const fn as_dict_mut(&mut self) -> Option<&mut Dict> {
+        match self {
+            Self::Dict(value) => Some(value),
+            Self::Stream(stream) => Some(&mut stream.dict),
             Self::Null
             | Self::Bool(_)
             | Self::Integer(_)
@@ -126,6 +149,14 @@ impl Object {
             | Self::Dict(_)
             | Self::Stream(_)
             | Self::Ref(_) => None,
+        }
+    }
+
+    pub(crate) const fn as_reference(&self) -> Option<ObjRef> {
+        if let Self::Ref(value) = self {
+            Some(*value)
+        } else {
+            None
         }
     }
 

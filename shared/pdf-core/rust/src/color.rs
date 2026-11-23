@@ -300,17 +300,9 @@ fn parse_indexed(
         .map_or(0, f64_to_usize)
         .min(MAX_INDEXED);
     let table = resolver.resolve(argument(3)?).ok()?;
-    let lookup = match &*table {
-        Object::String(bytes) => bytes.clone(),
-        Object::Stream(stream) => resolver.stream_data(stream).ok()?,
-        Object::Array(_)
-        | Object::Bool(_)
-        | Object::Dict(_)
-        | Object::Integer(_)
-        | Object::Name(_)
-        | Object::Null
-        | Object::Real(_)
-        | Object::Ref(_) => return None,
+    let lookup = match table.as_string() {
+        Some(bytes) => bytes.to_vec(),
+        None => resolver.stream_data(table.as_stream()?).ok()?,
     };
     Some(ColorSpace::Indexed(Box::new(Indexed {
         base,

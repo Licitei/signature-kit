@@ -6,7 +6,7 @@ use crate::deflate::zlib_compress;
 use crate::document::{Document, Page, decode_text_string};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::{Limits, PageInfo};
-use crate::num::{f64_to_i64, sort_unstable_with, unsigned_decimal, widen};
+use crate::num::{f64_to_i64, sort_total, unsigned_decimal, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
 use crate::png::{self, Image};
 use crate::revision::revision_complete;
@@ -796,18 +796,9 @@ fn dict_entry_mut<'object>(dict: &'object mut Dict, key: &[u8]) -> Option<&'obje
 }
 
 fn dict_of(object: &mut Object) -> Outcome<&mut Dict> {
-    match object {
-        Object::Dict(dict) => Ok(dict),
-        Object::Stream(stream) => Ok(&mut stream.dict),
-        Object::Array(_)
-        | Object::Bool(_)
-        | Object::Integer(_)
-        | Object::Name(_)
-        | Object::Null
-        | Object::Real(_)
-        | Object::Ref(_)
-        | Object::String(_) => Err(Failure::request("edit target is not a dictionary")),
-    }
+    object
+        .as_dict_mut()
+        .ok_or_else(|| Failure::request("edit target is not a dictionary"))
 }
 
 fn first_unused_field_name(
@@ -901,7 +892,7 @@ fn first_unused_field_name(
             }
         }
     }
-    sort_unstable_with(&mut taken, &Ord::cmp);
+    sort_total(&mut taken, &Ord::cmp);
     let mut suffix = 1_u64;
     for [value, ..] in taken {
         if value == suffix {
@@ -963,30 +954,8 @@ fn navigate_mut<'object>(
     let mut current = object;
     for step in path {
         current = match step {
-            Step::Key(key) => match current {
-                Object::Dict(dict) => dict_entry_mut(dict, key)?,
-                Object::Stream(stream) => dict_entry_mut(&mut stream.dict, key)?,
-                Object::Array(_)
-                | Object::Bool(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Ref(_)
-                | Object::String(_) => return None,
-            },
-            Step::Index(index) => match current {
-                Object::Array(items) => items.get_mut(*index)?,
-                Object::Bool(_)
-                | Object::Dict(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Ref(_)
-                | Object::Stream(_)
-                | Object::String(_) => return None,
-            },
+            Step::Key(key) => dict_entry_mut(current.as_dict_mut()?, key)?,
+            Step::Index(index) => current.as_array_mut()?.get_mut(*index)?,
         };
     }
     Some(current)
@@ -1006,18 +975,7 @@ fn page_annotations(
     }
     for (position, item) in items.iter().enumerate() {
         let resolved = document.follow(item)?;
-        let reference = match item {
-            Object::Ref(found) => Some(*found),
-            Object::Array(_)
-            | Object::Bool(_)
-            | Object::Dict(_)
-            | Object::Integer(_)
-            | Object::Name(_)
-            | Object::Null
-            | Object::Real(_)
-            | Object::Stream(_)
-            | Object::String(_) => None,
-        };
+        let reference = item.as_reference();
         let index = u32::try_from(position).unwrap_or(u32::MAX);
         let Some(dict) = resolved.as_dict() else {
             annotations.push(AnnotationInfo {
@@ -1136,18 +1094,9 @@ fn signature_slot(document: &Document<'_>, widget_object: &Object, widget: &Dict
             });
         };
         if depth == 0 && field_type.is_none() && current.get(b"T").is_none() {
-            field = match parent_object {
-                Object::Ref(reference) => FieldTarget::Ref(reference),
-                Object::Array(_)
-                | Object::Bool(_)
-                | Object::Dict(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Stream(_)
-                | Object::String(_) => FieldTarget::WidgetParent,
-            };
+            field = parent_object
+                .as_reference()
+                .map_or(FieldTarget::WidgetParent, FieldTarget::Ref);
         }
         current = parent_dict.clone();
     }

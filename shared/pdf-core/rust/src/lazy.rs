@@ -12,7 +12,7 @@ use crate::document::{
 };
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::num::{sort_unstable_with, widen};
+use crate::num::{sort_total, sort_unstable_with, widen};
 use crate::object::{Dict, ObjRef, Object};
 use crate::syntax::{keyword_at, parse_indirect_object, parse_object_header, skip_whitespace_at};
 
@@ -489,7 +489,7 @@ impl Lazy {
         if self.index.table.is_empty() {
             return Some(Plan::Fallback);
         }
-        sort_unstable_with(&mut self.sparse.offsets, &Ord::cmp);
+        sort_total(&mut self.sparse.offsets, &Ord::cmp);
         self.sparse.offsets.dedup();
         self.indexed = true;
         None

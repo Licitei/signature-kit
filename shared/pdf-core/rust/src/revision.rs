@@ -7,7 +7,7 @@ use crate::document::Document;
 use crate::filters::{self, paeth_filter};
 use crate::inflate::inflate;
 use crate::inspection::Limits;
-use crate::num::{f64_to_i64, sort_unstable_with, u64_to_f64};
+use crate::num::{f64_to_i64, sort_total, u64_to_f64};
 use crate::object::{Dict, Object};
 use crate::syntax::hex_value;
 
@@ -1187,7 +1187,7 @@ impl Entries {
             .enumerate()
             .map(|(position, (number, _))| [*number, sequence(position), 0, 0])
             .collect();
-        sort_unstable_with(&mut order, &Ord::cmp);
+        sort_total(&mut order, &Ord::cmp);
         order.dedup_by_key(|key| key[0]);
         Self(
             order
@@ -1242,7 +1242,7 @@ impl NumberIndex {
             scanner.index.failure = Some(failed_at);
         }
         let mut index = scanner.index;
-        sort_unstable_with(&mut index.entries, &Ord::cmp);
+        sort_total(&mut index.entries, &Ord::cmp);
         let mut previous: Option<(u64, u64)> = None;
         let mut firsts: Vec<[u64; 4]> = Vec::new();
         for [number, generation, offset, _] in &index.entries {
@@ -1251,7 +1251,7 @@ impl NumberIndex {
                 previous = Some((*number, *generation));
             }
         }
-        sort_unstable_with(&mut firsts, &Ord::cmp);
+        sort_total(&mut firsts, &Ord::cmp);
         index.first_offsets = firsts
             .iter()
             .map(|[offset, ..]| usize::try_from(*offset).unwrap_or(usize::MAX))
@@ -2264,11 +2264,8 @@ fn object_stream_references(bytes: &[u8], first: usize, count: u64) -> Option<Ve
         previous = Some(relative);
         references.push((number, usize::try_from(relative).ok()?));
     }
-    let mut numbers: Vec<[u64; 4]> = references
-        .iter()
-        .map(|(number, _)| [*number, 0, 0, 0])
-        .collect();
-    numbers.sort_unstable();
+    let mut numbers: Vec<u64> = references.iter().map(|(number, _)| *number).collect();
+    sort_total(&mut numbers, &Ord::cmp);
     if numbers.windows(2).any(|pair| pair.first() == pair.get(1)) {
         return None;
     }

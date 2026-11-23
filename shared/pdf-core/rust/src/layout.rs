@@ -1,4 +1,4 @@
-use crate::num::{f64_to_i64, fold_char, sort_unstable_with, widen};
+use crate::num::{f64_to_i64, fold_char, sort_total, sort_unstable_with, widen};
 use core::cmp::Ordering;
 use core::mem;
 use std::collections::{HashMap, HashSet};
@@ -407,7 +407,7 @@ fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     if compact.is_empty() {
         return CELL_GAP;
     }
-    sort_unstable_with(&mut compact, &f64::total_cmp);
+    sort_total(&mut compact, &f64::total_cmp);
     let bucket = usize::midpoint(0, compact.len());
     let typical = compact.get(bucket).copied().unwrap_or(WORD_GAP);
     CELL_GAP.max(typical * INTRA_WORD_SCALE)

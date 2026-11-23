@@ -1,6 +1,6 @@
 use crate::inspection::LinkInfo;
 use crate::layout::Band;
-use crate::num::{fold_string, sort_unstable_with};
+use crate::num::{fold_string, sort_total};
 use crate::table::{Table, render_markdown};
 
 const WORD_GAP: f64 = 0.12;
@@ -324,7 +324,7 @@ impl Words {
         if wanted.is_empty() {
             return words;
         }
-        sort_unstable_with(&mut wanted, &Ord::cmp);
+        sort_total(&mut wanted, &Ord::cmp);
         wanted.dedup();
         for line in md_lines(pages) {
             let last = line.runs.len().saturating_sub(1);
@@ -355,7 +355,7 @@ impl Words {
                 }
             }
         }
-        sort_unstable_with(&mut words.seen, &Ord::cmp);
+        sort_total(&mut words.seen, &Ord::cmp);
         for pair in words.seen.windows(2) {
             if let [first, second] = pair
                 && first == second
@@ -495,7 +495,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
             weighted.push((line.size, chars));
         }
     }
-    sort_unstable_with(&mut ratios, &f64::total_cmp);
+    sort_total(&mut ratios, &f64::total_cmp);
     let pitch = ratios
         .get(ratios.len().checked_div(4).unwrap_or(0))
         .copied()
@@ -512,7 +512,7 @@ pub(crate) fn document_metrics<'data>(pages: impl IntoIterator<Item = &'data [Md
 }
 
 pub(crate) fn body_size(mut weighted: Vec<(f64, usize)>) -> f64 {
-    sort_unstable_with(&mut weighted, &|left, right| left.0.total_cmp(&right.0));
+    sort_total(&mut weighted, &|left, right| left.0.total_cmp(&right.0));
     let total = weighted
         .iter()
         .map(|entry| entry.1)
@@ -985,7 +985,7 @@ fn compute_flows(lines: &[Option<Prepared<'_>>], metrics: Metrics) -> Vec<Flow> 
             before = Some(line.line);
         }
         let pitch = if gaps.len() >= FLOW_SAMPLES {
-            sort_unstable_with(&mut gaps, &f64::total_cmp);
+            sort_total(&mut gaps, &f64::total_cmp);
             gaps.get(gaps.len().checked_div(4).unwrap_or(0))
                 .copied()
                 .unwrap_or(0.0_f64)

@@ -279,18 +279,9 @@ impl OptionalContent {
     }
 
     fn state(&self, entry: &Object) -> bool {
-        match entry {
-            Object::Ref(reference) => !self.off.contains(reference),
-            Object::Array(_)
-            | Object::Bool(_)
-            | Object::Dict(_)
-            | Object::Integer(_)
-            | Object::Name(_)
-            | Object::Null
-            | Object::Real(_)
-            | Object::Stream(_)
-            | Object::String(_) => true,
-        }
+        entry
+            .as_reference()
+            .is_none_or(|reference| !self.off.contains(&reference))
     }
 
     fn visible(&self, document: &Document<'_>, entry: &Object, depth: usize) -> bool {

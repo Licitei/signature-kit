@@ -6,7 +6,7 @@ use crate::deflate::zlib_compress;
 use crate::document::{Document, Page};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::num::{f64_to_i64, sort_unstable_with, widen};
+use crate::num::{f64_to_i64, sort_total, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
 use crate::syntax::{is_delimiter, is_whitespace};
 
@@ -137,7 +137,7 @@ impl Written {
                 ]
             })
             .collect();
-        sort_unstable_with(&mut order, &Ord::cmp);
+        sort_total(&mut order, &Ord::cmp);
         self.entries = order
             .iter()
             .filter_map(|key| self.entries.get(usize::try_from(key[1]).ok()?).copied())
@@ -490,21 +490,11 @@ impl<'data> Copier<'_, 'data> {
         while let Some((reference, number)) = self.queue.pop() {
             let loaded = self.document.load(reference)?;
             let copied = self.copy(&loaded, output)?;
-            let data = match &*loaded {
-                Object::Stream(stream) if stream.decrypted.is_none() => {
-                    Some(stream.source_bytes(self.document.bytes())?)
-                }
-                Object::Stream(_)
-                | Object::Array(_)
-                | Object::Bool(_)
-                | Object::Dict(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Ref(_)
-                | Object::String(_) => None,
-            };
+            let data = loaded
+                .as_stream()
+                .filter(|stream| stream.decrypted.is_none())
+                .map(|stream| stream.source_bytes(self.document.bytes()))
+                .transpose()?;
             output.set(number, copied, data);
         }
         Ok(())
@@ -783,23 +773,15 @@ where
         }
         Object::Dict(dict) => serialize_dict(out, dict, map),
         Object::Stream(stream) => serialize_dict(out, &stream.dict, map),
-        Object::Ref(reference) => match map(*reference) {
-            Object::Ref(target) => {
+        Object::Ref(reference) => match map(*reference).as_reference() {
+            Some(target) => {
                 separate(out);
                 push_unsigned(out, u64::from(target.number));
                 out.push(b' ');
                 push_unsigned(out, u64::from(target.generation));
                 out.extend_from_slice(b" R");
             }
-            Object::Array(_)
-            | Object::Bool(_)
-            | Object::Dict(_)
-            | Object::Integer(_)
-            | Object::Name(_)
-            | Object::Null
-            | Object::Real(_)
-            | Object::Stream(_)
-            | Object::String(_) => token(out, b"null"),
+            None => token(out, b"null"),
         },
     }
 }
@@ -1156,18 +1138,9 @@ fn stream_bytes<'out>(document: &'out Document<'_>, body: &'out Body) -> Outcome
     if let Some(data) = &body.data {
         return Ok(data);
     }
-    match &body.object {
-        Object::Stream(stream) => stream.encoded_bytes(document.bytes()),
-        Object::Array(_)
-        | Object::Bool(_)
-        | Object::Dict(_)
-        | Object::Integer(_)
-        | Object::Name(_)
-        | Object::Null
-        | Object::Real(_)
-        | Object::Ref(_)
-        | Object::String(_) => Ok(&[]),
-    }
+    body.object
+        .as_stream()
+        .map_or(Ok(&[]), |stream| stream.encoded_bytes(document.bytes()))
 }
 
 fn token(out: &mut Vec<u8>, text: &[u8]) {
