@@ -2,6 +2,7 @@ use crate::num::{read_u16, read_u32, sort_total, widen};
 use crate::object::Dict;
 use crate::object::Object;
 use crate::object::Resolver;
+use crate::object::Stream;
 use core::cell::OnceCell;
 use std::collections::HashMap;
 
@@ -1530,14 +1531,9 @@ pub(crate) fn load_font_file_bytes(
     resolver: &dyn Resolver,
     limits: &Limits,
 ) -> Result<Vec<u8>, Failure> {
-    let Some(stream_obj) = descriptor.get(key) else {
-        return Err(Failure::invalid("missing font program stream"));
-    };
-    let object = resolver.resolve(stream_obj)?;
-    let Object::Stream(stream) = &*object else {
-        return Err(Failure::invalid("font program is not a stream"));
-    };
-    let bytes = resolver.stream_data(stream)?;
+    let bytes = font_stream(key, descriptor, resolver, |stream| {
+        resolver.stream_data(stream)
+    })?;
     if bytes.len() > limits.max_decoded_stream_bytes {
         return Err(Failure::limit("font program exceeds limit"));
     }
@@ -1550,6 +1546,17 @@ pub(crate) fn load_font_file_prefix(
     resolver: &dyn Resolver,
     len: usize,
 ) -> Result<Vec<u8>, Failure> {
+    font_stream(key, descriptor, resolver, |stream| {
+        resolver.stream_prefix(stream, len)
+    })
+}
+
+fn font_stream(
+    key: &[u8],
+    descriptor: &Dict,
+    resolver: &dyn Resolver,
+    read: impl FnOnce(&Stream) -> Result<Vec<u8>, Failure>,
+) -> Result<Vec<u8>, Failure> {
     let Some(stream_obj) = descriptor.get(key) else {
         return Err(Failure::invalid("missing font program stream"));
     };
@@ -1557,7 +1564,7 @@ pub(crate) fn load_font_file_prefix(
     let Object::Stream(stream) = &*object else {
         return Err(Failure::invalid("font program is not a stream"));
     };
-    resolver.stream_prefix(stream, len)
+    read(stream)
 }
 
 #[cfg(test)]
