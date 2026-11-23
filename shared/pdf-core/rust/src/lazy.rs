@@ -1,3 +1,4 @@
+use alloc::rc::Rc;
 use core::cell::RefCell;
 use core::iter;
 use core::mem;
@@ -13,8 +14,11 @@ use crate::document::{
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
 use crate::num::{sort_total, sort_unstable_with, widen};
-use crate::object::{Dict, ObjRef, Object};
-use crate::syntax::{keyword_at, parse_indirect_object, parse_object_header, skip_whitespace_at};
+use crate::object::{Dict, ObjRef, Object, Resolver as _};
+use crate::syntax::{
+    find_bytes, is_regular, is_whitespace, keyword_at, parse_indirect_object, parse_object_header,
+    skip_whitespace_at,
+};
 
 const MIN_SELECTIVE_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_PROBE: usize = 128;
@@ -49,6 +53,7 @@ pub(crate) struct Tuning {
 
 #[derive(Debug)]
 pub(crate) struct Sparse {
+    backlog: RefCell<Vec<Range<usize>>>,
     complete: bool,
     missing: RefCell<Vec<Range<usize>>>,
     offsets: Vec<usize>,
@@ -130,7 +135,11 @@ impl Sparse {
         (self.window(offset, ceiling), ceiling)
     }
 
-    fn plan_ranges(&self, mut wanted: Vec<Range<usize>>, read_ahead: bool) -> Plan {
+    fn plan_ranges(&self, wanted: Vec<Range<usize>>, read_ahead: bool) -> Plan {
+        self.plan_requests(wanted, read_ahead, false)
+    }
+
+    fn plan_requests(&self, mut wanted: Vec<Range<usize>>, read_ahead: bool, carry: bool) -> Plan {
         sort_unstable_with(&mut wanted, &|left, right| left.start.cmp(&right.start));
         let gap = self
             .tuning
@@ -148,14 +157,14 @@ impl Sparse {
                 .iter()
                 .fold(cached, |sum, range| sum.saturating_add(range.len()));
             if !requests.is_empty() && planned < self.size && planned <= budget {
-                return Plan::Need(self.round(requests));
+                return Plan::Need(self.round_with(requests, carry));
             }
         }
         let requests = self.ranges(&wanted, 0);
         if requests.is_empty() {
             return Plan::Fallback;
         }
-        Plan::Need(self.round(requests))
+        Plan::Need(self.round_with(requests, carry))
     }
 
     fn ranges(&self, wanted: &[Range<usize>], gap: usize) -> Vec<Range<usize>> {
@@ -191,11 +200,21 @@ impl Sparse {
         self.missing.borrow_mut().push(start..end);
     }
 
-    fn round(&self, mut requests: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    fn round(&self, requests: Vec<Range<usize>>) -> Vec<Range<usize>> {
+        self.round_with(requests, false)
+    }
+
+    fn round_with(&self, mut requests: Vec<Range<usize>>, carry: bool) -> Vec<Range<usize>> {
         let mut remaining = self.tuning.round_bytes;
+        let mut backlog = self.backlog.borrow_mut();
+        backlog.clear();
         for request in &mut requests {
             let length = request.len().min(remaining);
-            request.end = request.start.saturating_add(length);
+            let split = request.start.saturating_add(length);
+            if carry && split < request.end {
+                backlog.push(split..request.end);
+            }
+            request.end = split;
             remaining = remaining.saturating_sub(length);
         }
         requests.retain(|request| !request.is_empty());
@@ -222,34 +241,101 @@ impl Sparse {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Prefetch,
+    Probe,
+}
+
+#[derive(Debug)]
+enum Source {
+    Form(Rc<Object>),
+    Page(usize),
+}
+
+#[derive(Debug)]
+struct Job {
+    parent: Rc<Object>,
+    source: Source,
+}
+
 #[derive(Debug)]
 struct Frontier {
+    jobs: Vec<Job>,
     pages: Vec<(usize, Page)>,
     pending: Vec<ObjRef>,
+    scanned: HashSet<u32>,
     selection: PageRequest<Vec<u32>>,
     visited: HashSet<u32>,
+    xobjects: Vec<(ObjRef, Rc<Object>)>,
 }
 
 impl Frontier {
     fn advance(&mut self, document: &Document<'_>, sparse: &Sparse) -> Outcome<()> {
         let mut retry = Vec::new();
-        while let Some(reference) = self.pending.pop() {
-            if !self.visited.insert(reference.number) {
+        let mut retry_xobjects = Vec::new();
+        let mut retry_jobs = Vec::new();
+        loop {
+            while let Some(reference) = self.pending.pop() {
+                if !self.visited.insert(reference.number) {
+                    continue;
+                }
+                let before = sparse.misses();
+                let object = document.load_transient(reference)?;
+                if sparse.misses() == before {
+                    collect(&object, &mut self.pending);
+                } else {
+                    retry.push(reference);
+                }
+            }
+            if let Some((reference, parent)) = self.xobjects.pop() {
+                if let Some(missed) = self.load_xobject(document, sparse, reference, parent)? {
+                    retry_xobjects.push(missed);
+                }
                 continue;
             }
-            let before = sparse.misses();
-            let object = document.load_transient(reference)?;
-            if sparse.misses() == before {
-                collect(&object, &mut self.pending);
-            } else {
-                retry.push(reference);
+            let Some(job) = self.jobs.pop() else {
+                break;
+            };
+            if !self.scan(document, sparse, &job)? {
+                retry_jobs.push(job);
             }
         }
         for reference in &retry {
             let _: bool = self.visited.remove(&reference.number);
         }
         self.pending = retry;
+        self.xobjects = retry_xobjects;
+        self.jobs = retry_jobs;
         Ok(())
+    }
+
+    fn load_xobject(
+        &mut self,
+        document: &Document<'_>,
+        sparse: &Sparse,
+        reference: ObjRef,
+        parent: Rc<Object>,
+    ) -> Outcome<Option<(ObjRef, Rc<Object>)>> {
+        if !self.scanned.insert(reference.number) {
+            return Ok(None);
+        }
+        let before = sparse.misses();
+        let object = document.load_transient(reference)?;
+        if sparse.misses() != before {
+            let _: bool = self.scanned.remove(&reference.number);
+            return Ok(Some((reference, parent)));
+        }
+        if let Object::Stream(stream) = &*object
+            && stream.dict.get(b"Subtype").and_then(Object::as_name) == Some(b"Form")
+        {
+            collect(&object, &mut self.pending);
+            self.jobs.push(Job {
+                parent,
+                source: Source::Form(object),
+            });
+        }
+        Ok(None)
     }
 
     fn new(
@@ -257,6 +343,7 @@ impl Frontier {
         selection: PageRequest<&[u32]>,
         pages: Vec<(usize, Page)>,
         render: bool,
+        prefetch: bool,
     ) -> Outcome<Self> {
         let mut pending = Vec::new();
         for (_, page) in &pages {
@@ -273,12 +360,95 @@ impl Frontier {
         {
             collect(properties, &mut pending);
         }
-        Ok(Self {
+        let mut frontier = Self {
+            jobs: Vec::new(),
             selection: selection.owned(),
             pages,
             pending,
+            scanned: HashSet::new(),
             visited: HashSet::new(),
-        })
+            xobjects: Vec::new(),
+        };
+        if prefetch {
+            frontier.queue_scans();
+        }
+        Ok(frontier)
+    }
+
+    fn queue_scans(&mut self) {
+        for (index, (_, page)) in self.pages.iter().enumerate().rev() {
+            if page
+                .resources
+                .as_dict()
+                .is_some_and(|dict| dict.get(b"XObject").is_some())
+            {
+                self.jobs.push(Job {
+                    parent: Rc::clone(&page.resources),
+                    source: Source::Page(index),
+                });
+            }
+        }
+    }
+
+    const fn ready(&self) -> bool {
+        self.pending.is_empty() && self.xobjects.is_empty() && self.jobs.is_empty()
+    }
+
+    fn scan(&mut self, document: &Document<'_>, sparse: &Sparse, job: &Job) -> Outcome<bool> {
+        let before = sparse.misses();
+        let data = match &job.source {
+            Source::Page(index) => self
+                .pages
+                .get(*index)
+                .and_then(|(_, page)| document.content(page).ok()),
+            Source::Form(object) => object
+                .as_stream()
+                .and_then(|stream| document.stream_data(stream).ok()),
+        };
+        if sparse.misses() != before {
+            return Ok(false);
+        }
+        let Some(content) = data else {
+            return Ok(true);
+        };
+        let names = invoked_names(&content);
+        if names.is_empty() {
+            return Ok(true);
+        }
+        let resources = match &job.source {
+            Source::Form(object) => {
+                match object.as_dict().and_then(|dict| dict.get(b"Resources")) {
+                    Some(own) => {
+                        let found = document.follow(own)?;
+                        if found.as_dict().is_some() {
+                            found
+                        } else {
+                            Rc::clone(&job.parent)
+                        }
+                    }
+                    None => Rc::clone(&job.parent),
+                }
+            }
+            Source::Page(_) => Rc::clone(&job.parent),
+        };
+        let Some(entry) = resources.as_dict().and_then(|dict| dict.get(b"XObject")) else {
+            return Ok(sparse.misses() == before);
+        };
+        let table = document.follow(entry)?;
+        if sparse.misses() != before {
+            return Ok(false);
+        }
+        let Some(dict) = table.as_dict() else {
+            return Ok(true);
+        };
+        for name in names {
+            if let Some(&Object::Ref(reference)) = dict.get(name)
+                && !self.scanned.contains(&reference.number)
+            {
+                self.xobjects.push((reference, Rc::clone(&resources)));
+            }
+        }
+        Ok(true)
     }
 
     fn walk(
@@ -287,6 +457,7 @@ impl Frontier {
         sparse: &Sparse,
         requested: PageRequest<&[u32]>,
         render: bool,
+        prefetch: bool,
     ) -> Outcome<Option<Failure>> {
         if frontier.is_none() {
             let (count, pages) = document.sparse_pages(requested)?;
@@ -299,7 +470,7 @@ impl Frontier {
             {
                 return Ok(Some(failure));
             }
-            *frontier = Some(Self::new(document, requested, pages, render)?);
+            *frontier = Some(Self::new(document, requested, pages, render, prefetch)?);
         }
         if let Some(selection) = frontier {
             selection.advance(document, sparse)?;
@@ -325,6 +496,7 @@ pub(crate) struct Lazy {
     indexed: bool,
     linearized: Option<(usize, u32)>,
     next_section: Option<usize>,
+    phase: Phase,
     render: bool,
     sparse: Sparse,
 }
@@ -354,7 +526,7 @@ impl Lazy {
         merge_section_trailer(&mut self.index.trailer, section.trailer);
     }
 
-    fn document(&self, limits: &Limits) -> Outcome<Document<'_>> {
+    fn document(&self, limits: &Limits, abort: bool) -> Outcome<Document<'_>> {
         let trailer = self
             .index
             .trailer
@@ -366,6 +538,7 @@ impl Lazy {
             trailer,
             &self.cache,
             limits,
+            abort,
         )
     }
 
@@ -374,11 +547,11 @@ impl Lazy {
         limits: &Limits,
         run: impl FnOnce(&Document<'_>, &[(usize, &Page)]) -> Outcome<A>,
     ) -> Outcome<Option<A>> {
-        let document = self.document(limits)?;
+        let document = self.document(limits, self.phase == Phase::Probe)?;
         let frontier = self
             .frontier
             .as_ref()
-            .filter(|frontier| frontier.pending.is_empty())
+            .filter(|frontier| frontier.ready())
             .ok_or_else(|| Failure::invalid("lazy plan is not ready"))?;
         let result = run(&document, &borrow_pages(&frontier.pages));
         if document.was_repaired() {
@@ -533,8 +706,10 @@ impl Lazy {
             indexed: false,
             linearized: None,
             next_section: None,
+            phase: Phase::Probe,
             render: false,
             sparse: Sparse {
+                backlog: RefCell::new(Vec::new()),
                 complete: false,
                 missing: RefCell::new(Vec::new()),
                 offsets: Vec::new(),
@@ -552,17 +727,29 @@ impl Lazy {
         limits: &Limits,
     ) -> Plan {
         let misses = mem::take(self.sparse.missing.get_mut());
+        let backlog = mem::take(self.sparse.backlog.get_mut());
         let mut frontier = self
             .frontier
             .take()
             .filter(|frontier| frontier.selection.borrowed() == requested && self.render == render);
-        if !misses.is_empty()
-            && frontier
-                .as_ref()
-                .is_some_and(|selection| selection.pending.is_empty())
-        {
-            self.frontier = frontier;
-            return self.sparse.plan_ranges(misses, true);
+        if frontier.as_ref().is_some_and(Frontier::ready) {
+            if misses.is_empty() {
+                let outstanding = self.sparse.ranges(&backlog, 0);
+                if !outstanding.is_empty() {
+                    self.frontier = frontier;
+                    return Plan::Need(self.sparse.round_with(outstanding, true));
+                }
+            } else {
+                let probing = self.phase == Phase::Probe;
+                self.phase = Phase::Prefetch;
+                if probing && let Some(selection) = &mut frontier {
+                    selection.queue_scans();
+                }
+                if frontier.as_ref().is_some_and(Frontier::ready) {
+                    self.frontier = frontier;
+                    return self.sparse.plan_requests(misses, true, true);
+                }
+            }
         }
         if self.render != render {
             self.cache = DocumentCache::new();
@@ -577,8 +764,15 @@ impl Lazy {
             return plan;
         }
         let mut repaired = false;
-        let result = self.document(limits).and_then(|document| {
-            let walked = Frontier::walk(&mut frontier, &document, &self.sparse, requested, render);
+        let result = self.document(limits, false).and_then(|document| {
+            let walked = Frontier::walk(
+                &mut frontier,
+                &document,
+                &self.sparse,
+                requested,
+                render,
+                self.phase == Phase::Prefetch,
+            );
             repaired = document.was_repaired();
             walked
         });
@@ -700,6 +894,39 @@ fn linearized_first_page(bytes: &[u8], size: usize, limits: &Limits) -> Option<(
     Some((end, page))
 }
 
+fn invoked_names(data: &[u8]) -> Vec<&[u8]> {
+    let mut names = Vec::new();
+    let mut at = 0_usize;
+    while let Some(found) = find_bytes(data, at, b"Do") {
+        at = found.saturating_add(2);
+        if data.get(at).copied().is_some_and(is_regular) {
+            continue;
+        }
+        let Some(head) = data.get(..found) else {
+            continue;
+        };
+        let end = head
+            .iter()
+            .rposition(|&byte| !is_whitespace(byte))
+            .map_or(0, |last| last.saturating_add(1));
+        if end == found {
+            continue;
+        }
+        let Some(word) = head.get(..end) else {
+            continue;
+        };
+        let Some(slash) = word.iter().rposition(|&byte| !is_regular(byte)) else {
+            continue;
+        };
+        if let Some((&b'/', name)) = word.get(slash..).and_then(<[u8]>::split_first)
+            && !name.is_empty()
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
 fn references(dict: &Dict, refs: &mut Vec<ObjRef>) {
     let object_type = dict.get(b"Type").and_then(Object::as_name);
     if matches!(object_type, Some(b"Page" | b"Pages" | b"Catalog")) {
@@ -734,7 +961,7 @@ fn collect(object: &Object, refs: &mut Vec<ObjRef>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lazy, Plan, Tuning};
+    use super::{Lazy, Plan, Tuning, invoked_names};
     use crate::document::PageRequest;
     use crate::failure::FailureCode;
     use crate::inspection::Limits;
@@ -899,6 +1126,153 @@ mod tests {
                 }
                 Plan::Full(_) | Plan::Fallback => return,
                 Plan::Need(_) | Plan::Failed(_) => panic!("unexpected lazy plan"),
+            }
+        }
+        panic!("lazy plan did not settle");
+    }
+
+    #[test]
+    fn invoked_names_reads_names_before_do_operators() {
+        assert_eq!(
+            invoked_names(b"q /Im0 Do Q\n/Fm1\nDo /Domain 1 Tf (Do) Tj /Fm2 Do"),
+            vec![b"Im0".as_slice(), b"Fm1", b"Fm2"]
+        );
+        assert_eq!(invoked_names(b"Do /A Do Do"), vec![b"A".as_slice()]);
+        assert_eq!(invoked_names(b"BT (x) Tj ET"), Vec::<&[u8]>::new());
+    }
+
+    #[test]
+    fn nested_forms_settle_after_one_probe_run_and_match_eager_text() {
+        let outer = stream_object(
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 7 0 R >> /XObject << /Fm2 6 0 R >> >>",
+            "BT /F1 12 Tf 72 100 Td (Outer) Tj ET /Fm2 Do",
+        );
+        let inner = stream_object(
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 7 0 R >> >>",
+            "BT /F1 12 Tf 72 50 Td (Inner) Tj ET",
+        );
+        let bytes = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 200 200] >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Fm1 5 0 R >> >> >>"
+                    .to_owned(),
+            ),
+            (4, stream_object("", "/Fm1 Do")),
+            (5, outer),
+            (6, inner),
+            (
+                7,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            ),
+        ]);
+        let limits = text_limits();
+        let options = TextOptions {
+            drop_running: false,
+            markdown: false,
+            merge_across_pages: false,
+        };
+        let request = PageRequest::First(1);
+        let eager = document_text(&bytes, request, &limits, options).unwrap();
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 0,
+                probe: 64,
+                round_bytes: 4096,
+            },
+        );
+        let mut runs = 0_u32;
+        for _ in 0_i32..64_i32 {
+            match lazy.plan_with_recovery(request, false, &limits, false) {
+                Plan::Need(ranges) if !ranges.is_empty() => {
+                    for range in ranges {
+                        assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                    }
+                }
+                Plan::Ready => {
+                    runs += 1;
+                    let text = lazy
+                        .execute(&limits, |opened, pages| {
+                            opened_text(opened, pages, &limits, options)
+                        })
+                        .unwrap();
+                    if let Some(pages) = text {
+                        assert_eq!(pages, eager);
+                        assert!(runs <= 2, "took {runs} runs");
+                        return;
+                    }
+                }
+                Plan::Need(_) | Plan::Failed(_) | Plan::Fallback | Plan::Full(_) => {
+                    panic!("unexpected lazy plan")
+                }
+            }
+        }
+        panic!("lazy plan did not settle");
+    }
+
+    #[test]
+    fn truncated_rounds_carry_the_remaining_ranges_without_another_run() {
+        let bytes = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 200 200] >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R /Im1 6 0 R /Im2 7 0 R >> >> >>"
+                    .to_owned(),
+            ),
+            (4, stream_object("", "/Im0 Do /Im1 Do /Im2 Do")),
+            (5, stream_object("/Type /XObject /Subtype /Image /Width 1 /Height 1", &"A".repeat(3000))),
+            (6, stream_object("/Type /XObject /Subtype /Image /Width 1 /Height 1", &"B".repeat(3000))),
+            (7, stream_object("/Type /XObject /Subtype /Image /Width 1 /Height 1", &"C".repeat(3000))),
+        ]);
+        let limits = text_limits();
+        let options = TextOptions {
+            drop_running: false,
+            markdown: false,
+            merge_across_pages: false,
+        };
+        let request = PageRequest::First(1);
+        let eager = document_text(&bytes, request, &limits, options).unwrap();
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 0,
+                probe: 64,
+                round_bytes: 1024,
+            },
+        );
+        let mut runs = 0_u32;
+        for _ in 0_i32..128_i32 {
+            match lazy.plan_with_recovery(request, false, &limits, false) {
+                Plan::Need(ranges) if !ranges.is_empty() => {
+                    for range in ranges {
+                        assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                    }
+                }
+                Plan::Ready => {
+                    runs += 1;
+                    let text = lazy
+                        .execute(&limits, |opened, pages| {
+                            opened_text(opened, pages, &limits, options)
+                        })
+                        .unwrap();
+                    if let Some(pages) = text {
+                        assert_eq!(pages, eager);
+                        assert!(runs <= 2, "took {runs} runs");
+                        return;
+                    }
+                }
+                Plan::Need(_) | Plan::Failed(_) | Plan::Fallback | Plan::Full(_) => {
+                    panic!("unexpected lazy plan")
+                }
             }
         }
         panic!("lazy plan did not settle");
