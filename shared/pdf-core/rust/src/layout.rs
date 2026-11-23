@@ -306,10 +306,7 @@ struct Recurring {
 }
 type FurnitureKey = (String, i64, i64);
 fn scripted(base: &Frag<'_>, script: &Frag<'_>) -> bool {
-    if script.size > SCRIPT_RATIO * base.size
-        || script.size < SCRIPT_FLOOR * base.size
-        || script.text.chars().filter(|ch| !ch.is_whitespace()).count() > SCRIPT_CHARS
-    {
+    if script.size > SCRIPT_RATIO * base.size || script.size < SCRIPT_FLOOR * base.size {
         return false;
     }
     let reach = SCRIPT_REACH * base.height();
@@ -318,7 +315,14 @@ fn scripted(base: &Frag<'_>, script: &Frag<'_>) -> bool {
     let overlap = SCRIPT_OVERLAP * script.size;
     let after = script.x0 >= base.x1 - overlap && script.x0 <= base.x1 + slack;
     let before = script.x1 <= base.x0 + overlap && script.x1 >= base.x0 - slack;
-    nested && (after || before)
+    nested
+        && (after || before)
+        && script
+            .text
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .nth(SCRIPT_CHARS)
+            .is_none()
 }
 
 fn turn(quarter: usize, x: f64, y: f64) -> (f64, f64) {
