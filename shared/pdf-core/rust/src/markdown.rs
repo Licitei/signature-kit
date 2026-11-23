@@ -1194,10 +1194,11 @@ pub(crate) fn reflow_lines<'data>(lines: impl IntoIterator<Item = &'data str>) -
 fn append_spans(
     spans: &mut Vec<Span>,
     plain: &mut String,
-    mut next: Vec<Span>,
+    next: &[Span],
     next_plain: &str,
     words: &Words,
 ) {
+    let mut widened: Vec<Span> = Vec::new();
     if url_continues(plain, next_plain)
         && let Some(link) = spans
             .iter()
@@ -1209,8 +1210,14 @@ fn append_spans(
             .split(char::is_whitespace)
             .next()
             .unwrap_or_default();
-        widen_link(&mut next, link, trailer_cut(token));
+        widened = next.to_vec();
+        widen_link(&mut widened, link, trailer_cut(token));
     }
+    let incoming = if widened.is_empty() {
+        next
+    } else {
+        widened.as_slice()
+    };
     match glue(plain, next_plain, words) {
         Glue::Direct => {}
         Glue::Space => {
@@ -1227,14 +1234,14 @@ fn append_spans(
         }
     }
     plain.push_str(next_plain);
-    for span in next {
+    for span in incoming {
         match spans.last_mut() {
             Some(last)
                 if (last.bold, last.italic, last.link) == (span.bold, span.italic, span.link) =>
             {
                 last.text.push_str(&span.text);
             }
-            _ => spans.push(span),
+            _ => spans.push(span.clone()),
         }
     }
 }
@@ -1472,7 +1479,7 @@ fn extend(para: &mut Para, line: &Prepared<'_>, words: &Words) {
     append_spans(
         &mut para.spans,
         &mut para.plain,
-        line.spans.clone(),
+        &line.spans,
         &line.plain,
         words,
     );
@@ -1785,7 +1792,7 @@ pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics, words: &W
                 append_spans(
                     &mut target.spans,
                     &mut target.plain,
-                    moved.spans,
+                    &moved.spans,
                     &moved.plain,
                     words,
                 );
@@ -2133,7 +2140,7 @@ mod tests {
         append_spans(
             &mut spans,
             &mut plain,
-            vec![span(right)],
+            &[span(right)],
             right,
             &Words::default(),
         );
@@ -2193,7 +2200,7 @@ mod tests {
                 link: None,
             }];
             let mut plain = left.to_owned();
-            append_spans(&mut spans, &mut plain, Vec::new(), right, &words);
+            append_spans(&mut spans, &mut plain, &[], right, &words);
             plain
         };
         for (left, right, expected) in cases {
@@ -2277,7 +2284,7 @@ mod tests {
         append_spans(
             &mut spans,
             &mut plain,
-            vec![next],
+            &[next],
             "/empreendedor; ver",
             &Words::default(),
         );
@@ -2606,7 +2613,7 @@ mod properties {
             let words = Words::collect([items.as_slice()]);
             let mut spans = vec![span(&left)];
             let mut plain = left.clone();
-            append_spans(&mut spans, &mut plain, vec![span(&right)], &right, &words);
+            append_spans(&mut spans, &mut plain, &[span(&right)], &right, &words);
             let mut dropped = left.clone();
             let removed = dropped.pop();
             dropped.push_str(&right);
