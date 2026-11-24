@@ -44,6 +44,7 @@ export const PdfErrorCodeSchema = Schema.Literals([
   "pdf.PDF_LOAD_FAILED",
   "pdf.LIMIT_EXCEEDED",
   "pdf.RENDER_TIMEOUT",
+  "pdf.DAMAGED_SIGNED_PDF",
 ]);
 export type PdfErrorCode = (typeof PdfErrorCodeSchema)["Type"];
 
@@ -68,6 +69,7 @@ export const PdfErrorCodeValue = {
   pdfLoadFailed: "pdf.PDF_LOAD_FAILED",
   limitExceeded: "pdf.LIMIT_EXCEEDED",
   renderTimeout: "pdf.RENDER_TIMEOUT",
+  damagedSignedPdf: "pdf.DAMAGED_SIGNED_PDF",
 } satisfies Record<string, PdfErrorCode>;
 
 export type PdfErrorMessageLocale = ErrorMessageLocale;
@@ -99,6 +101,8 @@ export const pdfErrorMessages = {
     "pdf.PDF_LOAD_FAILED": "Failed to load the PDF document.",
     "pdf.LIMIT_EXCEEDED": "The PDF document exceeds a processing limit.",
     "pdf.RENDER_TIMEOUT": "Rendering the PDF pages took too long and was stopped.",
+    "pdf.DAMAGED_SIGNED_PDF":
+      "The PDF is already digitally signed and its internal structure is damaged, so another signature cannot be added without invalidating the existing one. Download the document again from its original source.",
   },
   "pt-BR": {
     "pdf.INVALID_PDF": "Documento PDF inválido.",
@@ -121,6 +125,8 @@ export const pdfErrorMessages = {
     "pdf.PDF_LOAD_FAILED": "Não foi possível carregar o documento PDF.",
     "pdf.LIMIT_EXCEEDED": "O documento PDF excede um limite de processamento.",
     "pdf.RENDER_TIMEOUT": "A renderização das páginas do PDF demorou demais e foi interrompida.",
+    "pdf.DAMAGED_SIGNED_PDF":
+      "O PDF já tem uma assinatura digital e sua estrutura interna está danificada, então não é possível adicionar outra assinatura sem invalidar a existente. Baixe o documento novamente da fonte original.",
   },
 } satisfies Record<PdfErrorMessageLocale, Record<PdfErrorCode, string>>;
 

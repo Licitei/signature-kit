@@ -1,5 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureCode {
+    DamagedXref,
     EncryptedPdf,
     InvalidPdf,
     InvalidRequest,
@@ -16,6 +17,7 @@ impl From<FailureCode> for u32 {
             FailureCode::LimitExceeded => 3,
             FailureCode::UnsupportedFeature => 4,
             FailureCode::InvalidRequest => 5,
+            FailureCode::DamagedXref => 6,
         }
     }
 }

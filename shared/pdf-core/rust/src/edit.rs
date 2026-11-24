@@ -652,14 +652,12 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     }
     let flags = reader.u32()?;
     let count = reader.u32()?;
-    let document = Document::open(pdf, limits)?;
     let mode = flags & MODE_MASK;
-    if mode == MODE_INCREMENTAL && document.is_encrypted() {
-        return Err(Failure::new(
-            FailureCode::EncryptedPdf,
-            "incremental editing of encrypted PDFs is not supported",
-        ));
-    }
+    let document = if mode == MODE_INCREMENTAL {
+        appendable(pdf, limits)?
+    } else {
+        Document::open(pdf, limits)?
+    };
     let mut store = Store {
         changed: Changes::default(),
         document: &document,
@@ -684,11 +682,8 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     } else {
         Packing::ObjectStreams
     };
-    let intact = !document.is_encrypted() && intact_xref(&document, pdf);
+    let intact = !document.is_encrypted() && intact_xref(&document, document.bytes());
     match mode {
-        MODE_INCREMENTAL if !intact => Err(Failure::request(
-            "incremental update needs an intact cross-reference chain",
-        )),
         MODE_INCREMENTAL => incremental(&document, &store.changed),
         MODE_REWRITE => rewrite(&document, &store.changed, layout),
         _ if intact && layout == Packing::Classic => incremental(&document, &store.changed),
@@ -920,6 +915,53 @@ fn image_dict(width: u32, height: u32, color_space: &[u8]) -> Dict {
     dict.insert(b"ColorSpace", Object::Name(color_space.to_vec()));
     dict.insert(b"BitsPerComponent", Object::Integer(8));
     dict
+}
+
+fn appendable<'data>(pdf: &'data [u8], limits: &Limits) -> Outcome<Document<'data>> {
+    let document = Document::open(pdf, limits)?;
+    if document.is_encrypted() {
+        return Err(Failure::new(
+            FailureCode::EncryptedPdf,
+            "incremental editing of encrypted PDFs is not supported",
+        ));
+    }
+    if intact_xref(&document, pdf) {
+        return Ok(document);
+    }
+    if let Some(end) = final_eof_end(pdf)
+        && end < pdf.len()
+        && let Some(prefix) = pdf.get(..end)
+        && let Ok(trimmed) = Document::open(prefix, limits)
+        && !trimmed.is_encrypted()
+        && intact_xref(&trimmed, prefix)
+    {
+        return Ok(trimmed);
+    }
+    let reason = if document.shift() > 0 {
+        "incremental update needs an intact cross-reference chain: the file has bytes before the %PDF header"
+    } else if document.startxref().is_none() {
+        "incremental update needs an intact cross-reference chain: the file has no startxref"
+    } else if document.was_repaired() {
+        "incremental update needs an intact cross-reference chain: the cross-reference table does not match the file and had to be rebuilt"
+    } else {
+        "incremental update needs an intact cross-reference chain: a revision of the file is incomplete"
+    };
+    Err(Failure::new(FailureCode::DamagedXref, reason))
+}
+
+fn final_eof_end(pdf: &[u8]) -> Option<usize> {
+    let marker = b"%%EOF";
+    let start = pdf
+        .windows(marker.len())
+        .rposition(|window| window == marker)?;
+    let mut end = start.checked_add(marker.len())?;
+    if pdf.get(end) == Some(&b'\r') {
+        end = end.saturating_add(1);
+    }
+    if pdf.get(end) == Some(&b'\n') {
+        end = end.saturating_add(1);
+    }
+    Some(end)
 }
 
 fn intact_xref(document: &Document<'_>, pdf: &[u8]) -> bool {
@@ -1340,6 +1382,35 @@ mod tests {
         assert!(revision_complete(&placed, placed.len()));
         let scan = analyze(&placed, Analysis::Dictionaries);
         assert_eq!(scan.dictionaries.len(), 1);
+    }
+
+    #[test]
+    fn incremental_update_drops_bytes_after_the_final_eof() {
+        let source = sample();
+        let mut padded = source.clone();
+        padded.extend_from_slice(b"<html>download footer</html>\n");
+        let info = document_info(&padded, None, b"Sig", &limits()).unwrap();
+        let page_number = info.pages[0].reference.unwrap().number;
+        let ops = placeholder_ops(info.next_object_number, page_number, "Sig1");
+        let placed = edit(&padded, &ops.finish(MODE_INCREMENTAL), &limits()).unwrap();
+        assert!(placed.starts_with(&source));
+        assert!(!placed.windows(6).any(|window| window == b"<html>"));
+        assert!(revision_complete(&placed, source.len()));
+        assert!(revision_complete(&placed, placed.len()));
+    }
+
+    #[test]
+    fn incremental_update_reports_damaged_cross_reference_chains() {
+        let mut shifted = b"JUNK\n".to_vec();
+        shifted.extend_from_slice(&sample());
+        let looping = self_looping_prev();
+        for source in [shifted, looping] {
+            let info = document_info(&source, None, b"Sig", &limits()).unwrap();
+            let page_number = info.pages[0].reference.unwrap().number;
+            let ops = placeholder_ops(info.next_object_number, page_number, "Sig1");
+            let failure = edit(&source, &ops.finish(MODE_INCREMENTAL), &limits()).unwrap_err();
+            assert_eq!(failure.code, FailureCode::DamagedXref);
+        }
     }
 
     #[test]

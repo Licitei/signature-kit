@@ -253,6 +253,10 @@ export const addSignaturePlaceholder = (
                   PdfCoreErrorCodeValue.limitExceeded,
                   () => PdfErrorCodeValue.limitExceeded,
                 ),
+                Match.when(
+                  PdfCoreErrorCodeValue.damagedXref,
+                  () => PdfErrorCodeValue.damagedSignedPdf,
+                ),
                 Match.orElse(() => PdfErrorCodeValue.invalidPdf),
               ),
               retryable: false,

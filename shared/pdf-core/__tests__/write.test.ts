@@ -238,11 +238,16 @@ describe("PdfCore write path", () => {
         ),
       );
 
-      for (const result of [syntax, page, incremental]) {
+      for (const result of [syntax, page]) {
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isFailure(result)) {
           expect(result.failure.code).toBe(PdfCoreErrorCodeValue.invalidOptions);
         }
+      }
+      expect(Result.isFailure(incremental)).toBe(true);
+      if (Result.isFailure(incremental)) {
+        expect(incremental.failure.code).toBe(PdfCoreErrorCodeValue.damagedXref);
+        expect(incremental.failure.reason).toMatch(/no startxref/);
       }
     }).pipe(Effect.provide(layer)),
   );

@@ -10,6 +10,7 @@ export const PdfCoreErrorCodeSchema = Schema.Literals([
   "pdfCore.PAINT_FAILED",
   "pdfCore.RANGE_READ_FAILED",
   "pdfCore.DOCUMENT_CLOSED",
+  "pdfCore.DAMAGED_XREF",
 ]);
 export type PdfCoreErrorCode = (typeof PdfCoreErrorCodeSchema)["Type"];
 
@@ -23,6 +24,7 @@ export const PdfCoreErrorCodeValue = {
   paintFailed: "pdfCore.PAINT_FAILED",
   rangeReadFailed: "pdfCore.RANGE_READ_FAILED",
   documentClosed: "pdfCore.DOCUMENT_CLOSED",
+  damagedXref: "pdfCore.DAMAGED_XREF",
 } satisfies Record<string, PdfCoreErrorCode>;
 
 export const PdfCoreErrorMessageLocaleSchema = Schema.Literals(["en-US", "pt-BR"]);
@@ -44,6 +46,8 @@ export const pdfCoreErrorMessages = {
     "pdfCore.PAINT_FAILED": "The PDF page could not be painted.",
     "pdfCore.RANGE_READ_FAILED": "The PDF byte range could not be read.",
     "pdfCore.DOCUMENT_CLOSED": "The PDF document is closed.",
+    "pdfCore.DAMAGED_XREF":
+      "The PDF cross-reference chain is damaged, so changes cannot be appended without rewriting the file.",
   },
   "pt-BR": {
     "pdfCore.WASM_LOAD_FAILED": "Não foi possível carregar o módulo WebAssembly do núcleo PDF.",
@@ -55,6 +59,8 @@ export const pdfCoreErrorMessages = {
     "pdfCore.PAINT_FAILED": "Não foi possível desenhar a página do PDF.",
     "pdfCore.RANGE_READ_FAILED": "Não foi possível ler o intervalo de bytes do PDF.",
     "pdfCore.DOCUMENT_CLOSED": "O documento PDF está fechado.",
+    "pdfCore.DAMAGED_XREF":
+      "A tabela de referências cruzadas do PDF está danificada; não é possível acrescentar alterações sem reescrever o arquivo.",
   },
 } satisfies Record<PdfCoreErrorMessageLocale, Record<PdfCoreErrorCode, string>>;
 

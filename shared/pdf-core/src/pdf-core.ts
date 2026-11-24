@@ -666,6 +666,16 @@ export const makePdfCore = (
                 reason,
               }),
           ),
+          Match.when(
+            6,
+            () =>
+              new PdfCoreError({
+                code: PdfCoreErrorCodeValue.damagedXref,
+                operation,
+                status,
+                reason,
+              }),
+          ),
           Match.orElse(
             () =>
               new PdfCoreError({
