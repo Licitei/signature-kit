@@ -420,7 +420,8 @@ impl<'data> Parser<'data> {
                 self.pos = self.pos.saturating_add(1);
             }
             let divisor = POW10.get(scale).copied().unwrap_or(1e18_f64);
-            let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
+            let integral = i64::try_from(whole).map_or_else(|_| u64_to_f64(whole), i64_to_f64);
+            let magnitude = integral + i64_to_f64(fraction.cast_signed()) / divisor;
             return Numeral::Real(if negative { -magnitude } else { magnitude });
         }
         if self.pos == start {
