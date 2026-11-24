@@ -1765,13 +1765,18 @@ export const makePdfCore = (
           "signature_kit.pdf.range_bytes": ranges.reduce((sum, range) => sum + range.length, 0),
         });
         yield* startRound;
-        yield* Effect.forEach(
+        const fetched = yield* Effect.forEach(
           ranges,
           ({ offset, length }) =>
-            Effect.scoped(
-              Effect.uninterruptibleMask((restore) =>
+            fetchRange(offset, length).pipe(Effect.map((bytes) => ({ offset, length, bytes }))),
+          { concurrency: 4 },
+        );
+        yield* Effect.uninterruptible(
+          Effect.forEach(
+            fetched,
+            ({ offset, length, bytes }) =>
+              Effect.scoped(
                 Effect.gen(function* () {
-                  const bytes = yield* restore(fetchRange(offset, length));
                   const input = yield* copyIn(PdfCoreOperationValue.readRange, bytes);
                   yield* ensureOpen;
                   if (core.pdf_core_lazy_feed(handle, offset, input.pointer, length) !== 1) {
@@ -1779,8 +1784,8 @@ export const makePdfCore = (
                   }
                 }),
               ),
-            ),
-          { concurrency: 4, discard: true },
+            { discard: true },
+          ),
         );
       });
 
