@@ -653,9 +653,7 @@ impl<'data> ContentLexer<'data> {
 
     fn make_room(&mut self, operands: &mut Vec<Operand<'data>>, limit: usize) {
         if operands.len() >= limit {
-            while let Some(stale) = operands.pop() {
-                self.recycle(stale);
-            }
+            self.release(operands);
         }
     }
 
@@ -672,9 +670,7 @@ impl<'data> ContentLexer<'data> {
         operands: &mut Vec<Operand<'data>>,
         limit: usize,
     ) -> Option<Outcome<&'data [u8]>> {
-        while let Some(used) = operands.pop() {
-            self.recycle(used);
-        }
+        self.release(operands);
         loop {
             self.parser.skip_whitespace();
             let byte = self.parser.peek()?;
@@ -831,12 +827,23 @@ impl<'data> ContentLexer<'data> {
         Ok(())
     }
 
-    pub(crate) fn recycle(&mut self, operand: Operand<'data>) {
-        if let Operand::Array(mut items) = operand
-            && self.spare.len() < SPARE_ARRAYS
-        {
-            items.clear();
-            self.spare.push(items);
+    fn release(&mut self, operands: &mut Vec<Operand<'data>>) {
+        while let Some(used) = operands.pop() {
+            match used {
+                Operand::Array(mut items) => {
+                    if self.spare.len() < SPARE_ARRAYS {
+                        items.clear();
+                        self.spare.push(items);
+                    }
+                }
+                Operand::Literal(text) | Operand::Name(text) => drop(text),
+                Operand::Object(object) => drop(object),
+                Operand::Bool(_)
+                | Operand::Hex(_)
+                | Operand::Integer(_)
+                | Operand::Null
+                | Operand::Real(_) => {}
+            }
         }
     }
 
