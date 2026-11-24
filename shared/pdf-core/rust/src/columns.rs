@@ -252,10 +252,7 @@ impl Traits {
                 if head.is_none() {
                     head = Some(ch);
                 }
-                tail = Some((
-                    ch,
-                    ch == '-' && previous.is_some_and(char::is_alphabetic),
-                ));
+                tail = Some((ch, ch == '-' && previous.is_some_and(char::is_alphabetic)));
             }
             previous = Some(ch);
         }
