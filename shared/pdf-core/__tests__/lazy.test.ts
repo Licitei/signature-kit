@@ -305,6 +305,38 @@ describe("PdfCore byte-range documents", () => {
     ).pipe(Effect.provide(layer)),
   );
 
+  it.effect.each([
+    { depth: 40, strategy: "lazy" },
+    { depth: 600, strategy: "fallback" },
+  ])("settles a $depth-object reference chain with the $strategy strategy", ({ depth, strategy }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const core = yield* PdfCore;
+        const bytes = pdfObjects([
+          "<< /Type /Catalog /Pages 2 0 R >>",
+          "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 200 200] >>",
+          "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> >>",
+          ...Array.from({ length: depth }, (_, index) => `[${index + 5} 0 R]`),
+          "null",
+        ]);
+        const doc = yield* core.openLazy(pdfCoreBytesSource(bytes), {
+          probeBytes: 128,
+          gapBytes: 0,
+          maxRoundBytes: 4096,
+        });
+        expect(yield* doc.text()).toStrictEqual(yield* core.text(bytes));
+        const stats = yield* doc.stats;
+        expect(stats.strategy).toBe(strategy);
+        if (strategy === "lazy") {
+          expect(stats.rounds).toBeGreaterThan(depth);
+        } else {
+          expect(stats.rounds).toBeLessThan(depth / 2);
+          expect(stats.bytesRead).toBe(bytes.length);
+        }
+      }),
+    ).pipe(Effect.provide(layer)),
+  );
+
   it.effect("releases page ranges between operations when the cache budget is zero", () =>
     Effect.scoped(
       Effect.gen(function* () {

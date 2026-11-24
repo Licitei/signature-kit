@@ -9,11 +9,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::document::{Document, Page, Transient};
 use crate::failure::{Failure, FailureCode, Outcome};
-use crate::font::{Font, Glyph, embedded_style};
+use crate::font::{Font, Glyph, embedded_style, push_piece};
 use crate::fontprog::FontStyle;
 use crate::inspection::{Limits, TextItem};
 use crate::object::{Dict, ObjRef, Object, Resolver as _};
-use crate::syntax::{ContentLexer, ContentToken, Operand};
+use crate::syntax::{ContentLexer, Operand};
 
 const IDENTITY: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
@@ -183,6 +183,7 @@ impl PathBuilder {
 struct Placement {
     direction: (f64, f64),
     effective_size: f64,
+    line: [f64; 4],
     linear: [f64; 4],
     usable: bool,
     vertical: bool,
@@ -199,7 +200,13 @@ impl Placement {
         let (dir_x, dir_y) = if vertical { (-c, -d) } else { (a, b) };
         let dir_length = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let effective_size = (state.size * (c * c + d * d).sqrt()).abs();
+        let line = rows(
+            &[a, b, c, d, 0.0_f64, 0.0_f64],
+            state.rise - entry.descent * state.size,
+            state.rise + entry.ascent * state.size,
+        );
         Self {
+            line,
             linear: [a, b, c, d],
             direction: (dir_x / dir_length, dir_y / dir_length),
             effective_size,
@@ -358,6 +365,13 @@ impl Scope {
             forms: None,
         }
     }
+}
+
+struct Shown<'shown> {
+    decoded: &'shown mut String,
+    entry: &'shown FontEntry,
+    glyphs: &'shown mut Vec<Glyph>,
+    placement: &'shown Placement,
 }
 
 #[derive(Clone, Copy)]
@@ -584,7 +598,7 @@ impl Interpreter<'_, '_, '_> {
         self.pending.bold = style.0;
         self.pending.italic = style.1;
         self.pending.text.clear();
-        self.pending.text.push_str(text);
+        push_piece(&mut self.pending.text, text);
         self.pending.bounds = bounds;
         self.pending.size = size;
         self.pending.dir = direction;
@@ -791,7 +805,7 @@ impl Interpreter<'_, '_, '_> {
                 self.pending.text.push(' ');
             }
         }
-        self.pending.text.push_str(text);
+        push_piece(&mut self.pending.text, text);
     }
 
     fn flush(&mut self) -> Outcome<()> {
@@ -1094,6 +1108,10 @@ impl Interpreter<'_, '_, '_> {
         let effective_size = placement.effective_size;
         let mut pen_x = 0.0_f64;
         let mut pen_y = 0.0_f64;
+        let rise = state.rise;
+        let at = |x: f64, y: f64| (x * a + (y + rise) * c + e, x * b + (y + rise) * d + f);
+        let mut origin = at(pen_x, pen_y);
+        let line = placement.line;
         let style = (entry.bold || state.stroked_fill, entry.italic);
         for glyph in glyphs {
             let replacement = match self.actual.as_ref() {
@@ -1115,45 +1133,38 @@ impl Interpreter<'_, '_, '_> {
                 } else {
                     0.0_f64
                 };
-            let (x0, y0, x1, y1, step_x, step_y);
+            let (bounds, step_x, step_y);
             if vertical {
                 let metrics = entry.font.vertical_metrics(glyph.code);
                 let span = metrics.advance * size;
                 let em = size.abs() * scale;
-                x0 = pen_x - metrics.origin_x * em;
-                x1 = x0 + glyph.advance * em;
-                y1 = pen_y + state.rise;
-                y0 = y1 - span;
+                let x0 = pen_x - metrics.origin_x * em;
+                let y1 = pen_y + rise;
+                bounds = spans(
+                    &mapping,
+                    x0,
+                    x0 + glyph.advance * em,
+                    rows(&mapping, y1 - span, y1),
+                );
                 step_x = 0.0_f64;
                 step_y = -span + spacing;
             } else {
                 let width = glyph.advance * size * scale;
-                x0 = pen_x;
-                x1 = pen_x + width;
-                y0 = state.rise - entry.descent * size;
-                y1 = state.rise + entry.ascent * size;
+                bounds = spans(&mapping, pen_x, pen_x + width, line);
                 step_x = width + spacing * scale;
                 step_y = 0.0_f64;
             }
-            let bounds = || transformed_bounds(&mapping, x0, y0, x1, y1);
-            let in_form = usable && !self.clip.is_some_and(|clip| outside(bounds(), clip));
+            let end = at(pen_x + step_x, pen_y + step_y);
+            let in_form = usable && !self.clip.is_some_and(|clip| outside(bounds, clip));
             if DIAGNOSTICS {
                 self.diagnose_glyph(
                     glyph_text,
                     spanned,
-                    in_form.then(bounds),
+                    in_form.then_some(bounds),
                     state.invisible_text,
                 );
             } else if in_form {
                 let visible = spanned || glyph_text.chars().any(|ch| !ch.is_whitespace());
-                let origin = (
-                    pen_x * a + (pen_y + state.rise) * c + e,
-                    pen_x * b + (pen_y + state.rise) * d + f,
-                );
-                let end = (
-                    (pen_x + step_x) * a + (pen_y + step_y + state.rise) * c + e,
-                    (pen_x + step_x) * b + (pen_y + step_y + state.rise) * d + f,
-                );
                 let mut join = self.join(origin, direction, effective_size, entry.space_gap);
                 if repositioned
                     && matches!(join, Join::Same | Join::Spaced)
@@ -1176,7 +1187,7 @@ impl Interpreter<'_, '_, '_> {
                 if matches!(join, Join::Same | Join::Spaced) {
                     self.extend(glyph_text, visible, join == Join::Spaced);
                     if visible {
-                        self.merge_bounds(bounds());
+                        self.merge_bounds(bounds);
                         self.pending.bold &= style.0;
                         self.pending.italic &= style.1;
                         self.pending.ink_end = end;
@@ -1187,12 +1198,13 @@ impl Interpreter<'_, '_, '_> {
                         self.flush()?;
                     }
                     if visible {
-                        self.begin(glyph_text, bounds(), effective_size, direction, end, style);
+                        self.begin(glyph_text, bounds, effective_size, direction, end, style);
                     }
                 }
             }
             pen_x += step_x;
             pen_y += step_y;
+            origin = end;
         }
         matrices.translate(pen_x, pen_y);
         Ok(())
@@ -1262,20 +1274,7 @@ impl Interpreter<'_, '_, '_> {
         let mut marked: Vec<bool> = Vec::new();
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
-        while let Some(token) = lexer.next() {
-            let name = match token {
-                Err(_) => break,
-                Ok(ContentToken::Operand(operand)) => {
-                    if operands.len() >= MAX_OPERANDS {
-                        while let Some(stale) = operands.pop() {
-                            lexer.recycle(stale);
-                        }
-                    }
-                    operands.push(operand);
-                    continue;
-                }
-                Ok(ContentToken::Operator(name)) => name,
-            };
+        while let Some(Ok(name)) = lexer.operator(&mut operands, MAX_OPERANDS) {
             let code = op(name);
             match code {
                 OP_END_IMAGE if self.scan.is_some() => {
@@ -1317,9 +1316,6 @@ impl Interpreter<'_, '_, '_> {
                     }
                 }
             }
-            while let Some(used) = operands.pop() {
-                lexer.recycle(used);
-            }
         }
         if marked.contains(&true) {
             self.actual = None;
@@ -1359,23 +1355,61 @@ impl Interpreter<'_, '_, '_> {
         items: &[Operand<'_>],
         scratch: &mut Vec<u8>,
     ) -> Outcome<()> {
-        let prepared = state.font.clone().map(|entry| {
-            let placement = Placement::new(&entry, state, &matrices.tm);
-            (entry, placement)
-        });
-        let vertical = prepared
-            .as_ref()
-            .is_some_and(|(_, placement)| placement.vertical);
+        let Some(entry) = state.font.clone() else {
+            for item in items {
+                if let Some(bytes) = item.string(scratch) {
+                    if let Some(scan) = self.scan.as_deref_mut() {
+                        scan.missing_font(bytes.len());
+                    }
+                } else if let Some(amount) = item.as_number() {
+                    matrices.translate(-amount / 1_000.0_f64 * state.size * state.scale, 0.0);
+                }
+            }
+            return Ok(());
+        };
+        let placement = Placement::new(&entry, state, &matrices.tm);
+        let mut glyphs = mem::take(&mut self.glyphs);
+        let mut decoded = mem::take(&mut self.decoded);
+        let mut shown = Shown {
+            entry: &entry,
+            placement: &placement,
+            glyphs: &mut glyphs,
+            decoded: &mut decoded,
+        };
+        let result = if self.scan.is_some() {
+            self.show_items::<true>(&mut shown, state, matrices, items, scratch)
+        } else {
+            self.show_items::<false>(&mut shown, state, matrices, items, scratch)
+        };
+        self.glyphs = glyphs;
+        self.decoded = decoded;
+        result
+    }
+
+    fn show_items<const DIAGNOSTICS: bool>(
+        &mut self,
+        shown: &mut Shown<'_>,
+        state: &GState,
+        matrices: &mut TextMatrices,
+        items: &[Operand<'_>],
+        scratch: &mut Vec<u8>,
+    ) -> Outcome<()> {
         for item in items {
             if let Some(bytes) = item.string(scratch) {
-                if let Some((entry, placement)) = &prepared {
-                    self.show_with(entry, placement, state, matrices, bytes)?;
-                } else if let Some(scan) = self.scan.as_deref_mut() {
-                    scan.missing_font(bytes.len());
-                }
+                shown.glyphs.clear();
+                shown.decoded.clear();
+                shown.entry.font.decode(bytes, shown.glyphs, shown.decoded);
+                self.place::<DIAGNOSTICS>(
+                    shown.entry,
+                    shown.placement,
+                    state,
+                    matrices,
+                    shown.glyphs,
+                    shown.decoded,
+                )?;
             } else if let Some(amount) = item.as_number() {
                 let shift = -amount / 1_000.0_f64 * state.size;
-                if vertical {
+                if shown.placement.vertical {
                     matrices.translate(0.0, shift);
                 } else {
                     matrices.translate(shift * state.scale, 0.0);
@@ -1693,22 +1727,30 @@ fn matrix_from(object: Option<&Object>) -> Option<Matrix> {
 }
 
 fn transformed_bounds(matrix: &Matrix, x0: f64, y0: f64, x1: f64, y1: f64) -> [f64; 4] {
-    let [a, b, c, d, e, f] = *matrix;
-    let mut bounds = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
-        let px = x * a + y * c + e;
-        let py = x * b + y * d + f;
-        bounds[0] = bounds[0].min(px);
-        bounds[1] = bounds[1].min(py);
-        bounds[2] = bounds[2].max(px);
-        bounds[3] = bounds[3].max(py);
+    spans(matrix, x0, x1, rows(matrix, y0, y1))
+}
+
+fn rows(matrix: &Matrix, y0: f64, y1: f64) -> [f64; 4] {
+    let [_, _, c, d, _, _] = *matrix;
+    let (c0, c1) = ordered(y0 * c, y1 * c);
+    let (d0, d1) = ordered(y0 * d, y1 * d);
+    [c0, d0, c1, d1]
+}
+
+fn spans(matrix: &Matrix, x0: f64, x1: f64, rows: [f64; 4]) -> [f64; 4] {
+    let [a, b, _, _, e, f] = *matrix;
+    let (a0, a1) = ordered(x0 * a, x1 * a);
+    let (b0, b1) = ordered(x0 * b, x1 * b);
+    let [c0, d0, c1, d1] = rows;
+    [a0 + c0 + e, b0 + d0 + f, a1 + c1 + e, b1 + d1 + f]
+}
+
+fn ordered(first: f64, second: f64) -> (f64, f64) {
+    if second < first {
+        (second, first)
+    } else {
+        (first, second)
     }
-    bounds
 }
 
 fn apply(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {

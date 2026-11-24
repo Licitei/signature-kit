@@ -99,6 +99,7 @@ struct Layout {
     bits: u32,
     components: usize,
     height: usize,
+    identity: bool,
     row_bytes: usize,
     width: usize,
 }
@@ -166,14 +167,24 @@ impl Downsampler {
             self.out.extend_from_slice(row);
             return;
         }
-        let sums = self.sums.as_chunks_mut::<4>().0;
-        for (index, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
-            if let Some(slot) = sums.get_mut(index.div_euclid(self.factor_x)) {
+        let span = self.factor_x.saturating_mul(4);
+        for (slot, group) in self
+            .sums
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(row.chunks(span))
+        {
+            let mut total = [0_u32; 4];
+            for pixel in group.as_chunks::<4>().0 {
                 let alpha = u32::from(pixel[3]);
-                slot[0] = slot[0].saturating_add(u32::from(pixel[0]).saturating_mul(alpha));
-                slot[1] = slot[1].saturating_add(u32::from(pixel[1]).saturating_mul(alpha));
-                slot[2] = slot[2].saturating_add(u32::from(pixel[2]).saturating_mul(alpha));
-                slot[3] = slot[3].saturating_add(alpha);
+                total[0] = total[0].wrapping_add(u32::from(pixel[0]).wrapping_mul(alpha));
+                total[1] = total[1].wrapping_add(u32::from(pixel[1]).wrapping_mul(alpha));
+                total[2] = total[2].wrapping_add(u32::from(pixel[2]).wrapping_mul(alpha));
+                total[3] = total[3].wrapping_add(alpha);
+            }
+            for (sum, added) in slot.iter_mut().zip(total) {
+                *sum = sum.saturating_add(added);
             }
         }
         self.rows_in_band = self.rows_in_band.saturating_add(1);
@@ -371,6 +382,108 @@ fn converter<'space>(space: &'space ColorSpace, decode: &[f64], bits: u32) -> Co
     }
 }
 
+fn convert_bytes(
+    converter: &Converter<'_>,
+    row: &[u8],
+    width: usize,
+    out: &mut [u8],
+    identity: bool,
+) -> bool {
+    let pixels = out.as_chunks_mut::<4>().0;
+    match converter {
+        Converter::Gray(values) => {
+            let Ok(lut) = <&[u8; 256]>::try_from(values.as_slice()) else {
+                return false;
+            };
+            for (pixel, byte) in pixels.iter_mut().zip(row).take(width) {
+                let gray = lut.get(usize::from(*byte)).copied().unwrap_or(0);
+                *pixel = [gray, gray, gray, 255];
+            }
+            true
+        }
+        Converter::Rgb([red_values, green_values, blue_values]) => {
+            let (Ok(red), Ok(green), Ok(blue)) = (
+                <&[u8; 256]>::try_from(red_values.as_slice()),
+                <&[u8; 256]>::try_from(green_values.as_slice()),
+                <&[u8; 256]>::try_from(blue_values.as_slice()),
+            ) else {
+                return false;
+            };
+            if identity {
+                for (pixel, rgb) in pixels.iter_mut().zip(row.as_chunks::<3>().0).take(width) {
+                    *pixel = [rgb[0], rgb[1], rgb[2], 255];
+                }
+                return true;
+            }
+            for (pixel, rgb) in pixels.iter_mut().zip(row.as_chunks::<3>().0).take(width) {
+                *pixel = [
+                    red.get(usize::from(rgb[0])).copied().unwrap_or(0),
+                    green.get(usize::from(rgb[1])).copied().unwrap_or(0),
+                    blue.get(usize::from(rgb[2])).copied().unwrap_or(0),
+                    255,
+                ];
+            }
+            true
+        }
+        Converter::Palette(entries) => {
+            let Ok(palette) = <&[[u8; 3]; 256]>::try_from(entries.as_slice()) else {
+                return false;
+            };
+            for (pixel, byte) in pixels.iter_mut().zip(row).take(width) {
+                let [red, green, blue] = palette.get(usize::from(*byte)).copied().unwrap_or([0; 3]);
+                *pixel = [red, green, blue, 255];
+            }
+            true
+        }
+        Converter::Cmyk(_) | Converter::Generic(_) | Converter::Stencil(..) => false,
+    }
+}
+
+fn convert_bitmap(converter: &Converter<'_>, row: &[u8], out: &mut [u8]) -> bool {
+    let table: [[u8; 4]; 2] = match converter {
+        Converter::Gray(lut) => {
+            let (Some(zero), Some(one)) = (lut.first(), lut.get(1)) else {
+                return false;
+            };
+            [[*zero, *zero, *zero, 255], [*one, *one, *one, 255]]
+        }
+        Converter::Palette(palette) => {
+            let (Some(zero), Some(one)) = (palette.first(), palette.get(1)) else {
+                return false;
+            };
+            [
+                [zero[0], zero[1], zero[2], 255],
+                [one[0], one[1], one[2], 255],
+            ]
+        }
+        Converter::Stencil(color, invert) => [
+            [
+                color[0],
+                color[1],
+                color[2],
+                if *invert { 0 } else { color[3] },
+            ],
+            [
+                color[0],
+                color[1],
+                color[2],
+                if *invert { color[3] } else { 0 },
+            ],
+        ],
+        Converter::Cmyk(_) | Converter::Generic(_) | Converter::Rgb(_) => return false,
+    };
+    let pixels = out.as_chunks_mut::<4>().0;
+    for (group, byte) in pixels.chunks_mut(8).zip(row) {
+        for (shift, pixel) in (0_u32..8).rev().zip(group) {
+            *pixel = table
+                .get(usize::from((*byte >> shift) & 1))
+                .copied()
+                .unwrap_or_default();
+        }
+    }
+    true
+}
+
 fn convert_row(
     converter: &mut Converter<'_>,
     row: &[u8],
@@ -379,6 +492,19 @@ fn convert_row(
     scratch: &mut Vec<f64>,
 ) {
     let components = layout.components;
+    if layout.bits == 8
+        && row.len() >= layout.width.saturating_mul(components)
+        && convert_bytes(converter, row, layout.width, out, layout.identity)
+    {
+        return;
+    }
+    if layout.bits == 1
+        && components == 1
+        && row.len() >= layout.width.div_ceil(8)
+        && convert_bitmap(converter, row, out)
+    {
+        return;
+    }
     let bits = layout.bits;
     for (x, pixel) in out
         .as_chunks_mut::<4>()
@@ -442,6 +568,14 @@ fn convert_row(
     }
 }
 
+fn apply_plane_value(pixel: &mut [u8; 4], matte: Option<[u8; 3]>, value: u32) {
+    if let Some(background) = matte {
+        unmatte(pixel, background, value);
+    }
+    pixel[3] =
+        u8::try_from(u32::from(pixel[3]).saturating_mul(value).div_euclid(255)).unwrap_or(u8::MAX);
+}
+
 fn apply_alpha(alpha: &Alpha, row: &[u8], y: usize, layout: &Layout, out: &mut [u8]) {
     match alpha {
         Alpha::Opaque | Alpha::Deferred(_) => {}
@@ -457,20 +591,29 @@ fn apply_alpha(alpha: &Alpha, row: &[u8], y: usize, layout: &Layout, out: &mut [
                 .pixels
                 .get(start..start.saturating_add(plane_width))
                 .unwrap_or_default();
-            for (x, pixel) in out
-                .as_chunks_mut::<4>()
-                .0
-                .iter_mut()
-                .enumerate()
-                .take(layout.width)
-            {
-                let plane_x = x.saturating_mul(plane_width).div_euclid(layout.width);
-                let value = u32::from(plane_row.get(plane_x).copied().unwrap_or(255));
-                if let Some(background) = matte {
-                    unmatte(pixel, *background, value);
+            let pixels = out.as_chunks_mut::<4>().0;
+            if plane_row.is_empty() {
+                return;
+            }
+            if plane_width == layout.width {
+                for (pixel, value) in pixels.iter_mut().zip(plane_row) {
+                    apply_plane_value(pixel, *matte, u32::from(*value));
                 }
-                pixel[3] = u8::try_from(u32::from(pixel[3]).saturating_mul(value).div_euclid(255))
-                    .unwrap_or(u8::MAX);
+                return;
+            }
+            let step = plane_width.div_euclid(layout.width);
+            let step_rest = plane_width.rem_euclid(layout.width);
+            let mut plane_x = 0_usize;
+            let mut rest = 0_usize;
+            for pixel in pixels.iter_mut().take(layout.width) {
+                let value = u32::from(plane_row.get(plane_x).copied().unwrap_or(255));
+                apply_plane_value(pixel, *matte, value);
+                plane_x = plane_x.saturating_add(step);
+                rest = rest.saturating_add(step_rest);
+                if rest >= layout.width {
+                    rest = rest.saturating_sub(layout.width);
+                    plane_x = plane_x.saturating_add(1);
+                }
             }
         }
         Alpha::ColorKey(ranges) => {
@@ -578,15 +721,24 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Optio
     };
     let decode = numbers(ctx.resolver, dict, b"Decode");
     let invert = decode.first().is_some_and(|first| *first > 0.5_f64);
-    let lut = component_lut(
-        if decode.len() >= 2 {
-            &decode
-        } else {
-            &[0.0_f64, 1.0_f64]
-        },
-        0,
-        bits,
-    );
+    let lut: Vec<u8> = if stencil {
+        if invert { vec![0, 255] } else { vec![255, 0] }
+    } else {
+        byte_lut(
+            if decode.len() >= 2 {
+                &decode
+            } else {
+                &[0.0_f64, 1.0_f64]
+            },
+            0,
+            bits,
+        )
+    };
+    let fallback = if stencil { 255 } else { unit_to_u8(1.0_f64) };
+    let identity = lut
+        .iter()
+        .enumerate()
+        .all(|(index, value)| usize::from(*value) == index);
     let row_bytes = width.checked_mul(usize::try_from(bits).ok()?)?.div_ceil(8);
     let mut pixels = Vec::with_capacity(width.checked_mul(height)?);
     for y in 0..height {
@@ -594,18 +746,27 @@ fn decode_alpha(ctx: &ImageContext<'_>, object: &Object, stencil: bool) -> Optio
         let row = data
             .get(start..start.saturating_add(row_bytes))
             .unwrap_or_default();
+        if bits == 8
+            && let Some(exact) = row.get(..width)
+        {
+            if identity {
+                pixels.extend_from_slice(exact);
+            } else {
+                pixels.extend(
+                    exact
+                        .iter()
+                        .map(|byte| lut.get(usize::from(*byte)).copied().unwrap_or(fallback)),
+                );
+            }
+            continue;
+        }
         for x in 0..width {
             let raw_value = sample(row, x, bits);
-            let value = if stencil {
-                if (raw_value == 0) == invert { 0 } else { 255 }
-            } else {
-                unit_to_u8(
-                    lut.get(usize::try_from(raw_value).unwrap_or(0))
-                        .copied()
-                        .unwrap_or(1.0_f64),
-                )
-            };
-            pixels.push(value);
+            pixels.push(
+                lut.get(usize::try_from(raw_value).unwrap_or(0))
+                    .copied()
+                    .unwrap_or(fallback),
+            );
         }
     }
     Some(Pixels::Raster(Raster {
@@ -735,10 +896,14 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
     } else {
         converter(space, &decode, bits)
     };
+    let identity = matches!(&converter, Converter::Rgb(luts) if luts
+        .iter()
+        .all(|lut| lut.iter().enumerate().all(|(index, value)| usize::from(*value) == index)));
     let layout = Layout {
         bits,
         components,
         height,
+        identity,
         row_bytes: width
             .checked_mul(components)?
             .checked_mul(usize::try_from(bits).ok()?)?

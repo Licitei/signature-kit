@@ -13,9 +13,10 @@ use crate::inspection::Limits;
 use crate::num::{bounded, f64_to_i64, f64_to_usize, unit_to_u8};
 use crate::object::{Dict, ObjRef, Object, Resolver as _, Stream, object_numbers};
 use crate::shading::{GradientPaint, Shading, parse_shading};
-use crate::syntax::{ContentLexer, ContentToken, Operand};
+use crate::syntax::{ContentLexer, Operand};
 use crate::text::tail_numbers;
 use alloc::rc::Rc;
+use core::cell::RefCell;
 use core::mem;
 use core::ops::Deref;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,7 @@ const MAX_OPERATORS: usize = 4_000_000;
 const MAX_OPS_BYTES: usize = 96 << 20;
 const MAX_BLOB_BYTES: usize = 384 << 20;
 const MAX_CACHED_FONTS: usize = 1024;
+const MAX_CACHED_GID_CODES: usize = 1 << 16;
 const MAX_CACHED_OUTLINES: usize = 1 << 16;
 const MAX_CACHED_IMAGE_BYTES: usize = 96 << 20;
 const MAX_CACHED_STREAM_BYTES: usize = 64 << 20;
@@ -101,7 +103,35 @@ struct Type3 {
 struct RenderFont {
     face: Face,
     font: Font,
+    gids: RefCell<Vec<u32>>,
     id: u32,
+}
+
+impl RenderFont {
+    fn render_gid(&self, code: u32) -> Option<u16> {
+        let Some(index) = usize::try_from(code)
+            .ok()
+            .filter(|index| *index < MAX_CACHED_GID_CODES)
+        else {
+            return self.font.render_gid(code);
+        };
+        if let Ok(cache) = self.gids.try_borrow()
+            && let Some(known) = cache.get(index).copied().filter(|entry| *entry != 0)
+        {
+            let gid = known.checked_sub(2)?;
+            return u16::try_from(gid).ok();
+        }
+        let gid = self.font.render_gid(code);
+        if let Ok(mut cache) = self.gids.try_borrow_mut() {
+            if cache.len() <= index {
+                cache.resize(index.saturating_add(1), 0);
+            }
+            if let Some(slot) = cache.get_mut(index) {
+                *slot = gid.map_or(1, |inner| u32::from(inner).saturating_add(2));
+            }
+        }
+        gid
+    }
 }
 
 #[derive(Clone)]
@@ -346,7 +376,7 @@ struct Renderer<'doc, 'data> {
     document: &'doc Document<'data>,
     emitted: Emitted,
     emitted_stack: Vec<Emitted>,
-    glyph_ids: HashMap<(u32, u16), Option<u32>>,
+    glyph_ids: Vec<Vec<u32>>,
     glyphs: Vec<Glyph>,
     images: HashMap<ImageKey, ImageRef>,
     limits: &'doc Limits,
@@ -689,8 +719,16 @@ impl Renderer<'_, '_> {
 
     fn define_glyph(&mut self, font: &RenderFont, gid: u16) -> Option<u32> {
         let key = (font.id, gid);
-        if let Some(found) = self.glyph_ids.get(&key) {
-            return *found;
+        let font_slot = usize::try_from(font.id).unwrap_or(0);
+        let gid_slot = usize::from(gid);
+        if let Some(known) = self
+            .glyph_ids
+            .get(font_slot)
+            .and_then(|row| row.get(gid_slot))
+            .copied()
+            .filter(|code| *code != 0)
+        {
+            return known.checked_sub(2);
         }
         let outline = if let Some(cached) = self.session.outlines.get(&key) {
             Rc::clone(cached)
@@ -719,7 +757,18 @@ impl Renderer<'_, '_> {
             self.list.glyph_define(id, &outline);
             Some(id)
         };
-        let _: Option<Option<u32>> = self.glyph_ids.insert(key, id);
+        if self.glyph_ids.len() <= font_slot {
+            self.glyph_ids
+                .resize_with(font_slot.saturating_add(1), Vec::new);
+        }
+        if let Some(row) = self.glyph_ids.get_mut(font_slot) {
+            if row.len() <= gid_slot {
+                row.resize(gid_slot.saturating_add(1), 0);
+            }
+            if let Some(slot) = row.get_mut(gid_slot) {
+                *slot = id.map_or(1, |defined| defined.saturating_add(2));
+            }
+        }
         id
     }
 
@@ -1005,6 +1054,7 @@ impl Renderer<'_, '_> {
         let render_font = Rc::new(RenderFont {
             face,
             font,
+            gids: RefCell::default(),
             id: self.session.next_font,
         });
         self.session.next_font = self.session.next_font.saturating_add(1);
@@ -1282,20 +1332,7 @@ impl Renderer<'_, '_> {
         };
         let mut scratch: Vec<u8> = Vec::new();
         let mut lexer = ContentLexer::new(data);
-        while let Some(token) = lexer.next() {
-            let code = match token {
-                Err(_) => break,
-                Ok(ContentToken::Operand(operand)) => {
-                    if operands.len() >= MAX_OPERANDS {
-                        while let Some(stale) = operands.pop() {
-                            lexer.recycle(stale);
-                        }
-                    }
-                    operands.push(operand);
-                    continue;
-                }
-                Ok(ContentToken::Operator(name)) => name,
-            };
+        while let Some(Ok(code)) = lexer.operator(&mut operands, MAX_OPERANDS) {
             if !self.count_operator() {
                 break;
             }
@@ -1561,9 +1598,6 @@ impl Renderer<'_, '_> {
                     let _: bool = Self::path_operator(code, &operands, &mut path, &mut current);
                 }
             }
-            while let Some(used) = operands.pop() {
-                lexer.recycle(used);
-            }
         }
         if text.clip {
             self.list.op(OP_TEXT_CLIP);
@@ -1629,7 +1663,11 @@ impl Renderer<'_, '_> {
         let mut decoded = mem::take(&mut self.decoded);
         glyphs.clear();
         decoded.clear();
-        font.font.decode(bytes, &mut glyphs, &mut decoded);
+        if matches!(font.face, Face::Fallback(_)) {
+            font.font.decode(bytes, &mut glyphs, &mut decoded);
+        } else {
+            font.font.decode_codes(bytes, &mut glyphs);
+        }
         let size = state.font_size;
         let horizontal_scale = state.scale;
         let vertical = font.font.is_vertical();
@@ -1671,7 +1709,7 @@ impl Renderer<'_, '_> {
             if modes != 0 && size != 0.0_f64 {
                 match &font.face {
                     Face::Outline => {
-                        if let Some(gid) = font.font.render_gid(glyph.code)
+                        if let Some(gid) = font.render_gid(glyph.code)
                             && let Some(id) = self.define_glyph(&font, gid)
                             && let Some(program) = font.font.program()
                         {
@@ -2069,33 +2107,26 @@ fn dict_flag(dict: &Dict, key: &[u8]) -> bool {
 
 fn tile_color(data: &[u8]) -> [u8; 3] {
     let mut lexer = ContentLexer::new(data);
+    let mut operands: Vec<Operand<'_>> = Vec::new();
     let mut values: Vec<f64> = Vec::new();
     let mut scratch = Vec::new();
-    while let Some(Ok(token)) = lexer.next() {
-        match token {
-            ContentToken::Operand(operand) => {
-                if let Some(number) = operand.as_number() {
-                    values.push(number);
-                }
-            }
-            ContentToken::Operator(code) => {
-                let space = match code {
-                    b"g" => Some(ColorSpace::Gray),
-                    b"rg" | b"sc" | b"scn" if values.len() == 3 => Some(ColorSpace::Rgb),
-                    b"k" => Some(ColorSpace::Cmyk),
-                    _ => None,
-                };
-                if let Some(found) = space {
-                    let count = found.components();
-                    let start = values.len().saturating_sub(count);
-                    let rgb = found
-                        .rgb(values.get(start..).unwrap_or_default(), &mut scratch)
-                        .map(unit_to_u8);
-                    if rgb != [255, 255, 255] {
-                        return rgb;
-                    }
-                }
-                values.clear();
+    while let Some(Ok(code)) = lexer.operator(&mut operands, usize::MAX) {
+        values.clear();
+        values.extend(operands.iter().filter_map(Operand::as_number));
+        let space = match code {
+            b"g" => Some(ColorSpace::Gray),
+            b"rg" | b"sc" | b"scn" if values.len() == 3 => Some(ColorSpace::Rgb),
+            b"k" => Some(ColorSpace::Cmyk),
+            _ => None,
+        };
+        if let Some(found) = space {
+            let count = found.components();
+            let start = values.len().saturating_sub(count);
+            let rgb = found
+                .rgb(values.get(start..).unwrap_or_default(), &mut scratch)
+                .map(unit_to_u8);
+            if rgb != [255, 255, 255] {
+                return rgb;
             }
         }
     }
@@ -2209,7 +2240,7 @@ fn render_page(target: &PageTarget<'_, '_>, session: &mut RenderSession) -> Outc
         document: target.document,
         emitted: Emitted::default(),
         emitted_stack: Vec::new(),
-        glyph_ids: HashMap::new(),
+        glyph_ids: Vec::new(),
         glyphs: Vec::new(),
         images: HashMap::new(),
         limits: target.limits,

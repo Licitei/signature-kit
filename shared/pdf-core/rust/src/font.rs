@@ -136,6 +136,13 @@ impl Font {
         }
     }
 
+    pub(crate) fn decode_codes(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>) {
+        match &self.inner {
+            FontKind::Simple(simple) => simple.decode_codes(bytes, glyphs),
+            FontKind::Composite(composite) => composite.decode_codes(bytes, glyphs),
+        }
+    }
+
     pub(crate) fn is_vertical(&self) -> bool {
         match &self.inner {
             FontKind::Simple(_) => false,
@@ -245,6 +252,15 @@ impl SimpleFont {
                 text: text_start..text.len(),
             });
         }
+    }
+
+    fn decode_codes(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>) {
+        glyphs.extend(bytes.iter().map(|byte| Glyph {
+            code: u32::from(*byte),
+            advance: self.width_for_code(u32::from(*byte)),
+            is_word_space: *byte == 32,
+            text: 0..0,
+        }));
     }
 
     fn encoding_name(&self, code: u32) -> Option<&[u8]> {
@@ -490,6 +506,32 @@ impl CompositeFont {
         }
     }
 
+    fn decode_codes(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>) {
+        if self.cmap.is_identity() {
+            for pair in bytes.as_chunks::<2>().0 {
+                let code = u32::from(u16::from_be_bytes(*pair));
+                glyphs.push(Glyph {
+                    code,
+                    advance: self.horizontal.width(Some(code)) / 1000.0,
+                    is_word_space: false,
+                    text: 0..0,
+                });
+            }
+            return;
+        }
+        let mut offset = 0_usize;
+        while let Some((code, consumed)) = self.cmap.read(bytes, offset) {
+            offset = offset.saturating_add(consumed);
+            let cid = self.cmap.cid(code, consumed);
+            glyphs.push(Glyph {
+                code: cid.unwrap_or(code),
+                advance: self.horizontal.width(cid) / 1_000.0_f64,
+                is_word_space: consumed == 1 && code == 32,
+                text: 0..0,
+            });
+        }
+    }
+
     fn decode_identity(&self, bytes: &[u8], glyphs: &mut Vec<Glyph>, text: &mut String) {
         let mut table = self.identity.borrow_mut();
         for pair in bytes.as_chunks::<2>().0 {
@@ -513,7 +555,10 @@ impl CompositeFont {
                 }
             }
             let text_start = text.len();
-            text.push_str(table.text.get(slot.start..slot.end).unwrap_or_default());
+            push_piece(
+                text,
+                table.text.get(slot.start..slot.end).unwrap_or_default(),
+            );
             glyphs.push(Glyph {
                 code,
                 advance: slot.advance,
@@ -1321,6 +1366,14 @@ const fn symbolic_fallback(code: u32) -> u32 {
         return code;
     }
     0
+}
+
+pub(crate) fn push_piece(text: &mut String, piece: &str) {
+    if let [byte] = piece.as_bytes() {
+        text.push(char::from(*byte));
+    } else {
+        text.push_str(piece);
+    }
 }
 
 fn push_codepoints(text: &mut String, codepoints: &[u32]) {

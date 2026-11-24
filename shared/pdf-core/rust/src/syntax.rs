@@ -420,7 +420,8 @@ impl<'data> Parser<'data> {
                 self.pos = self.pos.saturating_add(1);
             }
             let divisor = POW10.get(scale).copied().unwrap_or(1e18_f64);
-            let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
+            let integral = i64::try_from(whole).map_or_else(|_| u64_to_f64(whole), i64_to_f64);
+            let magnitude = integral + i64_to_f64(fraction.cast_signed()) / divisor;
             return Numeral::Real(if negative { -magnitude } else { magnitude });
         }
         if self.pos == start {
@@ -625,12 +626,6 @@ impl Operand<'_> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ContentToken<'data> {
-    Operand(Operand<'data>),
-    Operator(&'data [u8]),
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineImage {
     pub data: Range<usize>,
     pub dict: Dict,
@@ -643,37 +638,6 @@ pub(crate) struct ContentLexer<'data> {
 }
 
 impl<'data> ContentLexer<'data> {
-    fn array(&mut self, depth: usize) -> Parsed<Operand<'data>> {
-        if depth >= self.parser.max_depth {
-            self.parser.pos = self.parser.pos.saturating_add(1);
-            return Err(Reject::TooDeep);
-        }
-        self.parser.pos = self.parser.pos.saturating_add(1);
-        let mut items = self.spare.pop().unwrap_or_default();
-        loop {
-            self.parser.skip_whitespace();
-            match self.parser.peek() {
-                None => break,
-                Some(b']') => {
-                    self.parser.pos = self.parser.pos.saturating_add(1);
-                    break;
-                }
-                Some(_) => {}
-            }
-            match self.parser.garbage_keyword() {
-                Some(true) => break,
-                Some(false) => continue,
-                None => {}
-            }
-            match self.value(depth.saturating_add(1)) {
-                Ok(item) => items.push(item),
-                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
-                Err(Reject::Garbage) => {}
-            }
-        }
-        Ok(Operand::Array(items))
-    }
-
     fn hex(&mut self) -> &'data [u8] {
         let parser = &mut self.parser;
         let start = parser.pos.saturating_add(1);
@@ -688,38 +652,10 @@ impl<'data> ContentLexer<'data> {
         parser.slice(start, end)
     }
 
-    fn literal(&mut self) -> Cow<'data, [u8]> {
-        let parser = &mut self.parser;
-        let start = parser.pos.saturating_add(1);
-        let mut end = start;
-        while let Some(&byte) = parser.data.get(end) {
-            match byte {
-                b')' => {
-                    parser.pos = end.saturating_add(1);
-                    return Cow::Borrowed(parser.slice(start, end));
-                }
-                b'(' | b'\\' | b'\r' => break,
-                _ => end = end.saturating_add(1),
-            }
+    fn make_room(&mut self, operands: &mut Vec<Operand<'data>>, limit: usize) {
+        if operands.len() >= limit {
+            self.release(operands);
         }
-        Cow::Owned(parser.literal_string())
-    }
-
-    fn name(&mut self) -> Cow<'data, [u8]> {
-        let parser = &mut self.parser;
-        let start = parser.pos.saturating_add(1);
-        let mut end = start;
-        while let Some(&byte) = parser.data.get(end) {
-            if !is_regular(byte) {
-                break;
-            }
-            if byte == b'#' {
-                return Cow::Owned(parser.name());
-            }
-            end = end.saturating_add(1);
-        }
-        parser.pos = end;
-        Cow::Borrowed(parser.slice(start, end))
     }
 
     pub(crate) const fn new(data: &'data [u8]) -> Self {
@@ -730,19 +666,182 @@ impl<'data> ContentLexer<'data> {
         }
     }
 
-    fn number(&mut self) -> Operand<'data> {
-        match self.parser.numeral() {
-            Numeral::Real(value) => Operand::Real(value),
-            Numeral::Integer { value, .. } => Operand::Integer(value),
+    pub(crate) fn operator(
+        &mut self,
+        operands: &mut Vec<Operand<'data>>,
+        limit: usize,
+    ) -> Option<Outcome<&'data [u8]>> {
+        self.release(operands);
+        loop {
+            self.parser.skip_whitespace();
+            let byte = self.parser.peek()?;
+            match byte {
+                b'0'..=b'9' | b'+' | b'-' | b'.' => {
+                    let operand = match self.parser.numeral() {
+                        Numeral::Real(value) => Operand::Real(value),
+                        Numeral::Integer { value, .. } => Operand::Integer(value),
+                    };
+                    self.make_room(operands, limit);
+                    operands.push(operand);
+                }
+                b'/' => {
+                    self.make_room(operands, limit);
+                    self.push_name(operands);
+                }
+                b'(' => {
+                    self.make_room(operands, limit);
+                    self.push_literal(operands);
+                }
+                b'<' | b'[' => {
+                    self.make_room(operands, limit);
+                    if let Err(reject) = self.push_value(byte, operands, 0) {
+                        return Some(Err(reject.into_failure()));
+                    }
+                }
+                b')' | b']' | b'>' | b'{' | b'}' | b'%' => {
+                    let parser = &mut self.parser;
+                    let start = parser.pos;
+                    parser.pos = parser.pos.saturating_add(1);
+                    return Some(Ok(parser.slice(start, parser.pos)));
+                }
+                _ => {
+                    let parser = &mut self.parser;
+                    let run = parser.regular_run();
+                    let operand = match run {
+                        b"true" => Operand::Bool(true),
+                        b"false" => Operand::Bool(false),
+                        b"null" => Operand::Null,
+                        b"BI" => {
+                            return Some(parser.inline_image().map(|image| {
+                                self.inline = Some(image);
+                                &b"EI"[..]
+                            }));
+                        }
+                        _ => return Some(Ok(run)),
+                    };
+                    self.make_room(operands, limit);
+                    operands.push(operand);
+                }
+            }
         }
     }
 
-    pub(crate) fn recycle(&mut self, operand: Operand<'data>) {
-        if let Operand::Array(mut items) = operand
-            && self.spare.len() < SPARE_ARRAYS
-        {
-            items.clear();
-            self.spare.push(items);
+    fn push_array(&mut self, out: &mut Vec<Operand<'data>>, depth: usize) -> Parsed<()> {
+        if depth >= self.parser.max_depth {
+            self.parser.pos = self.parser.pos.saturating_add(1);
+            return Err(Reject::TooDeep);
+        }
+        self.parser.pos = self.parser.pos.saturating_add(1);
+        let mut items = self.spare.pop().unwrap_or_default();
+        loop {
+            self.parser.skip_whitespace();
+            let Some(byte) = self.parser.peek() else {
+                break;
+            };
+            if byte == b']' {
+                self.parser.pos = self.parser.pos.saturating_add(1);
+                break;
+            }
+            if is_regular(byte) && !is_number_start(byte) {
+                match self.parser.garbage_keyword() {
+                    Some(true) => break,
+                    Some(false) => continue,
+                    None => {}
+                }
+            }
+            match self.push_value(byte, &mut items, depth.saturating_add(1)) {
+                Ok(()) | Err(Reject::Garbage) => {}
+                Err(Reject::TooDeep) => return Err(Reject::TooDeep),
+            }
+        }
+        out.push(Operand::Array(items));
+        Ok(())
+    }
+
+    fn push_literal(&mut self, out: &mut Vec<Operand<'data>>) {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let mut end = start;
+        while let Some(&byte) = parser.data.get(end) {
+            match byte {
+                b')' => {
+                    parser.pos = end.saturating_add(1);
+                    out.push(Operand::Literal(Cow::Borrowed(parser.slice(start, end))));
+                    return;
+                }
+                b'(' | b'\\' | b'\r' => break,
+                _ => end = end.saturating_add(1),
+            }
+        }
+        out.push(Operand::Literal(Cow::Owned(parser.literal_string())));
+    }
+
+    fn push_name(&mut self, out: &mut Vec<Operand<'data>>) {
+        let parser = &mut self.parser;
+        let start = parser.pos.saturating_add(1);
+        let mut end = start;
+        while let Some(&byte) = parser.data.get(end) {
+            if !is_regular(byte) {
+                break;
+            }
+            if byte == b'#' {
+                out.push(Operand::Name(Cow::Owned(parser.name())));
+                return;
+            }
+            end = end.saturating_add(1);
+        }
+        parser.pos = end;
+        out.push(Operand::Name(Cow::Borrowed(parser.slice(start, end))));
+    }
+
+    fn push_value(&mut self, byte: u8, out: &mut Vec<Operand<'data>>, depth: usize) -> Parsed<()> {
+        match byte {
+            b'0'..=b'9' | b'+' | b'-' | b'.' => match self.parser.numeral() {
+                Numeral::Real(value) => out.push(Operand::Real(value)),
+                Numeral::Integer { value, .. } => out.push(Operand::Integer(value)),
+            },
+            b'/' => self.push_name(out),
+            b'(' => self.push_literal(out),
+            b'<' if self.parser.peek_at(1) == Some(b'<') => {
+                let object = self.parser.dictionary(depth)?;
+                out.push(Operand::Object(Box::new(object)));
+            }
+            b'<' => {
+                let raw = self.hex();
+                out.push(Operand::Hex(raw));
+            }
+            b'[' => return self.push_array(out, depth),
+            b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
+                self.parser.pos = self.parser.pos.saturating_add(1);
+                return Err(Reject::Garbage);
+            }
+            _ => match self.parser.regular_run() {
+                b"true" => out.push(Operand::Bool(true)),
+                b"false" => out.push(Operand::Bool(false)),
+                b"null" => out.push(Operand::Null),
+                _ => return Err(Reject::Garbage),
+            },
+        }
+        Ok(())
+    }
+
+    fn release(&mut self, operands: &mut Vec<Operand<'data>>) {
+        while let Some(used) = operands.pop() {
+            match used {
+                Operand::Array(mut items) => {
+                    if self.spare.len() < SPARE_ARRAYS {
+                        items.clear();
+                        self.spare.push(items);
+                    }
+                }
+                Operand::Literal(text) | Operand::Name(text) => drop(text),
+                Operand::Object(object) => drop(object),
+                Operand::Bool(_)
+                | Operand::Hex(_)
+                | Operand::Integer(_)
+                | Operand::Null
+                | Operand::Real(_) => {}
+            }
         }
     }
 
@@ -750,75 +849,6 @@ impl<'data> ContentLexer<'data> {
         let image = self.inline.take()?;
         let data = self.parser.data.get(image.data).unwrap_or_default();
         Some((image.dict, data))
-    }
-
-    fn value(&mut self, depth: usize) -> Parsed<Operand<'data>> {
-        self.parser.skip_whitespace();
-        let Some(byte) = self.parser.peek() else {
-            return Err(Reject::Garbage);
-        };
-        match byte {
-            b'/' => Ok(Operand::Name(self.name())),
-            b'(' => Ok(Operand::Literal(self.literal())),
-            b'<' if self.parser.peek_at(1) == Some(b'<') => self
-                .parser
-                .dictionary(depth)
-                .map(|object| Operand::Object(Box::new(object))),
-            b'<' => Ok(Operand::Hex(self.hex())),
-            b'[' => self.array(depth),
-            b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
-            b']' | b')' | b'>' | b'{' | b'}' | b'%' => {
-                self.parser.pos = self.parser.pos.saturating_add(1);
-                Err(Reject::Garbage)
-            }
-            _ => match self.parser.regular_run() {
-                b"true" => Ok(Operand::Bool(true)),
-                b"false" => Ok(Operand::Bool(false)),
-                b"null" => Ok(Operand::Null),
-                _ => Err(Reject::Garbage),
-            },
-        }
-    }
-}
-
-impl<'data> Iterator for ContentLexer<'data> {
-    type Item = Outcome<ContentToken<'data>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.parser.skip_whitespace();
-        let byte = self.parser.peek()?;
-        let token = match byte {
-            b'0'..=b'9' | b'+' | b'-' | b'.' => ContentToken::Operand(self.number()),
-            b'/' => ContentToken::Operand(Operand::Name(self.name())),
-            b'(' => ContentToken::Operand(Operand::Literal(self.literal())),
-            b'<' | b'[' => match self.value(0) {
-                Ok(operand) => ContentToken::Operand(operand),
-                Err(reject) => return Some(Err(reject.into_failure())),
-            },
-            b')' | b']' | b'>' | b'{' | b'}' | b'%' => {
-                let parser = &mut self.parser;
-                let start = parser.pos;
-                parser.pos = parser.pos.saturating_add(1);
-                ContentToken::Operator(parser.slice(start, parser.pos))
-            }
-            _ => {
-                let parser = &mut self.parser;
-                let run = parser.regular_run();
-                match run {
-                    b"true" => ContentToken::Operand(Operand::Bool(true)),
-                    b"false" => ContentToken::Operand(Operand::Bool(false)),
-                    b"null" => ContentToken::Operand(Operand::Null),
-                    b"BI" => {
-                        return Some(parser.inline_image().map(|image| {
-                            self.inline = Some(image);
-                            ContentToken::Operator(b"EI")
-                        }));
-                    }
-                    _ => ContentToken::Operator(run),
-                }
-            }
-        };
-        Some(Ok(token))
     }
 }
 
@@ -1125,6 +1155,13 @@ mod tests {
     use super::*;
     use crate::failure::FailureCode;
     use core::hint::black_box;
+    use core::mem;
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum ContentToken<'data> {
+        Operand(Operand<'data>),
+        Operator(&'data [u8]),
+    }
 
     fn parse(input: &[u8]) -> Object {
         Parser::new(input, 0, 64, true)
@@ -1456,8 +1493,26 @@ mod tests {
         assert_eq!(stream_bytes(eof, &parsed_8), b"hello");
     }
 
+    fn tokens(input: &[u8]) -> Vec<Outcome<ContentToken<'_>>> {
+        let mut lexer = ContentLexer::new(input);
+        let mut operands = Vec::new();
+        let mut out = Vec::new();
+        loop {
+            let next = lexer.operator(&mut operands, usize::MAX);
+            out.extend(
+                mem::take(&mut operands)
+                    .into_iter()
+                    .map(|operand| Ok(ContentToken::Operand(operand))),
+            );
+            match next {
+                Some(result) => out.push(result.map(ContentToken::Operator)),
+                None => return out,
+            }
+        }
+    }
+
     fn lex(input: &[u8]) -> Vec<ContentToken<'_>> {
-        ContentLexer::new(input).filter_map(Result::ok).collect()
+        tokens(input).into_iter().filter_map(Result::ok).collect()
     }
 
     fn op(value: &'static [u8]) -> ContentToken<'static> {
@@ -1519,20 +1574,32 @@ mod tests {
     fn content_lexer_recycles_array_buffers() {
         let data = b"[(a) 1] TJ [(b)] TJ";
         let mut lexer = ContentLexer::new(data);
-        let Some(Ok(ContentToken::Operand(first))) = lexer.next() else {
-            panic!("array expected");
-        };
-        let Operand::Array(items) = &first else {
-            panic!("array expected, got {first:?}");
+        let mut operands = Vec::new();
+        assert_eq!(
+            lexer.operator(&mut operands, usize::MAX),
+            Some(Ok(&b"TJ"[..]))
+        );
+        let Some(Operand::Array(items)) = operands.first() else {
+            panic!("array expected, got {operands:?}");
         };
         let capacity = items.capacity();
-        lexer.recycle(first);
-        assert_eq!(lexer.next(), Some(Ok(op(b"TJ"))));
-        let Some(Ok(ContentToken::Operand(Operand::Array(second)))) = lexer.next() else {
-            panic!("array expected");
+        assert_eq!(
+            lexer.operator(&mut operands, usize::MAX),
+            Some(Ok(&b"TJ"[..]))
+        );
+        let Some(Operand::Array(second)) = operands.first() else {
+            panic!("array expected, got {operands:?}");
         };
         assert_eq!(second.capacity(), capacity);
-        assert_eq!(second, vec![Operand::Literal(Cow::Borrowed(b"b"))]);
+        assert_eq!(second, &vec![Operand::Literal(Cow::Borrowed(b"b"))]);
+    }
+
+    #[test]
+    fn content_lexer_clears_operands_past_the_limit() {
+        let mut lexer = ContentLexer::new(b"1 2 3 4 5 Td");
+        let mut operands = Vec::new();
+        assert_eq!(lexer.operator(&mut operands, 2), Some(Ok(&b"Td"[..])));
+        assert_eq!(operands, vec![Operand::Integer(5)]);
     }
 
     #[test]
@@ -1633,7 +1700,7 @@ mod tests {
     fn content_lexer_reports_deep_nesting_and_continues() {
         let mut data = vec![b'['; 100];
         data.extend_from_slice(b" 1 Tj");
-        let results: Vec<_> = ContentLexer::new(&data).collect();
+        let results = tokens(&data);
         assert!(results.iter().any(Result::is_err));
         assert!(
             results
