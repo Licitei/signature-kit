@@ -2,6 +2,7 @@ use crate::inspection::LinkInfo;
 use crate::layout::Band;
 use crate::num::{fold_string, sort_total, widen};
 use crate::table::{Table, render_markdown};
+use alloc::borrow::Cow;
 use core::ops::Range;
 
 const PAGE_DIGITS: usize = 4;
@@ -32,6 +33,7 @@ const HEAD_SCAN: usize = 8;
 const COMPOUND_LETTERS: usize = 4;
 const SHAPE_LENGTHS: usize = 63;
 const SHAPE_WORDS: usize = 32;
+const BLOOM_WORDS: usize = 1024;
 const SCRIPT_RATIO: f64 = 0.8;
 const MARKER_CHARS: usize = 3;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -346,6 +348,14 @@ impl Words {
         }
         sort_total(&mut wanted, &Ord::cmp);
         wanted.dedup();
+        let mut counts = vec![0_u8; wanted.len()];
+        let mut bloom = vec![0_u64; BLOOM_WORDS];
+        for &hash in &wanted {
+            let bit = bloom_bit(hash);
+            if let Some(slot) = bloom.get_mut(bit >> 6_u32) {
+                *slot |= 1_u64 << (bit & 63);
+            }
+        }
         for line in md_lines(pages) {
             let last = line.runs.len().saturating_sub(1);
             for (position, run) in line.runs.iter().enumerate() {
@@ -362,29 +372,32 @@ impl Words {
                     let fits_length = shapes
                         .get(bit >> 6_u32)
                         .is_some_and(|slot| slot & (1_u64 << (bit & 63)) != 0);
-                    if !fits_length {
+                    if !fits_length || core.len() < 2 {
                         continue;
                     }
                     let hash = word_hash(&[core]);
-                    if wanted.binary_search(&hash).is_ok()
-                        && core.len() >= 2
+                    let mark = bloom_bit(hash);
+                    let maybe = bloom
+                        .get(mark >> 6_u32)
+                        .is_some_and(|slot| slot & (1_u64 << (mark & 63)) != 0);
+                    if maybe
+                        && let Ok(slot) = wanted.binary_search(&hash)
                         && core.chars().all(|ch| ch.is_alphabetic() || ch == '-')
+                        && let Some(count) = counts.get_mut(slot)
                     {
-                        words.seen.push(hash);
+                        *count = count.saturating_add(1);
                     }
                 }
             }
         }
-        sort_total(&mut words.seen, &Ord::cmp);
-        for pair in words.seen.windows(2) {
-            if let [first, second] = pair
-                && first == second
-                && words.repeated.last() != Some(first)
-            {
-                words.repeated.push(*first);
+        for (&hash, &count) in wanted.iter().zip(&counts) {
+            if count >= 1 {
+                words.seen.push(hash);
+            }
+            if count >= 2 {
+                words.repeated.push(hash);
             }
         }
-        words.seen.dedup();
         words
     }
 
@@ -456,6 +469,10 @@ fn word_hash(parts: &[&str]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+fn bloom_bit(hash: u64) -> usize {
+    usize::from(u16::try_from(hash >> 48_u32).unwrap_or(u16::MAX))
 }
 
 fn shape(length: usize, lead: Option<u8>) -> usize {
@@ -1196,10 +1213,11 @@ pub(crate) fn reflow_lines<'data>(lines: impl IntoIterator<Item = &'data str>) -
 fn append_spans(
     spans: &mut Vec<Span>,
     plain: &mut String,
-    mut next: Vec<Span>,
+    next: &[Span],
     next_plain: &str,
     words: &Words,
 ) {
+    let mut widened: Vec<Span> = Vec::new();
     if url_continues(plain, next_plain)
         && let Some(link) = spans
             .iter()
@@ -1211,8 +1229,14 @@ fn append_spans(
             .split(char::is_whitespace)
             .next()
             .unwrap_or_default();
-        widen_link(&mut next, link, trailer_cut(token));
+        widened = next.to_vec();
+        widen_link(&mut widened, link, trailer_cut(token));
     }
+    let incoming = if widened.is_empty() {
+        next
+    } else {
+        widened.as_slice()
+    };
     match glue(plain, next_plain, words) {
         Glue::Direct => {}
         Glue::Space => {
@@ -1229,14 +1253,14 @@ fn append_spans(
         }
     }
     plain.push_str(next_plain);
-    for span in next {
+    for span in incoming {
         match spans.last_mut() {
             Some(last)
                 if (last.bold, last.italic, last.link) == (span.bold, span.italic, span.link) =>
             {
                 last.text.push_str(&span.text);
             }
-            _ => spans.push(span),
+            _ => spans.push(span.clone()),
         }
     }
 }
@@ -1327,8 +1351,11 @@ fn heading_level(para: &Para, body: f64) -> Option<usize> {
     }
     let ratio = para.size / body.max(1e-3);
     let bold = all_bold(&para.spans);
-    let depth = numbering_depth(text);
     let big = ratio >= HEADING_RATIO;
+    if !(upper || bold || big) {
+        return None;
+    }
+    let depth = numbering_depth(text);
     let visible = text.chars().filter(|ch| !ch.is_whitespace()).count();
     let words: Vec<&str> = text.split_whitespace().collect();
     let readable = letters.saturating_mul(10) >= visible.saturating_mul(6)
@@ -1471,7 +1498,7 @@ fn extend(para: &mut Para, line: &Prepared<'_>, words: &Words) {
     append_spans(
         &mut para.spans,
         &mut para.plain,
-        line.spans.clone(),
+        &line.spans,
         &line.plain,
         words,
     );
@@ -1784,7 +1811,7 @@ pub(crate) fn join_pages(pages: &mut [Vec<MdBlock>], metrics: Metrics, words: &W
                 append_spans(
                     &mut target.spans,
                     &mut target.plain,
-                    moved.spans,
+                    &moved.spans,
                     &moved.plain,
                     words,
                 );
@@ -1823,7 +1850,17 @@ fn escape_into(text: &str, out: &mut String) {
     out.push_str(text.get(start..).unwrap_or_default());
 }
 
-fn collapse(text: &str) -> String {
+fn collapse(text: &str) -> Cow<'_, str> {
+    let mut spaced = true;
+    let settled = text.bytes().all(|byte| {
+        let blank = matches!(byte, b'\t'..=b'\r' | b' ');
+        let kept = byte.is_ascii() && !(blank && (spaced || byte != b' '));
+        spaced = blank;
+        kept
+    });
+    if settled {
+        return Cow::Borrowed(text);
+    }
     let mut out = String::with_capacity(text.len());
     let mut space = false;
     for ch in text.chars() {
@@ -1840,7 +1877,7 @@ fn collapse(text: &str) -> String {
     if space && !out.is_empty() {
         out.push(' ');
     }
-    out
+    Cow::Owned(out)
 }
 
 fn emphasize(span: &Span, out: &mut String) {
@@ -2005,7 +2042,7 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
             out.push_str(&"#".repeat(*level));
             out.push(' ');
             let mut text = String::new();
-            escape_into(collapse(block.plain.trim()).as_str(), &mut text);
+            escape_into(&collapse(block.plain.trim()), &mut text);
             let trimmed = text.trim_end_matches('#').trim_end();
             out.push_str(trimmed);
             if trimmed.len() < text.len() {
@@ -2132,7 +2169,7 @@ mod tests {
         append_spans(
             &mut spans,
             &mut plain,
-            vec![span(right)],
+            &[span(right)],
             right,
             &Words::default(),
         );
@@ -2192,7 +2229,7 @@ mod tests {
                 link: None,
             }];
             let mut plain = left.to_owned();
-            append_spans(&mut spans, &mut plain, Vec::new(), right, &words);
+            append_spans(&mut spans, &mut plain, &[], right, &words);
             plain
         };
         for (left, right, expected) in cases {
@@ -2276,7 +2313,7 @@ mod tests {
         append_spans(
             &mut spans,
             &mut plain,
-            vec![next],
+            &[next],
             "/empreendedor; ver",
             &Words::default(),
         );
@@ -2605,7 +2642,7 @@ mod properties {
             let words = Words::collect([items.as_slice()]);
             let mut spans = vec![span(&left)];
             let mut plain = left.clone();
-            append_spans(&mut spans, &mut plain, vec![span(&right)], &right, &words);
+            append_spans(&mut spans, &mut plain, &[span(&right)], &right, &words);
             let mut dropped = left.clone();
             let removed = dropped.pop();
             dropped.push_str(&right);

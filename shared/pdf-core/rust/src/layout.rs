@@ -28,6 +28,7 @@ const SIZE_TOLERANCE: f64 = 0.25;
 const SAME_LINE: f64 = 0.5;
 const ISOLATED_SLACK_EM: f64 = 2.0;
 const LOOKBACK: usize = 8;
+const NAIVE_SPANS: usize = 8;
 const CORE_TOP: f64 = 0.15;
 const CORE_BOTTOM: f64 = 0.2;
 const DUPLICATE_OVERLAP: f64 = 0.5;
@@ -306,10 +307,7 @@ struct Recurring {
 }
 type FurnitureKey = (String, i64, i64);
 fn scripted(base: &Frag<'_>, script: &Frag<'_>) -> bool {
-    if script.size > SCRIPT_RATIO * base.size
-        || script.size < SCRIPT_FLOOR * base.size
-        || script.text.chars().filter(|ch| !ch.is_whitespace()).count() > SCRIPT_CHARS
-    {
+    if script.size > SCRIPT_RATIO * base.size || script.size < SCRIPT_FLOOR * base.size {
         return false;
     }
     let reach = SCRIPT_REACH * base.height();
@@ -318,7 +316,14 @@ fn scripted(base: &Frag<'_>, script: &Frag<'_>) -> bool {
     let overlap = SCRIPT_OVERLAP * script.size;
     let after = script.x0 >= base.x1 - overlap && script.x0 <= base.x1 + slack;
     let before = script.x1 <= base.x0 + overlap && script.x1 >= base.x0 - slack;
-    nested && (after || before)
+    nested
+        && (after || before)
+        && script
+            .text
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .nth(SCRIPT_CHARS)
+            .is_none()
 }
 
 fn turn(quarter: usize, x: f64, y: f64) -> (f64, f64) {
@@ -401,29 +406,18 @@ fn cluster_lines(frags: &[Frag<'_>]) -> Vec<Line> {
 }
 
 fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
-    let mut gaps: Vec<f64> = Vec::new();
-    let mut ordered = members.to_vec();
-    sort_frag_indices(&mut ordered, frags, FragOrder::X0);
+    let mut compact: Vec<f64> = Vec::new();
     let mut previous: Option<&Frag<'_>> = None;
-    for index in ordered {
-        let Some(frag) = frags.get(index) else {
-            continue;
-        };
+    for frag in members.iter().filter_map(|&index| frags.get(index)) {
         if let Some(left) = previous {
             let gap = frag.x0 - left.x1;
-            if gap > 0.0_f64 {
-                let em = left.size.max(frag.size);
-                if em > 0.0_f64 {
-                    gaps.push(gap / em);
-                }
+            let em = left.size.max(frag.size);
+            if gap > 0.0_f64 && em > 0.0_f64 && gap / em <= COMPACT_GAP_EM {
+                compact.push(gap / em);
             }
         }
         previous = Some(frag);
     }
-    let mut compact: Vec<f64> = gaps
-        .into_iter()
-        .filter(|gap| *gap <= COMPACT_GAP_EM)
-        .collect();
     if compact.is_empty() {
         return CELL_GAP;
     }
@@ -433,12 +427,12 @@ fn line_cell_split_em(frags: &[Frag<'_>], members: &[usize]) -> f64 {
     CELL_GAP.max(typical * INTRA_WORD_SCALE)
 }
 
-fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
+fn deduplicated(frags: &[Frag<'_>], members: &[usize]) -> Vec<usize> {
     if members.len() < 2 {
-        return;
+        return members.to_vec();
     }
     let mut kept: Vec<usize> = Vec::with_capacity(members.len());
-    for &index in members.iter() {
+    for &index in members {
         let Some(frag) = frags.get(index) else {
             continue;
         };
@@ -454,12 +448,11 @@ fn drop_duplicates(frags: &[Frag<'_>], members: &mut Vec<usize>) {
             kept.push(index);
         }
     }
-    *members = kept;
+    kept
 }
 
 fn split_segments(frags: &[Frag<'_>], line: &Line, out: &mut Vec<Segment>) {
-    let mut members = line.members.clone();
-    drop_duplicates(frags, &mut members);
+    let members = deduplicated(frags, &line.members);
     let split_em = line_cell_split_em(frags, &members);
     let mut current: Option<Segment> = None;
     let mut right_edge = f64::NEG_INFINITY;
@@ -549,9 +542,13 @@ fn line_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Opt
     }) && line
         .iter()
         .all(|segment| segment.x0.is_finite() && segment.x1.is_finite());
-    if !finite {
+    if !finite || (active.len() <= NAIVE_SPANS && line.len() <= NAIVE_SPANS) {
         return naive_targets(blocks, active, line);
     }
+    swept_targets(blocks, active, line)
+}
+
+fn swept_targets(blocks: &[Block], active: &[usize], line: &[Segment]) -> Vec<Option<usize>> {
     let open = Sweep::new(active.iter().filter_map(|&id| {
         blocks
             .get(id)
@@ -2396,6 +2393,10 @@ mod tests {
             })
             .take(width)
             .collect();
+            assert_eq!(
+                swept_targets(&blocks, &active, &line),
+                naive_targets(&blocks, &active, &line)
+            );
             assert_eq!(
                 line_targets(&blocks, &active, &line),
                 naive_targets(&blocks, &active, &line)
