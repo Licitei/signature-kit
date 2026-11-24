@@ -174,6 +174,7 @@ impl DocumentCache {
 }
 
 struct SparseDocument<'data> {
+    abort: bool,
     cache: &'data DocumentCache,
     source: &'data Sparse,
     table: &'data [Entry],
@@ -244,6 +245,9 @@ impl<'data> Document<'data> {
     }
 
     pub(crate) fn content(&self, page: &Page) -> Outcome<Vec<u8>> {
+        if self.sparse.as_ref().is_some_and(|sparse| sparse.abort) && self.pending_reads() != 0 {
+            return Err(Failure::invalid("byte ranges are pending"));
+        }
         let Some(contents) = page.dict.get(b"Contents") else {
             return Ok(Vec::new());
         };
@@ -1267,9 +1271,11 @@ impl<'data> Document<'data> {
         trailer: &'data Dict,
         cache: &'data DocumentCache,
         limits: &Limits,
+        abort: bool,
     ) -> Outcome<Self> {
         let mut document = Self::new(&[], limits);
         document.sparse = Some(SparseDocument {
+            abort,
             cache,
             source,
             table,

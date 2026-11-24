@@ -26,7 +26,6 @@ use crate::write::{Packing, merge};
 const EDIT_MAGIC: u32 = 0x4445_4450;
 const EDIT_VERSION: u32 = 1;
 const MAX_DECODED: usize = 1 << 22_u32;
-const MAX_LAZY_ROUNDS: usize = 64;
 
 struct InputResolver<'data> {
     data: &'data [u8],
@@ -189,31 +188,37 @@ fn lazy_matches_eager(data: &[u8]) {
         },
     );
     let request = PageRequest::First(2);
-    for _ in 0..MAX_LAZY_ROUNDS {
-        match lazy.plan_with_recovery(request, false, &limits, false) {
-            Plan::Need(ranges) | Plan::Full(ranges) if !ranges.is_empty() => {
-                for range in ranges {
-                    let slice = data.get(range.clone());
-                    assert!(slice.is_some(), "lazy planned an out-of-bounds range");
-                    let fed = slice.is_some_and(|bytes| lazy.feed(range.start, bytes));
-                    assert!(fed, "lazy rejected its own planned range");
+    let bound = lazy
+        .round_cap()
+        .saturating_add(data.len().div_ceil(4096))
+        .saturating_add(8);
+    let settled =
+        (0..bound).any(
+            |_| match lazy.plan_with_recovery(request, false, &limits, false) {
+                Plan::Need(ranges) | Plan::Full(ranges) if !ranges.is_empty() => {
+                    for range in ranges {
+                        let slice = data.get(range.clone());
+                        assert!(slice.is_some(), "lazy planned an out-of-bounds range");
+                        let fed = slice.is_some_and(|bytes| lazy.feed(range.start, bytes));
+                        assert!(fed, "lazy rejected its own planned range");
+                    }
+                    false
                 }
-            }
-            Plan::Ready => {
-                let Ok(result) = lazy.execute(&limits, |opened, pages| {
+                Plan::Ready => match lazy.execute(&limits, |opened, pages| {
                     layout::opened_text(opened, pages, &limits, options)
-                }) else {
-                    return;
-                };
-                if let Some(pages) = result {
-                    let eager = layout::document_text(data, request, &limits, options);
-                    assert_eq!(eager.ok(), Some(pages), "lazy text differs from eager text");
-                    return;
-                }
-            }
-            Plan::Need(_) | Plan::Full(_) | Plan::Failed(_) | Plan::Fallback => return,
-        }
-    }
+                }) {
+                    Ok(Some(pages)) => {
+                        let eager = layout::document_text(data, request, &limits, options);
+                        assert_eq!(eager.ok(), Some(pages), "lazy text differs from eager text");
+                        true
+                    }
+                    Ok(None) => false,
+                    Err(_) => true,
+                },
+                Plan::Need(_) | Plan::Full(_) | Plan::Failed(_) | Plan::Fallback => true,
+            },
+        );
+    assert!(settled, "lazy planner did not settle within its round cap");
 }
 
 fn indirect_object(data: &[u8]) {
