@@ -1,0 +1,41 @@
+---
+title: OpenTelemetry spans for every public operation
+date: 2026-11-24T15:38:32.058Z
+packages:
+  "@signature-kit/pdf-core":
+    version: 0.4.0
+  "@signature-kit/http":
+    version: 0.2.0
+  "@signature-kit/signatures":
+    version: 0.4.0
+  "@signature-kit/certificates":
+    version: 0.4.0
+  "@signature-kit/crypto":
+    version: 0.3.0
+  "@signature-kit/cms":
+    version: 0.3.0
+  "@signature-kit/a1":
+    version: 0.5.0
+  "@signature-kit/assinafy":
+    version: 0.5.0
+  "@signature-kit/clicksign":
+    version: 0.5.0
+  "@signature-kit/documenso":
+    version: 0.5.0
+  "@signature-kit/docuseal":
+    version: 0.5.0
+  "@signature-kit/zapsign":
+    version: 0.5.0
+  "@signature-kit/pdf":
+    version: 0.7.0
+  "@signature-kit/react":
+    version: 0.2.0
+  "@signature-kit/xml":
+    version: 0.3.0
+  "@signature-kit/iti":
+    version: 0.3.0
+---
+
+## OpenTelemetry spans for every public operation
+
+Public operations now run inside named Effect spans, for example `pdfCore.text`, `pdf.sign`, `crypto.pkcs12.parse` and `assinafy.reconcile`. PDF core calls split into `pdfCore.wasm.copyIn`, `pdfCore.wasm.run` and `pdfCore.wasm.decode`. HTTP calls are client spans with method, status and server attributes. Attributes record sizes, counts and algorithm or status literals, never document content, certificate identity, secrets or URLs with paths. No new runtime dependency: provide `@effect/opentelemetry` at the app boundary to export spans. See the OpenTelemetry tracing recipe.

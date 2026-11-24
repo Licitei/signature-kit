@@ -1,3 +1,9 @@
+## @signature-kit/documenso@0.5.0
+
+### OpenTelemetry spans for every public operation
+
+Public operations now run inside named Effect spans, for example `pdfCore.text`, `pdf.sign`, `crypto.pkcs12.parse` and `assinafy.reconcile`. PDF core calls split into `pdfCore.wasm.copyIn`, `pdfCore.wasm.run` and `pdfCore.wasm.decode`. HTTP calls are client spans with method, status and server attributes. Attributes record sizes, counts and algorithm or status literals, never document content, certificate identity, secrets or URLs with paths. No new runtime dependency: provide `@effect/opentelemetry` at the app boundary to export spans. See the OpenTelemetry tracing recipe.
+
 ## @signature-kit/documenso@0.4.2
 
 ### Faster selected-page and Markdown PDF extraction
