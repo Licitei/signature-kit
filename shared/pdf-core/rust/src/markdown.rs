@@ -2,6 +2,7 @@ use crate::inspection::LinkInfo;
 use crate::layout::Band;
 use crate::num::{fold_string, sort_total, widen};
 use crate::table::{Table, render_markdown};
+use alloc::borrow::Cow;
 use core::ops::Range;
 
 const PAGE_DIGITS: usize = 4;
@@ -1849,7 +1850,17 @@ fn escape_into(text: &str, out: &mut String) {
     out.push_str(text.get(start..).unwrap_or_default());
 }
 
-fn collapse(text: &str) -> String {
+fn collapse(text: &str) -> Cow<'_, str> {
+    let mut spaced = true;
+    let settled = text.bytes().all(|byte| {
+        let blank = matches!(byte, b'\t'..=b'\r' | b' ');
+        let kept = byte.is_ascii() && !(blank && (spaced || byte != b' '));
+        spaced = blank;
+        kept
+    });
+    if settled {
+        return Cow::Borrowed(text);
+    }
     let mut out = String::with_capacity(text.len());
     let mut space = false;
     for ch in text.chars() {
@@ -1866,7 +1877,7 @@ fn collapse(text: &str) -> String {
     if space && !out.is_empty() {
         out.push(' ');
     }
-    out
+    Cow::Owned(out)
 }
 
 fn emphasize(span: &Span, out: &mut String) {
@@ -2031,7 +2042,7 @@ fn render_block(block: &MdBlock, links: &[LinkInfo], out: &mut String) {
             out.push_str(&"#".repeat(*level));
             out.push(' ');
             let mut text = String::new();
-            escape_into(collapse(block.plain.trim()).as_str(), &mut text);
+            escape_into(&collapse(block.plain.trim()), &mut text);
             let trimmed = text.trim_end_matches('#').trim_end();
             out.push_str(trimmed);
             if trimmed.len() < text.len() {
