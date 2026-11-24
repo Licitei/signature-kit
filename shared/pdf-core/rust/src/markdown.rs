@@ -32,6 +32,7 @@ const HEAD_SCAN: usize = 8;
 const COMPOUND_LETTERS: usize = 4;
 const SHAPE_LENGTHS: usize = 63;
 const SHAPE_WORDS: usize = 32;
+const BLOOM_WORDS: usize = 1024;
 const SCRIPT_RATIO: f64 = 0.8;
 const MARKER_CHARS: usize = 3;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -347,6 +348,13 @@ impl Words {
         sort_total(&mut wanted, &Ord::cmp);
         wanted.dedup();
         let mut counts = vec![0_u8; wanted.len()];
+        let mut bloom = vec![0_u64; BLOOM_WORDS];
+        for &hash in &wanted {
+            let bit = bloom_bit(hash);
+            if let Some(slot) = bloom.get_mut(bit >> 6_u32) {
+                *slot |= 1_u64 << (bit & 63);
+            }
+        }
         for line in md_lines(pages) {
             let last = line.runs.len().saturating_sub(1);
             for (position, run) in line.runs.iter().enumerate() {
@@ -366,7 +374,13 @@ impl Words {
                     if !fits_length || core.len() < 2 {
                         continue;
                     }
-                    if let Ok(slot) = wanted.binary_search(&word_hash(&[core]))
+                    let hash = word_hash(&[core]);
+                    let mark = bloom_bit(hash);
+                    let maybe = bloom
+                        .get(mark >> 6_u32)
+                        .is_some_and(|slot| slot & (1_u64 << (mark & 63)) != 0);
+                    if maybe
+                        && let Ok(slot) = wanted.binary_search(&hash)
                         && core.chars().all(|ch| ch.is_alphabetic() || ch == '-')
                         && let Some(count) = counts.get_mut(slot)
                     {
@@ -454,6 +468,10 @@ fn word_hash(parts: &[&str]) -> u64 {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
+}
+
+fn bloom_bit(hash: u64) -> usize {
+    usize::from(u16::try_from(hash >> 48_u32).unwrap_or(u16::MAX))
 }
 
 fn shape(length: usize, lead: Option<u8>) -> usize {
