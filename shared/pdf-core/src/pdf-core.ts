@@ -168,6 +168,7 @@ const FLAG_DROP_RUNNING = 16;
 const FLAG_MERGE_TABLES = 64;
 const FLAG_PAGE_LIMIT = 128;
 const FLAG_LAZY_RECOVER = 256;
+const LAZY_ROUND_SLACK = 1024;
 const FLAG_RUNS = 32;
 const STATUS_OK = 0;
 const STATUS_INVALID_PDF = 1;
@@ -1687,6 +1688,7 @@ export const makePdfCore = (
       yield* Effect.annotateCurrentSpan("signature_kit.pdf.bytes", size);
       const maxRoundBytes = tuning.maxRoundBytes ?? 2 * 1024 * 1024;
       const maxCachedBytes = tuning.maxCachedBytes ?? 2 * 1024 * 1024;
+      const maxLazyRounds = LAZY_ROUND_SLACK + 4 * Math.ceil(size / maxRoundBytes);
       const lock = yield* Semaphore.make(1);
       type LazyState = PdfCoreLazyStats & { readonly closed: boolean };
       const state = yield* Ref.make<LazyState>({
@@ -1886,7 +1888,19 @@ export const makePdfCore = (
               );
               new Uint32Array(core.memory.buffer, pages.pointer, selection.length).set(selection);
               let recovery = 0;
+              let rounds = 0;
               while (true) {
+                rounds += 1;
+                if (rounds > 2 * maxLazyRounds) {
+                  return yield* new PdfCoreError({
+                    code: PdfCoreErrorCodeValue.limitExceeded,
+                    operation,
+                    reason: `The lazy PDF plan did not settle within ${2 * maxLazyRounds} rounds.`,
+                  });
+                }
+                if (rounds > maxLazyRounds) {
+                  recovery = FLAG_LAZY_RECOVER;
+                }
                 const next = yield* plan(operation, profile, readFlags | recovery, pages);
                 const fallback = next.status === 2 || next.status === 3;
                 if (fallback && tuning.allowFullRead === false) {

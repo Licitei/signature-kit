@@ -1,5 +1,5 @@
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::iter;
 use core::mem;
 use core::ops::Range;
@@ -25,6 +25,7 @@ const BUCKETS: usize = 1 << DIGIT_BITS;
 const DIGIT_MASK: usize = BUCKETS - 1;
 const MIN_SELECTIVE_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_PROBE: usize = 128;
+const ROUND_SLACK: usize = 256;
 
 #[derive(Debug)]
 pub(crate) enum Plan {
@@ -496,7 +497,9 @@ pub(crate) struct Lazy {
     next_section: Option<usize>,
     phase: Phase,
     render: bool,
+    rounds: Cell<usize>,
     sparse: Sparse,
+    stalled: Cell<bool>,
 }
 
 impl Lazy {
@@ -554,11 +557,13 @@ impl Lazy {
         let result = run(&document, &borrow_pages(&frontier.pages));
         if document.was_repaired() {
             self.sparse.missing.borrow_mut().clear();
+            self.stalled.set(true);
             return Ok(None);
         }
         if self.needs_ranges() {
             return Ok(None);
         }
+        self.rounds.set(0);
         result.map(Some)
     }
 
@@ -706,6 +711,7 @@ impl Lazy {
             next_section: None,
             phase: Phase::Probe,
             render: false,
+            rounds: Cell::new(0),
             sparse: Sparse {
                 backlog: RefCell::new(Vec::new()),
                 complete: false,
@@ -715,6 +721,7 @@ impl Lazy {
                 size,
                 tuning,
             },
+            stalled: Cell::new(false),
         }
     }
 
@@ -724,6 +731,9 @@ impl Lazy {
         render: bool,
         limits: &Limits,
     ) -> Plan {
+        if self.stalled.get() {
+            return Plan::Fallback;
+        }
         let misses = mem::take(self.sparse.missing.get_mut());
         let backlog = mem::take(self.sparse.backlog.get_mut());
         let mut frontier = self
@@ -807,7 +817,11 @@ impl Lazy {
         if !self.fallback {
             if !recover {
                 let plan = self.plan(requested, render, limits);
-                if !matches!(plan, Plan::Fallback) {
+                let rounds = self.rounds.get().saturating_add(1);
+                self.rounds.set(rounds);
+                if !matches!(plan, Plan::Fallback)
+                    && (rounds <= self.round_cap() || matches!(plan, Plan::Failed(_)))
+                {
                     return plan;
                 }
             }
@@ -822,6 +836,14 @@ impl Lazy {
             self.sparse
                 .round(self.sparse.ranges(slice::from_ref(&wanted), 0)),
         )
+    }
+
+    pub(crate) fn round_cap(&self) -> usize {
+        self.sparse
+            .size
+            .div_ceil(self.sparse.tuning.round_bytes.max(1))
+            .saturating_mul(2)
+            .saturating_add(ROUND_SLACK)
     }
 
     fn section_range(&self, offset: usize, length: usize) -> Range<usize> {
@@ -996,6 +1018,7 @@ mod tests {
     use crate::failure::FailureCode;
     use crate::inspection::Limits;
     use crate::layout::{TextOptions, document_text, opened_text, text_limits};
+    use crate::num::widen;
     use crate::test_pdf::{build, stream_object};
 
     #[test]
@@ -1333,5 +1356,140 @@ mod tests {
             }
         }
         panic!("lazy plan did not settle");
+    }
+
+    #[test]
+    fn repair_found_while_running_falls_back_instead_of_planning_ready_again() {
+        let mut bytes = build(&[
+            (5, "<< /Type /ExtGState /ca 1 >>".to_owned()),
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 200 200] >>".to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /ExtGState << /G0 5 0 R >> /Font << /F1 6 0 R >> >> >>"
+                    .to_owned(),
+            ),
+            (
+                4,
+                stream_object("", "/G0 gs BT /F1 12 Tf 72 100 Td (Hi) Tj ET"),
+            ),
+            (
+                6,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            ),
+        ]);
+        let marker = b"/ca 1 >>\nendobj";
+        let at = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        assert!(at + marker.len() < 64);
+        bytes[at + marker.len() - 5] = b'#';
+        let limits = text_limits();
+        let options = TextOptions {
+            drop_running: false,
+            markdown: false,
+            merge_across_pages: false,
+        };
+        let request = PageRequest::First(1);
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 0,
+                probe: 64,
+                round_bytes: 4096,
+            },
+        );
+        let mut stalls = 0_u32;
+        for _ in 0_i32..64_i32 {
+            match lazy.plan_with_recovery(request, false, &limits, false) {
+                Plan::Need(ranges) | Plan::Full(ranges) if !ranges.is_empty() => {
+                    for range in ranges {
+                        assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                    }
+                }
+                Plan::Ready => {
+                    let text = lazy
+                        .execute(&limits, |opened, pages| {
+                            opened_text(opened, pages, &limits, options)
+                        })
+                        .unwrap();
+                    assert!(text.is_none(), "repaired lazy run returned text");
+                    assert!(!lazy.needs_ranges());
+                    stalls += 1;
+                }
+                Plan::Full(_) => {
+                    assert_eq!(stalls, 1);
+                    assert_eq!(lazy.full_bytes(), Some(bytes.as_slice()));
+                    return;
+                }
+                Plan::Need(_) | Plan::Failed(_) | Plan::Fallback => {
+                    panic!("unexpected lazy plan")
+                }
+            }
+        }
+        panic!("lazy plan did not settle");
+    }
+
+    #[test]
+    fn reference_chains_longer_than_the_round_cap_fall_back() {
+        for (depth, falls_back) in [(40_u32, false), (600_u32, true)] {
+            let mut objects = vec![
+                (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+                (
+                    2,
+                    "<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 200 200] >>".to_owned(),
+                ),
+                (
+                    3,
+                    "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> >>"
+                        .to_owned(),
+                ),
+            ];
+            objects.extend((4..depth + 4).map(|number| (number, format!("[{} 0 R]", number + 1))));
+            objects.push((depth + 4, "null".to_owned()));
+            let bytes = build(&objects);
+            let limits = text_limits();
+            let request = PageRequest::First(1);
+            let mut lazy = Lazy::new(
+                bytes.len(),
+                Tuning {
+                    gap: 0,
+                    probe: 64,
+                    round_bytes: 512,
+                },
+            );
+            assert_eq!(lazy.round_cap() < widen(depth), falls_back);
+            let bound = lazy.round_cap() + bytes.len().div_ceil(512) + 8;
+            let mut lazy_rounds = 0_usize;
+            let settled = (0..bound).find_map(|_| {
+                match lazy.plan_with_recovery(request, false, &limits, false) {
+                    Plan::Need(ranges) => {
+                        lazy_rounds += 1;
+                        for range in ranges {
+                            assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                        }
+                        None
+                    }
+                    Plan::Full(ranges) if !ranges.is_empty() => {
+                        for range in ranges {
+                            assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                        }
+                        None
+                    }
+                    Plan::Full(_) => Some(true),
+                    Plan::Ready => Some(false),
+                    Plan::Failed(_) | Plan::Fallback => panic!("unexpected lazy plan"),
+                }
+            });
+            assert_eq!(settled, Some(falls_back), "depth {depth}");
+            assert!(lazy_rounds <= lazy.round_cap(), "depth {depth}");
+            if falls_back {
+                assert_eq!(lazy.full_bytes(), Some(bytes.as_slice()));
+            }
+        }
     }
 }
