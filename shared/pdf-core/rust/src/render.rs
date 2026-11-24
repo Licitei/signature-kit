@@ -1679,7 +1679,11 @@ impl Renderer<'_, '_> {
         let mut decoded = mem::take(&mut self.decoded);
         glyphs.clear();
         decoded.clear();
-        font.font.decode(bytes, &mut glyphs, &mut decoded);
+        if matches!(font.face, Face::Fallback(_)) {
+            font.font.decode(bytes, &mut glyphs, &mut decoded);
+        } else {
+            font.font.decode_codes(bytes, &mut glyphs);
+        }
         let size = state.font_size;
         let horizontal_scale = state.scale;
         let vertical = font.font.is_vertical();
