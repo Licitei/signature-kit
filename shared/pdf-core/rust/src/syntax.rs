@@ -694,7 +694,7 @@ impl<'data> ContentLexer<'data> {
                 }
                 b'<' | b'[' => {
                     self.make_room(operands, limit);
-                    if let Err(reject) = self.push_value(operands, 0) {
+                    if let Err(reject) = self.push_value(byte, operands, 0) {
                         return Some(Err(reject.into_failure()));
                     }
                 }
@@ -735,20 +735,21 @@ impl<'data> ContentLexer<'data> {
         let mut items = self.spare.pop().unwrap_or_default();
         loop {
             self.parser.skip_whitespace();
-            match self.parser.peek() {
-                None => break,
-                Some(b']') => {
-                    self.parser.pos = self.parser.pos.saturating_add(1);
-                    break;
+            let Some(byte) = self.parser.peek() else {
+                break;
+            };
+            if byte == b']' {
+                self.parser.pos = self.parser.pos.saturating_add(1);
+                break;
+            }
+            if is_regular(byte) && !is_number_start(byte) {
+                match self.parser.garbage_keyword() {
+                    Some(true) => break,
+                    Some(false) => continue,
+                    None => {}
                 }
-                Some(_) => {}
             }
-            match self.parser.garbage_keyword() {
-                Some(true) => break,
-                Some(false) => continue,
-                None => {}
-            }
-            match self.push_value(&mut items, depth.saturating_add(1)) {
+            match self.push_value(byte, &mut items, depth.saturating_add(1)) {
                 Ok(()) | Err(Reject::Garbage) => {}
                 Err(Reject::TooDeep) => return Err(Reject::TooDeep),
             }
@@ -793,11 +794,7 @@ impl<'data> ContentLexer<'data> {
         out.push(Operand::Name(Cow::Borrowed(parser.slice(start, end))));
     }
 
-    fn push_value(&mut self, out: &mut Vec<Operand<'data>>, depth: usize) -> Parsed<()> {
-        self.parser.skip_whitespace();
-        let Some(byte) = self.parser.peek() else {
-            return Err(Reject::Garbage);
-        };
+    fn push_value(&mut self, byte: u8, out: &mut Vec<Operand<'data>>, depth: usize) -> Parsed<()> {
         match byte {
             b'0'..=b'9' | b'+' | b'-' | b'.' => match self.parser.numeral() {
                 Numeral::Real(value) => out.push(Operand::Real(value)),
