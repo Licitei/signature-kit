@@ -1765,6 +1765,7 @@ const commitPageDrawings = (
           code: Match.value(error.code).pipe(
             Match.when(PdfCoreErrorCodeValue.encryptedPdf, () => PdfErrorCodeValue.encryptedPdf),
             Match.when(PdfCoreErrorCodeValue.limitExceeded, () => PdfErrorCodeValue.limitExceeded),
+            Match.when(PdfCoreErrorCodeValue.damagedXref, () => PdfErrorCodeValue.damagedSignedPdf),
             Match.orElse(() => PdfErrorCodeValue.stampFailed),
           ),
           retryable: false,
