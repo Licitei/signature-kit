@@ -311,9 +311,10 @@ fn ciphers(data: &[u8]) {
 
 fn content(data: &[u8]) {
     let mut lexer = ContentLexer::new(data);
+    let mut operands = Vec::new();
     let mut tokens = 0_usize;
-    while lexer.next().is_some() {
-        tokens = tokens.saturating_add(1);
+    while lexer.operator(&mut operands, usize::MAX).is_some() {
+        tokens = tokens.saturating_add(operands.len()).saturating_add(1);
         assert!(
             tokens <= data.len().saturating_add(1),
             "content lexer did not advance"
