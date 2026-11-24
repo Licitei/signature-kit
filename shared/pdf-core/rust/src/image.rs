@@ -99,6 +99,7 @@ struct Layout {
     bits: u32,
     components: usize,
     height: usize,
+    identity: bool,
     row_bytes: usize,
     width: usize,
 }
@@ -381,7 +382,13 @@ fn converter<'space>(space: &'space ColorSpace, decode: &[f64], bits: u32) -> Co
     }
 }
 
-fn convert_bytes(converter: &Converter<'_>, row: &[u8], width: usize, out: &mut [u8]) -> bool {
+fn convert_bytes(
+    converter: &Converter<'_>,
+    row: &[u8],
+    width: usize,
+    out: &mut [u8],
+    identity: bool,
+) -> bool {
     let pixels = out.as_chunks_mut::<4>().0;
     match converter {
         Converter::Gray(values) => {
@@ -402,6 +409,12 @@ fn convert_bytes(converter: &Converter<'_>, row: &[u8], width: usize, out: &mut 
             ) else {
                 return false;
             };
+            if identity {
+                for (pixel, rgb) in pixels.iter_mut().zip(row.as_chunks::<3>().0).take(width) {
+                    *pixel = [rgb[0], rgb[1], rgb[2], 255];
+                }
+                return true;
+            }
             for (pixel, rgb) in pixels.iter_mut().zip(row.as_chunks::<3>().0).take(width) {
                 *pixel = [
                     red.get(usize::from(rgb[0])).copied().unwrap_or(0),
@@ -481,7 +494,7 @@ fn convert_row(
     let components = layout.components;
     if layout.bits == 8
         && row.len() >= layout.width.saturating_mul(components)
-        && convert_bytes(converter, row, layout.width, out)
+        && convert_bytes(converter, row, layout.width, out, layout.identity)
     {
         return;
     }
@@ -883,10 +896,14 @@ pub(crate) fn decode_image(ctx: &ImageContext<'_>, input: &ImageInput<'_>) -> Op
     } else {
         converter(space, &decode, bits)
     };
+    let identity = matches!(&converter, Converter::Rgb(luts) if luts
+        .iter()
+        .all(|lut| lut.iter().enumerate().all(|(index, value)| usize::from(*value) == index)));
     let layout = Layout {
         bits,
         components,
         height,
+        identity,
         row_bytes: width
             .checked_mul(components)?
             .checked_mul(usize::try_from(bits).ok()?)?
