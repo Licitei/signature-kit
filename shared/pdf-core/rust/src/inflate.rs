@@ -252,7 +252,11 @@ fn fixed_lit_lens() -> [u8; 288] {
     lens
 }
 
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "the per-symbol decoder must inline into the block loop on wasm32"
+)]
+#[inline(always)]
 fn decode_symbol(bits: &mut BitReader<'_>, tree: &Huffman) -> Option<u16> {
     if bits.bit_count < u32::try_from(MAX_BITS).unwrap_or(u32::MAX) {
         bits.refill();
