@@ -2,7 +2,9 @@ use crate::failure::{Failure, FailureCode, Outcome};
 use crate::num::widen;
 use core::iter;
 
+const SLACK_FROM_BYTES: usize = 1 << 20;
 const MAX_BITS: usize = 15;
+const TAIL_SLACK: usize = 1 << 16;
 
 const LENGTH_BASE: [usize; 29] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
@@ -510,7 +512,40 @@ pub(crate) fn inflate_prefix(data: &[u8], len: usize) -> Outcome<Vec<u8>> {
     inflate_with(data, len, true)
 }
 
+fn presize(out: &mut Vec<u8>, consumed: usize, total: usize, max: usize) {
+    let spare = out.capacity().saturating_sub(out.len());
+    if consumed == 0 || spare >= out.len() >> 2_i32 {
+        return;
+    }
+    let length = u64::try_from(out.len()).unwrap_or_default();
+    let projected = length
+        .saturating_mul(u64::try_from(total).unwrap_or_default())
+        .checked_div(u64::try_from(consumed).unwrap_or(1))
+        .unwrap_or_default();
+    let padded = projected
+        .saturating_add(projected >> 2_i32)
+        .saturating_add(projected >> 3_i32)
+        .max(length);
+    let target = usize::try_from(padded)
+        .unwrap_or(usize::MAX)
+        .min(max)
+        .min(out.capacity().saturating_mul(64));
+    if target > out.capacity().saturating_add(out.capacity() >> 4_i32) {
+        out.reserve_exact(target.saturating_sub(out.len()));
+    }
+}
+
 fn inflate_with(data: &[u8], max_output: usize, truncate: bool) -> Outcome<Vec<u8>> {
+    let mut out = inflate_unsized(data, max_output, truncate)?;
+    if out.len() >= SLACK_FROM_BYTES {
+        out.shrink_to(out.len().saturating_add(TAIL_SLACK));
+    } else {
+        out.shrink_to_fit();
+    }
+    Ok(out)
+}
+
+fn inflate_unsized(data: &[u8], max_output: usize, truncate: bool) -> Outcome<Vec<u8>> {
     let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max_output));
     let skip = skip_zlib_header(data);
     let payload = data.get(skip..).map_or(data, |slice| slice);
@@ -523,6 +558,7 @@ fn inflate_with(data: &[u8], max_output: usize, truncate: bool) -> Outcome<Vec<u
     let mut dynamic = (Huffman::new(), Huffman::new());
 
     while !final_block {
+        presize(&mut out, bits.pos, payload.len(), max_output);
         let Some(hdr) = bits.take_bits(3) else { break };
         final_block = (hdr & 1) != 0;
         let btype = (hdr >> 1_i32) & 3;
@@ -587,8 +623,9 @@ fn inflate_with(data: &[u8], max_output: usize, truncate: bool) -> Outcome<Vec<u
 
 #[cfg(test)]
 mod tests {
-    use super::inflate;
+    use super::{FailureCode, TAIL_SLACK, inflate};
     use core::array;
+    use core::iter;
 
     const ZLIB_MB: &[u8] = include_bytes!("../tests/fixtures/repetitive_mb.zlib");
     const ZLIB_SKEWED: &[u8] = include_bytes!("../tests/fixtures/skewed.zlib");
@@ -625,6 +662,25 @@ mod tests {
             b = (b.saturating_add(a)).rem_euclid(0xFFF1);
         }
         (b << 16) | a
+    }
+
+    #[test]
+    fn output_buffer_follows_a_changing_compression_ratio() {
+        use crate::deflate::zlib_compress;
+        let mut state = 0x9e37_79b9_u32;
+        let mut data: Vec<u8> = iter::repeat_with(|| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(state >> 24_i32).unwrap()
+        })
+        .take(300_000)
+        .collect();
+        data.extend((0_u32..4_000_000).map(|index| u8::try_from(index.rem_euclid(7)).unwrap()));
+        let packed = zlib_compress(&data);
+        let out = inflate(&packed, usize::MAX).unwrap();
+        assert_eq!(out, data);
+        assert!(out.capacity() <= out.len() + TAIL_SLACK);
+        let limited = inflate(&packed, 1_000_000).unwrap_err();
+        assert_eq!(limited.code, FailureCode::LimitExceeded);
     }
 
     #[test]
@@ -744,5 +800,88 @@ mod tests {
         ];
         let out = inflate(&data, 1024).expect("inflate");
         assert_eq!(out, b"hello world");
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use crate::deflate::zlib_compress;
+    use proptest::prelude::*;
+
+    fn payload() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec((any::<u8>(), 1_u8..=255, 1_u8..5), 0..64).prop_map(|runs| {
+            let mut out = Vec::new();
+            for (byte, length, alphabet) in runs {
+                out.extend((0..length).map(|step| byte.wrapping_add(step.rem_euclid(alphabet))));
+            }
+            out
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        #[test]
+        fn inflate_inverts_the_crate_compressor_at_every_cut(
+            data in payload(),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let compressed = zlib_compress(&data);
+            prop_assert_eq!(&inflate(&compressed, data.len().max(1)).unwrap_or_default(), &data);
+            if !data.is_empty() {
+                let len = cut.index(data.len()).saturating_add(1);
+                prop_assert_eq!(inflate_prefix(&compressed, len).unwrap(), &data[..len]);
+                if len < data.len() {
+                    prop_assert!(inflate(&compressed, len).is_err());
+                }
+            }
+        }
+
+        #[test]
+        fn truncated_streams_yield_a_prefix_or_fail(
+            data in payload(),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let compressed = zlib_compress(&data);
+            let end = cut.index(compressed.len().saturating_add(1));
+            if let Ok(prefix) = inflate(&compressed[..end], 1 << 24_u32) {
+                prop_assert!(data.starts_with(&prefix));
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn bit_at(data: &[u8], index: usize) -> u32 {
+        u32::from((data[index / 8] >> (index % 8)) & 1)
+    }
+
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn bit_reader_returns_bits_lsb_first_and_never_overreads() {
+        let data: [u8; 9] = kani::any();
+        let mut reader = BitReader::new(&data);
+        let mut consumed = 0_usize;
+        for _ in 0..2 {
+            let count: u8 = kani::any();
+            kani::assume(count <= 16);
+            let taken = reader.take_bits(count);
+            let available = data.len() * 8 - consumed;
+            if usize::from(count) > available {
+                assert!(taken.is_none());
+                return;
+            }
+            let value = taken.unwrap();
+            let mut expected = 0_u32;
+            for bit in 0..usize::from(count) {
+                expected |= bit_at(&data, consumed + bit) << bit;
+            }
+            assert_eq!(value, expected);
+            consumed += usize::from(count);
+        }
     }
 }

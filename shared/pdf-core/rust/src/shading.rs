@@ -2,7 +2,7 @@ use crate::color::ColorSpace;
 use crate::display::{Gradient, Matrix};
 use crate::function::Function;
 use crate::num::usize_to_f64;
-use crate::object::{Dict, Object, Resolver};
+use crate::object::{Dict, Object, Resolver, numbers};
 
 const STOPS: usize = 48;
 const MAX_FUNCTIONS: usize = 32;
@@ -37,17 +37,6 @@ impl GradientPaint {
             .get(self.stops.len() >> 1_u32)
             .map_or([0, 0, 0, 255], |(_, color)| *color)
     }
-}
-
-fn numbers(resolver: &dyn Resolver, dict: &Dict, key: &[u8]) -> Vec<f64> {
-    dict.get(key)
-        .and_then(|value| resolver.resolve(value).ok())
-        .and_then(|value| {
-            value
-                .as_array()
-                .map(|items| items.iter().filter_map(Object::as_number).collect())
-        })
-        .unwrap_or_default()
 }
 
 fn functions(resolver: &dyn Resolver, dict: &Dict) -> Vec<Function> {

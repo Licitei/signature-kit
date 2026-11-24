@@ -34,6 +34,12 @@ impl Reject {
 
 type Parsed<T> = Result<T, Reject>;
 
+#[derive(Clone, Copy)]
+enum Numeral {
+    Integer { plain: bool, value: i64 },
+    Real(f64),
+}
+
 pub(crate) struct Parser<'data> {
     data: &'data [u8],
     max_depth: usize,
@@ -346,6 +352,23 @@ impl<'data> Parser<'data> {
     }
 
     fn number(&mut self) -> Object {
+        match self.numeral() {
+            Numeral::Real(value) => Object::Real(value),
+            Numeral::Integer { plain, value } => {
+                if self.refs
+                    && plain
+                    && let Ok(whole) = u64::try_from(value)
+                    && let Some((reference, end)) = self.reference(whole)
+                {
+                    self.pos = end;
+                    return reference;
+                }
+                Object::Integer(value)
+            }
+        }
+    }
+
+    fn numeral(&mut self) -> Numeral {
         let mut negative = false;
         let mut signed = false;
         match self.peek() {
@@ -398,10 +421,13 @@ impl<'data> Parser<'data> {
             }
             let divisor = POW10.get(scale).copied().unwrap_or(1e18_f64);
             let magnitude = u64_to_f64(whole) + u64_to_f64(fraction) / divisor;
-            return Object::Real(if negative { -magnitude } else { magnitude });
+            return Numeral::Real(if negative { -magnitude } else { magnitude });
         }
         if self.pos == start {
-            return Object::Integer(0);
+            return Numeral::Integer {
+                plain: false,
+                value: 0,
+            };
         }
         if overflow || whole > i64::MAX.cast_unsigned() {
             let magnitude = if overflow {
@@ -409,21 +435,17 @@ impl<'data> Parser<'data> {
             } else {
                 u64_to_f64(whole)
             };
-            return Object::Real(if negative { -magnitude } else { magnitude });
+            return Numeral::Real(if negative { -magnitude } else { magnitude });
         }
         let integer = whole.cast_signed();
-        if self.refs
-            && !signed
-            && let Some((reference, end)) = self.reference(whole)
-        {
-            self.pos = end;
-            return reference;
+        Numeral::Integer {
+            plain: !signed,
+            value: if negative {
+                integer.saturating_neg()
+            } else {
+                integer
+            },
         }
-        Object::Integer(if negative {
-            integer.saturating_neg()
-        } else {
-            integer
-        })
     }
 
     pub(crate) fn parse_object(&mut self) -> Outcome<Object> {
@@ -548,7 +570,7 @@ pub(crate) enum Operand<'data> {
     Literal(Cow<'data, [u8]>),
     Name(Cow<'data, [u8]>),
     Null,
-    Object(Object),
+    Object(Box<Object>),
     Real(f64),
 }
 
@@ -709,17 +731,9 @@ impl<'data> ContentLexer<'data> {
     }
 
     fn number(&mut self) -> Operand<'data> {
-        match self.parser.number() {
-            Object::Real(value) => Operand::Real(value),
-            Object::Integer(value) => Operand::Integer(value),
-            Object::Null
-            | Object::Bool(_)
-            | Object::Name(_)
-            | Object::String(_)
-            | Object::Array(_)
-            | Object::Dict(_)
-            | Object::Stream(_)
-            | Object::Ref(_) => Operand::Null,
+        match self.parser.numeral() {
+            Numeral::Real(value) => Operand::Real(value),
+            Numeral::Integer { value, .. } => Operand::Integer(value),
         }
     }
 
@@ -746,9 +760,10 @@ impl<'data> ContentLexer<'data> {
         match byte {
             b'/' => Ok(Operand::Name(self.name())),
             b'(' => Ok(Operand::Literal(self.literal())),
-            b'<' if self.parser.peek_at(1) == Some(b'<') => {
-                self.parser.dictionary(depth).map(Operand::Object)
-            }
+            b'<' if self.parser.peek_at(1) == Some(b'<') => self
+                .parser
+                .dictionary(depth)
+                .map(|object| Operand::Object(Box::new(object))),
             b'<' => Ok(Operand::Hex(self.hex())),
             b'[' => self.array(depth),
             b'0'..=b'9' | b'+' | b'-' | b'.' => Ok(self.number()),
@@ -1552,7 +1567,7 @@ mod tests {
         assert_eq!(tokens.len(), 4);
         assert!(matches!(
             tokens.get(1),
-            Some(ContentToken::Operand(Operand::Object(Object::Dict(_))))
+            Some(ContentToken::Operand(Operand::Object(object))) if matches!(**object, Object::Dict(_))
         ));
         assert_eq!(tokens.get(2), Some(&op(b"BDC")));
     }
@@ -1647,5 +1662,67 @@ mod tests {
         assert_eq!(find_bytes(b"abc", 0, b"x"), None);
         assert_eq!(find_bytes(b"abc", 9, b"a"), None);
         assert_eq!(find_bytes(b"abc", 0, b""), None);
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn unsigned_numbers_read_every_leading_digit() {
+        let bytes: [u8; 6] = kani::any();
+        let start: usize = kani::any();
+        kani::assume(start <= bytes.len());
+        let mut pos = start;
+        let parsed = read_unsigned(&bytes, &mut pos);
+        let mut end = start;
+        let mut expected = 0_u64;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            expected = expected * 10 + u64::from(bytes[end] - b'0');
+            end += 1;
+        }
+        if end == start {
+            assert!(parsed.is_none());
+            assert_eq!(pos, start);
+        } else {
+            assert_eq!(parsed, Some(expected));
+            assert_eq!(pos, end);
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn find_bytes_returns_the_first_match_at_or_after_the_start() {
+        let data: [u8; 7] = kani::any();
+        let needle: [u8; 2] = kani::any();
+        let from: usize = kani::any();
+        kani::assume(from <= data.len() + 1);
+        let found = find_bytes(&data, from, &needle);
+        let mut expected = None;
+        let mut at = from;
+        while at + needle.len() <= data.len() {
+            if data[at] == needle[0] && data[at + 1] == needle[1] {
+                expected = Some(at);
+                break;
+            }
+            at += 1;
+        }
+        assert_eq!(found, expected);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn object_headers_never_panic() {
+        let bytes: [u8; 8] = kani::any();
+        let offset: usize = kani::any();
+        kani::assume(offset <= bytes.len() + 1);
+        if let Some((_, end)) = parse_object_header(&bytes, offset) {
+            assert!(end <= bytes.len());
+        }
+        let mut pos: usize = kani::any();
+        kani::assume(pos <= bytes.len() + 1);
+        let _ = read_unsigned(&bytes, &mut pos);
     }
 }

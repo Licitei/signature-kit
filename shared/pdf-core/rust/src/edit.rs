@@ -6,7 +6,7 @@ use crate::deflate::zlib_compress;
 use crate::document::{Document, Page, decode_text_string};
 use crate::failure::{Failure, FailureCode, Outcome};
 use crate::inspection::{Limits, PageInfo};
-use crate::num::{f64_to_i64, unsigned_decimal, widen};
+use crate::num::{f64_to_i64, sort_total, unsigned_decimal, widen};
 use crate::object::{Dict, ObjRef, Object, Stream};
 use crate::png::{self, Image};
 use crate::revision::revision_complete;
@@ -304,11 +304,7 @@ impl Store<'_, '_> {
         let key = reader.bytes()?.to_vec();
         let value = parse_value(reader.bytes()?)?;
         let (root, inner) = self.locate(&target, append)?;
-        let current = {
-            let container = navigate_mut(self.object_mut(root)?, &inner)
-                .ok_or_else(|| Failure::request("edit target does not exist"))?;
-            dict_of(container)?.get(&key).cloned()
-        };
+        let current = { self.dict_at(root, &inner)?.get(&key).cloned() };
         match current {
             Some(Object::Ref(reference)) => {
                 let Object::Array(items) = self.object_mut(reference)? else {
@@ -317,21 +313,26 @@ impl Store<'_, '_> {
                 apply_array(items, value, append);
             }
             Some(Object::Array(_)) => {
-                let container = navigate_mut(self.object_mut(root)?, &inner)
-                    .ok_or_else(|| Failure::request("edit target does not exist"))?;
-                if let Some(Object::Array(items)) = dict_entry_mut(dict_of(container)?, &key) {
+                if let Some(Object::Array(items)) =
+                    dict_entry_mut(self.dict_at(root, &inner)?, &key)
+                {
                     apply_array(items, value, append);
                 }
             }
             None if append => {
-                let container = navigate_mut(self.object_mut(root)?, &inner)
-                    .ok_or_else(|| Failure::request("edit target does not exist"))?;
-                dict_of(container)?.insert(&key, Object::Array(vec![value]));
+                self.dict_at(root, &inner)?
+                    .insert(&key, Object::Array(vec![value]));
             }
             None => {}
             Some(_) => return Err(Failure::request("edit target is not an array")),
         }
         Ok(())
+    }
+
+    fn dict_at(&mut self, root: ObjRef, path: &[Step]) -> Outcome<&mut Dict> {
+        let container = navigate_mut(self.object_mut(root)?, path)
+            .ok_or_else(|| Failure::request("edit target does not exist"))?;
+        dict_of(container)
     }
 
     fn dict_edit(&mut self, reader: &mut Reader<'_>, set: bool) -> Outcome<()> {
@@ -365,11 +366,7 @@ impl Store<'_, '_> {
         let key = reader.bytes()?.to_vec();
         let bits = reader.u32()?;
         let (root, inner) = self.locate(&target, true)?;
-        let current = {
-            let container = navigate_mut(self.object_mut(root)?, &inner)
-                .ok_or_else(|| Failure::request("edit target does not exist"))?;
-            dict_of(container)?.get(&key).cloned()
-        };
+        let current = { self.dict_at(root, &inner)?.get(&key).cloned() };
         let resolved = match current {
             Some(Object::Ref(reference)) => self.peek_value(reference, &[])?,
             other => other,
@@ -381,9 +378,8 @@ impl Store<'_, '_> {
             .map_or(0_i64, |value| f64_to_i64(value.trunc()));
         let low = u32::try_from(old.rem_euclid(1_i64 << 32_i32)).unwrap_or(0);
         let combined = i64::from((low | bits).cast_signed());
-        let container = navigate_mut(self.object_mut(root)?, &inner)
-            .ok_or_else(|| Failure::request("edit target does not exist"))?;
-        dict_of(container)?.insert(&key, Object::Integer(combined));
+        self.dict_at(root, &inner)?
+            .insert(&key, Object::Integer(combined));
         Ok(())
     }
 
@@ -430,9 +426,8 @@ impl Store<'_, '_> {
                     let parent = inner
                         .get(..inner.len().saturating_sub(1))
                         .unwrap_or_default();
-                    let container = navigate_mut(self.object_mut(root)?, parent)
-                        .ok_or_else(|| Failure::request("edit target does not exist"))?;
-                    dict_of(container)?.insert(key, Object::Dict(Dict::default()));
+                    self.dict_at(root, parent)?
+                        .insert(key, Object::Dict(Dict::default()));
                 }
             }
         }
@@ -490,9 +485,7 @@ impl Store<'_, '_> {
             path: vec![Step::Key(b"Resources".to_vec()), Step::Key(category)],
         };
         let (root, inner) = self.locate(&target, true)?;
-        let container = navigate_mut(self.object_mut(root)?, &inner)
-            .ok_or_else(|| Failure::request("edit target does not exist"))?;
-        let resources = dict_of(container)?;
+        let resources = self.dict_at(root, &inner)?;
         match resources.get(&name) {
             Some(existing) if *existing != value => Err(Failure::request(
                 "page resource name is already bound to another object",
@@ -796,18 +789,9 @@ fn dict_entry_mut<'object>(dict: &'object mut Dict, key: &[u8]) -> Option<&'obje
 }
 
 fn dict_of(object: &mut Object) -> Outcome<&mut Dict> {
-    match object {
-        Object::Dict(dict) => Ok(dict),
-        Object::Stream(stream) => Ok(&mut stream.dict),
-        Object::Array(_)
-        | Object::Bool(_)
-        | Object::Integer(_)
-        | Object::Name(_)
-        | Object::Null
-        | Object::Real(_)
-        | Object::Ref(_)
-        | Object::String(_) => Err(Failure::request("edit target is not a dictionary")),
-    }
+    object
+        .as_dict_mut()
+        .ok_or_else(|| Failure::request("edit target is not a dictionary"))
 }
 
 fn first_unused_field_name(
@@ -901,7 +885,7 @@ fn first_unused_field_name(
             }
         }
     }
-    taken.sort_unstable();
+    sort_total(&mut taken, &Ord::cmp);
     let mut suffix = 1_u64;
     for [value, ..] in taken {
         if value == suffix {
@@ -963,30 +947,8 @@ fn navigate_mut<'object>(
     let mut current = object;
     for step in path {
         current = match step {
-            Step::Key(key) => match current {
-                Object::Dict(dict) => dict_entry_mut(dict, key)?,
-                Object::Stream(stream) => dict_entry_mut(&mut stream.dict, key)?,
-                Object::Array(_)
-                | Object::Bool(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Ref(_)
-                | Object::String(_) => return None,
-            },
-            Step::Index(index) => match current {
-                Object::Array(items) => items.get_mut(*index)?,
-                Object::Bool(_)
-                | Object::Dict(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Ref(_)
-                | Object::Stream(_)
-                | Object::String(_) => return None,
-            },
+            Step::Key(key) => dict_entry_mut(current.as_dict_mut()?, key)?,
+            Step::Index(index) => current.as_array_mut()?.get_mut(*index)?,
         };
     }
     Some(current)
@@ -1006,18 +968,7 @@ fn page_annotations(
     }
     for (position, item) in items.iter().enumerate() {
         let resolved = document.follow(item)?;
-        let reference = match item {
-            Object::Ref(found) => Some(*found),
-            Object::Array(_)
-            | Object::Bool(_)
-            | Object::Dict(_)
-            | Object::Integer(_)
-            | Object::Name(_)
-            | Object::Null
-            | Object::Real(_)
-            | Object::Stream(_)
-            | Object::String(_) => None,
-        };
+        let reference = item.as_reference();
         let index = u32::try_from(position).unwrap_or(u32::MAX);
         let Some(dict) = resolved.as_dict() else {
             annotations.push(AnnotationInfo {
@@ -1136,18 +1087,9 @@ fn signature_slot(document: &Document<'_>, widget_object: &Object, widget: &Dict
             });
         };
         if depth == 0 && field_type.is_none() && current.get(b"T").is_none() {
-            field = match parent_object {
-                Object::Ref(reference) => FieldTarget::Ref(reference),
-                Object::Array(_)
-                | Object::Bool(_)
-                | Object::Dict(_)
-                | Object::Integer(_)
-                | Object::Name(_)
-                | Object::Null
-                | Object::Real(_)
-                | Object::Stream(_)
-                | Object::String(_) => FieldTarget::WidgetParent,
-            };
+            field = parent_object
+                .as_reference()
+                .map_or(FieldTarget::WidgetParent, FieldTarget::Ref);
         }
         current = parent_dict.clone();
     }

@@ -4,11 +4,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::deflate::adler32;
 use crate::document::Document;
-use crate::filters;
+use crate::filters::{self, paeth_filter};
 use crate::inflate::inflate;
 use crate::inspection::Limits;
-use crate::num::{f64_to_i64, u64_to_f64};
+use crate::num::{f64_to_i64, sort_total, u64_to_f64};
 use crate::object::{Dict, Object};
+use crate::syntax::hex_value;
 
 const MAX_REVISIONS: usize = 128;
 const MAX_SIGNATURE_DICTIONARIES: usize = 1024;
@@ -1186,7 +1187,7 @@ impl Entries {
             .enumerate()
             .map(|(position, (number, _))| [*number, sequence(position), 0, 0])
             .collect();
-        order.sort_unstable();
+        sort_total(&mut order, &Ord::cmp);
         order.dedup_by_key(|key| key[0]);
         Self(
             order
@@ -1241,7 +1242,7 @@ impl NumberIndex {
             scanner.index.failure = Some(failed_at);
         }
         let mut index = scanner.index;
-        index.entries.sort_unstable();
+        sort_total(&mut index.entries, &Ord::cmp);
         let mut previous: Option<(u64, u64)> = None;
         let mut firsts: Vec<[u64; 4]> = Vec::new();
         for [number, generation, offset, _] in &index.entries {
@@ -1250,7 +1251,7 @@ impl NumberIndex {
                 previous = Some((*number, *generation));
             }
         }
-        firsts.sort_unstable();
+        sort_total(&mut firsts, &Ord::cmp);
         index.first_offsets = firsts
             .iter()
             .map(|[offset, ..]| usize::try_from(*offset).unwrap_or(usize::MAX))
@@ -1885,11 +1886,11 @@ fn decode_name(raw: &[u8]) -> Vec<u8> {
         let high = raw
             .get(index.saturating_add(1))
             .copied()
-            .and_then(hex_digit);
+            .and_then(hex_value);
         let low = raw
             .get(index.saturating_add(2))
             .copied()
-            .and_then(hex_digit);
+            .and_then(hex_value);
         if byte == b'#'
             && let (Some(first), Some(second)) = (high, low)
         {
@@ -1978,16 +1979,8 @@ fn decode_predictor(input: &[u8], expected: usize, predictor: Predictor) -> Opti
             } else {
                 0
             };
-            let prediction = match filter {
-                0 => 0,
-                1 => left,
-                2 => above,
-                3 => u8::try_from((u16::from(left).saturating_add(u16::from(above))) >> 1_i32)
-                    .unwrap_or(0),
-                _ => paeth(left, above, upper_left),
-            };
             if let Some(slot) = output.get_mut(at) {
-                *slot = encoded.wrapping_add(prediction);
+                *slot = paeth_filter(filter, encoded, left, above, upper_left);
             }
         }
     }
@@ -2271,31 +2264,12 @@ fn object_stream_references(bytes: &[u8], first: usize, count: u64) -> Option<Ve
         previous = Some(relative);
         references.push((number, usize::try_from(relative).ok()?));
     }
-    let mut numbers: Vec<[u64; 4]> = references
-        .iter()
-        .map(|(number, _)| [*number, 0, 0, 0])
-        .collect();
-    numbers.sort_unstable();
+    let mut numbers: Vec<u64> = references.iter().map(|(number, _)| *number).collect();
+    sort_total(&mut numbers, &Ord::cmp);
     if numbers.windows(2).any(|pair| pair.first() == pair.get(1)) {
         return None;
     }
     Some(references)
-}
-
-fn paeth(left: u8, above: u8, upper_left: u8) -> u8 {
-    let estimate = i32::from(left)
-        .saturating_add(i32::from(above))
-        .saturating_sub(i32::from(upper_left));
-    let left_distance = estimate.saturating_sub(i32::from(left)).abs();
-    let above_distance = estimate.saturating_sub(i32::from(above)).abs();
-    let upper_left_distance = estimate.saturating_sub(i32::from(upper_left)).abs();
-    if left_distance <= above_distance && left_distance <= upper_left_distance {
-        left
-    } else if above_distance <= upper_left_distance {
-        above
-    } else {
-        upper_left
-    }
 }
 
 fn parse_js_number(lexeme: &[u8]) -> Option<f64> {
@@ -2475,15 +2449,6 @@ fn to_object(value: &Value) -> Option<Object> {
         }
         Value::Bool | Value::Ref(_) | Value::Text => return None,
     })
-}
-
-const fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte.wrapping_sub(b'0')),
-        b'A'..=b'F' => Some(byte.wrapping_sub(b'A').wrapping_add(10)),
-        b'a'..=b'f' => Some(byte.wrapping_sub(b'a').wrapping_add(10)),
-        _ => None,
-    }
 }
 
 fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {

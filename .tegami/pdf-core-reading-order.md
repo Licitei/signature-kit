@@ -1,0 +1,8 @@
+---
+packages:
+  "@signature-kit/pdf-core": patch
+---
+
+## Column-aware reading order and text flow
+
+`text` and Markdown now split each page into column regions at prose and index gutters before building lines, tables and blocks. Two-column papers read the whole left column before the right one, tight 3–4 column layouts (gutters of about 1 em) read column by column, and prose columns no longer turn into borderless tables. Footnotes at the bottom of a column move to the end of the page, superscript footnote markers stay with their text, and page continuations skip footnotes, captions and tables. End-of-line hyphens are joined with a document-vocabulary rule that keeps real compounds.

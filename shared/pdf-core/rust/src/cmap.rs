@@ -1,7 +1,9 @@
 use alloc::collections::BinaryHeap;
+use core::iter;
 use core::slice;
 
 use crate::inspection::Limits;
+use crate::num::sort_total;
 use crate::syntax::{hex_value, is_regular, is_whitespace};
 
 const MAX_ENTRIES: usize = 0x0004_0000;
@@ -183,15 +185,20 @@ impl UnicodeMap {
     }
 
     fn finish(&mut self) {
-        self.chars.sort_by_key(|(key, _)| *key);
-        let mut merged: Vec<(u32, Box<[u32]>)> = Vec::with_capacity(self.chars.len());
-        for item in self.chars.drain(..) {
-            match merged.last_mut() {
-                Some(last) if last.0 == item.0 => *last = item,
-                _ => merged.push(item),
-            }
-        }
-        self.chars = merged;
+        let mut order: Vec<(u32, usize)> = self
+            .chars
+            .iter()
+            .enumerate()
+            .map(|(position, (key, _))| (*key, position))
+            .collect();
+        sort_total(&mut order, &Ord::cmp);
+        let mut slots: Vec<Option<(u32, Box<[u32]>)>> = self.chars.drain(..).map(Some).collect();
+        self.chars = order
+            .iter()
+            .zip(order.iter().skip(1).map(Some).chain(iter::once(None)))
+            .filter(|(current, next)| next.is_none_or(|following| following.0 != current.0))
+            .filter_map(|(&(_, position), _)| slots.get_mut(position)?.take())
+            .collect();
         let spans: Vec<(u32, u32)> = self
             .ranges
             .iter()
@@ -778,7 +785,9 @@ pub(crate) fn disjoint(spans: &[(u32, u32)]) -> Vec<(u32, u32, usize)> {
     let mut order: Vec<usize> = (0..spans.len())
         .filter(|&index| start_of(index) <= end_of(index))
         .collect();
-    order.sort_by_key(|&index| start_of(index));
+    sort_total(&mut order, &|&left, &right| {
+        start_of(left).cmp(&start_of(right)).then(left.cmp(&right))
+    });
     let mut active: BinaryHeap<usize> = BinaryHeap::new();
     let mut out: Vec<(u32, u32, usize)> = Vec::new();
     let mut next = 0_usize;

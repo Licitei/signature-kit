@@ -1,6 +1,6 @@
-use crate::display::{Matrix, PathData};
+use crate::display::{Matrix, PathData, Pen, multiply};
 use crate::font_tables::{BuiltinEncoding, encoding_glyph_name};
-use crate::num::{f64_to_f32, f64_to_usize, parse_decimal, widen};
+use crate::num::{f64_to_f32, f64_to_usize, parse_decimal, read_u16, widen};
 use core::str;
 
 const MAX_COMPONENT_DEPTH: usize = 8;
@@ -155,7 +155,11 @@ impl Outline<'_> {
                 local[3] = f2dot14(data, position.checked_add(6)?)?;
                 position = position.checked_add(8)?;
             }
-            self.glyph(component, &compose(&local, matrix), depth.saturating_add(1))?;
+            self.glyph(
+                component,
+                &multiply(&local, matrix),
+                depth.saturating_add(1),
+            )?;
             if flags & 0x0020 == 0 {
                 break;
             }
@@ -236,14 +240,11 @@ pub(crate) struct Type1Glyphs {
 struct Type1Machine<'run> {
     flex: Option<Vec<(f64, f64)>>,
     glyphs: &'run Type1Glyphs,
-    open: bool,
     other: Vec<f64>,
-    path: &'run mut PathData,
+    pen: Pen<'run>,
     sbx: f64,
     stack: Vec<f64>,
     steps: usize,
-    x: f64,
-    y: f64,
 }
 
 impl Type1Glyphs {
@@ -264,42 +265,21 @@ impl Type1Glyphs {
         let mut machine = Type1Machine {
             flex: None,
             glyphs: self,
-            open: false,
             other: Vec::new(),
-            path,
+            pen: Pen::new(path),
             sbx: 0.0,
             stack: Vec::with_capacity(MAX_TYPE1_STACK),
             steps: 0,
-            x: 0.0,
-            y: 0.0,
         };
         let outcome = machine.run(code, 0);
         charge(work, machine.steps)?;
         let _: bool = outcome?;
-        machine.close();
+        machine.pen.close();
         Some(())
     }
 }
 
 impl Type1Machine<'_> {
-    fn close(&mut self) {
-        if self.open {
-            self.path.close();
-            self.open = false;
-        }
-    }
-
-    fn curve(&mut self, deltas: [f64; 6]) {
-        let x1 = self.x + deltas[0];
-        let y1 = self.y + deltas[1];
-        let x2 = x1 + deltas[2];
-        let y2 = y1 + deltas[3];
-        self.x = x2 + deltas[4];
-        self.y = y2 + deltas[5];
-        self.path.cubic([x1, y1, x2, y2, self.x, self.y]);
-        self.open = true;
-    }
-
     fn escape(&mut self, code: u8, depth: usize) -> Option<bool> {
         let arg = |index: usize| self.stack.get(index).copied().unwrap_or(0.0_f64);
         match code {
@@ -311,8 +291,8 @@ impl Type1Machine<'_> {
             }
             7 => {
                 self.sbx = arg(0);
-                self.x = arg(0);
-                self.y = arg(1);
+                self.pen.x = arg(0);
+                self.pen.y = arg(1);
             }
             12 => {
                 let divisor = self.stack.pop().unwrap_or(1.0_f64);
@@ -341,8 +321,8 @@ impl Type1Machine<'_> {
                 return Some(false);
             }
             33 => {
-                self.x = arg(0);
-                self.y = arg(1);
+                self.pen.x = arg(0);
+                self.pen.y = arg(1);
             }
             _ => {}
         }
@@ -350,44 +330,43 @@ impl Type1Machine<'_> {
         Some(false)
     }
 
-    fn line(&mut self, dx: f64, dy: f64) {
-        self.x += dx;
-        self.y += dy;
-        self.path.line(self.x, self.y);
-        self.open = true;
-    }
-
     fn move_by(&mut self, dx: f64, dy: f64) {
         if let Some(points) = self.flex.as_mut() {
-            self.x += dx;
-            self.y += dy;
-            points.push((self.x, self.y));
+            self.pen.x += dx;
+            self.pen.y += dy;
+            points.push((self.pen.x, self.pen.y));
             return;
         }
-        self.close();
-        self.x += dx;
-        self.y += dy;
-        self.path.move_to(self.x, self.y);
+        self.pen.close();
+        self.pen.x += dx;
+        self.pen.y += dy;
+        self.pen.path.move_to(self.pen.x, self.pen.y);
     }
 
     fn operator(&mut self, code: u8) {
         let arg = |index: usize| self.stack.get(index).copied().unwrap_or(0.0_f64);
         match code {
             4 => self.move_by(0.0, arg(0)),
-            5 => self.line(arg(0), arg(1)),
-            6 => self.line(arg(0), 0.0),
-            7 => self.line(0.0, arg(0)),
-            8 => self.curve([arg(0), arg(1), arg(2), arg(3), arg(4), arg(5)]),
-            9 => self.close(),
+            5 => self.pen.line(arg(0), arg(1)),
+            6 => self.pen.line(arg(0), 0.0),
+            7 => self.pen.line(0.0, arg(0)),
+            8 => self
+                .pen
+                .curve([arg(0), arg(1), arg(2), arg(3), arg(4), arg(5)]),
+            9 => self.pen.close(),
             13 => {
                 self.sbx = arg(0);
-                self.x = arg(0);
-                self.y = 0.0_f64;
+                self.pen.x = arg(0);
+                self.pen.y = 0.0_f64;
             }
             21 => self.move_by(arg(0), arg(1)),
             22 => self.move_by(arg(0), 0.0),
-            30 => self.curve([0.0_f64, arg(0), arg(1), arg(2), arg(3), 0.0_f64]),
-            31 => self.curve([arg(0), 0.0_f64, arg(1), arg(2), 0.0_f64, arg(3)]),
+            30 => self
+                .pen
+                .curve([0.0_f64, arg(0), arg(1), arg(2), arg(3), 0.0_f64]),
+            31 => self
+                .pen
+                .curve([arg(0), 0.0_f64, arg(1), arg(2), 0.0_f64, arg(3)]),
             _ => {}
         }
         self.stack.clear();
@@ -398,16 +377,18 @@ impl Type1Machine<'_> {
             0 => {
                 let points = self.flex.take().unwrap_or_default();
                 if let [_, first, second, middle, third, fourth, end] = points.as_slice() {
-                    self.path
+                    self.pen
+                        .path
                         .cubic([first.0, first.1, second.0, second.1, middle.0, middle.1]);
-                    self.path
+                    self.pen
+                        .path
                         .cubic([third.0, third.1, fourth.0, fourth.1, end.0, end.1]);
-                    self.open = true;
-                    self.x = end.0;
-                    self.y = end.1;
+                    self.pen.open = true;
+                    self.pen.x = end.0;
+                    self.pen.y = end.1;
                 }
                 self.other.clear();
-                self.other.extend([self.y, self.x]);
+                self.other.extend([self.pen.y, self.pen.x]);
             }
             1 => {
                 self.flex = Some(Vec::with_capacity(7));
@@ -479,7 +460,7 @@ impl Type1Machine<'_> {
                     }
                 }
                 14 => {
-                    self.close();
+                    self.pen.close();
                     return Some(true);
                 }
                 _ => self.operator(byte),
@@ -508,15 +489,16 @@ impl Type1Machine<'_> {
         let accent_gid = standard(accent)?;
         let base_sbx = self.sbx;
         let (_, base_code) = self.glyphs.charstrings.get(usize::from(base_gid))?;
-        self.close();
+        self.pen.close();
         let _: bool = self.run(base_code, depth.saturating_add(1))?;
-        self.close();
-        let start = self.path.coords.len();
+        self.pen.close();
+        let start = self.pen.path.coords.len();
         let (_, accent_code) = self.glyphs.charstrings.get(usize::from(accent_gid))?;
         let _: bool = self.run(accent_code, depth.saturating_add(1))?;
-        self.close();
+        self.pen.close();
         let offsets = [base_sbx + adx - asb, ady];
         for (index, value) in self
+            .pen
             .path
             .coords
             .get_mut(start..)
@@ -539,13 +521,6 @@ pub(crate) const fn charge(work: &mut usize, amount: usize) -> Option<()> {
     Some(())
 }
 
-fn read_u16(data: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([
-        *data.get(at)?,
-        *data.get(at.checked_add(1)?)?,
-    ]))
-}
-
 fn read_i16(data: &[u8], at: usize) -> Option<i16> {
     read_u16(data, at).map(u16::cast_signed)
 }
@@ -559,19 +534,6 @@ fn transform(matrix: &Matrix, x: f64, y: f64) -> (f64, f64) {
         x * matrix[0] + y * matrix[2] + matrix[4],
         x * matrix[1] + y * matrix[3] + matrix[5],
     )
-}
-
-fn compose(inner: &Matrix, outer: &Matrix) -> Matrix {
-    let [a1, b1, c1, d1, e1, f1] = *inner;
-    let [a2, b2, c2, d2, e2, f2] = *outer;
-    [
-        a1 * a2 + b1 * c2,
-        a1 * b2 + b1 * d2,
-        c1 * a2 + d1 * c2,
-        c1 * b2 + d1 * d2,
-        e1 * a2 + f1 * c2 + e2,
-        e1 * b2 + f1 * d2 + f2,
-    ]
 }
 
 fn read_coordinates(

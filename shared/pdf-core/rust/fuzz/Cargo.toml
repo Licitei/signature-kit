@@ -1,0 +1,73 @@
+[package]
+name = "signature-kit-pdf-core-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.signature-kit-pdf-core]
+path = ".."
+
+[[bin]]
+name = "markdown"
+path = "fuzz_targets/markdown.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inspect"
+path = "fuzz_targets/inspect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tables"
+path = "fuzz_targets/tables.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "render"
+path = "fuzz_targets/render.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signatures"
+path = "fuzz_targets/signatures.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edit_and_merge"
+path = "fuzz_targets/edit_and_merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lazy"
+path = "fuzz_targets/lazy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decoders"
+path = "fuzz_targets/decoders.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

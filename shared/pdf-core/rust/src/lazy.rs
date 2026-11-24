@@ -12,7 +12,7 @@ use crate::document::{
 };
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
-use crate::num::widen;
+use crate::num::{sort_total, sort_unstable_with, widen};
 use crate::object::{Dict, ObjRef, Object};
 use crate::syntax::{keyword_at, parse_indirect_object, parse_object_header, skip_whitespace_at};
 
@@ -49,6 +49,7 @@ pub(crate) struct Tuning {
 
 #[derive(Debug)]
 pub(crate) struct Sparse {
+    complete: bool,
     missing: RefCell<Vec<Range<usize>>>,
     offsets: Vec<usize>,
     segments: Vec<Segment>,
@@ -87,25 +88,23 @@ impl Sparse {
         {
             return true;
         }
-        let mut segments = self.segments.drain(first..after);
-        let mut merged = match segments.next() {
-            Some(segment) if segment.start <= offset => segment,
-            Some(segment) => {
-                let mut merged = Segment {
-                    bytes: bytes.to_vec(),
-                    start: offset,
-                };
-                let overlap = end.saturating_sub(segment.start);
-                merged
-                    .bytes
-                    .extend_from_slice(segment.bytes.get(overlap..).unwrap_or_default());
-                merged
-            }
-            None => Segment {
+        let absorbed: Vec<Segment> = self.segments.drain(first..after).collect();
+        let last_end = absorbed.last().map_or(end, Segment::end).max(end);
+        let mut segments = absorbed.into_iter().peekable();
+        let mut merged = segments
+            .next_if(|segment| segment.start <= offset)
+            .unwrap_or(Segment {
                 bytes: Vec::new(),
                 start: offset,
-            },
+            });
+        let target = if self.complete && merged.start == 0 {
+            self.size
+        } else {
+            last_end
         };
+        merged
+            .bytes
+            .reserve_exact(target.saturating_sub(merged.end()));
         let overlap = merged.end().saturating_sub(offset);
         merged
             .bytes
@@ -132,7 +131,7 @@ impl Sparse {
     }
 
     fn plan_ranges(&self, mut wanted: Vec<Range<usize>>, read_ahead: bool) -> Plan {
-        wanted.sort_unstable_by_key(|range| range.start);
+        sort_unstable_with(&mut wanted, &|left, right| left.start.cmp(&right.start));
         let gap = self
             .tuning
             .gap
@@ -239,7 +238,7 @@ impl Frontier {
                 continue;
             }
             let before = sparse.misses();
-            let object = document.load(reference)?;
+            let object = document.load_transient(reference)?;
             if sparse.misses() == before {
                 collect(&object, &mut self.pending);
             } else {
@@ -280,6 +279,32 @@ impl Frontier {
             pending,
             visited: HashSet::new(),
         })
+    }
+
+    fn walk(
+        frontier: &mut Option<Self>,
+        document: &Document<'_>,
+        sparse: &Sparse,
+        requested: PageRequest<&[u32]>,
+        render: bool,
+    ) -> Outcome<Option<Failure>> {
+        if frontier.is_none() {
+            let (count, pages) = document.sparse_pages(requested)?;
+            if sparse.misses() != 0 {
+                return Ok(None);
+            }
+            if matches!(requested, PageRequest::Indexes(Some(_)))
+                && requested.stop_after().is_some_and(|end| end > count)
+                && let Err(failure) = requested.select(count)
+            {
+                return Ok(Some(failure));
+            }
+            *frontier = Some(Self::new(document, requested, pages, render)?);
+        }
+        if let Some(selection) = frontier {
+            selection.advance(document, sparse)?;
+        }
+        Ok(None)
     }
 }
 
@@ -489,7 +514,7 @@ impl Lazy {
         if self.index.table.is_empty() {
             return Some(Plan::Fallback);
         }
-        self.sparse.offsets.sort_unstable();
+        sort_total(&mut self.sparse.offsets, &Ord::cmp);
         self.sparse.offsets.dedup();
         self.indexed = true;
         None
@@ -510,6 +535,7 @@ impl Lazy {
             next_section: None,
             render: false,
             sparse: Sparse {
+                complete: false,
                 missing: RefCell::new(Vec::new()),
                 offsets: Vec::new(),
                 segments: Vec::new(),
@@ -550,29 +576,16 @@ impl Lazy {
         if let Some(plan) = self.index(first, limits) {
             return plan;
         }
+        let mut repaired = false;
         let result = self.document(limits).and_then(|document| {
-            if frontier.is_none() {
-                let (count, pages) = document.sparse_pages(requested)?;
-                if self.sparse.misses() != 0 {
-                    return Ok(None);
-                }
-                if matches!(requested, PageRequest::Indexes(Some(_)))
-                    && stop_after.is_some_and(|end| end > count)
-                    && !document.was_repaired()
-                    && let Err(failure) = requested.select(count)
-                {
-                    return Ok(Some(failure));
-                }
-                frontier = Some(Frontier::new(&document, requested, pages, render)?);
-            }
-            if let Some(selection) = &mut frontier {
-                selection.advance(&document, &self.sparse)?;
-            }
-            if document.was_repaired() {
-                return Err(Failure::invalid("lazy document requires repair"));
-            }
-            Ok(None)
+            let walked = Frontier::walk(&mut frontier, &document, &self.sparse, requested, render);
+            repaired = document.was_repaired();
+            walked
         });
+        if repaired {
+            self.sparse.missing.get_mut().clear();
+            return Plan::Fallback;
+        }
         self.frontier = frontier;
         if self.sparse.misses() != 0 {
             let wanted = mem::take(self.sparse.missing.get_mut());
@@ -607,6 +620,7 @@ impl Lazy {
                 }
             }
             self.fallback = true;
+            self.sparse.complete = true;
             self.cache = DocumentCache::new();
             self.frontier = None;
             self.index = Index::default();
@@ -724,7 +738,39 @@ mod tests {
     use crate::document::PageRequest;
     use crate::failure::FailureCode;
     use crate::inspection::Limits;
-    use crate::test_pdf::build;
+    use crate::layout::{TextOptions, document_text, opened_text, text_limits};
+    use crate::test_pdf::{build, stream_object};
+
+    #[test]
+    fn out_of_order_feeds_merge_into_one_exact_segment() {
+        let bytes: Vec<u8> = (0_u32..10_000)
+            .map(|index| u8::try_from(index.rem_euclid(251)).unwrap())
+            .collect();
+        let tuning = Tuning {
+            gap: 0,
+            probe: 128,
+            round_bytes: 2048,
+        };
+        for complete in [false, true] {
+            let mut lazy = Lazy::new(bytes.len(), tuning);
+            lazy.sparse.complete = complete;
+            for range in [
+                0..100,
+                5_000..6_000,
+                100..2_500,
+                9_000..10_000,
+                2_400..5_100,
+            ] {
+                assert!(lazy.feed(range.start, &bytes[range.clone()]));
+            }
+            assert_eq!(lazy.sparse.segments.len(), 2);
+            assert_eq!(lazy.sparse.bytes(0..6_000), Some(&bytes[..6_000]));
+            assert!(lazy.feed(6_000, &bytes[6_000..9_000]));
+            assert_eq!(lazy.sparse.segments.len(), 1);
+            assert_eq!(lazy.sparse.bytes(0..bytes.len()), Some(bytes.as_slice()));
+            assert!(lazy.sparse.segments[0].bytes.capacity() >= bytes.len());
+        }
+    }
 
     #[test]
     fn exact_selection_skips_unselected_leaf_resources() {
@@ -790,5 +836,71 @@ mod tests {
             }
         }
         panic!("exact selection did not complete");
+    }
+
+    #[test]
+    fn page_object_needing_repair_falls_back_instead_of_dropping_the_page() {
+        let content = stream_object("", "BT /F1 12 Tf 72 700 Td (Second) Tj ET");
+        let bytes = build(&[
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (
+                2,
+                "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /MediaBox [0 0 200 200] >>"
+                    .to_owned(),
+            ),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /Contents 5 0 (R >>".to_owned(),
+            ),
+            (
+                4,
+                "<< /Type /Page /Parent 2 0 R /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> >> >>"
+                    .to_owned(),
+            ),
+            (5, content),
+            (
+                6,
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            ),
+        ]);
+        let limits = text_limits();
+        let options = TextOptions {
+            drop_running: false,
+            markdown: false,
+            merge_across_pages: false,
+        };
+        let request = PageRequest::First(2);
+        let eager = document_text(&bytes, request, &limits, options).unwrap();
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 0,
+                probe: 64,
+                round_bytes: 4096,
+            },
+        );
+        for _ in 0_i32..64_i32 {
+            match lazy.plan_with_recovery(request, false, &limits, false) {
+                Plan::Need(ranges) | Plan::Full(ranges) if !ranges.is_empty() => {
+                    for range in ranges {
+                        assert!(lazy.feed(range.start, &bytes[range.clone()]));
+                    }
+                }
+                Plan::Ready => {
+                    let lazy_text = lazy
+                        .execute(&limits, |opened, pages| {
+                            opened_text(opened, pages, &limits, options)
+                        })
+                        .unwrap();
+                    if let Some(pages) = lazy_text {
+                        assert_eq!(pages, eager);
+                        return;
+                    }
+                }
+                Plan::Full(_) | Plan::Fallback => return,
+                Plan::Need(_) | Plan::Failed(_) => panic!("unexpected lazy plan"),
+            }
+        }
+        panic!("lazy plan did not settle");
     }
 }

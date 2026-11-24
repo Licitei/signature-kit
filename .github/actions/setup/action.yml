@@ -1,0 +1,47 @@
+name: Set up workspace
+description: Installs Bun and dependencies and restores the cached pdf-core wasm, building it only on a cache miss.
+
+inputs:
+  wasm:
+    description: Restore pdf-core.wasm from the content-addressed cache so `bun run build` skips the Rust build.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.3
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Compute pdf-core wasm key
+      if: inputs.wasm == 'true'
+      id: wasm-key
+      shell: bash
+      run: |
+        echo "key=$(bash shared/pdf-core/scripts/build-wasm-cached.sh --key)" >> "$GITHUB_OUTPUT"
+        echo "PDF_CORE_WASM_CACHE=$HOME/.cache/pdf-core-wasm" >> "$GITHUB_ENV"
+
+    - name: Restore pdf-core wasm
+      if: inputs.wasm == 'true'
+      id: wasm-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pdf-core-wasm
+        key: pdf-core-wasm-${{ steps.wasm-key.outputs.key }}
+
+    - name: Set up Rust for the wasm build
+      if: inputs.wasm == 'true' && steps.wasm-cache.outputs.cache-hit != 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Install the pinned Rust toolchain
+      if: inputs.wasm == 'true' && steps.wasm-cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: shared/pdf-core/rust
+      run: rustup toolchain install --no-self-update

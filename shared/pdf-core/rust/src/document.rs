@@ -5,6 +5,7 @@ use crate::text::Session;
 use crate::text::{Capture, Reposition, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
+use core::mem;
 use std::collections::{HashMap, HashSet};
 
 use crate::encryption::Encryption;
@@ -18,6 +19,7 @@ use crate::syntax::{
     read_unsigned, skip_whitespace_at,
 };
 
+const EXACT_APPEND_BYTES: usize = 1 << 20;
 const HEADER_PROBE: usize = 1024;
 pub(crate) const STARTXREF_PROBE: usize = 4096;
 pub(crate) const MAX_SECTIONS: usize = 4096;
@@ -120,6 +122,9 @@ impl PageRequest<Vec<u32>> {
         }
     }
 }
+
+type PageVisitor<'visit> =
+    dyn FnMut(usize, Option<ObjRef>, &Dict, &Inherited) -> Outcome<()> + 'visit;
 
 #[derive(Clone, Default)]
 struct Inherited {
@@ -251,7 +256,7 @@ impl<'data> Document<'data> {
             let Object::Stream(stream) = object else {
                 return Ok(());
             };
-            let Some(data) = lenient(self.stream_data(stream))? else {
+            let Some(mut data) = lenient(self.stream_data(stream))? else {
                 return Ok(());
             };
             if out.is_empty() {
@@ -261,10 +266,26 @@ impl<'data> Document<'data> {
                 out = data;
                 return Ok(());
             }
-            out.push(b'\n');
-            if out.len().saturating_add(data.len()) > max {
+            let extra = data.len().saturating_add(1);
+            if out.len().saturating_add(extra) > max {
                 return Err(Failure::limit("page content exceeds limit"));
             }
+            if data.len() > out.len() {
+                mem::swap(&mut out, &mut data);
+                data.push(b'\n');
+                out.reserve_exact(data.len());
+                let end = out.len();
+                out.resize(end.saturating_add(data.len()), 0);
+                out.copy_within(..end, data.len());
+                if let Some(front) = out.get_mut(..data.len()) {
+                    front.copy_from_slice(&data);
+                }
+                return Ok(());
+            }
+            if out.len() >= EXACT_APPEND_BYTES {
+                out.reserve_exact(extra.max(out.len() >> 5_i32));
+            }
+            out.push(b'\n');
             out.extend_from_slice(&data);
             Ok(())
         };
@@ -307,13 +328,21 @@ impl<'data> Document<'data> {
     }
 
     pub(crate) fn follow(&self, object: &Object) -> Outcome<Rc<Object>> {
+        self.follow_with(object, true)
+    }
+
+    pub(crate) fn follow_transient(&self, object: &Object) -> Outcome<Rc<Object>> {
+        self.follow_with(object, false)
+    }
+
+    fn follow_with(&self, object: &Object, retain: bool) -> Outcome<Rc<Object>> {
         let Object::Ref(first) = object else {
             return Ok(Rc::new(object.clone()));
         };
-        let mut current = self.load(*first)?;
+        let mut current = self.load_with(*first, retain)?;
         for _ in 0..MAX_REF_CHAIN {
             if let &Object::Ref(next) = &*current {
-                current = self.load(next)?;
+                current = self.load_with(next, retain)?;
             } else {
                 return Ok(current);
             }
@@ -398,7 +427,7 @@ impl<'data> Document<'data> {
         let Some(action) = dict.get(b"A") else {
             return Ok(None);
         };
-        let Some(resolved_action) = lenient(self.follow(action))? else {
+        let Some(resolved_action) = lenient(self.follow_transient(action))? else {
             return Ok(None);
         };
         let Some(action_dict) = resolved_action.as_dict() else {
@@ -428,44 +457,7 @@ impl<'data> Document<'data> {
     }
 
     pub(crate) fn load(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
-        let index = widen(reference.number);
-        let cache = &self.cache().objects;
-        if let Some(hit) = cache.borrow().get(index).and_then(Clone::clone) {
-            return Ok(hit);
-        }
-        let before = self.pending_reads();
-        let loaded = match self.entry(reference.number) {
-            Entry::Unset | Entry::Free => return Ok(Rc::new(Object::Null)),
-            Entry::Offset(offset) => self.load_at(reference.number, offset),
-            Entry::Compressed {
-                stream,
-                index: position,
-            } => self.load_compressed(reference.number, stream, position),
-        };
-        if self.pending_reads() != before {
-            return Ok(Rc::new(Object::Null));
-        }
-        match loaded {
-            Ok(object) => {
-                let shared_object = Rc::new(object);
-                if let Some(slot) = cache.borrow_mut().get_mut(index) {
-                    *slot = Some(Rc::clone(&shared_object));
-                }
-                Ok(shared_object)
-            }
-            Err(failure)
-                if matches!(
-                    failure.code,
-                    FailureCode::LimitExceeded | FailureCode::EncryptedPdf
-                ) || self.repaired.get() =>
-            {
-                Err(failure)
-            }
-            Err(_) => {
-                self.rebuild()?;
-                self.load(reference)
-            }
-        }
+        self.load_with(reference, true)
     }
 
     fn load_at(&self, number: u32, offset: usize) -> Outcome<Object> {
@@ -516,6 +508,51 @@ impl<'data> Document<'data> {
             .checked_add(relative)
             .ok_or_else(|| Failure::invalid("object stream offset overflow"))?;
         Parser::new(&object_stream.data, start, self.limits.max_nesting, true).parse_object()
+    }
+
+    pub(crate) fn load_transient(&self, reference: ObjRef) -> Outcome<Rc<Object>> {
+        self.load_with(reference, false)
+    }
+
+    fn load_with(&self, reference: ObjRef, retain: bool) -> Outcome<Rc<Object>> {
+        let index = widen(reference.number);
+        let cache = &self.cache().objects;
+        if let Some(hit) = cache.borrow().get(index).and_then(Clone::clone) {
+            return Ok(hit);
+        }
+        let before = self.pending_reads();
+        let loaded = match self.entry(reference.number) {
+            Entry::Unset | Entry::Free => return Ok(Rc::new(Object::Null)),
+            Entry::Offset(offset) => self.load_at(reference.number, offset),
+            Entry::Compressed {
+                stream,
+                index: position,
+            } => self.load_compressed(reference.number, stream, position),
+        };
+        if self.pending_reads() != before {
+            return Ok(Rc::new(Object::Null));
+        }
+        match loaded {
+            Ok(object) => {
+                let shared_object = Rc::new(object);
+                if retain && let Some(slot) = cache.borrow_mut().get_mut(index) {
+                    *slot = Some(Rc::clone(&shared_object));
+                }
+                Ok(shared_object)
+            }
+            Err(failure)
+                if matches!(
+                    failure.code,
+                    FailureCode::LimitExceeded | FailureCode::EncryptedPdf
+                ) || self.repaired.get() =>
+            {
+                Err(failure)
+            }
+            Err(_) => {
+                self.rebuild()?;
+                self.load_with(reference, retain)
+            }
+        }
     }
 
     fn new(bytes: &'data [u8], limits: &Limits) -> Self {
@@ -621,9 +658,11 @@ impl<'data> Document<'data> {
     fn page(&self, obj_ref: Option<ObjRef>, dict: &Dict, inherited: &Inherited) -> Outcome<Page> {
         let merged = inherited.merged(dict);
         let resources = match &merged.resources {
-            Some(object) => lenient(self.follow(object))?.filter(|value| value.as_dict().is_some()),
+            Some(object) if object.is_ref() => lenient(self.follow(object))?,
+            Some(object) => Some(Rc::clone(object)),
             None => None,
         }
+        .filter(|value| value.as_dict().is_some())
         .unwrap_or_else(|| Rc::new(Object::Dict(Dict::default())));
         let resources_ref = match merged.resources.as_deref() {
             Some(Object::Ref(reference)) => Some(*reference),
@@ -680,14 +719,14 @@ impl<'data> Document<'data> {
         let Some(annots) = page.dict.get(b"Annots") else {
             return Ok(());
         };
-        let Some(resolved_annots) = lenient(self.follow(annots))? else {
+        let Some(resolved_annots) = lenient(self.follow_transient(annots))? else {
             return Ok(());
         };
         let Some(items) = resolved_annots.as_array() else {
             return Ok(());
         };
         for item in items {
-            let Some(annotation) = lenient(self.follow(item))? else {
+            let Some(annotation) = lenient(self.follow_transient(item))? else {
                 continue;
             };
             let Some(dict) = annotation.as_dict() else {
@@ -721,7 +760,7 @@ impl<'data> Document<'data> {
             && !self.repaired.get()
             && self.rebuild().is_ok()
         {
-            let _: usize = self.walk_pages(None, collect)?;
+            let _: usize = self.walk_pages(None, &mut collect)?;
         }
         Ok(pages)
     }
@@ -1019,7 +1058,7 @@ impl<'data> Document<'data> {
         stop_after: Option<usize>,
     ) -> Outcome<(usize, Vec<(usize, Page)>)> {
         let mut chosen: HashMap<_, _> = indexes.iter().map(|&index| (widen(index), None)).collect();
-        let count = self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
             if let Some(page) = chosen.get_mut(&index) {
                 *page = Some(self.page(obj_ref, dict, inherited)?);
             }
@@ -1306,11 +1345,7 @@ impl<'data> Document<'data> {
         self.pending_reads() != 0
     }
 
-    fn walk_pages(
-        &self,
-        stop_after: Option<usize>,
-        mut visit: impl FnMut(usize, Option<ObjRef>, &Dict, &Inherited) -> Outcome<()>,
-    ) -> Outcome<usize> {
+    fn walk_pages(&self, stop_after: Option<usize>, visit: &mut PageVisitor<'_>) -> Outcome<usize> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
@@ -1337,7 +1372,7 @@ impl<'data> Document<'data> {
             if visited.len() > self.limits.max_objects {
                 return Err(Failure::limit("page tree too large"));
             }
-            let Some(resolved) = lenient(self.follow(&node))? else {
+            let Some(resolved) = lenient(self.follow_transient(&node))? else {
                 continue;
             };
             if stop_after.is_some() && self.waiting() {
@@ -1351,7 +1386,8 @@ impl<'data> Document<'data> {
             };
             let kids = match dict.get(b"Kids") {
                 Some(kids) if !name_is(dict, b"Type", b"Page") => {
-                    lenient(self.follow(kids))?.filter(|inner_kids| inner_kids.as_array().is_some())
+                    lenient(self.follow_transient(kids))?
+                        .filter(|inner_kids| inner_kids.as_array().is_some())
                 }
                 _ => None,
             };
@@ -1399,7 +1435,7 @@ impl<'data> Document<'data> {
             return self.requested_pages(indexes, stop_after);
         }
         let mut pages = Vec::new();
-        let count = self.walk_pages(stop_after, |index, obj_ref, dict, inherited| {
+        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
             if stop_after.is_none_or(|limit| index < limit) {
                 pages.push((index, self.page(obj_ref, dict, inherited)?));
             }
@@ -1410,6 +1446,22 @@ impl<'data> Document<'data> {
 
     pub(crate) const fn was_repaired(&self) -> bool {
         self.repaired.get()
+    }
+}
+
+pub(crate) struct Transient<'doc, 'data>(pub(crate) &'doc Document<'data>);
+
+impl Resolver for Transient<'_, '_> {
+    fn resolve(&self, object: &Object) -> Outcome<Rc<Object>> {
+        self.0.follow_transient(object)
+    }
+
+    fn stream_data(&self, stream: &Stream) -> Outcome<Vec<u8>> {
+        self.0.stream_data(stream)
+    }
+
+    fn stream_prefix(&self, stream: &Stream, len: usize) -> Outcome<Vec<u8>> {
+        self.0.stream_prefix(stream, len)
     }
 }
 
@@ -1712,9 +1764,6 @@ pub(crate) fn inspect(
     options: &InspectOptions,
     limits: &Limits,
 ) -> Outcome<Inspection> {
-    if bytes.len() > limits.max_pdf_bytes {
-        return Err(Failure::limit("pdf exceeds size limit"));
-    }
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let mut inspection = Inspection {
@@ -2380,6 +2429,37 @@ mod tests {
         let pages = document.pages().unwrap();
         assert_eq!(document.content(&pages[0]).unwrap(), b"q\nQ");
         assert_exact(&pages[0].info.media_box, &DEFAULT_MEDIA_BOX);
+    }
+
+    #[test]
+    fn contents_array_keeps_order_when_a_later_part_is_larger() {
+        let big = "0 0 m 1 1 l S\n".repeat(20_000);
+        let layouts = [
+            ("[4 0 R 5 0 R 6 0 R]", format!("q\n{big}\nQ")),
+            ("[5 0 R 4 0 R]", format!("{big}\nq")),
+            ("[4 0 R 5 0 R]", format!("q\n{big}")),
+        ];
+        for (contents, expected) in layouts {
+            let objects = vec![
+                (1, CATALOG.to_owned()),
+                (2, PAGES.to_owned()),
+                (
+                    3,
+                    format!("<< /Type /Page /Parent 2 0 R /Contents {contents} >>"),
+                ),
+                (4, stream_object("", "q")),
+                (5, stream_object("", &big)),
+                (6, stream_object("", "Q")),
+            ];
+            let bytes = build_classic(&objects, "", 0).bytes;
+            let document = open(&bytes);
+            let pages = document.pages().unwrap();
+            assert_eq!(
+                document.content(&pages[0]).unwrap(),
+                expected.as_bytes(),
+                "{contents}"
+            );
+        }
     }
 
     #[test]

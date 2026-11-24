@@ -5,6 +5,7 @@ mod ccitt;
 mod cff;
 mod cmap;
 mod color;
+mod columns;
 mod deflate;
 mod diagnostics;
 mod display;
@@ -41,3 +42,6 @@ mod write;
 mod fixture_corpus;
 #[cfg(test)]
 mod test_pdf;
+
+#[cfg(fuzzing)]
+pub mod fuzzing;
