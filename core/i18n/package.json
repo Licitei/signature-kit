@@ -32,8 +32,8 @@
     "effect": "4.1.0"
   },
   "devDependencies": {
-    "@signature-kit/crypto": "^0.2.1",
-    "@signature-kit/signatures": "^0.3.0"
+    "@signature-kit/crypto": "^0.3.0",
+    "@signature-kit/signatures": "^0.4.0"
   },
   "nx": {
     "implicitDependencies": [

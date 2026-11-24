@@ -1,109 +1,118 @@
 core:changelogs:
-  - content: "---\npackages:\n  \"@signature-kit/certificates\":\n    type: patch\n  \"@signature-kit/http\":\n    type: patch\n  \"@signature-kit/i18n\":\n    type: patch\n  \"@signature-kit/signatures\":\n    type: patch\n  \"@signature-kit/asn1\":\n    type: patch\n  \"@signature-kit/cms\":\n    type: patch\n  \"@signature-kit/crypto\":\n    type: patch\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/a1\":\n    type: patch\n  \"@signature-kit/assinafy\":\n    type: patch\n  \"@signature-kit/clicksign\":\n    type: patch\n  \"@signature-kit/documenso\":\n    type: patch\n  \"@signature-kit/docuseal\":\n    type: patch\n  \"@signature-kit/zapsign\":\n    type: patch\n  \"@signature-kit/pdf\":\n    type: patch\n  \"@signature-kit/react\":\n    type: patch\n  \"@signature-kit/xml\":\n    type: patch\n  \"@signature-kit/iti\":\n    type: patch\n---\n\n## Faster selected-page and Markdown PDF extraction\n\nThe PDF core opens selected pages without materializing the whole page tree, defers unused XObjects, and accepts complete streams before the next cross-reference offset. Markdown rendering reuses buffers and the number parser uses bounded accumulation for common operands. Page resources share the resolved dictionary across readers, and the JavaScript bindings share result-block validation and disposal.\n\nThe pdf-core README documents the procurement corpus results, evidence audit, Wasm size, and an isolated benchmark against LiteParse and PDF Inspector. This release also refreshes all public SignatureKit packages.\n"
-    filename: pdf-extraction-performance.md
+  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: minor\n  \"@signature-kit/http\":\n    type: minor\n  \"@signature-kit/signatures\":\n    type: minor\n  \"@signature-kit/certificates\":\n    type: minor\n  \"@signature-kit/crypto\":\n    type: minor\n  \"@signature-kit/cms\":\n    type: minor\n  \"@signature-kit/a1\":\n    type: minor\n  \"@signature-kit/assinafy\":\n    type: minor\n  \"@signature-kit/clicksign\":\n    type: minor\n  \"@signature-kit/documenso\":\n    type: minor\n  \"@signature-kit/docuseal\":\n    type: minor\n  \"@signature-kit/zapsign\":\n    type: minor\n  \"@signature-kit/pdf\":\n    type: minor\n  \"@signature-kit/react\":\n    type: minor\n  \"@signature-kit/xml\":\n    type: minor\n  \"@signature-kit/iti\":\n    type: minor\n---\n\n## OpenTelemetry spans for every public operation\n\nPublic operations now run inside named Effect spans, for example `pdfCore.text`, `pdf.sign`, `crypto.pkcs12.parse` and `assinafy.reconcile`. PDF core calls split into `pdfCore.wasm.copyIn`, `pdfCore.wasm.run` and `pdfCore.wasm.decode`. HTTP calls are client spans with method, status and server attributes. Attributes record sizes, counts and algorithm or status literals, never document content, certificate identity, secrets or URLs with paths. No new runtime dependency: provide `@effect/opentelemetry` at the app boundary to export spans. See the OpenTelemetry tracing recipe.\n"
+    filename: opentelemetry-tracing.md
+    v: 0.0.0
+  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: patch\n  \"@signature-kit/pdf\":\n    type: patch\n---\n\n## Sign already-signed PDFs with trailing bytes, and name damaged ones\n\nAlready-signed PDFs are stamped and signed through incremental updates so earlier signatures stay valid. When such a file had bytes after its final `%%EOF` (a download footer, for example), stamping failed with `pdf.STAMP_FAILED` and the reason `incremental update needs an intact cross-reference chain`. `PdfCore.edit` in incremental mode now drops the bytes after the final `%%EOF`, which no signature covers, and appends the update to the intact revision, so the earlier signatures stay valid.\n\nSigned files whose cross-reference chain is damaged in other ways still cannot take an incremental update without invalidating their signatures. They now fail with `pdfCore.DAMAGED_XREF`, whose reason says what is wrong: bytes before the `%PDF` header, no `startxref`, a cross-reference table that had to be rebuilt, or an incomplete revision. Stamping and placeholder insertion report these failures as `pdf.DAMAGED_SIGNED_PDF`, with a message that asks the user to download the document again from its original source, instead of `pdf.STAMP_FAILED` or `pdf.INVALID_PDF`.\n"
+    filename: damaged-signed-pdf.md
+    v: 0.0.0
+  - content: "---\npackages:\n  \"@signature-kit/pdf-core\":\n    type: patch\n---\n\n## Column-aware reading order and text flow\n\n`text` and Markdown now split each page into column regions at prose and index gutters before building lines, tables and blocks. Two-column papers read the whole left column before the right one, tight 3–4 column layouts (gutters of about 1 em) read column by column, and prose columns no longer turn into borderless tables. Footnotes at the bottom of a column move to the end of the page, superscript footnote markers stay with their text, and page continuations skip footnotes, captions and tables. End-of-line hyphens are joined with a document-vocabulary rule that keeps real compounds.\n"
+    filename: pdf-core-reading-order.md
     v: 0.0.0
 core:packages:
   - id: npm:signature-kit
     updated: false
-  - id: npm:@signature-kit/docs
-    updated: true
   - id: npm:@signature-kit/signing-domain
     updated: false
   - changelogIds:
-      - pdf-extraction-performance.md
+      - opentelemetry-tracing.md
     id: npm:@signature-kit/certificates
     updated: true
   - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/i18n
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
+      - opentelemetry-tracing.md
     id: npm:@signature-kit/http
     updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/signatures
+  - id: npm:@signature-kit/docs
     updated: true
+  - id: npm:@signature-kit/i18n
+    updated: false
   - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/react
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
+      - damaged-signed-pdf.md
+      - opentelemetry-tracing.md
     id: npm:@signature-kit/pdf
     updated: true
   - changelogIds:
-      - pdf-extraction-performance.md
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/signatures
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
     id: npm:@signature-kit/xml
     updated: true
+  - id: npm:@signature-kit/asn1
+    updated: false
   - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/asn1
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/react
     updated: true
   - changelogIds:
-      - pdf-extraction-performance.md
+      - opentelemetry-tracing.md
     id: npm:@signature-kit/cms
     updated: true
   - changelogIds:
-      - pdf-extraction-performance.md
+      - opentelemetry-tracing.md
     id: npm:@signature-kit/crypto
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/pdf-core
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/a1
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/assinafy
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/clicksign
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/documenso
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/docuseal
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/zapsign
-    updated: true
-  - changelogIds:
-      - pdf-extraction-performance.md
-    id: npm:@signature-kit/iti
     updated: true
   - id: npm:@tooling/oxc
     updated: false
   - id: npm:@tooling/integration-tests
     updated: true
+  - changelogIds:
+      - damaged-signed-pdf.md
+      - opentelemetry-tracing.md
+      - pdf-core-reading-order.md
+    id: npm:@signature-kit/pdf-core
+    updated: true
   - id: npm:@tooling/static-checks
     updated: false
   - id: npm:@tooling/typescript
     updated: false
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/a1
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/assinafy
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/clicksign
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/documenso
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/docuseal
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/zapsign
+    updated: true
+  - changelogIds:
+      - opentelemetry-tracing.md
+    id: npm:@signature-kit/iti
+    updated: true
 npm:packages:
   - id: npm:signature-kit
-  - id: npm:@signature-kit/docs
   - id: npm:@signature-kit/signing-domain
   - id: npm:@signature-kit/certificates
-  - id: npm:@signature-kit/i18n
   - id: npm:@signature-kit/http
-  - id: npm:@signature-kit/signatures
-  - id: npm:@signature-kit/react
+  - id: npm:@signature-kit/docs
+  - id: npm:@signature-kit/i18n
   - id: npm:@signature-kit/pdf
+  - id: npm:@signature-kit/signatures
   - id: npm:@signature-kit/xml
   - id: npm:@signature-kit/asn1
+  - id: npm:@signature-kit/react
   - id: npm:@signature-kit/cms
   - id: npm:@signature-kit/crypto
+  - id: npm:@tooling/oxc
+  - id: npm:@tooling/integration-tests
   - id: npm:@signature-kit/pdf-core
+  - id: npm:@tooling/static-checks
+  - id: npm:@tooling/typescript
   - id: npm:@signature-kit/a1
   - id: npm:@signature-kit/assinafy
   - id: npm:@signature-kit/clicksign
@@ -111,7 +120,3 @@ npm:packages:
   - id: npm:@signature-kit/docuseal
   - id: npm:@signature-kit/zapsign
   - id: npm:@signature-kit/iti
-  - id: npm:@tooling/oxc
-  - id: npm:@tooling/integration-tests
-  - id: npm:@tooling/static-checks
-  - id: npm:@tooling/typescript

@@ -1,6 +1,6 @@
 {
   "name": "@signature-kit/react",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -41,11 +41,11 @@
   },
   "dependencies": {
     "@effect/platform-browser": "4.1.0",
-    "@signature-kit/a1": "^0.4.0",
-    "@signature-kit/cms": "^0.2.1",
-    "@signature-kit/pdf": "^0.6.0",
-    "@signature-kit/pdf-core": "^0.3.0",
-    "@signature-kit/signatures": "^0.3.0",
+    "@signature-kit/a1": "^0.5.0",
+    "@signature-kit/cms": "^0.3.0",
+    "@signature-kit/pdf": "^0.7.0",
+    "@signature-kit/pdf-core": "^0.4.0",
+    "@signature-kit/signatures": "^0.4.0",
     "effect": "4.1.0"
   },
   "devDependencies": {

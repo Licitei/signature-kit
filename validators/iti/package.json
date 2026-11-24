@@ -1,6 +1,6 @@
 {
   "name": "@signature-kit/iti",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -33,17 +33,17 @@
   "dependencies": {
     "@peculiar/asn1-ess": "2.11.0",
     "@peculiar/asn1-schema": "2.11.0",
-    "@signature-kit/cms": "^0.2.1",
-    "@signature-kit/http": "^0.1.0",
-    "@signature-kit/pdf": "^0.6.0",
-    "@signature-kit/pdf-core": "^0.3.0",
-    "@signature-kit/signatures": "^0.3.0",
+    "@signature-kit/cms": "^0.3.0",
+    "@signature-kit/http": "^0.2.0",
+    "@signature-kit/pdf": "^0.7.0",
+    "@signature-kit/pdf-core": "^0.4.0",
+    "@signature-kit/signatures": "^0.4.0",
     "asn1js": "4.0.0",
     "effect": "4.1.0",
     "pkijs": "3.4.3"
   },
   "devDependencies": {
-    "@signature-kit/a1": "^0.4.0"
+    "@signature-kit/a1": "^0.5.0"
   },
   "nx": {
     "implicitDependencies": [
