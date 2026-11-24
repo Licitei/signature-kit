@@ -628,7 +628,13 @@ pub(crate) fn unfilter_row(filter: u8, row: &mut [u8], prior: Option<&[u8]>, pix
             }
         }
         (2, Some(up_row)) => {
-            for (cell, &up) in row.iter_mut().zip(up_row) {
+            let (cells, cell_tail) = row.as_chunks_mut::<8>();
+            let (ups, up_tail) = up_row.as_chunks::<8>();
+            for (cell, up) in cells.iter_mut().zip(ups) {
+                let sum = add_bytes(u64::from_le_bytes(*cell), u64::from_le_bytes(*up));
+                *cell = sum.to_le_bytes();
+            }
+            for (cell, &up) in cell_tail.iter_mut().zip(up_tail) {
                 *cell = cell.wrapping_add(up);
             }
         }
@@ -675,6 +681,11 @@ pub(crate) fn paeth_filter(filter: u8, raw: u8, left: u8, up: u8, up_left: u8) -
         _ => 0,
     };
     raw.wrapping_add(pred)
+}
+
+const fn add_bytes(left: u64, right: u64) -> u64 {
+    let low = (left & 0x7f7f_7f7f_7f7f_7f7f).wrapping_add(right & 0x7f7f_7f7f_7f7f_7f7f);
+    low ^ ((left ^ right) & 0x8080_8080_8080_8080)
 }
 
 fn avg(left: u8, up: u8) -> u8 {
@@ -1084,6 +1095,17 @@ mod properties {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1_000))]
+
+        #[test]
+        fn byte_lanes_add_without_carrying_across_lanes(left in any::<u64>(), right in any::<u64>()) {
+            let expected: Vec<u8> = left
+                .to_le_bytes()
+                .iter()
+                .zip(right.to_le_bytes())
+                .map(|(byte, other)| byte.wrapping_add(other))
+                .collect();
+            prop_assert_eq!(add_bytes(left, right).to_le_bytes().to_vec(), expected);
+        }
 
         #[test]
         fn png_predictors_invert_png_filtering(
