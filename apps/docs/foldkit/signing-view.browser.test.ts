@@ -94,7 +94,7 @@ it("signs a selected PDF after a wrong password and revokes its download on unmo
               form.requestSubmit();
               return app.host.querySelector("[data-status]")?.textContent;
             })
-            .toBe("Selecione o certificado, a senha e de 1 a 100 PDFs."),
+            .toBe("Escolha o certificado, digite a senha e adicione de 1 a 100 PDFs."),
         );
         const certificateFiles = new DataTransfer();
         certificateFiles.items.add(new File([new Uint8Array(pfx)], "certificate.p12"));
@@ -359,7 +359,7 @@ it("cancels and retries a real signing flow and disposes during another active f
         yield* Effect.promise(() =>
           expect
             .poll(() => app.host.querySelector("[data-status]")?.textContent, { timeout: 30000 })
-            .toBe("Operação cancelada."),
+            .toBe("Assinatura cancelada."),
         );
         expect(app.host.querySelector("[data-downloads] a")).toBeNull();
         documentInput.dispatchEvent(new Event("change", { bubbles: true }));
@@ -532,7 +532,7 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
               },
               { timeout: 30000 },
             )
-            .toBe("Selecione o certificado, a senha e de 1 a 100 PDFs."),
+            .toBe("Escolha o certificado, digite a senha e adicione de 1 a 100 PDFs."),
         );
         expect(doc.body.inert).toBe(false);
         expect(doc.querySelector("form:has([name=pfx])")).toBe(
@@ -661,7 +661,7 @@ it("requires a placement for every loaded document and automatically places both
         input.dispatchEvent(new Event("change", { bubbles: true }));
         form.requestSubmit();
         expect(app.host.querySelector("[data-status]")?.textContent).toBe(
-          "Carregue a identidade do certificado.",
+          "Clique em Carregar para ler o certificado.",
         );
         loadIdentity.click();
         yield* Effect.promise(() =>
@@ -685,7 +685,7 @@ it("requires a placement for every loaded document and automatically places both
         );
         form.requestSubmit();
         expect(app.host.querySelector("[data-status]")?.textContent).toBe(
-          "Aguarde os PDFs e posicione a assinatura em cada documento.",
+          "Aguarde o carregamento dos PDFs e posicione a assinatura em cada um.",
         );
         auto.click();
         yield* Effect.promise(() =>
@@ -963,7 +963,7 @@ it("blocks signing after a PDF preview fails", async () => {
         );
         form.requestSubmit();
         expect(app.host.querySelector("[data-status]")?.textContent).toBe(
-          "Aguarde os PDFs e posicione a assinatura em cada documento.",
+          "Aguarde o carregamento dos PDFs e posicione a assinatura em cada um.",
         );
         expect(app.host.querySelector("[data-downloads] a")).toBeNull();
       }),
@@ -989,7 +989,7 @@ it("rejects invalid logo PNG data and clears the selection on removal", async ()
         yield* Effect.promise(() =>
           expect
             .poll(() => app.host.querySelector("[data-status]")?.textContent)
-            .toBe("Selecione um PNG válido."),
+            .toBe("Escolha uma imagem PNG válida."),
         );
         remove.click();
         expect(input.files?.length).toBe(0);

@@ -1,13 +1,13 @@
 ---
-title: Publicar o A1 com imports resolvíveis pelo Node
+title: A1 carrega no ESM nativo do Node
 date: 2026-11-06T17:46:39.022Z
 packages:
   "@signature-kit/a1":
     version: 0.4.0
 ---
 
-## Publicar o A1 com imports resolvíveis pelo Node
+## A1 carrega no ESM nativo do Node
 
-Publicamos os imports relativos totalmente especificados que já estavam no código-fonte, para que `@signature-kit/a1/signer` carregue no ESM nativo do Node em vez de falhar com `ERR_MODULE_NOT_FOUND`.
+O pacote publicado agora traz os imports relativos com o caminho completo, como já estavam no código-fonte. Com isso, `@signature-kit/a1/signer` carrega no ESM nativo do Node em vez de falhar com `ERR_MODULE_NOT_FOUND`.
 
-Esta versão também remove o serviço `A1Signer` e o `a1SignerLayer`, que não eram usados; use `a1SignaturesLayer` ou `loadA1SignerAdapter`.
+Esta versão também remove o serviço `A1Signer` e o `a1SignerLayer`, que não eram usados. Use `a1SignaturesLayer` ou `loadA1SignerAdapter`.

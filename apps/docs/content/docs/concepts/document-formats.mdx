@@ -1,18 +1,18 @@
 ---
 title: Formatos de documento
-description: "Pacotes PDF e XML possuem a mutação de documento enquanto compartilham a mesma capability de assinatura."
+description: "Os pacotes de PDF e XML alteram o documento e pedem a assinatura dos bytes ao serviço Signatures."
 ---
 
-Um pacote de formato decide onde os bytes entram. PDF possui retângulos visíveis, placeholders PAdES, byte ranges e política de validação. XML possui canonicalização, transforms, referências e posicionamento XML-DSig. Ambos consomem `Signatures`; nenhum possui o backend de assinatura.
+O pacote de formato decide onde os bytes da assinatura entram no documento. O de PDF cuida de retângulos visíveis, placeholders PAdES, byte ranges e política de assinatura. O de XML cuida de canonicalização, transforms, referências e posição do elemento XML-DSig. Os dois consomem `Signatures` e nenhum deles implementa o backend de assinatura.
 
 ## Responsabilidades do formato
 
 - Ler ou preparar o documento.
 - Derivar os bytes que precisam ser assinados.
-- Pedir para `Signatures` assinar esses bytes.
-- Embutir o artefato de volta no documento.
+- Pedir ao serviço `Signatures` que assine esses bytes.
+- Embutir a assinatura de volta no documento.
 
 <Cards>
-  <Card title="PDF / PAdES" href="/docs/signing/pdf">Retângulos visíveis, políticas e bytes PDF assinados.</Card>
-  <Card title="XML-DSig" href="/docs/signing/xml">Referências, canonicalização e mutação XML.</Card>
+  <Card title="PDF/PAdES" href="/docs/signing/pdf">Retângulos visíveis, políticas e bytes de PDF assinados.</Card>
+  <Card title="XML-DSig" href="/docs/signing/xml">Referências, canonicalização e alteração do XML.</Card>
 </Cards>

@@ -352,7 +352,9 @@ it("generates, marks, navigates, resets and downloads four illustrative PDFs wit
             .poll(() => host.querySelector("[data-demo-status]")?.textContent, { timeout: 30000 })
             .toContain("Exemplos prontos"),
         );
-        expect(host.querySelector(".home-demo")?.textContent).toContain("não é assinatura digital");
+        expect(host.querySelector(".home-demo")?.textContent).toContain(
+          "não é uma assinatura digital",
+        );
         const run = host.querySelector<HTMLButtonElement>("[data-demo-run]");
         const next = host.querySelector<HTMLButtonElement>("[data-demo-next]");
         const reset = host.querySelector<HTMLButtonElement>("[data-demo-reset]");

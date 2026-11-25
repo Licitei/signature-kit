@@ -1,15 +1,15 @@
 ---
 title: Certificados A1
-description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ), inspecione o certificado completo e verifique a validade e os campos ICP-Brasil."
+description: "Leia a identidade do titular de um A1 (e-CPF ou e-CNPJ), inspecione o certificado completo e confira a validade e os campos ICP-Brasil."
 ---
 
-**O que você vai fazer:** ler a identidade do titular de um certificado A1 (e-CPF ou e-CNPJ), inspecionar o certificado completo e checar a validade e os campos ICP-Brasil. Um A1 é um arquivo PKCS#12 (`.pfx`/`.p12`) carregado pelo `@signature-kit/a1`; o runtime expõe duas leituras independentes do material de assinatura.
+Um certificado A1 é um arquivo PKCS#12 (`.pfx`/`.p12`) carregado pelo `@signature-kit/a1`. Depois de carregado, o serviço `Signatures` oferece duas leituras: a identidade resumida do titular e o certificado completo.
 
 <Steps>
   <Step title="Leia a identidade">
     ### Leia a identidade
 
-    `signatures.inspect()` retorna um `Effect<SignerIdentity, SignatureKitError>` com os campos essenciais do titular — a leitura barata: subject, issuer, número de série, thumbprint, janela de validade e o `document` opcional. Forneça uma layer `Signatures` (aqui `a1SignaturesLayer`) para que o accessor consiga resolver o material carregado.
+    `signatures.inspect()` retorna um `Effect<SignerIdentity, SignatureKitError, Signatures>` com o essencial do titular: subject, emissor, número de série, thumbprint, período de validade e o `document` opcional. Forneça uma layer de `Signatures` (aqui, `a1SignaturesLayer`) para que a chamada encontre o certificado carregado.
 
     ```ts title="read-identity.ts"
     import { a1SignaturesLayer } from "@signature-kit/a1/signer"
@@ -25,12 +25,12 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
       const identity = yield* signatures.inspect()
 
       console.log(identity.subject)       // titular do certificado
-      console.log(identity.issuer)        // AC emissora (cadeia ICP-Brasil)
+      console.log(identity.issuer)        // AC emissora
       console.log(identity.serialNumber)  // número de série
-      console.log(identity.thumbprint)    // thumbprint
+      console.log(identity.thumbprint)    // SHA-256 do certificado
       console.log(identity.validFrom, identity.validTo)
 
-      // e-CPF -> CPF; e-CNPJ -> CNPJ; ausente se o OID não for reconhecido
+      // CNPJ quando existir; senão, CPF; ausente se nenhum for encontrado
       if (identity.document !== undefined) {
         console.log("document:", identity.document)
       }
@@ -38,15 +38,15 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
     ```
 
     <Callout type="info">
-      `document` só é preenchido quando o certificado carrega um OID
-      ICP-Brasil reconhecido (e-CPF ou e-CNPJ). Para outros perfis o campo fica ausente — sempre teste `!== undefined`.
+      `document` só é preenchido quando o certificado traz CPF ou CNPJ nos campos ICP-Brasil. Se houver os dois (caso
+      comum no e-CNPJ, que também carrega o CPF do responsável), vale o CNPJ. Teste sempre `!== undefined`.
     </Callout>
   </Step>
 
   <Step title="O tipo SignerIdentity">
     ### O tipo SignerIdentity
 
-    O formato exato do que `inspect` retorna. `validFrom` e `validTo` são `Date`; `document` é o único campo opcional.
+    O formato exato do retorno de `inspect`. `validFrom` e `validTo` são `Date`; `document` é o único campo opcional.
 
     ```ts title="signer-identity.ts"
     // retorno de signatures.inspect()
@@ -57,7 +57,7 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
       thumbprint: string
       validFrom: Date
       validTo: Date
-      document?: string   // CPF (e-CPF) ou CNPJ (e-CNPJ), quando reconhecido
+      document?: string   // CNPJ ou CPF, só dígitos
     }
     ```
   </Step>
@@ -65,38 +65,37 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
   <Step title="Inspecione o certificado">
     ### Inspecione o certificado
 
-    Quando você precisa de mais do que a identidade, `signatures.certificate()` retorna um `Effect<Certificate, SignatureKitError>` com o certificado inteiro: PEM, DER, chave pública, validade pré-computada (`isValid`), SANs e o bloco `brazilian` com os campos ICP-Brasil.
+    Quando a identidade não basta, `signatures.certificate()` retorna um `Effect<Certificate, SignatureKitError, Signatures>` com o certificado inteiro: PEM, DER, chave pública, a flag `isValid`, o SubjectAltName e o bloco `brazilian` com CPF e CNPJ.
 
-    <Callout type="error" title="Atenção">
-      o accessor é `signatures.certificate()` — a leitura completa no
-      mesmo serviço `Signatures` que `inspect()`. `privateKeyPem` é `Redacted<string>`:
-      nunca aparece em logs, `console.log`, ou `JSON.stringify`. Para obter o PEM, chame
-      `Redacted.value(...)` explicitamente, apenas na camada onde a chave é consumida.
+    <Callout type="warn" title="A chave privada é Redacted">
+      `privateKeyPem` é um `Redacted<string>` e não aparece em logs, `console.log` nem `JSON.stringify`. Chame
+      `Redacted.value(...)` apenas no ponto em que a chave é usada.
     </Callout>
 
     ```ts title="inspect.ts"
     import { signatures } from "@signature-kit/signatures"
     import { Effect, Redacted } from "effect"
 
-    // forneça o mesmo a1SignaturesLayer({ pfx, password }) acima
+    // forneça o mesmo a1SignaturesLayer({ pfx, password }) do passo anterior
     export const inspectCertificate = Effect.gen(function* () {
       const cert = yield* signatures.certificate()
 
-      console.log(cert.isValid)        // boolean já computado pela cadeia
-      console.log(cert.fingerprint)    // fingerprint SHA-256 (hex)
-      console.log(cert.subjectAltName) // subject alternative name (string | null)
-      console.log(cert.brazilian)      // { cnpj, cpf } — campos ICP-Brasil
+      console.log(cert.isValid)        // data atual dentro do período de validade
+      console.log(cert.fingerprint)    // SHA-256 em hexadecimal
+      console.log(cert.subjectAltName) // string | null
+      console.log(cert.brazilian)      // { cnpj, cpf }
 
-      // a chave privada é Redacted: não aparece em logs nem em JSON.stringify
-      const pem = Redacted.value(cert.privateKeyPem) // apenas no ponto de uso
+      const pem = Redacted.value(cert.privateKeyPem) // só no ponto de uso
     }).pipe(Effect.provide(layer))
     ```
+
+    `isValid` é calculado uma vez, quando o arquivo é lido, e só compara a data atual com o período de validade. Não indica confiança na cadeia nem situação de revogação.
   </Step>
 
   <Step title="O tipo Certificate">
     ### O tipo Certificate
 
-    O formato completo do que `signatures.certificate()` retorna. Note as três codificações do certificado (`certPem`, `certificateDer`, `publicKeyDer`) e a chave privada protegida por `Redacted`.
+    O formato completo do retorno de `signatures.certificate()`. O certificado aparece em três codificações (`certPem`, `certificateDer`, `publicKeyDer`), e a chave privada fica em `Redacted`.
 
     ```ts title="certificate.ts"
     // retorno de signatures.certificate()
@@ -124,9 +123,9 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
       brazilian: { cnpj: string | null; cpf: string | null }
       certPem: string
       certificateDer: Uint8Array
-      intermediateCertificates: readonly Uint8Array[]   // cadeia de CAs intermediárias, embutida pelo signPdf no SignedData da CMS
+      intermediateCertificates: readonly Uint8Array[]   // ACs intermediárias do .pfx; signPdf as inclui no CMS
       publicKeyDer: Uint8Array
-      privateKeyPem: Redacted<string>   // segredo, nunca impresso
+      privateKeyPem: Redacted<string>
     }
     ```
   </Step>
@@ -134,37 +133,27 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
   <Step title="Validade e ICP-Brasil">
     ### Validade e ICP-Brasil
 
-    Instale o pacote de baixo nível para trabalhar diretamente com PKCS#12/X.509:
+    Para trabalhar direto com PKCS#12 e X.509, instale o pacote de baixo nível:
 
     ```package-install
     @signature-kit/certificates
     ```
 
-    `@signature-kit/certificates` expõe utilitários puros sobre o certificado:
-    `toSignerIdentity(cert)` reduz um `Certificate` ao mesmo `SignerIdentity` que o
-    `inspect`; `isCertificateValid(cert)` retorna um `boolean` e
-    `daysUntilExpiry(cert)`, um `number`. Para os bytes DER brutos, `parseX509(der)` retorna
-    um `X509Info`.
+    `@signature-kit/certificates` traz funções puras sobre o certificado: `toSignerIdentity(cert)` gera o mesmo `SignerIdentity` de `inspect`, `isCertificateValid(cert)` retorna um `boolean` e `daysUntilExpiry(cert)` retorna um `number`. Para bytes DER, `parseX509(der)` retorna um `Effect` com um `X509Info`.
 
     ```ts title="validity.ts"
     import { toSignerIdentity, isCertificateValid, daysUntilExpiry } from "@signature-kit/certificates"
     import { signatures } from "@signature-kit/signatures"
     import { Effect } from "effect"
 
-    // forneça o mesmo a1SignaturesLayer({ pfx, password }) acima
+    // forneça o mesmo a1SignaturesLayer({ pfx, password }) do primeiro passo
     export const checkValidity = Effect.gen(function* () {
-      // cert: Certificate vindo de signatures.certificate()
       const cert = yield* signatures.certificate()
 
-      // identidade derivada do certificado (mesmo formato que inspect())
-      const identity = toSignerIdentity(cert)
-      // identity.document é preenchido pelos OIDs ICP-Brasil:
-      //   2.16.76.1.3.1 -> e-CPF   (document = CPF)
-      //   2.16.76.1.3.3 -> e-CNPJ  (document = CNPJ)
+      const identity = toSignerIdentity(cert)   // mesmo formato de inspect()
 
-      // validade temporal e janela de expiração
-      const valid = isCertificateValid(cert)   // boolean
-      const days = daysUntilExpiry(cert)       // number
+      const valid = isCertificateValid(cert)    // boolean
+      const days = daysUntilExpiry(cert)        // number
 
       if (!valid) {
         yield* Effect.logWarning("certificate out of validity")
@@ -175,38 +164,43 @@ description: "Leia a identidade do titular de um certificado A1 (e-CPF / e-CNPJ)
     ```
 
     <Callout type="info">
-      os OIDs ICP-Brasil preenchem o campo `document`:
-      `2.16.76.1.3.1` identifica o e-CPF (document = CPF) e `2.16.76.1.3.3`
-      o e-CNPJ (document = CNPJ). O `extractBrazilianFields` lê esses campos internamente; os
-      valores já chegam prontos em `identity.document` e `cert.brazilian`.
+      CPF e CNPJ são lidos do subject e do SubjectAltName, incluindo os OIDs ICP-Brasil `2.16.76.1.3.1` (e-CPF) e
+      `2.16.76.1.3.3` (e-CNPJ). `extractBrazilianFields` faz essa leitura; o resultado já chega em `cert.brazilian` e
+      em `identity.document`.
     </Callout>
   </Step>
 </Steps>
 
-## Erros que você pode encontrar
+## Validade com o relógio do Effect
 
-Toda falha de leitura é um `SignatureKitError` tipado no canal de erro. Os mais comuns ao ler certificados:
+`inspectCertificateValidity` retorna o estado (`notYetValid`, `valid` ou `expired`), o instante da avaliação, os milissegundos restantes e os dias inteiros até a expiração. Os limites inicial e final contam como válidos. Datas inválidas ou um início posterior ao fim falham com `signature-kit.INVALID_INPUT`. O limiar para alertar sobre a expiração fica com a aplicação.
 
-- [`signature-kit.NO_CERTIFICATE`](/docs/signing/errors#error-catalog) — o material carregado não contém um certificado.
-- [`signature-kit.X509_PARSE_FAILED`](/docs/signing/errors#error-catalog) — o DER não pôde ser parseado pelo `parseX509`.
-- [`signature-kit.PEM_EXTRACTION_FAILED`](/docs/signing/errors#error-catalog) — falha ao extrair o PEM do certificado.
+A função lê o `Clock` do Effect, então dá para testá-la com `TestClock`. `parseCertificate` usa o mesmo relógio para calcular `isValid`. Confiança na cadeia e revogação são verificações à parte.
+
+```ts title="validity-inspection.ts"
+import { inspectCertificateValidity } from "@signature-kit/certificates"
+
+declare const notBefore: Date
+declare const notAfter: Date
+
+const inspection = inspectCertificateValidity({ notBefore, notAfter })
+```
+
+## Erros mais comuns
+
+Toda falha de leitura é um `SignatureKitError` no canal de erro:
+
+- [`signature-kit.EMPTY_FILE`](/docs/signing/errors#error-catalog): o arquivo está vazio.
+- [`signature-kit.INVALID_FORMAT`](/docs/signing/errors#error-catalog): os bytes não parecem um PKCS#12.
+- [`signature-kit.WRONG_PASSWORD`](/docs/signing/errors#error-catalog): a senha do certificado está errada.
+- [`signature-kit.NO_CERTIFICATE`](/docs/signing/errors#error-catalog): o arquivo não contém um certificado.
+- [`signature-kit.NO_PRIVATE_KEY`](/docs/signing/errors#error-catalog): o arquivo não contém a chave privada.
+- [`signature-kit.X509_PARSE_FAILED`](/docs/signing/errors#error-catalog): o certificado X.509 não pôde ser lido.
+- [`signature-kit.CORRUPTED_FILE`](/docs/signing/errors#error-catalog): o arquivo está corrompido ou não é um PKCS#12 válido.
 
 ## Veja também
 
 <Cards>
-  <Card title="A camada de assinatura" href="/docs/signing/signers">O SignerAdapter que carrega o A1 e expõe o material de assinatura.</Card>
-  <Card title="Canal de erros tipados" href="/docs/signing/errors">NO_CERTIFICATE, X509_PARSE_FAILED e os demais SignatureKitError.</Card>
+  <Card title="A camada de assinatura" href="/docs/signing/signers">O SignerAdapter que carrega o A1 e entrega o material de assinatura.</Card>
+  <Card title="Erros tipados" href="/docs/signing/errors">O catálogo completo de códigos do SignatureKitError.</Card>
 </Cards>
-
-## Inspecionar validade com o relógio do Effect
-
-`inspectCertificateValidity` retorna `notYetValid`, `valid` ou `expired`, o instante da avaliação, os milissegundos restantes e os dias inteiros até a expiração. Os limites inicial e final são inclusivos. Datas inválidas e intervalos invertidos falham com `SignatureKitError`. A aplicação escolhe o limiar para alertar sobre expiração. Esta inspeção avalia o intervalo de validade; confiança da cadeia e revogação são verificações separadas. `parseCertificate` usa o mesmo relógio do Effect para o campo `isValid`.
-
-```ts
-import { inspectCertificateValidity } from "@signature-kit/certificates";
-
-declare const notBefore: Date;
-declare const notAfter: Date;
-
-const inspection = inspectCertificateValidity({ notBefore, notAfter });
-```

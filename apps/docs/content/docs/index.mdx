@@ -1,12 +1,12 @@
 ---
 title: Introdução
-description: Assinatura digital com certificado A1 em TypeScript. Um serviço de assinatura no centro, PDF e XML ao redor e a interface na borda da sua aplicação.
+description: Biblioteca TypeScript e Effect para assinatura digital com certificado A1, com PDF/PAdES e XML-DSig, no servidor ou no navegador.
 icon: Rocket
 ---
 
 SignatureKit é uma biblioteca da **licitei-oss**, a iniciativa de código aberto mantida pela [Licitei](https://licitei.com.br). O código está em [Licitei/signature-kit](https://github.com/Licitei/signature-kit), sob licença MIT.
 
-SignatureKit mantém o poder de assinatura atrás de um serviço Effect. Comece com certificado A1 / PKCS#12; reutilize a mesma fronteira no Node, no navegador, em XML-DSig e em PDF/PAdES.
+O SignatureKit coloca a chave de assinatura atrás de um serviço Effect, o `Signatures`. O primeiro backend é o certificado A1 (PKCS#12), e o mesmo serviço atende Node, navegador, XML-DSig e PDF/PAdES.
 
 ```mermaid
 flowchart TD
@@ -14,7 +14,7 @@ flowchart TD
   service["Serviço Signatures<br/>inspecionar · assinar · verificar"]
   adapter["Camada SignerAdapter"]
   a1["Certificado A1 (PKCS#12)<br/>a chave fica onde você a carregou"]
-  formats["PDF/PAdES e XML-DSig<br/>mutação do documento"]
+  formats["PDF/PAdES e XML-DSig<br/>alteração do documento"]
 
   app --> formats
   formats --> service
@@ -23,13 +23,13 @@ flowchart TD
   adapter --> a1
 ```
 
-## Escolha o caminho
+## Por onde começar
 
 <Cards>
-  <Card title="Primeira assinatura" href="/docs/get-started/quickstart" description="Carregue um A1, leia a identidade, assine bytes e verifique o resultado." />
-  <Card title="Certificados A1" href="/docs/signing/certificates" description="PKCS#12, identidade e-CPF / e-CNPJ, senha e falhas comuns de certificado." />
-  <Card title="Fronteira de assinatura" href="/docs/signing/signers" description="O contrato SignerAdapter e o serviço Signatures consumido por formatos e React." />
-  <Card title="Fluxo PDF no navegador" href="/docs/a1-signing/browser-pdf-flow" description="PDF entra, UI posiciona a assinatura, layer A1 roda só na ação do usuário." />
+  <Card title="Primeira assinatura" href="/docs/get-started/quickstart" description="Carregue um A1, leia a identidade do titular, assine bytes e verifique o resultado." />
+  <Card title="Certificados A1" href="/docs/signing/certificates" description="PKCS#12, identidade e-CPF / e-CNPJ, validade e erros comuns de certificado." />
+  <Card title="A camada de assinatura" href="/docs/signing/signers" description="O contrato SignerAdapter e o serviço Signatures usado pelos formatos e pelo React." />
+  <Card title="PDF no navegador" href="/docs/a1-signing/browser-pdf-flow" description="O PDF entra, a interface posiciona a assinatura e o A1 só é carregado quando o usuário assina." />
 </Cards>
 
 ## O contrato
@@ -55,30 +55,30 @@ export const signWithA1 = (content: Uint8Array, pfx: Uint8Array, password: strin
   )
 ```
 
-Esse programa não sabe onde a chave vive. A1 no navegador, A1 no servidor e módulos de formato fornecem ou consomem o mesmo serviço `Signatures`.
+O programa não sabe onde a chave está. Um A1 carregado no navegador ou no servidor fornece o mesmo serviço `Signatures`, e os módulos de formato consomem esse serviço.
 
-## O que importa
+## Princípios
 
-- **A1 primeiro.** O signer local principal é PKCS#12 (`.pfx` / `.p12`) com segredo em `Redacted`.
-- **PDF no navegador pertence ao formato.** `@signature-kit/pdf` cuida de bytes, estado de posicionamento e assinatura PDF A1 no navegador; a UI da app só assina esse estado e fornece `a1SignaturesLayer` na fronteira da ação.
-- **Formatos fazem o trabalho de documento.** XML-DSig e PDF/PAdES mutam documentos ao redor de `signatures.sign`; adapters de signer não cuidam de XML ou layout de PDF.
-- **Falhas são valores.** Erros recuperáveis são `SignatureKitError` tipados no canal de erro do Effect, não exceções lançadas.
+- **A1 primeiro.** O adapter local é o PKCS#12 (`.pfx` / `.p12`), com a senha em `Redacted`.
+- **O PDF no navegador fica no pacote de formato.** `@signature-kit/pdf` cuida dos bytes, do posicionamento e da assinatura do PDF. A interface acompanha esse estado e fornece `a1SignaturesLayer` só no momento da ação.
+- **Formatos alteram documentos.** XML-DSig e PDF/PAdES montam o documento em torno de `signatures.sign`. O adapter de assinatura não sabe nada de XML nem de layout de PDF.
+- **Falhas são valores.** Erros recuperáveis chegam tipados no canal de erro do Effect (`SignatureKitError`, e `PdfError` ou `XmlError` nos formatos), sem exceções.
 
-## Aprofunde
+## Referência
 
 <Cards>
-  <Card title="PDF/PAdES" href="/docs/signing/pdf" description="CMS detached e tamanho de placeholder para documentos PDF." />
-  <Card title="XML-DSig" href="/docs/signing/xml" description="Mutação de XML com dependência explícita de XmlRuntime." />
+  <Card title="PDF/PAdES" href="/docs/signing/pdf" description="signPdf, política ICP-Brasil, espaço reservado para o CMS e verifyPdf." />
+  <Card title="XML-DSig" href="/docs/signing/xml" description="signXml e verifyXml com a dependência explícita de XmlRuntime." />
   <Card title="Posicionamento por âncora" href="/docs/recipes/anchor-placement" description="Encontre o texto da linha de assinatura e posicione o carimbo sem coordenadas fixas." />
-  <Card title="Catálogo de erros" href="/docs/signing/errors" description="Códigos literais e metadados preservados em cada ponto de falha." />
+  <Card title="Catálogo de erros" href="/docs/signing/errors" description="Códigos literais e os metadados guardados em cada falha." />
 </Cards>
 
 ```package-install
 @signature-kit/signatures @signature-kit/a1
 ```
 
-<Callout type="warn" title="Verificações locais não são validade jurídica">
-  `verifyXml`, `verifyPdf` e `signatures.verify` confirmam a criptografia contra a chave presente no
-  documento — não a validade jurídica. Verifique com sua própria cadeia de confiança e política ICP-Brasil antes de
-  tratar um documento assinado como válido.
+<Callout type="warn" title="Verificação local não é validade jurídica">
+  `verifyXml`, `verifyPdf` e `signatures.verify` conferem a assinatura criptográfica. Não decidem se o documento tem
+  validade jurídica: valide a cadeia com as suas raízes de confiança e aplique a política ICP-Brasil antes de aceitar
+  um documento assinado.
 </Callout>

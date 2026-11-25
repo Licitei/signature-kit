@@ -392,7 +392,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                               h.Attribute("data-load-identity", ""),
                               ...sx(h, signing.groupButton),
                             ],
-                            ["Validar"],
+                            ["Carregar"],
                           ),
                       },
                       h,
@@ -406,7 +406,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                   model.pdf,
                   "pdf",
                   "PDFs para assinar",
-                  "Solte ou escolha até 100 arquivos",
+                  "Arraste ou escolha até 100 PDFs",
                   ["application/pdf", ".pdf"],
                   true,
                 ),
@@ -476,7 +476,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                                     toggle(
                                       "signing-stamp-identity",
                                       "data-stamp-identity",
-                                      "Exibir identidade",
+                                      "Exibir dados do signatário",
                                       model.identity,
                                       (checked) => Message.IdentityToggled({ checked }),
                                     ),
@@ -490,7 +490,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                                     toggle(
                                       "signing-rubric",
                                       "data-rubric",
-                                      "Rubricar demais páginas",
+                                      "Rubricar as demais páginas",
                                       model.rubric,
                                       (checked) => Message.RubricToggled({ checked }),
                                     ),
@@ -532,7 +532,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                                       toParentMessage: (message) =>
                                         Message.GotRubricSourceMessage({ message }),
                                     }),
-                                    input("rubricText", "Texto manuscrito", "text", [
+                                    input("rubricText", "Texto da rubrica", "text", [
                                       h.Attribute("maxlength", "120"),
                                     ]),
                                   ],

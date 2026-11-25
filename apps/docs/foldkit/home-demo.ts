@@ -263,7 +263,7 @@ export const homeDemoView = defineView<HomeDemoModel, Message>((model, h) => {
     [
       h.p(
         [...sx(h, landing.demoNote)],
-        ["Exemplo visual ilustrativo: não é assinatura digital e não usa certificado."],
+        ["Exemplo visual: não é uma assinatura digital e não usa certificado."],
       ),
       h.submodel({
         slotId: "home-demo-documents",

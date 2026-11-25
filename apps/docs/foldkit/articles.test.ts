@@ -263,14 +263,14 @@ describe("Foldkit articles", () => {
   });
 
   it("indexes Portuguese articles in reverse chronological order", () => {
-    expect(articles("blog")[0]?.title).toContain("assinar com A1");
+    expect(articles("blog")[0]?.title).toContain("assinatura A1 no navegador");
     const changelog = articles("changelog");
     expect(changelog.length).toBeGreaterThan(1);
     expect(changelog.map((entry) => entry.timestamp)).toEqual(
       changelog.map((entry) => entry.timestamp).sort((a, b) => b - a),
     );
     expect(resolveArticle("changelog", "a1-node-esm-release")?.title).toBe(
-      "Publicar o A1 com imports resolvíveis pelo Node",
+      "A1 carrega no ESM nativo do Node",
     );
     expect(changelog.some((entry) => entry.href === "/changelog/a1-node-esm-release")).toBe(true);
     expect(prerenderPaths).toContain("/changelog/a1-node-esm-release");

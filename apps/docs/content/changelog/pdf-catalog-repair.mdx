@@ -1,11 +1,11 @@
 ---
-title: Reparar o tipo ausente do catálogo do PDF durante edições
+title: Reparo do tipo ausente no catálogo do PDF
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
     version: 0.2.0
 ---
 
-## Reparar o tipo ausente do catálogo do PDF durante edições
+## Reparo do tipo ausente no catálogo do PDF
 
-Quando uma edição grava o catálogo do documento, o núcleo de PDF adiciona o `/Type /Catalog` ausente na mesma revisão. A assinatura inclui o catálogo reparado nos bytes cobertos.
+Quando uma edição grava o catálogo do documento e falta a entrada `/Type /Catalog`, o núcleo de PDF a adiciona na mesma revisão. O catálogo reparado fica dentro dos bytes cobertos pela assinatura.

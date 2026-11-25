@@ -111,7 +111,7 @@ export const mountSigning = (element: Element) =>
         const locale = "pt-BR";
         const message = (error: { readonly _tag: string; readonly code?: string }) =>
           error._tag === "RpcClientError"
-            ? "Não foi possível comunicar com o serviço de assinatura. Tente novamente."
+            ? "Não foi possível iniciar o assinador. Recarregue a página e tente novamente."
             : errorMessage(error, {
                 locale,
                 catalogs: [signatureKitErrorMessages, pdfErrorMessages, cmsErrorMessages],
@@ -188,12 +188,12 @@ export const mountSigning = (element: Element) =>
           canvas.setAttribute("role", "button");
           canvas.setAttribute(
             "aria-label",
-            `Posicionar assinatura — ${label.textContent}. Use Enter ou espaço para posicionar e as setas para mover.`,
+            `Posicionar assinatura, ${label.textContent}. Use Enter ou Espaço para posicionar e as setas para mover.`,
           );
           canvas.setAttribute("aria-disabled", String(controlsLocked || cancelling));
           const img = document.createElement("img");
           img.src = image;
-          img.alt = `${entry.file.name} — ${label.textContent}`;
+          img.alt = `${entry.file.name}, ${label.textContent}`;
           img.className = stylex.props(signing.pageImage).className ?? "";
           canvas.append(img);
           if (entry.rect !== undefined && entry.rect.pageIndex === selectedPage) {
@@ -538,7 +538,7 @@ export const mountSigning = (element: Element) =>
                   if (generation !== logoGeneration || closed) return;
                   logoBytes = valid ? bytes : undefined;
                   logoFile = valid ? file : undefined;
-                  if (!valid) say("Selecione um PNG válido.");
+                  if (!valid) say("Escolha uma imagem PNG válida.");
                 }),
               ),
               Effect.catch((error) =>
@@ -739,7 +739,7 @@ export const mountSigning = (element: Element) =>
           const file = pfx?.files?.item(0);
           const secret = password?.value ?? "";
           if (file == null || secret.length === 0) {
-            say("Selecione o certificado e informe a senha.");
+            say("Escolha o certificado e digite a senha.");
             return;
           }
           setLocked(true);
@@ -749,7 +749,7 @@ export const mountSigning = (element: Element) =>
           invalidateVisual();
           drawPreview();
           captureDocsEvent("pdf_signer_certificate_profile_started");
-          say("Carregando identidade…");
+          say("Carregando certificado…");
           run(
             Effect.scoped(
               Effect.gen(function* () {
@@ -781,7 +781,7 @@ export const mountSigning = (element: Element) =>
                   profileDate = new Date().toLocaleString(locale);
                   if (identityStatus !== null) identityStatus.textContent = loaded.profile.subject;
                   captureDocsEvent("pdf_signer_certificate_profile_loaded");
-                  say("Identidade carregada.");
+                  say("Certificado carregado.");
                   refreshVisual();
                   drawPreview();
                 }),
@@ -834,7 +834,7 @@ export const mountSigning = (element: Element) =>
                     ? "missing_password"
                     : "no_signature_placement",
             });
-            say("Selecione o certificado, a senha e de 1 a 100 PDFs.");
+            say("Escolha o certificado, digite a senha e adicione de 1 a 100 PDFs.");
             return;
           }
           if (controlsLocked || cancelling) return;
@@ -881,10 +881,10 @@ export const mountSigning = (element: Element) =>
               entries.length === files.length && entries.every((entry) => entry.rect !== undefined);
             say(
               profile === undefined || profileFile !== certificate
-                ? "Carregue a identidade do certificado."
+                ? "Clique em Carregar para ler o certificado."
                 : hasPositions && visualAppearance === undefined
                   ? "Aguarde a prévia da assinatura."
-                  : "Aguarde os PDFs e posicione a assinatura em cada documento.",
+                  : "Aguarde o carregamento dos PDFs e posicione a assinatura em cada um.",
             );
             return;
           }
@@ -1032,7 +1032,7 @@ export const mountSigning = (element: Element) =>
                   }
                 say(
                   results.some((item) => Result.isFailure(item.result))
-                    ? "Alguns documentos não puderam ser assinados."
+                    ? "Alguns PDFs não puderam ser assinados. Veja o motivo de cada um na lista."
                     : "Assinatura concluída.",
                 );
               }).pipe(
@@ -1071,7 +1071,7 @@ export const mountSigning = (element: Element) =>
                 Effect.sync(() => {
                   cancelling = false;
                   setLocked(false);
-                  say("Operação cancelada.");
+                  say("Assinatura cancelada.");
                 }),
               ),
             ),

@@ -1,5 +1,5 @@
 ---
-title: Imagens PNG, documentos em branco, métricas de fonte e URIs de link no núcleo próprio
+title: PNG, páginas em branco e métricas de fonte no núcleo próprio
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
@@ -10,7 +10,7 @@ packages:
     version: 0.2.0
 ---
 
-## Imagens PNG, documentos em branco, métricas de fonte e URIs de link no núcleo próprio
+## PNG, páginas em branco e métricas de fonte no núcleo próprio
 
 O `@signature-kit/pdf-core` ganha o que o carimbo precisa para deixar de depender do pdf-lib. A operação de edição `png` decodifica um PNG (todos os tipos de cor e profundidades de bit, entrelaçamento Adam7, paleta e transparência `tRNS`) em um image XObject de 8 bits com `/SMask` quando algum pixel não é opaco; a entrada é limitada a 16 MiB, 16 Mi pixels e 64 MiB de scanlines decodificadas. `PdfCore.create({ pages })` grava um novo documento com páginas em branco, e `PdfCore.fontMetrics(baseFont)` retorna o mapeamento Unicode WinAnsi e as larguras de avanço das doze fontes standard-14 WinAnsi. `PdfCore.document` agora informa a `uri` das anotações de link com ação URI (versão 2 do payload do documento). `PdfCore.pngSize(png)` roda o mesmo decodificador limitado e retorna `width` e `height` da imagem; o decodificador rejeita chunks de PNG animado, bytes depois de `IEND` e dados de imagem que inflam além das scanlines. A operação de edição `addResource` agora falha com `pdfCore.INVALID_OPTIONS` quando a página já associa o nome a outro objeto, em vez de sobrescrevê-lo. O módulo wasm exporta três funções novas: `pdf_core_create`, `pdf_core_font_metrics` e `pdf_core_png_size`.
 

@@ -1,9 +1,9 @@
 ---
 title: Componentes React
-description: "Instale os componentes shadcn do SignatureKit no seu app e seja dono do código de UI."
+description: "Copie os componentes shadcn do SignatureKit para a sua aplicação e adapte o código de UI como quiser."
 ---
 
-`@signature-kit/react` publica só hooks. Use o registry shadcn quando quiser um caminho pronto; os arquivos gerados entram no seu app, então storage, texto, estilo, fetch/tRPC e regras de produto continuam seus.
+`@signature-kit/react` publica só hooks. Para começar com uma UI pronta, use o registry shadcn: os arquivos são copiados para a sua aplicação, e armazenamento, textos, estilo, fetch/tRPC e regras de produto ficam sob o seu controle.
 
 ```bash title="Instalar um componente"
 npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json
@@ -13,17 +13,17 @@ npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json
 
 | Item | Comando | Uso |
 | --- | --- | --- |
-| `signature-certificate-form` | `npx shadcn@latest add https://signaturekit.dev/r/signature-certificate-form.json` | Confirmação de senha com persistência por callbacks `getSavedPassword` / `onSavePassword`. |
-| `certificate-upload-form` | `npx shadcn@latest add https://signaturekit.dev/r/certificate-upload-form.json` | Selecionar `.pfx` / `.p12`, parsear no navegador com `useA1Certificate`, pré-visualizar metadados e chamar seu callback de upload. |
-| `signature-pdf-viewer` | `npx shadcn@latest add https://signaturekit.dev/r/signature-pdf-viewer.json` | Preview com `react-pdf`, destaque de âncoras de texto e posicionamento manual por clique. |
-| `signature-dialog` | `npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json` | Fluxo direto de assinatura A1 com `useA1Signer`, retry de senha salva, progresso e preview/download do PDF assinado. |
-| `signing-progress-list` | `npx shadcn@latest add https://signaturekit.dev/r/signing-progress-list.json` | Linhas de status por documento para uma tela de assinatura customizada. |
-| `pdf-signature-anchor` | `npx shadcn@latest add https://signaturekit.dev/r/pdf-signature-anchor.json` | Marcadores invisíveis `takumi-pdf` (texto e link URI) pareados com `findPdfTextAnchors`. |
+| `signature-certificate-form` | `npx shadcn@latest add https://signaturekit.dev/r/signature-certificate-form.json` | Confirmação de senha, com persistência pelos callbacks `getSavedPassword` e `onSavePassword`. |
+| `certificate-upload-form` | `npx shadcn@latest add https://signaturekit.dev/r/certificate-upload-form.json` | Seleciona o `.pfx`/`.p12`, lê o certificado no navegador com `useA1Certificate`, mostra os metadados e chama o seu callback de upload. |
+| `signature-pdf-viewer` | `npx shadcn@latest add https://signaturekit.dev/r/signature-pdf-viewer.json` | Prévia com `react-pdf`, destaque das âncoras de texto e posicionamento manual por clique. |
+| `signature-dialog` | `npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json` | Assinatura A1 direta com `useA1Signer`, nova tentativa com a senha salva, progresso e prévia ou download do PDF assinado. |
+| `signing-progress-list` | `npx shadcn@latest add https://signaturekit.dev/r/signing-progress-list.json` | Status de cada documento para uma tela de assinatura personalizada. |
+| `pdf-signature-anchor` | `npx shadcn@latest add https://signaturekit.dev/r/pdf-signature-anchor.json` | Marcadores invisíveis para `takumi-pdf` (texto e link) usados com `findPdfTextAnchors`. |
 
-## Dialog de assinatura direta
+## Diálogo de assinatura direta
 
 ```tsx title="sign-button.tsx"
-import { SignatureDialog } from "@/components/signature-dialog"
+import { SignatureDialog } from "@/components/signature-kit/signature-dialog"
 
 export function SignButton({ pfx }: { pfx: Uint8Array }) {
   return (
@@ -32,7 +32,7 @@ export function SignButton({ pfx }: { pfx: Uint8Array }) {
       anchorTokens={["{{signature}}"]}
       getSavedPassword={() => null}
       onWrongPassword={() => {
-        // Limpe aqui o storage de senha que pertence ao seu app.
+        // Apague aqui a senha que a sua aplicação guardou.
       }}
       buildDocuments={async () => [
         {
@@ -66,7 +66,7 @@ export function SignButton({ pfx }: { pfx: Uint8Array }) {
 
 ## Posicionamento por âncora
 
-Use âncoras invisíveis quando você gera PDFs com `takumi-pdf`. As variantes de texto e link combinam com os matchers de `findPdfTextAnchors`.
+Se você gera PDFs com `takumi-pdf`, use âncoras invisíveis. As variantes de texto e de link correspondem aos matchers `text` e `link` de `findPdfTextAnchors`.
 
 ```tsx title="contract.tsx"
 import { render } from "takumi-pdf"
@@ -89,10 +89,10 @@ export async function buildContractPdf(fontBytes: Uint8Array) {
 }
 ```
 
-Veja [Posicionamento por âncora](/docs/recipes/anchor-placement) para o fluxo gerar → `findPdfTextAnchors` → `prepareAndSignPdf`.
+O fluxo completo (gerar o PDF, chamar `findPdfTextAnchors` e depois `prepareAndSignPdf`) está em [Posicionamento por âncora](/docs/recipes/anchor-placement).
 
-Use `signature-pdf-viewer` quando uma pessoa precisar confirmar as âncoras ou trocar para posicionamento manual por clique.
+Use o `signature-pdf-viewer` quando alguém precisar conferir as âncoras ou posicionar a assinatura manualmente.
 
-### Ilha `react-pdf` no Waku/FumaPress
+### `react-pdf` em frameworks com SSR
 
-`react-pdf` toca APIs do navegador, então mantenha-o atrás do boundary de hidratação mostrado em [`PdfPreviewIsland`](/docs/recipes/react-pdf-preview). Use `useSyncExternalStore` para expor um snapshot do servidor como `false`, `lazy` para adiar o módulo exclusivo do navegador e `Suspense` para o fallback de carregamento. Páginas Waku/FumaPress podem passar bytes PDF, páginas e retângulos já validados para essa ilha; ela controla o estado do preview e os object URLs sem um helper específico de carregamento client.
+O `react-pdf` usa APIs do navegador e não pode rodar na renderização do servidor. Carregue-o atrás da fronteira de hidratação descrita em [Pré-visualização com react-pdf](/docs/recipes/react-pdf-preview).

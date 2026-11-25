@@ -1,17 +1,17 @@
 ---
-title: Hook React para assinar
-description: "Use os hooks de @signature-kit/react para carregar certificado, assinar PDFs em sequência, acompanhar progresso e manter erros tipados."
+title: Hooks React de assinatura
+description: "Carregue o certificado, assine PDFs em sequência e acompanhe o progresso com os hooks de @signature-kit/react, mantendo os erros tipados."
 ---
 
-`@signature-kit/react` agora é a fronteira de app para assinatura A1 no navegador. Ele continua headless: sem storage, sem fetch/tRPC, sem toasts, sem modais, sem `react-pdf` e sem componentes publicados no npm.
+`@signature-kit/react` expõe hooks headless para assinar com certificado A1 no navegador. O pacote não inclui armazenamento, fetch/tRPC, toasts, modais, `react-pdf` nem componentes de UI.
 
-Caminho rápido: instale a UI do registry no seu app e edite os arquivos gerados.
+Para uma UI pronta, instale o componente do registry e edite os arquivos copiados para a sua aplicação.
 
-```bash title="Instalar o dialog de assinatura direta"
+```bash title="Instalar o diálogo de assinatura direta"
 npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json
 ```
 
-Precisa de UI customizada? Use os hooks diretamente.
+Para uma UI própria, use os hooks diretamente.
 
 ## Estado do certificado
 
@@ -42,7 +42,7 @@ export function CertificateForm() {
 }
 ```
 
-`load(pfx, password)` envolve a senha com `Redacted.make` dentro da action e guarda as últimas credenciais válidas só no store do hook. Persistência fica fora do pacote; o app define storage criptografado e política de retenção de senha.
+`load(pfx, password)` envolve a senha com `Redacted.make` assim que a recebe e abre o certificado em uma sessão de Web Worker. O store do hook guarda só `status`, `profile` e `error`. O pacote não persiste nada: armazenamento criptografado e política de retenção da senha ficam com a sua aplicação.
 
 ## Assinatura sequencial
 
@@ -88,7 +88,9 @@ export function SignDocuments({ pfx, pdf }: { pfx: Uint8Array; pdf: Uint8Array }
 }
 ```
 
-As linhas evoluem em ordem: `pending → signing → signed | failed`. A assinatura roda com concorrência 1, e falhas por linha preservam o erro tipado bruto (`PdfError`, `CmsError` ou `SignatureKitError`) para o app chamar `@signature-kit/i18n` `errorMessage(...)` com locale e catálogos próprios.
+Se você omitir `credentials`, o hook usa o certificado já carregado por `useA1Certificate`.
+
+Cada linha passa por `pending → signing → signed | failed`. Os documentos são assinados um de cada vez, e a linha que falha guarda o erro tipado original (`PdfError`, `CmsError` ou `SignatureKitError`). Com ele, a sua aplicação chama `errorMessage(...)` de `@signature-kit/i18n` com o locale e os catálogos que quiser.
 
 ## Object URLs de PDF
 
@@ -101,4 +103,4 @@ export function SignedPreview({ bytes }: { bytes: Uint8Array | null }) {
 }
 ```
 
-O hook cria e revoga object URLs com um effect mínimo de cleanup porque o recurso do navegador exige limpeza explícita.
+O hook cria o object URL e o revoga no cleanup de um effect, porque esse recurso do navegador precisa ser liberado explicitamente.
