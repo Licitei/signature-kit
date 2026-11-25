@@ -13,6 +13,7 @@
   ],
   "type": "module",
   "scripts": {
+    "bench:v1": "bun scripts/local-first/bench-v1/run.ts",
     "build": "nx run-many --target=build --projects=tag:npm:public && nx run @signature-kit/signing-domain:build",
     "build:affected": "nx affected --target=build",
     "typecheck": "nx run-many --target=typecheck --projects=tag:npm:public && nx run @signature-kit/signing-domain:typecheck",

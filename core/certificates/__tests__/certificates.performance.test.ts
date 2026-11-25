@@ -42,6 +42,7 @@ describe("certificate parsing performance", () => {
         }
       }
       const elapsedMillis = performance.now() - startedAt;
+      console.info(`bench-v1-internal certificates.parse-20 ${elapsedMillis}`);
 
       expect(parsedCount).toBe(20);
       expect(sawCpf).toBe(true);

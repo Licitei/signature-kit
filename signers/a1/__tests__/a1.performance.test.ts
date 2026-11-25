@@ -28,6 +28,7 @@ describe("A1 signer performance", () => {
         { concurrency: 1 },
       );
       const elapsedMillis = millisecondsSince(startedAt);
+      console.info(`bench-v1-internal a1.profile-five ${elapsedMillis}`);
 
       expect(profiles.every((profile) => profile.document === "12345678901")).toBe(true);
       expect(elapsedMillis).toBeLessThan(2_500);
@@ -61,6 +62,7 @@ describe("A1 signer performance", () => {
         { concurrency: 1 },
       );
       const elapsedMillis = millisecondsSince(startedAt);
+      console.info(`bench-v1-internal a1.sign-and-verify-25 ${elapsedMillis}`);
 
       expect(artifacts.every(({ artifact }) => artifact.signature.byteLength > 0)).toBe(true);
       expect(artifacts.every(({ verification }) => verification.valid)).toBe(true);
