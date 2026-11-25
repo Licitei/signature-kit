@@ -79,8 +79,9 @@ Delivery order is fixed:
   signer identity, trust (explicit roots only), changes after each signature
   (recognised vs unknown), timestamp evidence and revocation. Revocation has three
   distinct states: `notChecked`, `embeddedEvidence` (OCSP/CRL present but not
-  evaluated) and `verified { good | revoked }`. Present evidence is never reported
-  as verified.
+  evaluated) and `verified { good | revoked | unknown }`. Present evidence is never
+  reported as verified. Each signature also reports its DocMDP/FieldMDP outcome,
+  verified time evidence and PAdES level (`B-B`, `B-T`, `B-LT`, `B-LTA`).
 
 ## Runtime
 

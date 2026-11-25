@@ -11,6 +11,7 @@ import { decodeSignatureContents, signatureContents, signedBytes } from "./pdf-c
 import { LocalError, PdfVerifyOptionsSchema } from "./rpc.js";
 import type {
   ComparisonReport,
+  PdfLtvLevel,
   PdfSignatureVerification,
   PdfVerificationReport,
   PdfVerifyOptions,
@@ -160,6 +161,7 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
         if (Option.isNone(token)) return undefined;
         return {
           offset: range[1],
+          revisionEnd: range[2] + range[3],
           timestampEvidence: yield* readTimestamp(
             [token.value],
             signedBytes(pdf, range),
@@ -305,6 +307,36 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
             : [];
         const trust =
           roots === undefined ? "notEvaluated" : trustedPath.length > 0 ? "trusted" : "untrusted";
+        const revocationReport = yield* evaluateRevocation(
+          {
+            ocsp: [...revocation.ocsp, ...(validationData?.ocsp ?? [])],
+            crls: [...revocation.crls, ...(validationData?.crls ?? [])],
+          },
+          trustedPath,
+          effectiveTime.at,
+        );
+        const validationDataEnd = Math.max(
+          revisionEnd,
+          ...changes.value.changes
+            .filter(({ kind }) => kind === "dss")
+            .map(({ revisionEnd: end }) => end),
+        );
+        const archived = documentTimestamps.some(
+          (entry) =>
+            entry !== undefined &&
+            entry.timestampEvidence.kind === "verified" &&
+            entry.revisionEnd > validationDataEnd,
+        );
+        const ltvLevel: PdfLtvLevel | undefined = !result.valid
+          ? undefined
+          : effectiveTime.source !== "signatureTimestamp" &&
+              effectiveTime.source !== "documentTimestamp"
+            ? "B-B"
+            : revocationReport.kind !== "verified" || revocationReport.result.status !== "good"
+              ? "B-T"
+              : archived
+                ? "B-LTA"
+                : "B-LT";
         return {
           ...covered,
           integrity: result.valid ? "valid" : "invalid",
@@ -313,14 +345,8 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
           timestampEvidence,
           evaluationTime: effectiveTime,
           trust,
-          revocation: yield* evaluateRevocation(
-            {
-              ocsp: [...revocation.ocsp, ...(validationData?.ocsp ?? [])],
-              crls: [...revocation.crls, ...(validationData?.crls ?? [])],
-            },
-            trustedPath,
-            effectiveTime.at,
-          ),
+          revocation: revocationReport,
+          ltvLevel,
         };
       }),
   );
@@ -395,6 +421,9 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
   );
   const unknown = (changes?.unknownObjectCount ?? 0) > 0;
   const untrusted = signatures.some(({ trust }) => trust === "untrusted");
+  const revoked = allSignatures.some(
+    ({ revocation }) => revocation.kind === "verified" && revocation.result.status === "revoked",
+  );
   const reasons: ComparisonReport["reasons"][number][] = [];
   if (!sentPreserved) reasons.push("sentRevisionMissing");
   if (invalid) reasons.push("invalidSignature");
@@ -404,6 +433,7 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
   if (trailingBytes) reasons.push("trailingUnparsedBytes");
   if (unknown) reasons.push("unknownObjects");
   if (untrusted) reasons.push("untrustedSignature");
+  if (revoked) reasons.push("revokedSignature");
   if (!hasNewSignature) reasons.push("noNewSignatures");
 
   return {
@@ -419,7 +449,7 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
           ? "modifiedAfterSigning"
           : unknown
             ? "unknownChanges"
-            : untrusted
+            : untrusted || revoked
               ? "untrustedSignatures"
               : !hasNewSignature
                 ? "noSignatures"

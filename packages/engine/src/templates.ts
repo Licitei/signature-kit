@@ -19,7 +19,8 @@ import {
   TotalPages,
 } from "./compose.js";
 import type { ComposeNode, PathCommand, Style } from "./compose.js";
-import { A1Profile } from "./rpc.js";
+import { A1Profile, PdfLtvLevel } from "./rpc.js";
+import type { PdfSignatureVerification } from "./rpc.js";
 
 const LabelStyle = {
   color: "accent",
@@ -215,11 +216,15 @@ const ReportSignature = Schema.Struct({
     Schema.Literals(["notChecked", "embeddedEvidence"]),
     Schema.Struct({
       kind: Schema.Literal("verified"),
-      status: Schema.Literals(["good", "revoked"]),
+      status: Schema.Literals(["good", "revoked", "unknown"]),
     }),
   ]),
+  timestamp: Schema.optional(Schema.Literals(["absent", "unverified", "verified"])),
+  mdp: Schema.optional(Schema.Literals(["none", "respected", "violated"])),
+  ltvLevel: Schema.optional(PdfLtvLevel),
   changes: Schema.optional(Schema.Struct({ recognised: ChangeCount, unknown: ChangeCount })),
 });
+type ReportSignature = (typeof ReportSignature)["Type"];
 const TimelineEntry = Schema.Struct({ time: Schema.String, detail: Schema.String });
 export const EvidenceReport = Schema.Struct({
   document: Schema.String,
@@ -251,6 +256,23 @@ const trustBadges = {
   untrusted: { label: "não confiável", tone: "danger" },
   notEvaluated: { label: "não avaliada", tone: "neutral" },
 } satisfies Record<typeof ReportSignature.Type.trust, Status>;
+const timestampBadges = {
+  absent: { label: "ausente", tone: "neutral" },
+  unverified: { label: "não verificado", tone: "warning" },
+  verified: { label: "verificado", tone: "success" },
+} satisfies Record<NonNullable<ReportSignature["timestamp"]>, Status>;
+const mdpBadges = {
+  none: { label: "sem restrição", tone: "neutral" },
+  respected: { label: "respeitada", tone: "success" },
+  violated: { label: "violada", tone: "danger" },
+} satisfies Record<NonNullable<ReportSignature["mdp"]>, Status>;
+const ltvBadges = {
+  "B-B": { label: "PAdES B-B", tone: "neutral" },
+  "B-T": { label: "PAdES B-T", tone: "neutral" },
+  "B-LT": { label: "PAdES B-LT", tone: "success" },
+  "B-LTA": { label: "PAdES B-LTA", tone: "success" },
+} satisfies Record<PdfLtvLevel, Status>;
+const notEvaluated: Status = { label: "não avaliado", tone: "neutral" };
 const holderLabels = {
   "e-cpf": "e-CPF",
   "e-cnpj": "e-CNPJ",
@@ -267,8 +289,55 @@ const revocationBadge = (revocation: typeof ReportSignature.Type.revocation): St
     })),
     Match.when({ status: "good" }, (): Status => ({ label: "válida", tone: "success" })),
     Match.when({ status: "revoked" }, (): Status => ({ label: "revogada", tone: "danger" })),
+    Match.when({ status: "unknown" }, (): Status => ({ label: "desconhecida", tone: "warning" })),
     Match.exhaustive,
   );
+
+const changesBadge = (changes: ReportSignature["changes"]): Status =>
+  changes === undefined
+    ? { label: "não avaliadas", tone: "neutral" }
+    : changes.recognised + changes.unknown === 0
+      ? { label: "nenhuma alteração", tone: "neutral" }
+      : {
+          label: `${changes.unknown} ${changes.unknown === 1 ? "desconhecida" : "desconhecidas"} de ${changes.recognised + changes.unknown}`,
+          tone: changes.unknown > 0 ? "warning" : "neutral",
+        };
+
+export const reportSignature = (
+  verification: PdfSignatureVerification,
+  signedAt?: string,
+): ReportSignature => {
+  const { signer, fieldName, mdp, changes, ltvLevel, revocation } = verification;
+  return {
+    ...(signer?.commonName == null ? {} : { signer: signer.commonName }),
+    ...(signer === undefined ? {} : { holderKind: signer.holderKind }),
+    ...(signedAt === undefined ? {} : { signedAt }),
+    ...(fieldName === undefined ? {} : { field: fieldName }),
+    coverage: { kind: verification.coverage.kind },
+    integrity: verification.integrity,
+    trust: verification.trust,
+    revocation:
+      revocation.kind === "verified"
+        ? { kind: "verified", status: revocation.result.status }
+        : revocation.kind,
+    timestamp: verification.timestampEvidence.kind,
+    mdp:
+      mdp === undefined
+        ? "none"
+        : mdp.pageContentViolation || mdp.violations.length > 0
+          ? "violated"
+          : "respected",
+    ...(ltvLevel === undefined ? {} : { ltvLevel }),
+    ...(changes === undefined
+      ? {}
+      : {
+          changes: {
+            recognised: changes.recognisedObjectCount,
+            unknown: changes.unknownObjectCount,
+          },
+        }),
+  };
+};
 
 const status = (name: string, { label, tone }: Status) =>
   Stack([small(name), Badge(label, { ...statusStyles[tone], textAlign: "center" })], {
@@ -290,8 +359,13 @@ export const evidenceReportTemplate = (data: EvidenceReport) =>
               [
                 labels("DOCUMENTO ANALISADO"),
                 Text(data.document, { fontWeight: 700, fontSize: "subtitle" }),
-                small("SHA-256"),
-                Text(data.digest, { fontSize: "caption", letterSpacing: 0.32 }),
+                Row(
+                  [
+                    small("SHA-256", { width: 60, shrink: 0 }),
+                    Text(data.digest, { fontSize: "caption", letterSpacing: 0.32, grow: 1 }),
+                  ],
+                  { align: "center", gap: "sm" },
+                ),
               ],
               { background: "tint", padding: 13 },
             ),
@@ -304,7 +378,6 @@ export const evidenceReportTemplate = (data: EvidenceReport) =>
                       [
                         labels(`SIGNATÁRIO ${String(index + 1).padStart(2, "0")}`),
                         Text(signer.signer ?? "Identidade não disponível", { fontWeight: 700 }),
-                        small(`Campo: ${signer.field ?? "não identificado"}`),
                       ],
                       { gap: "xs" },
                     ),
@@ -320,7 +393,10 @@ export const evidenceReportTemplate = (data: EvidenceReport) =>
                             textAlign: "right",
                           },
                         ),
-                        small(signer.signedAt ?? "Data não informada", { textAlign: "right" }),
+                        small(
+                          `${signer.field ?? "campo não identificado"} · ${signer.signedAt ?? "data não informada"}`,
+                          { textAlign: "right" },
+                        ),
                       ],
                       { gap: "xs" },
                     ),
@@ -335,24 +411,26 @@ export const evidenceReportTemplate = (data: EvidenceReport) =>
                     ],
                     { gap: "sm" },
                   ),
-                  ...(signer.changes === undefined
-                    ? [small("Alterações após a assinatura não avaliadas")]
-                    : [
-                        Row(
-                          [
-                            small(
-                              `Após a assinatura: ${signer.changes.recognised} ${signer.changes.recognised === 1 ? "alteração reconhecida" : "alterações reconhecidas"}`,
-                            ),
-                            Badge(
-                              signer.changes.unknown === 1
-                                ? "1 alteração desconhecida"
-                                : `${signer.changes.unknown} alterações desconhecidas`,
-                              statusStyles[signer.changes.unknown > 0 ? "warning" : "neutral"],
-                            ),
-                          ],
-                          { align: "center", gap: "sm" },
-                        ),
-                      ]),
+                  Row(
+                    [
+                      status(
+                        "Carimbo do tempo",
+                        signer.timestamp === undefined
+                          ? notEvaluated
+                          : timestampBadges[signer.timestamp],
+                      ),
+                      status(
+                        "Certificação",
+                        signer.mdp === undefined ? notEvaluated : mdpBadges[signer.mdp],
+                      ),
+                      status(
+                        "Longo prazo",
+                        signer.ltvLevel === undefined ? notEvaluated : ltvBadges[signer.ltvLevel],
+                      ),
+                      status("Após a assinatura", changesBadge(signer.changes)),
+                    ],
+                    { gap: "sm" },
+                  ),
                 ],
                 { padding: 13 },
               ),
@@ -397,6 +475,9 @@ export const sampleEvidence: EvidenceReport = {
       integrity: "valid",
       trust: "trusted",
       revocation: "embeddedEvidence",
+      timestamp: "unverified",
+      mdp: "respected",
+      ltvLevel: "B-B",
       changes: { recognised: 1, unknown: 2 },
     },
     {
@@ -406,8 +487,11 @@ export const sampleEvidence: EvidenceReport = {
       field: "assinatura-contratada",
       coverage: { kind: "wholeFile" },
       integrity: "valid",
-      trust: "notEvaluated",
-      revocation: "notChecked",
+      trust: "trusted",
+      revocation: { kind: "verified", status: "good" },
+      timestamp: "verified",
+      mdp: "none",
+      ltvLevel: "B-LTA",
       changes: { recognised: 0, unknown: 0 },
     },
   ],

@@ -99,7 +99,8 @@
       "trust": "trusted",
       "revocation": {
         "kind": "notChecked"
-      }
+      },
+      "ltvLevel": "B-B"
     },
     {
       "fieldName": "Contratada",
@@ -137,7 +138,8 @@
       "trust": "trusted",
       "revocation": {
         "kind": "notChecked"
-      }
+      },
+      "ltvLevel": "B-B"
     }
   ],
   "changes": {

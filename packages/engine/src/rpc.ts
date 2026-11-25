@@ -311,6 +311,9 @@ const PdfReportedChanges = Schema.Struct({
   pageContentChanged: Schema.Boolean,
 });
 
+export const PdfLtvLevel = Schema.Literals(["B-B", "B-T", "B-LT", "B-LTA"]);
+export type PdfLtvLevel = (typeof PdfLtvLevel)["Type"];
+
 const PdfSignatureVerification = Schema.Struct({
   fieldName: Schema.optional(Schema.String),
   kind: Schema.Literals(["signature", "documentTimestamp"]),
@@ -352,6 +355,7 @@ const PdfSignatureVerification = Schema.Struct({
   ),
   trust: Schema.Literals(["notEvaluated", "trusted", "untrusted"]),
   revocation: RevocationReport,
+  ltvLevel: Schema.optional(PdfLtvLevel),
 });
 export type PdfSignatureVerification = (typeof PdfSignatureVerification)["Type"];
 const pdfSignatureVerificationCodec: Schema.Codec<PdfSignatureVerification> =
@@ -385,6 +389,7 @@ export const ComparisonReport = Schema.Struct({
       "trailingUnparsedBytes",
       "unknownObjects",
       "untrustedSignature",
+      "revokedSignature",
       "noNewSignatures",
     ]),
   ),
