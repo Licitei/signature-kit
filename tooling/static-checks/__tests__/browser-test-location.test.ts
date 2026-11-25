@@ -36,6 +36,7 @@ describe("browser integration test placement", () => {
       "apps/docs/",
       "formats/pdf/__tests__/",
       "formats/react/__tests__/",
+      "runtime/local/__tests__/",
       "shared/pdf-core/__tests__/",
       "signers/a1/__tests__/",
     ];
@@ -68,7 +69,7 @@ describe("browser integration test placement", () => {
       .map(([, script]) => script)
       .join(" ");
 
-    expect(command).toContain("tooling/vitest/browser.config.ts shared signers formats");
+    expect(command).toContain("tooling/vitest/browser.config.ts shared signers formats runtime");
     expect(command).toContain("apps/docs/vitest.browser.config.ts apps/docs");
     expect(command).not.toContain(".browser.test.");
   });

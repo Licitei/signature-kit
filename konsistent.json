@@ -9,7 +9,7 @@
     {
       "name": "package-directories-have-required-files",
       "description": "Publishable package directories must keep the source directory, manifest, and changelog together.",
-      "paths": "{core,shared,formats,signers,validators}/{packageName}",
+      "paths": "{core,shared,formats,signers,validators,runtime}/{packageName}",
       "must": {
         "haveType": "directory",
         "haveFiles": ["src", "package.json", "CHANGELOG.md"]
@@ -18,15 +18,15 @@
     {
       "name": "source-modules-are-not-barrels",
       "description": "Source modules must not be pure re-export barrels; package exports point at real modules instead.",
-      "paths": "{core,shared,formats,signers,validators}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "paths": "{core,shared,formats,signers,validators,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
         "areBarrelFiles": true
       }
     },
     {
       "name": "non-signer-sources-must-not-import-remote-signers",
-      "description": "Core, shared, format, and validator sources cannot import remote signer packages.",
-      "paths": "{core,shared,formats,validators}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "description": "Core, shared, format, validator, and runtime sources cannot import remote signer packages.",
+      "paths": "{core,shared,formats,validators,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "must": [
         {
           "name": "forbid-assinafy",
@@ -69,7 +69,7 @@
       "name": "non-react-sources-must-not-import-a1",
       "description": "A1 is a signer package; only the React browser hooks package may import it.",
       "paths": [
-        "{core,shared,validators}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+        "{core,shared,validators,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
         "formats/{format:matches(^(pdf|xml)$)}/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
       ],
       "mustNot": {
@@ -79,8 +79,8 @@
     },
     {
       "name": "core-shared-sources-must-not-import-formats",
-      "description": "Core and shared sources cannot import format packages.",
-      "paths": "{core,shared}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "description": "Core, shared, and runtime sources cannot import format packages.",
+      "paths": "{core,shared,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "must": [
         {
           "name": "forbid-pdf",
@@ -143,10 +143,19 @@
     {
       "name": "non-validator-sources-must-not-import-validator",
       "description": "Validators are leaf product surfaces and cannot be imported by non-validator sources.",
-      "paths": "{core,shared,formats,signers}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "paths": "{core,shared,formats,signers,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
         "importValuesFrom": "@signature-kit/iti",
         "importTypesFrom": "@signature-kit/iti"
+      }
+    },
+    {
+      "name": "existing-packages-must-not-import-local",
+      "description": "Core, shared, format, signer, and validator sources cannot import the local runtime.",
+      "paths": "{core,shared,formats,signers,validators}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "mustNot": {
+        "importValuesFrom": "@signature-kit/local",
+        "importTypesFrom": "@signature-kit/local"
       }
     },
     {

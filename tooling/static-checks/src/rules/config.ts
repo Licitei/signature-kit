@@ -15,7 +15,7 @@ const hasSecretStringInInternalConfig = (context: CheckContext): boolean =>
   !/\bcredentials\s*:/.test(context.line) &&
   /(?:password|secret|token|privatekey|apikey|\bcertificate\b)/i.test(context.line) &&
   /\b(?:Schema\.String|Schema\.NonEmptyString|nonEmptyString|:\s*string)\b/.test(context.line) &&
-  !/\bRedacted\b/.test(context.line);
+  !/\b(?:Redacted|Schema\.RedactedFromValue)\b/.test(context.line);
 
 export const configChecks: readonly Check[] = [
   {

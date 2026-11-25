@@ -68,6 +68,7 @@
         "shared/**/tsconfig.json",
         "signers/**/tsconfig.json",
         "validators/**/tsconfig.json",
+        "runtime/**/tsconfig.json",
         "apps/signing-domain/tsconfig.json"
       ],
       "options": {

@@ -56,6 +56,9 @@
       "path": "./validators/iti"
     },
     {
+      "path": "./runtime/local"
+    },
+    {
       "path": "./apps/signing-domain"
     }
   ]

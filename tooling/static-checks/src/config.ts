@@ -21,7 +21,7 @@ export const skippedSegments: Record<string, true> = {
 export const skippedSuffixes: readonly string[] = [".d.ts", ".tsbuildinfo", "README.md"];
 
 export const packageToolingPathPattern =
-  /(?:^|\/)(?:core|signers|formats|validators|shared)\/[^/]+\/(?:scripts|bench)\//;
+  /(?:^|\/)(?:core|signers|formats|validators|shared|runtime)\/[^/]+\/(?:scripts|bench)\//;
 
 export const roots = [
   "core",
@@ -29,6 +29,7 @@ export const roots = [
   "formats",
   "validators",
   "shared",
+  "runtime",
   "apps/signing-domain",
   "apps/docs/components/sections/providers-showcase.tsx",
   "apps/docs/content/docs/providers",
@@ -42,6 +43,12 @@ export const promiseBoundaryModules: readonly string[] = [
 export const nodeBoundaryModules: readonly string[] = ["shared/pdf-core/src/node.ts"];
 
 export const allowedEffectProvideSites: Record<string, readonly string[]> = {
+  "runtime/local/src/client.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
+  "runtime/local/src/worker.ts": [
+    "localHandlersLayer",
+    "RpcServer.layerProtocolWorkerRunner",
+    "BrowserWorkerRunner.layer",
+  ],
   "formats/pdf/src/worker-browser.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
   "formats/pdf/src/browser.worker.ts": [
     "pdfWorkerHandlersLayer",
@@ -100,5 +107,6 @@ export const adapterOrPackagePathPrefixes: readonly string[] = [
   "signers/",
   "formats/",
   "validators/",
+  "runtime/",
 ];
 export const signatureRuntimePrefix = "core/signatures/";
