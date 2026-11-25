@@ -128,6 +128,13 @@ it("signs a PDF from the home and exposes a verifiable download", async () => {
           expect.poll(() => host.querySelector("#site-overlay form")).not.toBeNull(),
         );
         yield* openOverlay(host, "signer");
+        yield* Effect.promise(() =>
+          expect
+            .poll(() => host.querySelector("#site-overlay [data-signing-ready]"), {
+              timeout: 30000,
+            })
+            .not.toBeNull(),
+        );
         const form = host.querySelector<HTMLFormElement>("#site-overlay form");
         const certificate = host.querySelector<HTMLInputElement>("#site-overlay [name=pfx]");
         const documentInput = host.querySelector<HTMLInputElement>("#site-overlay [name=pdf]");
@@ -225,6 +232,7 @@ it("hydrates the server-rendered home and keeps theme controls interactive", asy
         );
         frame.srcdoc = `<!doctype html><html><body>${rendered.html}<script type="module">
       import { Runtime } from "/@id/foldkit";
+      window.__vitest_browser_runner__ = parent.__vitest_browser_runner__;
       import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
       const container = document.querySelector("[data-foldkit-app]");
       Runtime.hydrate(Runtime.makeApplication({ Flags, Model, init, update, view, container }), { buildId: "home-browser-test" });
@@ -282,6 +290,7 @@ it("persists theme across hydration and reload", async () => {
             );
             frame.srcdoc = `<!doctype html><html><body>${rendered.html}<script type="module">
         import { Runtime } from "/@id/foldkit";
+        window.__vitest_browser_runner__ = parent.__vitest_browser_runner__;
         import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
         const container = document.querySelector("[data-foldkit-app]");
         Runtime.hydrate(Runtime.makeApplication({ Flags, Model, init, update, view, container }), { buildId: "home-theme-test" });
@@ -678,6 +687,11 @@ it("keeps two real signer instances independent after one is disposed", async ()
                 ),
               ),
               (handle) => Effect.sync(() => handle.dispose()),
+            );
+            yield* Effect.promise(() =>
+              expect
+                .poll(() => host.querySelector("[data-signing-ready]"), { timeout: 30000 })
+                .not.toBeNull(),
             );
             return { host, runtime };
           });

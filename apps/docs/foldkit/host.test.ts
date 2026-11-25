@@ -206,6 +206,22 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(post.headers.get("allow")).toBe("GET, HEAD");
           }
           expect((await request(new URL("/blog/not-real.webp", origin))).status).toBe(404);
+          for (const [path, type] of [
+            ["/llms.txt", /text\/plain/],
+            ["/llms-full.txt", /text\/plain/],
+            ["/robots.txt", /text\/plain/],
+            ["/.well-known/search?q=clicksign", /text\/markdown/],
+            ["/api/search.json?q=clicksign", /application\/json/],
+          ] satisfies ReadonlyArray<readonly [string, RegExp]>) {
+            const agent = await request(new URL(path, origin));
+            expect(agent.status).toBe(200);
+            expect(agent.headers.get("content-type")).toMatch(type);
+          }
+          const negotiated = await request(new URL("/docs/get-started/quickstart", origin), {
+            headers: { accept: "text/markdown" },
+          });
+          expect(negotiated.headers.get("content-type")).toMatch(/text\/markdown/);
+          expect(await negotiated.text()).toMatch(/^---\nagent:/);
           const registry = await request(new URL("/r/registry.json", origin));
           expect(registry.status).toBe(200);
           expect(registry.headers.get("content-type")).toMatch(/application\/json/);

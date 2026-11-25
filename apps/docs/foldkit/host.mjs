@@ -30,6 +30,16 @@ export const fetch = async (request) => {
   const route = Schema.decodeUnknownOption(
     Schema.Struct({ _tag: Schema.Literal("Page"), path: Schema.String }),
   )(handler.parsePublicUrl(request.url));
+  const agentPath =
+    path === "/llms.txt" ||
+    path === "/llms-full.txt" ||
+    path === "/robots.txt" ||
+    path === "/.well-known/search" ||
+    path === "/api/search.json";
+  if (agentPath === true) {
+    const result = await handler.renderPage(request);
+    return result._tag === "Responded" ? result.response : new Response(null, { status: 404 });
+  }
   const wantsMarkdown =
     path.startsWith("/docs") === true &&
     String(request.headers.get("accept") ?? "").includes("text/markdown") === true;

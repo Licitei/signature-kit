@@ -72,12 +72,18 @@ export const CopyHome = Command.define("CopyHome", {
 export const CopyToast = Toast.make(Schema.Struct({ text: Schema.String }));
 
 export const homeProviders = [
-  { name: "Clicksign", slug: "clicksign", logo: "/landing/clicksign.svg", height: 26 },
-  { name: "Assinafy", slug: "assinafy", logo: "/landing/assinafy.png", height: 24 },
-  { name: "ZapSign", slug: "zapsign", logo: "/landing/zapsign.svg", height: 30 },
-  { name: "DocuSeal", slug: "docuseal", logo: "/landing/docuseal.svg", height: 26 },
-  { name: "Documenso", slug: "documenso", logo: "/landing/documenso.svg", height: 21 },
-] satisfies ReadonlyArray<{ name: string; slug: string; logo: string; height: number }>;
+  { name: "Clicksign", slug: "clicksign", logo: "/landing/clicksign.svg", height: 26, width: 109 },
+  { name: "Assinafy", slug: "assinafy", logo: "/landing/assinafy.webp", height: 24, width: 111 },
+  { name: "ZapSign", slug: "zapsign", logo: "/landing/zapsign.svg", height: 30, width: 103 },
+  { name: "DocuSeal", slug: "docuseal", logo: "/landing/docuseal.svg", height: 26, width: 26 },
+  { name: "Documenso", slug: "documenso", logo: "/landing/documenso.svg", height: 21, width: 148 },
+] satisfies ReadonlyArray<{
+  name: string;
+  slug: string;
+  logo: string;
+  height: number;
+  width: number;
+}>;
 
 export const signFreeDescription =
   "Assine documentos PDF grátis no navegador com certificado digital A1. O arquivo, o .p12/.pfx e a senha ficam no seu dispositivo.";
@@ -302,6 +308,7 @@ const providerLogo = <Message>(
     h.Src(provider.logo),
     h.Alt(provider.slug === "docuseal" ? "" : provider.name),
     h.Height(String(provider.height)),
+    h.Width(String(provider.width)),
     h.Loading("lazy"),
     h.Decoding("async"),
     ...sx(h, landing.providerLogo),
@@ -334,9 +341,10 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
                 ],
                 [
                   h.img([
-                    h.Src("/landing/licitei.png"),
+                    h.Src("/landing/licitei.webp"),
                     h.Alt("Licitei"),
                     h.Height("15"),
+                    h.Width("68"),
                     ...sx(h, landing.backedLogo),
                   ]),
                 ],

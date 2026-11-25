@@ -110,12 +110,18 @@ export const contentSource = (section: string, slug: string) =>
   sources[`../content/${section}/${slug || "index"}.mdx`];
 export const contentPaths = () =>
   Object.keys(sources).map((path) => path.slice("../content/".length, -4));
+const parsedContent = new Map<string, ReturnType<typeof parseContent>>();
 export const resolveContent = (section: string, slug: string) => {
   const path = `../content/${section}/${slug || "index"}.mdx`;
+  const cached = parsedContent.get(path);
+  if (cached !== undefined) return cached;
   const source = sources[path];
-  return source === undefined ? undefined : parseContent(source);
+  if (source === undefined) return undefined;
+  const parsed = parseContent(source);
+  parsedContent.set(path, parsed);
+  return parsed;
 };
-export const docsNavigation = () => {
+const buildDocsNavigation = () => {
   const read = (dir: string) => {
     const raw = metadata[`../content/docs/${dir}meta.json`];
     if (raw === undefined) return undefined;
@@ -159,6 +165,8 @@ export const docsNavigation = () => {
       : [];
   });
 };
+const docsNavigationTree = buildDocsNavigation();
+export const docsNavigation = () => docsNavigationTree;
 
 export const expressionText = (
   node: Extract<ContentNode, { type: "mdxTextExpression" | "mdxFlowExpression" }>,
@@ -560,7 +568,7 @@ export const renderContent = <Message>(
               [...sx(h, prose.step)],
               [
                 (attr("title")?.length ?? 0) > 0
-                  ? h.h3([...sx(h, prose.stepTitle)], [attr("title") ?? ""])
+                  ? h.h2([...sx(h, prose.stepTitle)], [attr("title") ?? ""])
                   : null,
                 ...children,
               ],

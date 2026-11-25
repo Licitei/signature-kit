@@ -1280,9 +1280,10 @@ export const createView = (source: {
                             [...sx(h, shell.footerLicitei), h.Href("https://licitei.com.br")],
                             [
                               h.img([
-                                h.Src("/landing/licitei.png"),
+                                h.Src("/landing/licitei.webp"),
                                 h.Alt("Licitei"),
                                 h.Height("13"),
+                                h.Width("59"),
                                 ...sx(h, shell.footerLiciteiLogo),
                               ]),
                             ],

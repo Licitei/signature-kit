@@ -11,7 +11,7 @@ export const prose = stylex.create({
     paddingTop: "72px",
     color: "#ffffff",
     backgroundColor: tokens.ink,
-    backgroundImage: "url(/landing/hero-chapada.png)",
+    backgroundImage: "url(/landing/hero-chapada.webp)",
     backgroundPosition: "center 46%",
     backgroundSize: { default: "1600px auto", [wide]: "100% auto" },
     backgroundRepeat: "no-repeat",

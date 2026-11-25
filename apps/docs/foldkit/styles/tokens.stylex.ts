@@ -6,9 +6,9 @@ export const tokens = stylex.defineVars({
   bgSubtle: "#f1efe9",
   fg: "#0d1a20",
   muted: "#55606a",
-  faint: "#7a8590",
+  faint: "#5f6b75",
   line: "rgba(13, 26, 32, 0.1)",
-  accent: "#F66013",
+  accent: "#C9460A",
   accentSoft: "#fff1e8",
   teal: "#0B5275",
   tealSoft: "#eef5f8",
@@ -23,7 +23,7 @@ export const tokens = stylex.defineVars({
   header: "rgba(250, 250, 247, 0.86)",
   halo: "#ffffff",
   sealShadow: "rgba(0, 0, 0, 0.18)",
-  focus: "0 0 0 2px #fafaf7, 0 0 0 4px #F66013",
+  focus: "0 0 0 2px #fafaf7, 0 0 0 4px #C9460A",
 });
 
 export const darkTheme = stylex.createTheme(tokens, {

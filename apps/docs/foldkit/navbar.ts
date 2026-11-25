@@ -123,7 +123,7 @@ const styles = stylex.create({
     overflow: "hidden",
     borderRadius: "11px",
     backgroundColor: tokens.ink,
-    backgroundImage: "url(/landing/drop-chapada.png)",
+    backgroundImage: "url(/landing/drop-chapada.webp)",
     backgroundSize: "cover",
     backgroundPosition: "center 30%",
     imageRendering: "pixelated",
@@ -303,6 +303,7 @@ const content = <Message>(h: HtmlBuilder<Message>, kind: NavMenuKind): Html => {
                           h.Src(provider.logo),
                           h.Alt(provider.slug === "docuseal" ? "" : provider.name),
                           h.Height("18"),
+                          h.Width(String(Math.round((18 * provider.width) / provider.height))),
                           ...sx(h, styles.providerLogo),
                         ]),
                         ...(provider.slug === "docuseal"

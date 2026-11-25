@@ -35,12 +35,12 @@ export const groupReleases = <Entry extends ChangelogEntry>(entries: ReadonlyArr
 };
 
 const backgrounds = stylex.create({
-  bg0: { backgroundImage: "url(/landing/release-bg-0.png)" },
-  bg1: { backgroundImage: "url(/landing/release-bg-1.png)" },
-  bg2: { backgroundImage: "url(/landing/release-bg-2.png)" },
-  bg3: { backgroundImage: "url(/landing/release-bg-3.png)" },
-  bg4: { backgroundImage: "url(/landing/release-bg-4.png)" },
-  bg5: { backgroundImage: "url(/landing/release-bg-5.png)" },
+  bg0: { backgroundImage: "url(/landing/release-bg-0.webp)" },
+  bg1: { backgroundImage: "url(/landing/release-bg-1.webp)" },
+  bg2: { backgroundImage: "url(/landing/release-bg-2.webp)" },
+  bg3: { backgroundImage: "url(/landing/release-bg-3.webp)" },
+  bg4: { backgroundImage: "url(/landing/release-bg-4.webp)" },
+  bg5: { backgroundImage: "url(/landing/release-bg-5.webp)" },
 });
 const backgroundList = [
   backgrounds.bg0,

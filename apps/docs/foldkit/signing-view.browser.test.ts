@@ -51,6 +51,11 @@ const application = Effect.gen(function* () {
       .poll(() => host.querySelector<HTMLButtonElement>("[data-signing-mode-option=completa]"))
       .not.toBeNull(),
   );
+  yield* Effect.promise(() =>
+    expect
+      .poll(() => host.querySelector("[data-signing-ready]"), { timeout: 30000 })
+      .not.toBeNull(),
+  );
   host.querySelector<HTMLButtonElement>("[data-signing-mode-option=completa]")?.click();
   yield* Effect.promise(() =>
     expect
@@ -495,6 +500,7 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
         );
         frame.srcdoc = `<!doctype html><html><head><title>Signing</title></head><body>${rendered.html}<script type="module">
       import { Runtime } from "/@id/foldkit";
+      window.__vitest_browser_runner__ = parent.__vitest_browser_runner__;
       import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
       const container = document.querySelector("[data-foldkit-app]");
       window.beforeHydrationForm = document.querySelector("form:has([name=pfx])");
@@ -510,6 +516,11 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
         const serverForm = doc.querySelector<HTMLFormElement>("form:has([name=pfx])");
         if (serverForm === null) return expect.fail("Server form missing");
         serverForm.addEventListener("submit", (event) => event.preventDefault());
+        yield* Effect.promise(() =>
+          expect
+            .poll(() => doc.querySelector("[data-signing-ready]") !== null, { timeout: 30000 })
+            .toBe(true),
+        );
         yield* Effect.promise(() =>
           expect
             .poll(

@@ -251,7 +251,7 @@ export const shell = stylex.create({
     paddingBottom: { default: "min(110vw, 520px)", [desktop]: 0 },
     color: "#ffffff",
     backgroundColor: tokens.ink,
-    backgroundImage: "url(/landing/footer-mandacaru.png)",
+    backgroundImage: "url(/landing/footer-mandacaru.webp)",
     backgroundPosition: "center bottom",
     backgroundSize: "100% auto",
     backgroundRepeat: "no-repeat",

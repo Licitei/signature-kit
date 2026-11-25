@@ -100,7 +100,7 @@ describe("Foldkit content", () => {
     );
     const html = result.html;
     expect(html).toMatch(
-      /<p[^>]*>Before <\/p><ol class="steps[^"]*"><li[^>]*><h3[^>]*>One<\/h3>Body<\/li><\/ol><p[^>]*> after<\/p>/,
+      /<p[^>]*>Before <\/p><ol class="steps[^"]*"><li[^>]*><h2[^>]*>One<\/h2>Body<\/li><\/ol><p[^>]*> after<\/p>/,
     );
     expect(html).toMatch(
       /<p[^>]*><em>Em before <\/em><\/p><aside class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*><strong[^>]*>Notice<\/strong>Inside <strong>bold<\/strong><\/div><\/aside><p[^>]*><em> em after<\/em><\/p>/,
@@ -111,7 +111,7 @@ describe("Foldkit content", () => {
     expect(html).toMatch(/<p[^>]*>Catalog before <\/p><div class="error-catalog/);
     expect(html).toMatch(/<p[^>]*> catalog after<\/p>/);
     expect(html).toMatch(
-      /Outer before <\/p><ol class="steps[^"]*"><li[^>]*><h3[^>]*>Nested<\/h3>Nested body<\/li><\/ol><p[^>]*> outer after/,
+      /Outer before <\/p><ol class="steps[^"]*"><li[^>]*><h2[^>]*>Nested<\/h2>Nested body<\/li><\/ol><p[^>]*> outer after/,
     );
   });
 
@@ -133,7 +133,7 @@ describe("Foldkit content", () => {
       /<p[^>]*><a[^>]*href="\/ok"[^>]*>Link before <\/a><\/p><aside class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*>Notice<\/div><\/aside><p[^>]*><a[^>]*href="\/ok"[^>]*> link after<\/a><\/p>/,
     );
     expect(result.html).toMatch(
-      /<p[^>]*>Before <\/p><div class="card[^"]*"><strong>Outer<\/strong><p[^>]*>card before <em>em <\/em><\/p><ol class="steps[^"]*"><li[^>]*><h3[^>]*>One<\/h3>Body<\/li><\/ol><p[^>]*><em> tail<\/em><\/p><\/div><p[^>]*> after<\/p>/,
+      /<p[^>]*>Before <\/p><div class="card[^"]*"><strong>Outer<\/strong><p[^>]*>card before <em>em <\/em><\/p><ol class="steps[^"]*"><li[^>]*><h2[^>]*>One<\/h2>Body<\/li><\/ol><p[^>]*><em> tail<\/em><\/p><\/div><p[^>]*> after<\/p>/,
     );
     await expect(
       render(

@@ -179,7 +179,7 @@ export const createServerComposition = (
           `<meta name="agent:${key}" content="${value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;")}">`,
       )
       .join("");
-    const agentHead = `${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
+    const agentHead = `<link rel="preload" as="image" href="/landing/hero-chapada.webp" fetchpriority="high">${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
     return Server.renderDocument(application, assets, { head: head + jsonLd + agentHead });
   };
   const renderPage = async (request: Request, buildId?: string): Promise<Server.EntryResult> => {
