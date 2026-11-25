@@ -21,7 +21,7 @@ else
   exit 1
 fi
 
-CARGO_TARGET_DIR="$TARGET_DIR" CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo build --locked --release --target wasm32-unknown-unknown --package signature-kit-wasm
+CARGO_TARGET_DIR="$TARGET_DIR" CARGO_PROFILE_RELEASE_OPT_LEVEL=2 cargo build --locked --release --target wasm32-unknown-unknown --package signature-kit-wasm
 mkdir -p "$OUT_DIR"
 "$WASM_OPT" -O3 \
   --enable-bulk-memory \

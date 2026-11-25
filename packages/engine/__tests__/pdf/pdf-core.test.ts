@@ -14,7 +14,7 @@ import {
   type CorpusFixtureName,
 } from "./corpus.ts";
 
-const MAX_WASM_BYTES = 1144 * 1024;
+const MAX_WASM_BYTES = 1184 * 1024;
 const wasmUrl = new URL("../../dist/wasm/signature-kit.wasm", import.meta.url);
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 

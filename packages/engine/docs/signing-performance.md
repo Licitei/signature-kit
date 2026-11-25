@@ -155,6 +155,75 @@ validates the batch and transfers it through RPC.
 | 20 pages                |               13,109 → 12,261 |                        6.30 → 4.20 |                    0.10 → 0.00 |
 | 200 pages               |               13,110 → 12,262 |                        6.30 → 5.90 |                    0.00 → 0.10 |
 
-Collection and drain run outside the prepare-to-receipt timing. This profile
-records the volume of attributes and gives a combined time for worker encoding,
-transfer, and receipt validation. It does not time each stage separately.
+Collection and drain run outside the prepare-to-receipt timing. In a separate
+Chromium run at opt-level `2`, encoding the combined page and worker batch
+with the RPC schema took 0.70 ms at 20 pages and 1.20 ms at 200 pages. The
+collection RPC took 4.60 and 5.70 ms respectively, including transfer and
+receipt validation. Both page drains were below the timer's 0.1 ms resolution.
+The same run measured warm signing at 9.60 ms and 16.30 ms, respectively,
+so the smaller batch does not establish a consistent signing latency at either size.
+
+## WASM optimization comparison
+
+The Rust 1.99.1 builds used the same checkout, Cargo target directory, and
+Binaryen 130 `wasm-opt -O3 --converge` pipeline. The only Rust build variable
+was `CARGO_PROFILE_RELEASE_OPT_LEVEL`. Raw size is from the optimized WASM.
+Gzip size is from `gzip -n -c`. The host was an Intel Xeon E5-2680 v4 with
+Bun 1.4.3, Node 26.13.1 and Chromium 156.0.8078.4.
+
+Full `bench:pdf` used 30 edital PDFs, five batches per level, and the first
+eight pages of the five smallest PDFs for render. Fixture columns show median
+signature scan / document inspection / full text extraction in milliseconds.
+The large fixture has 559 pages and 30,395,509 bytes.
+
+| Rust opt-level | Raw bytes | Gzip bytes | Text ms/page | Render ms/page | 150-page fixture (ms) |     Large fixture (ms) |
+| -------------- | --------: | ---------: | -----------: | -------------: | --------------------: | ---------------------: |
+| `s`            |   918,869 |    412,255 |        2.012 |          1.723 |    1.12 / 1.72 / 8.30 | 18.62 / 16.35 / 998.17 |
+| `2`            | 1,198,229 |    494,980 |        1.834 |          1.312 |    0.87 / 1.47 / 6.90 | 14.80 / 14.08 / 853.43 |
+| `3`            | 1,249,727 |    508,753 |        1.841 |          1.340 |    0.72 / 1.35 / 7.97 | 14.66 / 14.18 / 836.81 |
+
+Prepare plus confirmation includes self-verification. Each cell is warm median
+of seven / first sign on an open handle, in milliseconds. Both measurements
+use an already-open A1 session. The first PDF in each run also initializes the
+session's cached CMS signer. Chromium timings include both worker RPC calls.
+
+| Runtime                    | Synthetic PDF | `s` warm / first | `2` warm / first | `3` warm / first |
+| -------------------------- | ------------- | ---------------: | ---------------: | ---------------: |
+| Node                       | 1 page        |     5.98 / 56.73 |     7.10 / 57.70 |     7.12 / 58.55 |
+| Node                       | 20 pages      |     8.29 / 10.66 |     7.90 / 10.83 |     8.14 / 10.21 |
+| Node                       | 200 pages     |    15.26 / 20.63 |    13.14 / 20.31 |    14.78 / 18.69 |
+| Node                       | 21 MiB        |    31.45 / 41.15 |    19.15 / 24.28 |    35.75 / 42.49 |
+| Node, telemetry            | 1 page        |     6.86 / 16.75 |     7.41 / 18.70 |     8.94 / 20.29 |
+| Node, telemetry            | 20 pages      |      7.28 / 8.92 |      6.84 / 9.51 |     7.99 / 10.07 |
+| Node, telemetry            | 200 pages     |    13.94 / 19.16 |    12.35 / 16.21 |    15.11 / 16.00 |
+| Node, telemetry            | 21 MiB        |    30.68 / 32.83 |    22.22 / 30.66 |    22.68 / 44.82 |
+| Chromium worker            | 1 page        |     7.10 / 52.90 |     8.00 / 63.40 |     7.00 / 56.00 |
+| Chromium worker            | 20 pages      |     8.10 / 13.20 |     7.40 / 11.20 |     6.60 / 11.50 |
+| Chromium worker            | 200 pages     |    17.90 / 28.40 |    14.10 / 22.10 |    13.60 / 19.80 |
+| Chromium worker            | 21 MiB        |    44.30 / 79.00 |    25.00 / 46.10 |    21.50 / 39.10 |
+| Chromium worker, telemetry | 1 page        |     8.50 / 37.60 |     8.40 / 43.80 |     9.20 / 42.10 |
+| Chromium worker, telemetry | 20 pages      |    12.20 / 28.80 |     8.00 / 13.10 |     8.90 / 23.40 |
+| Chromium worker, telemetry | 200 pages     |    19.20 / 30.50 |    11.80 / 20.90 |    14.90 / 27.70 |
+| Chromium worker, telemetry | 21 MiB        |    43.30 / 84.80 |    25.00 / 33.60 |    25.30 / 40.70 |
+
+Use Rust `opt-level = 2`. Compared with `s`, text extraction was 8.8% faster per page, rendering was 23.9% faster per page, and the large signature scan was 20.5% faster. Levels `2` and `3` were within the observed run ranges on text and render. Their signing results varied by runtime. Level `2` saves 51,498 raw bytes and 13,773 gzip bytes against `3`. The budget increases from 1144 to 1184 KiB, leaving 14,187 bytes above the measured artifact.
+
+## Final comparison with 1.x and the previous cut
+
+Timings are milliseconds. The 1.x baseline ran Chromium signing in the page.
+Its fresh-sign figure includes A1 setup, so it measures a wider interval than
+2.0 first sign. The previous cut provided warm telemetry measurements for the
+Chromium worker. A dash marks a missing historical measurement.
+
+| Runtime         | PDF       | 1.x warm / fresh | Previous warm / first | Previous telemetry warm | Now warm / first | Now telemetry warm / first |
+| --------------- | --------- | ---------------: | --------------------: | ----------------------: | ---------------: | -------------------------: |
+| Node            | 1 page    |     7.10 / 71.69 |          6.98 / 54.26 |                       — |     7.10 / 57.70 |               7.41 / 18.70 |
+| Node            | 20 pages  |     8.17 / 68.43 |           6.49 / 8.15 |                       — |     7.90 / 10.83 |                6.84 / 9.51 |
+| Node            | 200 pages |    14.74 / 63.90 |         10.81 / 15.33 |                       — |    13.14 / 20.31 |              12.35 / 16.21 |
+| Node            | 21 MiB    |  170.62 / 200.12 |        21.25 / 235.42 |                       — |    19.15 / 24.28 |              22.22 / 30.66 |
+| Chromium worker | 1 page    |     9.70 / 65.40 |          8.00 / 63.40 |                    9.70 |     8.00 / 63.40 |               8.40 / 43.80 |
+| Chromium worker | 20 pages  |     7.90 / 48.00 |          7.10 / 11.10 |                   11.70 |     7.40 / 11.20 |               8.00 / 13.10 |
+| Chromium worker | 200 pages |    14.20 / 68.10 |         12.30 / 21.80 |                   16.00 |    14.10 / 22.10 |              11.80 / 20.90 |
+| Chromium worker | 21 MiB    |  151.20 / 232.40 |        22.00 / 296.70 |                   26.10 |    25.00 / 46.10 |              25.00 / 33.60 |
+
+At 21 MiB, open plus first sign measured 241.31 ms in Node and 334.80 ms in Chromium with telemetry off. The Chromium worker with telemetry took 8.00 ms on 20 pages and 11.80 ms on 200 pages. The default and telemetry variants ran separately, so differences between individual medians can include startup, GC, and host variation.
