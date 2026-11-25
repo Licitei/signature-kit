@@ -17,6 +17,8 @@ import { feedbackResponse } from "./feedback-server";
 import { agentMeta, agentResponse } from "./agents";
 import { signFreeDescription, signFreeFaqs, signFreeSteps } from "./home";
 import { siteOrigin } from "./site-origin";
+import geistFont from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
+import geistMonoFont from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url";
 
 export const createServerComposition = (
   source: {
@@ -179,7 +181,7 @@ export const createServerComposition = (
           `<meta name="agent:${key}" content="${value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;")}">`,
       )
       .join("");
-    const agentHead = `${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
+    const agentHead = `<link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preload" as="image" href="/landing/hero-chapada.webp" fetchpriority="high"><link rel="preload" as="font" type="font/woff2" href="${geistFont}" crossorigin><link rel="preload" as="font" type="font/woff2" href="${geistMonoFont}" crossorigin>${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
     return Server.renderDocument(application, assets, { head: head + jsonLd + agentHead });
   };
   const renderPage = async (request: Request, buildId?: string): Promise<Server.EntryResult> => {
@@ -196,7 +198,11 @@ export const createServerComposition = (
     }
     const path = new URL(request.url).pathname;
     const parsedImage = parsePublicUrl(request.url);
-    if (parsedImage?._tag === "Page" && parsedImage.path.endsWith(".webp")) {
+    if (
+      parsedImage?._tag === "Page" &&
+      parsedImage.path.endsWith(".webp") &&
+      !path.startsWith("/landing/")
+    ) {
       const imagePath = parsedImage.path.slice(0, -5);
       if (imagePath === "") return Server.Responded(new Response("Not found", { status: 404 }));
       const pagePath = imagePath === "index" ? homeRoute({}) : pageRoute({ path: imagePath });

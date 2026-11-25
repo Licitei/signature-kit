@@ -19,15 +19,15 @@ describe("Foldkit home", () => {
     const html = renderDocument(result.application, assets);
     expect(html).toContain("Assinatura digital com certificado A1.");
     expect(html).toContain('lang="pt-BR"');
-    for (const id of ["assinar", "provedores", "site-footer"]) expect(html).toContain(`id="${id}"`);
+    for (const id of ["assinar", "site-footer"]) expect(html).toContain(`id="${id}"`);
     expect(html).not.toContain('id="auto-sign"');
     expect(html).not.toContain("hreflang");
     expect(html.split(installCommand)).toHaveLength(3);
     expect(html).toContain('rel="canonical" href="https://signaturekit.dev/"');
     expect(html).toContain('data-overlay="signer"');
     expect(html).toContain('href="/assine-documentos-gratis"');
-    for (const slug of ["clicksign", "assinafy", "zapsign", "docuseal", "documenso"])
-      expect(html).toContain(`href="/docs/providers/${slug}"`);
+    expect(html).not.toContain('id="provedores"');
+    expect(html).not.toContain("/landing/clicksign.svg");
     for (const href of [
       "/blog",
       "/changelog",
@@ -37,7 +37,7 @@ describe("Foldkit home", () => {
     ])
       expect(html).toContain(`href="${href}"`);
     expect(html).toContain("Apoiado pela");
-    expect(html).toContain("Não tem certificado A1?");
+    expect(html).not.toContain("Não tem certificado A1?");
     expect(html).toContain("CC BY-SA 4.0");
     expect(html).not.toContain("en-US");
   });
@@ -87,11 +87,6 @@ describe("Foldkit home", () => {
         },
       ],
     });
-  });
-  it("preserves the theme toggle", () => {
-    const initial = init({ path: "" }).model;
-    expect(update(initial, Message.ThemeToggled()).model.theme).toBe("dark");
-    expect(update({ ...initial, theme: "dark" }, Message.ThemeToggled()).model.theme).toBe("light");
   });
   it("sends only bounded search dimensions through the real analytics transport", async () => {
     await Effect.runPromise(

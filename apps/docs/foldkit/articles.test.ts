@@ -4,7 +4,8 @@ import { once } from "node:events";
 import { DOMParser } from "@xmldom/xmldom";
 import { Effect, Schema } from "effect";
 import * as Server from "foldkit/experimental/server";
-import { parseContent, renderContent } from "./content";
+import { renderContent } from "./content";
+import { parseContent } from "./content-parse";
 import { Flags, init } from "./main";
 import type { HtmlBuilder } from "foldkit/html";
 import {

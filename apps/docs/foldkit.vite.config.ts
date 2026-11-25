@@ -1,5 +1,7 @@
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseContent } from "./foldkit/content-parse";
 import { parsePublicUrl } from "./foldkit/routes";
 import { siteOrigin } from "./foldkit/site-origin";
 import stylex from "@stylexjs/unplugin";
@@ -8,6 +10,45 @@ import { defineConfig } from "vite";
 import type { Plugin } from "vite";
 
 const docsRoot = path.dirname(fileURLToPath(import.meta.url));
+
+const contentDataId = "\0signaturekit-content-data";
+const contentFiles = (pattern: RegExp) =>
+  readdirSync(path.join(docsRoot, "content"), { recursive: true, encoding: "utf8" })
+    .filter((file) => pattern.test(file))
+    .map((file) => `../content/${file.split(path.sep).join("/")}`)
+    .sort();
+const prebuiltContent: Plugin = {
+  name: "signaturekit-prebuilt-content",
+  apply: "build",
+  enforce: "pre",
+  resolveId(source, importer) {
+    if (
+      this.environment.name !== "client" ||
+      source !== "./content-data" ||
+      importer === undefined ||
+      path.basename(importer) !== "content.ts"
+    )
+      return null;
+    return contentDataId;
+  },
+  load(id) {
+    if (id !== contentDataId) return null;
+    const read = (file: string) => readFileSync(path.join(docsRoot, "foldkit", file), "utf8");
+    const pages = contentFiles(/^(docs|blog|changelog)\/.*\.mdx$/);
+    const metadata = contentFiles(/^docs\/(.*\/)?meta[^/]*\.json$/);
+    const parsed = JSON.stringify(
+      Object.fromEntries(pages.map((file) => [file, parseContent(read(file))])),
+      (key, value) => (key === "position" || key === "loc" || key === "range" ? undefined : value),
+    );
+    return [
+      `export const contentSources = {};`,
+      `export const contentKeys = ${JSON.stringify(pages)};`,
+      `export const contentMetadata = ${JSON.stringify(Object.fromEntries(metadata.map((file) => [file, read(file)])))};`,
+      `const parsed = JSON.parse(${JSON.stringify(parsed)});`,
+      `export const loadContent = (path) => parsed[path];`,
+    ].join("\n");
+  },
+};
 
 const socialImages: Plugin = {
   name: "signaturekit-social-images",
@@ -27,7 +68,13 @@ const socialImages: Plugin = {
         (url.pathname.startsWith("/docs") &&
           (url.pathname.endsWith(".md") ||
             String(request.headers.accept ?? "").includes("text/markdown")));
-      if (!agentRoute && (route?._tag !== "Page" || !route.path.endsWith(".webp"))) return next();
+      if (
+        !agentRoute &&
+        (route?._tag !== "Page" ||
+          !route.path.endsWith(".webp") ||
+          url.pathname.startsWith("/landing/"))
+      )
+        return next();
       const controller = new AbortController();
       const cancel = () => controller.abort();
       response.once("close", cancel);
@@ -85,6 +132,7 @@ export default defineConfig({
       unstable_moduleResolution: { type: "commonJS", rootDir: docsRoot },
     }),
     socialImages,
+    prebuiltContent,
     foldkit({
       devToolsMcpPort: false,
       ssr: {

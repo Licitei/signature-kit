@@ -119,6 +119,7 @@ it("hydrates the server-rendered demo and runs its controls", async () => {
         doc.open();
         doc.write(`<!doctype html><html><body>${rendered.html}<script type="module">
       import { Runtime } from "/@id/foldkit";
+      window.__vitest_browser_runner__ = parent.__vitest_browser_runner__;
       import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
       const container = document.querySelector("[data-foldkit-app]");
       Runtime.hydrate(Runtime.makeApplication({ Flags, Model, init, update, view, container }), { buildId: "home-demo-hydration" });

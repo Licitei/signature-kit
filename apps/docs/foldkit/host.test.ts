@@ -117,6 +117,11 @@ test("serves the Foldkit build over HTTP", async () => {
               join(fixture, "dist-foldkit/client/r/registry.json"),
             );
             await writeFile(join(fixture, "dist-foldkit/client/favicon.svg"), "<svg></svg>");
+            await mkdir(join(fixture, "dist-foldkit/client/landing"), { recursive: true });
+            await copyFile(
+              new URL("public/landing/hero-chapada.webp", root),
+              join(fixture, "dist-foldkit/client/landing/hero-chapada.webp"),
+            );
             await writeFile(join(fixture, "dist-foldkit/client/manifest.json"), "private manifest");
             await writeFile(join(fixture, "dist-foldkit/client/source.ts"), "private source");
             await writeFile(join(fixture, "outside.json"), "outside sentinel");
@@ -136,13 +141,13 @@ test("serves the Foldkit build over HTTP", async () => {
               join(fixture, "dist-foldkit/client/index.html"),
               `${generated}${marker}`,
             );
-            const asset = generated.match(/(?:src|href)="(\/assets\/[^"]+\.js)"/)?.[1];
-            expect(asset).toBeDefined();
-            if (asset === undefined) return expect.fail("Missing asset");
-            await copyFile(
-              new URL(`dist-foldkit/client${asset}`, root),
-              join(fixture, "dist-foldkit/client", asset),
-            );
+            const assets = [...generated.matchAll(/(?:src|href)="(\/assets\/[^"]+\.js)"/g)];
+            expect(assets.length).toBeGreaterThan(0);
+            for (const [, asset = ""] of assets)
+              await copyFile(
+                new URL(`dist-foldkit/client${asset}`, root),
+                join(fixture, "dist-foldkit/client", asset),
+              );
           }),
         );
         const server = yield* child("bun", ["foldkit/host.mjs"], fixture);
@@ -160,16 +165,39 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(html).toContain(marker);
             expect(response.status).toBe(200);
             expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
-            expect(html).toBe(generated);
+            expect(response.headers.get("cache-control")).toBe(
+              "public, max-age=0, s-maxage=300, stale-while-revalidate=86400",
+            );
+            expect(response.headers.get("vary")).toBe("accept-encoding");
+            expect(html).not.toContain('rel="modulepreload"');
+            expect(html).not.toMatch(/<script type="module" crossorigin src=/);
+            expect(html.replace(/<script type="module">[^<]*<\/script>/g, "")).toBe(
+              generated
+                .replace(/<link rel="modulepreload"[^>]*>/g, "")
+                .replace(/<script type="module"[^>]*src="[^"]+"><\/script>/g, ""),
+            );
             expect(html).toContain("Assinatura digital com certificado A1");
             expect(html).toContain(`lang="pt-BR"`);
             expect(html).toContain(`href="https://signaturekit.dev/"`);
             expect(html).toContain("data-foldkit-app");
-            const asset = html.match(/(?:src|href)="(\/assets\/[^"]+\.js)"/)?.[1];
+            const asset = html.match(/import\("(\/assets\/[^"]+\.js)"\)/)?.[1];
             expect(asset).toBeDefined();
             if (asset === undefined) return expect.fail("Missing asset");
             {
-              const assetResponse = await request(new URL(asset, origin));
+              const identity = await request(new URL(asset, origin), {
+                headers: { "accept-encoding": "identity" },
+              });
+              expect(identity.headers.get("content-encoding")).toBeNull();
+              expect(identity.headers.get("cache-control")).toBe(
+                "public, max-age=31536000, immutable",
+              );
+              const assetResponse = await request(new URL(asset, origin), {
+                headers: { "accept-encoding": "br" },
+              });
+              expect(assetResponse.headers.get("content-encoding")).toBe("br");
+              expect(Number(assetResponse.headers.get("content-length"))).toBeLessThan(
+                Number(identity.headers.get("content-length")),
+              );
               expect(assetResponse.status).toBe(200);
               expect(assetResponse.headers.get("content-type")).toMatch(/javascript/);
               expect((await assetResponse.text()).length).toBeGreaterThan(0);
@@ -206,6 +234,28 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(post.headers.get("allow")).toBe("GET, HEAD");
           }
           expect((await request(new URL("/blog/not-real.webp", origin))).status).toBe(404);
+          const art = await request(new URL("/landing/hero-chapada.webp", origin));
+          expect(art.status).toBe(200);
+          expect(art.headers.get("content-type")).toBe("image/webp");
+          expect(Buffer.from(await art.arrayBuffer())).toEqual(
+            await readFile(new URL("public/landing/hero-chapada.webp", root)),
+          );
+          for (const [path, type] of [
+            ["/llms.txt", /text\/plain/],
+            ["/llms-full.txt", /text\/plain/],
+            ["/robots.txt", /text\/plain/],
+            ["/.well-known/search?q=clicksign", /text\/markdown/],
+            ["/api/search.json?q=clicksign", /application\/json/],
+          ] satisfies ReadonlyArray<readonly [string, RegExp]>) {
+            const agent = await request(new URL(path, origin));
+            expect(agent.status).toBe(200);
+            expect(agent.headers.get("content-type")).toMatch(type);
+          }
+          const negotiated = await request(new URL("/docs/get-started/quickstart", origin), {
+            headers: { accept: "text/markdown" },
+          });
+          expect(negotiated.headers.get("content-type")).toMatch(/text\/markdown/);
+          expect(await negotiated.text()).toMatch(/^---\nagent:/);
           const registry = await request(new URL("/r/registry.json", origin));
           expect(registry.status).toBe(200);
           expect(registry.headers.get("content-type")).toMatch(/application\/json/);
@@ -213,6 +263,7 @@ test("serves the Foldkit build over HTTP", async () => {
           expect(Buffer.from(await registry.arrayBuffer())).toEqual(registryBytes);
           const registryHead = await request(new URL("/r/registry.json", origin), {
             method: "HEAD",
+            headers: { "accept-encoding": "identity" },
           });
           expect(registryHead.status).toBe(200);
           expect(registryHead.headers.get("content-type")).toBe(

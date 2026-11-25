@@ -4,9 +4,7 @@ import { Command, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { defineView } from "foldkit/submodel";
 import * as Mount from "foldkit/mount";
-import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
-import { createIllustrativePdf } from "@signature-kit/pdf/stamp";
-import { captureDocsEvent } from "../lib/posthog/client";
+import { captureDocsEvent } from "./analytics";
 import { landing } from "./styles/landing";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
@@ -66,15 +64,24 @@ const DemoMount = Mount.define("DemoMount", {
             if (status !== null) status.textContent = "Preparando exemplos…";
             if (run !== null) run.disabled = true;
             if (reset !== null) reset.disabled = true;
-            const program = Effect.forEach(variants, (variant, index) =>
-              createIllustrativePdf({
-                title: names[index] ?? "Example",
-                body: "Documento demonstrativo. Este conteúdo é apenas um exemplo visual.",
-                variant,
-                marked,
-                markLabel: "MARCA ILUSTRATIVA",
-              }),
-            ).pipe(Effect.provide(pdfCoreBrowserLayer));
+            const program = Effect.promise(() =>
+              Promise.all([
+                import("@signature-kit/pdf/stamp"),
+                import("@signature-kit/pdf-core/browser"),
+              ]),
+            ).pipe(
+              Effect.flatMap(([{ createIllustrativePdf }, { pdfCoreBrowserLayer }]) =>
+                Effect.forEach(variants, (variant, index) =>
+                  createIllustrativePdf({
+                    title: names[index] ?? "Example",
+                    body: "Documento demonstrativo. Este conteúdo é apenas um exemplo visual.",
+                    variant,
+                    marked,
+                    markLabel: "MARCA ILUSTRATIVA",
+                  }),
+                ).pipe(Effect.provide(pdfCoreBrowserLayer)),
+              ),
+            );
             Effect.runPromiseExitWith(context)(program, { signal }).then(
               (result) => {
                 if (closed || current !== generation) return;
@@ -256,7 +263,12 @@ export const homeDemoView = defineView<HomeDemoModel, Message>((model, h) => {
         toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
       }),
       h.div(
-        [...sx(h, landing.stage)],
+        [
+          ...sx(h, landing.stage),
+          h.Id(`home-demo-documents-panel-${String(model.active)}`),
+          h.Role("tabpanel"),
+          h.AriaLabelledBy(`home-demo-documents-tab-${String(model.active)}`),
+        ],
         [
           h.iframe([
             h.Attribute("data-demo-preview", ""),

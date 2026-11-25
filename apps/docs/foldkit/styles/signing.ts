@@ -6,6 +6,8 @@ const desktop = "@media (min-width: 960px)";
 export const signing = stylex.create({
   modes: {
     display: "inline-flex",
+    justifySelf: "start",
+    width: "fit-content",
     gap: "2px",
     padding: "3px",
     marginBottom: "14px",
@@ -28,7 +30,7 @@ export const signing = stylex.create({
     transitionProperty: "background-color, color, box-shadow",
     transitionDuration: "150ms",
     ":hover": { color: tokens.fg },
-    ":focus-visible": { outline: "none", boxShadow: tokens.focus },
+    ":focus-visible": { outline: "none", boxShadow: `inset 0 0 0 1.5px ${tokens.teal}` },
   },
   modeOn: {
     backgroundColor: tokens.bgElevated,

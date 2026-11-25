@@ -67,6 +67,7 @@ it("updates appearance toggles without storing certificate material in the model
     "identity",
     "logo",
     "mode",
+    "modeTabs",
     "pdf",
     "pfx",
     "rubric",
