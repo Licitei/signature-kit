@@ -1,15 +1,22 @@
+#[path = "revision_changes.rs"]
+mod changes;
+
 use alloc::rc::Rc;
 use core::mem;
 use std::collections::{HashMap, HashSet};
 
 use crate::deflate::adler32;
 use crate::document::Document;
+use crate::edit::final_eof_end;
+use crate::failure::{Failure, Outcome};
 use crate::filters::{self, paeth_filter};
 use crate::inflate::inflate;
 use crate::inspection::Limits;
 use crate::num::{f64_to_i64, sort_total, u64_to_f64};
 use crate::object::{Dict, Object};
 use crate::syntax::hex_value;
+
+pub(crate) use changes::{RevisionChanges, revision_changes};
 
 const MAX_REVISIONS: usize = 128;
 const MAX_SIGNATURE_DICTIONARIES: usize = 1024;
@@ -1740,6 +1747,47 @@ impl Reachability<'_, '_> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct RevisionIndex<'data> {
+    pdf: &'data [u8],
+    structure: Structure,
+}
+
+impl<'data> RevisionIndex<'data> {
+    pub(crate) fn contains_end(&self, end: usize) -> bool {
+        end <= self.pdf.len() && self.structure.terminal_for_range(self.pdf, end).is_some()
+    }
+
+    pub(crate) fn current(&self) -> &'data [u8] {
+        let end = self
+            .structure
+            .terminals
+            .last()
+            .map_or(0, |terminal| terminal.end(self.pdf));
+        self.pdf.get(..end).unwrap_or_default()
+    }
+
+    pub(crate) fn ends(&self) -> Vec<usize> {
+        self.structure
+            .terminals
+            .iter()
+            .map(|terminal| terminal.end(self.pdf))
+            .collect()
+    }
+}
+
+impl Terminal {
+    fn end(self, pdf: &[u8]) -> usize {
+        let tail = pdf.get(self.eof_end..).unwrap_or_default();
+        let extra = if tail.starts_with(b"\r\n") {
+            2
+        } else {
+            usize::from(tail.starts_with(b"\r") || tail.starts_with(b"\n"))
+        };
+        self.eof_end.saturating_add(extra)
+    }
+}
+
 pub(crate) fn analyze(pdf: &[u8], analysis: Analysis) -> Report {
     match analysis {
         Analysis::Scan => {
@@ -1819,6 +1867,49 @@ pub(crate) fn revision_complete(pdf: &[u8], end: usize) -> bool {
     Document::open(prefix, &Limits::default())
         .and_then(|document| document.catalog())
         .is_ok_and(|catalog| catalog.is_some())
+}
+
+pub(crate) fn revision_index(pdf: &[u8]) -> Outcome<RevisionIndex<'_>> {
+    let parse = |input| scan_revision_index(input);
+    match parse(pdf) {
+        Ok(index) => Ok(index),
+        Err(original) => {
+            let Some(end) = final_eof_end(pdf).filter(|end| *end < pdf.len()) else {
+                return Err(original);
+            };
+            let mut trimmed = parse(pdf.get(..end).unwrap_or_default())?;
+            trimmed.pdf = pdf;
+            Ok(trimmed)
+        }
+    }
+}
+
+fn scan_revision_index(pdf: &[u8]) -> Outcome<RevisionIndex<'_>> {
+    let (scan, revisions) = dictionary_scan(pdf)
+        .map_err(|reason| Failure::invalid(format!("could not parse PDF revisions: {reason:?}")))?;
+    if scan.flags.stream_failed || scan.flags.stream_uncertain {
+        return Err(Failure::invalid(
+            "could not bound a stream when reading PDF revisions",
+        ));
+    }
+    let mut scanner = Scanner::new(pdf, Mode::Revisions, revisions.as_ref());
+    scanner.own = scan.numbers;
+    scanner
+        .main_loop()
+        .map_err(|_cause| Failure::invalid("could not parse PDF revision structure"))?;
+    let mut structure = finish_structure(scanner);
+    hydrate(pdf, &mut structure).map_err(|reason| {
+        Failure::invalid(format!("could not read PDF cross-references: {reason:?}"))
+    })?;
+    if structure.terminals.is_empty()
+        || !structure
+            .terminals
+            .iter()
+            .all(|terminal| structure.chain_complete(*terminal))
+    {
+        return Err(Failure::invalid("incomplete PDF revision chain"));
+    }
+    Ok(RevisionIndex { pdf, structure })
 }
 
 fn byte_range_values(value: &Value) -> Option<[f64; 4]> {

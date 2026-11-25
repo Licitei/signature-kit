@@ -118,6 +118,33 @@ Work is bounded: 128 revisions, 1,024 signature dictionaries, 200,000 indirect n
 
 `revisionComplete(pdf, end)` is `true` when `pdf.subarray(0, end)` is a complete revision: it ends at `%%EOF` (trailing whitespace allowed), its cross-reference chain is intact, and the prefix opens as a document.
 
+### Preparing a signature
+
+`signatureFields(pdf)` reads the current AcroForm. Each signature field reports its fully qualified name, object reference when indirect, widgets, signed status, and FieldMDP lock. A signature value reports its parsed byte range, SubFilter, and covered revision end when available. The report also includes the catalog's DocMDP permission and the revision end offsets. A revision end includes the line break immediately following its `%%EOF` marker when present.
+
+`prepareSignature(pdf, request)` appends one incremental update and preserves every input byte. Select an unsigned field by its fully qualified name or create a top-level field on a zero-based page. Rectangles use `[left, bottom, right, top]` in PDF points. A visible appearance uses widget-relative coordinates, standard Helvetica fonts with WinAnsi text, gray or RGB components in `[0, 1]`, and an optional border or PNG. A new invisible signature can use `[0, 0, 0, 0]` with `{ kind: "none" }`.
+
+```ts
+const prepared =
+  yield *
+  core.prepareSignature(pdf, {
+    field: { kind: "create", name: "Approval", page: 0, rect: [36, 36, 252, 80] },
+    appearance: {
+      kind: "visible",
+      lines: [
+        { text: "Approved", font: "Helvetica-Bold", size: 12, position: [8, 16], color: [0] },
+      ],
+    },
+    date: "D:20261125123000Z",
+    contentsCapacity: 16384,
+    sha512: true,
+  });
+```
+
+The result contains the PDF, its four ByteRange numbers, SHA-256, and SHA-512 when requested. Embed the hex-encoded detached CMS at `contentsStart`, leaving any remaining zero padding in place through `contentsEnd` (exclusive). These offsets exclude the angle brackets. The default SubFilter is `ETSI.CAdES.detached`. `docMdp` can certify the first signature with permission 1, 2, or 3. Creating a field accepts `lock` with action `All`, `Include`, or `Exclude` and the applicable list of field names.
+
+`revisionChanges(pdf, fromRevisionEnd)` compares consecutive revisions after the supplied boundary. Each entry identifies its object, revision end, category, and whether the object was added, modified, or removed. `pageContentChanged` indicates a page content or resource change, including inherited resources. Entries with an unrecognized role are reported as `unknown`. A change to the document trailer uses the current catalog reference and the `catalogOther` category.
+
 ## Writing
 
 `document(pdf, options)` describes what an edit needs: `nextObjectNumber`, every page (`ref`, boxes, rotation, annotation count), whether the catalog has an AcroForm, the annotations of `annotationPages` (reference, widget flag, `/T` presence, `/Rect`, the `uri` of `/Link` annotations with a URI action, and the signature slot analysis of empty signature widgets), and with `fieldNamePrefix` the first unused `<prefix><n>` field name (or why the field tree could not be read within its depth, node, and name-length budgets).
@@ -343,6 +370,9 @@ The module exports `memory` and the functions below. The caller owns input and r
 | `pdf_core_page_diagnostics(pdf_ptr, pdf_len, flags, pages_ptr, pages_len) -> result_ptr`                 | Returns native text layer diagnostics for the selected pages.                                                    |
 | `pdf_core_render(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, scale: f64) -> result_ptr`               | Returns a render result block, or `0` when out of memory. `scale` is device pixels per point, `0 < scale <= 64`. |
 | `pdf_core_signatures(pdf_ptr, pdf_len, mode) -> result_ptr`                                              | Signature analysis; `mode` `0` scan, `1` dictionaries, `2` verification.                                         |
+| `pdf_core_signature_fields(pdf_ptr, pdf_len) -> result_ptr`                                              | Current signature fields, permissions, and revision boundaries.                                                  |
+| `pdf_core_prepare_signature(pdf_ptr, pdf_len, request_ptr, request_len) -> result_ptr`                   | Appends and hashes a single signature preparation.                                                               |
+| `pdf_core_revision_changes(pdf_ptr, pdf_len, from_revision_end) -> result_ptr`                           | Classifies object changes by revision.                                                                           |
 | `pdf_core_revision_complete(pdf_ptr, pdf_len, end) -> u32`                                               | `1` when the first `end` bytes are a complete revision, else `0`.                                                |
 | `pdf_core_document(pdf_ptr, pdf_len, flags, pages_ptr, pages_len, prefix_ptr, prefix_len) -> result_ptr` | Document description; `flags` bit 2 selects annotation pages.                                                    |
 | `pdf_core_edit(pdf_ptr, pdf_len, ops_ptr, ops_len) -> result_ptr`                                        | Applies an edit payload; the result payload is the new PDF.                                                      |
@@ -417,6 +447,15 @@ Little-endian: `magic` (`0x4d464450`, "PDFM"), `version` (`1`), then 256 records
 ### Edit payload (version 1)
 
 Little-endian and unaligned: `magic` (`0x44455044`, "PDED"), `version` (`1`), `flags` (bits 0–1 mode: `0` auto, `1` incremental, `2` rewrite; bit 2 object streams), `count`, then `count` operations. Each operation starts with its opcode (`1` setObject … `10` image, `11` standardFont, `12` signature, `13` repairCatalog, `14` png). Byte strings are a `u32` length followed by the bytes; references are `number`, `generation`; optional references use number `0` for none; targets are `kind` (`0` catalog, `1` page, `2` object), two `u32` arguments (page index, or number and generation), a step count, and steps (`0` + key bytes, or `1` + `u32` index).
+
+### Signature preparation and revision changes payloads
+
+All values are little-endian and unaligned. Integers are `u32` unless specified. A sized string or byte array is a byte length followed by data. Strings are UTF-8. Object references are number and generation, with zero number indicating an absent reference. Optional request data begins with a 0/1 presence word.
+
+- Preparation request (`0x52505350`, version 1) contains the field selector (0 existing, 1 create), name, page and four `f64` rectangle coordinates for create, contents capacity, SubFilter (0 CAdES, 1 PKCS#7), SHA-512 flag, DocMDP permission (0 absent), date, and optional reason, location, and contact. The lock word (0 absent, 1 All, 2 Include, 3 Exclude) precedes a counted list of field names when present. The optional appearance contains counted text lines (bold flag, `f64` size and two positions, color, text), optional border (width and color), and optional image (rectangle and PNG bytes). Colors use a component count and `f64` components.
+- Preparation result (`0x4F505350`, version 1) contains four ByteRange numbers, the two contents offsets, 32 raw SHA-256 bytes, sized SHA-512 bytes (zero length when absent), and the sized PDF.
+- Fields result (`0x46435350`, version 1) contains DocMDP, a counted list of revision ends, and a counted list of fields. Each field has name, reference, and flags (bits 0 signed, 1 signature details, 2 lock). Signature details contain an optional four-element `f64` ByteRange, revision end (zero absent), and SubFilter. The lock contains action and a counted list of names. Each counted widget has a reference, a page index (`0xFFFFFFFF` absent), and an optional four-element `f64` rectangle.
+- Changes result (`0x48435350`, version 1) contains a page-change flag and a count. Each 20-byte record has a reference, category (indices 0 through 9 in `PdfCoreRevisionChangeKindSchema` order), flags (bit 0 added, bit 1 removed), and revision end.
 
 ### Merge payload
 

@@ -2,12 +2,8 @@ macro_rules! sha2 {
     ($name:ident, $word:ty, $length:ty, $block:literal, $size:literal, $rounds:literal,
      $constants:ident, [$s0a:expr, $s0b:expr, $s0c:expr], [$s1a:expr, $s1b:expr, $s1c:expr],
      [$s2a:expr, $s2b:expr, $s2c:expr], [$s3a:expr, $s3b:expr, $s3c:expr]) => {
-        fn $name(data: &[u8], mut hash: [$word; 8]) -> [$word; 8] {
-            let bits = <$length>::try_from(data.len()).unwrap_or(0).wrapping_mul(8);
-            for block in padded(data, $block, &bits.to_be_bytes())
-                .as_chunks::<$block>()
-                .0
-            {
+        fn $name(parts: &[&[u8]], mut hash: [$word; 8]) -> [$word; 8] {
+            let mut compress = |block: &[u8; $block]| {
                 let mut words = [0; $rounds];
                 for (word, chunk) in words.iter_mut().zip(block.as_chunks::<$size>().0) {
                     *word = <$word>::from_be_bytes(*chunk);
@@ -60,6 +56,46 @@ macro_rules! sha2 {
                 for (slot, word) in hash.iter_mut().zip([a, b, c, d, e, f, word_g, word_h]) {
                     *slot = slot.wrapping_add(word);
                 }
+            };
+            let size = parts
+                .iter()
+                .map(|part| part.len())
+                .fold(0_usize, usize::saturating_add);
+            let bits = <$length>::try_from(size).unwrap_or(0).wrapping_mul(8);
+            let mut tail = [0_u8; $block];
+            let mut used = 0_usize;
+            for &part in parts {
+                let mut next = part;
+                if used != 0 {
+                    let space = tail.len().saturating_sub(used).min(part.len());
+                    if let Some((head, rest)) = part.split_at_checked(space) {
+                        if let Some(slot) = tail.get_mut(used..used.saturating_add(space)) {
+                            slot.copy_from_slice(head);
+                        }
+                        used = used.saturating_add(space);
+                        if used < $block {
+                            continue;
+                        }
+                        compress(&tail);
+                        next = rest;
+                    }
+                }
+                let (blocks, remaining) = next.as_chunks::<$block>();
+                for block in blocks {
+                    compress(block);
+                }
+                used = remaining.len();
+                if let Some(slot) = tail.get_mut(..used) {
+                    slot.copy_from_slice(remaining);
+                }
+            }
+            let padding = padded(
+                tail.get(..used).unwrap_or_default(),
+                $block,
+                &bits.to_be_bytes(),
+            );
+            for block in padding.as_chunks::<$block>().0 {
+                compress(block);
             }
             hash
         }
@@ -363,8 +399,12 @@ sha2!(
 );
 
 pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
+    sha256_parts(&[data])
+}
+
+pub(crate) fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {
     let words = sha256_words(
-        data,
+        parts,
         [
             0x6a09_e667,
             0xbb67_ae85,
@@ -384,6 +424,10 @@ pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 pub(crate) fn sha512(data: &[u8], truncated: bool) -> Vec<u8> {
+    sha512_parts(&[data], truncated)
+}
+
+pub(crate) fn sha512_parts(parts: &[&[u8]], truncated: bool) -> Vec<u8> {
     let initial = if truncated {
         [
             0xcbbb_9d5d_c105_9ed8,
@@ -407,7 +451,7 @@ pub(crate) fn sha512(data: &[u8], truncated: bool) -> Vec<u8> {
             0x5be0_cd19_137e_2179,
         ]
     };
-    sha512_words(data, initial)
+    sha512_words(parts, initial)
         .into_iter()
         .take(if truncated { 6 } else { 8 })
         .flat_map(u64::to_be_bytes)

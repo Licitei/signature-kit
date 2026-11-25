@@ -1,3 +1,6 @@
+#[path = "signing.rs"]
+mod signing;
+
 use alloc::rc::Rc;
 use core::str;
 use std::collections::HashSet;
@@ -12,6 +15,11 @@ use crate::png::{self, Image};
 use crate::revision::revision_complete;
 use crate::syntax::{Parser, skip_whitespace_at};
 use crate::write::{Body, Changes, Packing, incremental, rewrite};
+
+pub(crate) use signing::{
+    FieldLock, PreparedSignature, SignatureField, SignatureFields, prepare_signature,
+    signature_fields, signature_references,
+};
 
 const EDIT_MAGIC: u32 = 0x4445_4450;
 const EDIT_VERSION: u32 = 1;
@@ -150,6 +158,32 @@ impl<'data> Reader<'data> {
         Ok(slice)
     }
 
+    fn coordinates<const COUNT: usize>(&mut self, max: f64) -> Outcome<[f64; COUNT]> {
+        let mut result = [0.0_f64; COUNT];
+        for number in &mut result {
+            let end = self.pos.saturating_add(8);
+            let bytes = self
+                .data
+                .get(self.pos..end)
+                .and_then(|raw| <[u8; 8]>::try_from(raw).ok())
+                .ok_or_else(|| Failure::request("truncated signature coordinate"))?;
+            self.pos = end;
+            *number = f64::from_le_bytes(bytes);
+            if !number.is_finite() || number.abs() > max {
+                return Err(Failure::request("signature coordinate is out of range"));
+            }
+        }
+        Ok(result)
+    }
+
+    fn flag(&mut self) -> Outcome<bool> {
+        match self.u32()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(Failure::request("invalid signature request flag")),
+        }
+    }
+
     fn optional_reference(&mut self) -> Outcome<Option<ObjRef>> {
         let number = self.u32()?;
         let generation = u16::try_from(self.u32()?)
@@ -195,6 +229,14 @@ impl<'data> Reader<'data> {
             path.push(step);
         }
         Ok(Target { base, path })
+    }
+
+    fn text(&mut self) -> Outcome<&'data str> {
+        let bytes = self.bytes()?;
+        if bytes.len() > MAX_FIELD_CHARACTERS {
+            return Err(Failure::limit("signature text exceeds its size limit"));
+        }
+        str::from_utf8(bytes).map_err(|_cause| Failure::request("signature text must be UTF-8"))
     }
 
     fn u32(&mut self) -> Outcome<u32> {
@@ -303,30 +345,7 @@ impl Store<'_, '_> {
         let target = reader.target()?;
         let key = reader.bytes()?.to_vec();
         let value = parse_value(reader.bytes()?)?;
-        let (root, inner) = self.locate(&target, append)?;
-        let current = { self.dict_at(root, &inner)?.get(&key).cloned() };
-        match current {
-            Some(Object::Ref(reference)) => {
-                let Object::Array(items) = self.object_mut(reference)? else {
-                    return Err(Failure::request("edit target is not an array"));
-                };
-                apply_array(items, value, append);
-            }
-            Some(Object::Array(_)) => {
-                if let Some(Object::Array(items)) =
-                    dict_entry_mut(self.dict_at(root, &inner)?, &key)
-                {
-                    apply_array(items, value, append);
-                }
-            }
-            None if append => {
-                self.dict_at(root, &inner)?
-                    .insert(&key, Object::Array(vec![value]));
-            }
-            None => {}
-            Some(_) => return Err(Failure::request("edit target is not an array")),
-        }
-        Ok(())
+        self.edit_array(&target, &key, value, append)
     }
 
     fn dict_at(&mut self, root: ObjRef, path: &[Step]) -> Outcome<&mut Dict> {
@@ -357,6 +376,38 @@ impl Store<'_, '_> {
             None => dict
                 .entries
                 .retain(|(name, _)| name.as_slice() != key.as_slice()),
+        }
+        Ok(())
+    }
+
+    fn edit_array(
+        &mut self,
+        target: &Target,
+        key: &[u8],
+        value: Object,
+        append: bool,
+    ) -> Outcome<()> {
+        let (root, inner) = self.locate(target, append)?;
+        let current = { self.dict_at(root, &inner)?.get(key).cloned() };
+        match current {
+            Some(Object::Ref(reference)) => {
+                let Object::Array(items) = self.object_mut(reference)? else {
+                    return Err(Failure::request("edit target is not an array"));
+                };
+                apply_array(items, value, append);
+            }
+            Some(Object::Array(_)) => {
+                if let Some(Object::Array(items)) = dict_entry_mut(self.dict_at(root, &inner)?, key)
+                {
+                    apply_array(items, value, append);
+                }
+            }
+            None if append => {
+                self.dict_at(root, &inner)?
+                    .insert(key, Object::Array(vec![value]));
+            }
+            None => {}
+            Some(_) => return Err(Failure::request("edit target is not an array")),
         }
         Ok(())
     }
@@ -742,22 +793,25 @@ pub(crate) fn document_info(
         };
         Some(first_unused_field_name(&document, &fields, prefix)?)
     };
+    Ok(DocumentInfo {
+        acro_form: acro_form.is_some(),
+        annotations,
+        field_name,
+        next_object_number: next_object_number(&document),
+        pages: entries,
+    })
+}
+
+fn next_object_number(document: &Document<'_>) -> u32 {
     let declared = document
         .trailer()
         .get(b"Size")
         .and_then(Object::as_integer)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(0);
-    let next_object_number = declared
+    declared
         .max(u32::try_from(document.object_count()).unwrap_or(u32::MAX))
-        .max(1);
-    Ok(DocumentInfo {
-        acro_form: acro_form.is_some(),
-        annotations,
-        field_name,
-        next_object_number,
-        pages: entries,
-    })
+        .max(1)
 }
 
 fn annotation_items(document: &Document<'_>, page: &Page) -> Outcome<Option<Vec<Object>>> {
@@ -830,10 +884,7 @@ fn first_unused_field_name(
             continue;
         };
         let mut full_name = parent.clone();
-        let title = match dict.get(b"T") {
-            Some(value) => document.follow(value)?.as_string().map(decode_text_string),
-            None => None,
-        };
+        let title = field_title(document, dict)?;
         if let Some(name) = title {
             let name_length = name.encode_utf16().count();
             if name_length > MAX_FIELD_NAME {
@@ -852,17 +903,7 @@ fn first_unused_field_name(
             }
             characters = characters.saturating_add(processed);
             taken.extend(numbered_suffix(&name, prefix).map(|value| [value, 0, 0, 0]));
-            full_name = if parent.is_empty() {
-                name
-            } else {
-                let mut joined = String::with_capacity(
-                    parent.len().saturating_add(name.len()).saturating_add(1),
-                );
-                joined.push_str(&parent);
-                joined.push('.');
-                joined.push_str(&name);
-                joined
-            };
+            full_name = qualify(&parent, &name);
             taken.extend(numbered_suffix(&full_name, prefix).map(|value| [value, 0, 0, 0]));
         }
         let kids = match dict.get(b"Kids") {
@@ -893,6 +934,32 @@ fn first_unused_field_name(
     out.push_str(prefix);
     out.push_str(&unsigned_decimal(suffix));
     Ok(Ok(out))
+}
+
+fn field_title(document: &Document<'_>, dict: &Dict) -> Outcome<Option<String>> {
+    match dict.get(b"T") {
+        Some(value) => Ok(document.follow(value)?.as_string().map(decode_text_string)),
+        None => Ok(None),
+    }
+}
+
+fn field_type(document: &Document<'_>, dict: &Dict) -> Outcome<Option<Vec<u8>>> {
+    match dict.get(b"FT") {
+        Some(value) => Ok(document.follow(value)?.as_name().map(<[u8]>::to_vec)),
+        None => Ok(None),
+    }
+}
+
+fn qualify(parent: &str, title: &str) -> String {
+    if parent.is_empty() {
+        return title.to_owned();
+    }
+    let mut joined =
+        String::with_capacity(parent.len().saturating_add(title.len()).saturating_add(1));
+    joined.push_str(parent);
+    joined.push('.');
+    joined.push_str(title);
+    joined
 }
 
 fn numbered_suffix(name: &str, prefix: &str) -> Option<u64> {
@@ -949,7 +1016,7 @@ fn appendable<'data>(pdf: &'data [u8], limits: &Limits) -> Outcome<Document<'dat
     Err(Failure::new(FailureCode::DamagedXref, reason))
 }
 
-fn final_eof_end(pdf: &[u8]) -> Option<usize> {
+pub(crate) fn final_eof_end(pdf: &[u8]) -> Option<usize> {
     let marker = b"%%EOF";
     let start = pdf
         .windows(marker.len())
@@ -1095,10 +1162,7 @@ fn signature_slot(document: &Document<'_>, widget_object: &Object, widget: &Dict
     let mut has_value = false;
     let signature = |kind: &Option<Vec<u8>>| kind.as_deref() == Some(b"Sig".as_slice());
     for depth in 0..MAX_PARENT_DEPTH {
-        let field_type = match current.get(b"FT") {
-            Some(value) => document.follow(value)?.as_name().map(<[u8]>::to_vec),
-            None => None,
-        };
+        let field_type = field_type(document, &current)?;
         if inherited.is_none() && field_type.is_some() {
             inherited.clone_from(&field_type);
         }

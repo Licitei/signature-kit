@@ -75,6 +75,9 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.render",
   "pdfCore.paint",
   "pdfCore.signatures",
+  "pdfCore.signatureFields",
+  "pdfCore.prepareSignature",
+  "pdfCore.revisionChanges",
   "pdfCore.revision",
   "pdfCore.document",
   "pdfCore.edit",
@@ -96,6 +99,9 @@ export const PdfCoreOperationValue = {
   render: "pdfCore.render",
   paint: "pdfCore.paint",
   signatures: "pdfCore.signatures",
+  signatureFields: "pdfCore.signatureFields",
+  prepareSignature: "pdfCore.prepareSignature",
+  revisionChanges: "pdfCore.revisionChanges",
   revision: "pdfCore.revision",
   document: "pdfCore.document",
   edit: "pdfCore.edit",
@@ -121,6 +127,11 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCoreDisplayLists",
   "PdfCorePaintOptions",
   "PdfCoreSignatureReport",
+  "PdfCoreSignatureFields",
+  "PdfCorePrepareSignatureRequest",
+  "PdfCorePreparedSignature",
+  "PdfCoreRevisionChanges",
+  "PdfCoreRevisionEnd",
   "PdfCoreDocumentOptions",
   "PdfCoreDocument",
   "PdfCoreEditOperations",
@@ -146,6 +157,11 @@ export const PdfCoreSchemaNameValue = {
   displayLists: "PdfCoreDisplayLists",
   paintOptions: "PdfCorePaintOptions",
   signatureReport: "PdfCoreSignatureReport",
+  signatureFields: "PdfCoreSignatureFields",
+  prepareSignatureRequest: "PdfCorePrepareSignatureRequest",
+  preparedSignature: "PdfCorePreparedSignature",
+  revisionChanges: "PdfCoreRevisionChanges",
+  revisionEnd: "PdfCoreRevisionEnd",
   documentOptions: "PdfCoreDocumentOptions",
   document: "PdfCoreDocument",
   editOperations: "PdfCoreEditOperations",
@@ -412,6 +428,15 @@ export const PdfCoreExportsSchema = Schema.Struct({
   }),
   pdf_core_render: Schema.declare(isRenderFunction, { identifier: "pdf_core_render" }),
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
+  pdf_core_signature_fields: Schema.optional(
+    Schema.declare(isBufferFunction, { identifier: "pdf_core_signature_fields" }),
+  ),
+  pdf_core_prepare_signature: Schema.optional(
+    Schema.declare(isEditFunction, { identifier: "pdf_core_prepare_signature" }),
+  ),
+  pdf_core_revision_changes: Schema.optional(
+    Schema.declare(isSignaturesFunction, { identifier: "pdf_core_revision_changes" }),
+  ),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {
     identifier: "pdf_core_revision_complete",
   }),
@@ -650,6 +675,168 @@ export const PdfCoreStandardFontSchema = Schema.Literals([
 export type PdfCoreStandardFont = (typeof PdfCoreStandardFontSchema)["Type"];
 
 export const MAX_PDF_CORE_SIGNATURE_CONTENTS = 16 * 1024 * 1024;
+
+const pdfSignatureNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096));
+const pdfSignaturePermissionSchema = Schema.Literals([1, 2, 3]);
+const pdfSignatureColorComponentSchema = Schema.Finite.check(
+  Schema.isBetween({ minimum: 0, maximum: 1 }),
+);
+const pdfSignatureColorSchema = Schema.Union([
+  Schema.Tuple([pdfSignatureColorComponentSchema]),
+  Schema.Tuple([
+    pdfSignatureColorComponentSchema,
+    pdfSignatureColorComponentSchema,
+    pdfSignatureColorComponentSchema,
+  ]),
+]);
+const pdfSignaturePositiveSizeSchema = Schema.Finite.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(1_000_000),
+);
+const pdfSignaturePositionSchema = Schema.Finite.check(
+  Schema.isBetween({ minimum: 0, maximum: 1_000_000 }),
+);
+const pdfSignatureLockSchema = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("All") }),
+  Schema.Struct({
+    action: Schema.Literals(["Include", "Exclude"]),
+    fields: Schema.Array(pdfSignatureNameSchema).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(10_000),
+    ),
+  }),
+]);
+const pdfSignatureAppearanceSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("none") }),
+  Schema.Struct({
+    kind: Schema.Literal("visible"),
+    lines: Schema.Array(
+      Schema.Struct({
+        text: Schema.String,
+        font: Schema.Literals(["Helvetica", "Helvetica-Bold"]),
+        size: pdfSignaturePositiveSizeSchema,
+        position: Schema.Tuple([pdfSignaturePositionSchema, pdfSignaturePositionSchema]),
+        color: pdfSignatureColorSchema,
+      }),
+    ).check(Schema.isMaxLength(1024)),
+    border: Schema.optional(
+      Schema.Struct({
+        width: pdfSignaturePositiveSizeSchema,
+        color: pdfSignatureColorSchema,
+      }),
+    ),
+    image: Schema.optional(
+      Schema.Struct({
+        png: Schema.Uint8Array,
+        rect: PdfCoreBoxSchema,
+      }),
+    ),
+  }),
+]);
+
+export const PdfCorePrepareSignatureRequestSchema = Schema.Struct({
+  field: Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("existing"),
+      name: pdfSignatureNameSchema,
+    }),
+    Schema.Struct({
+      kind: Schema.Literal("create"),
+      name: pdfSignatureNameSchema,
+      page: pageIndexSchema,
+      rect: PdfCoreBoxSchema,
+    }),
+  ]),
+  appearance: pdfSignatureAppearanceSchema,
+  date: Schema.String,
+  contentsCapacity: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: MAX_PDF_CORE_SIGNATURE_CONTENTS }),
+  ),
+  subFilter: Schema.optional(Schema.Literals(["ETSI.CAdES.detached", "adbe.pkcs7.detached"])),
+  reason: Schema.optional(Schema.String),
+  location: Schema.optional(Schema.String),
+  contactInfo: Schema.optional(Schema.String),
+  docMdp: Schema.optional(pdfSignaturePermissionSchema),
+  lock: Schema.optional(pdfSignatureLockSchema),
+  sha512: Schema.optional(Schema.Boolean),
+});
+export type PdfCorePrepareSignatureRequest = (typeof PdfCorePrepareSignatureRequestSchema)["Type"];
+
+const pdfSignatureByteRangeSchema = Schema.Tuple([
+  safeOffsetSchema,
+  safeOffsetSchema,
+  safeOffsetSchema,
+  safeOffsetSchema,
+]);
+
+export const PdfCorePreparedSignatureSchema = Schema.Struct({
+  pdf: Schema.Uint8Array,
+  byteRange: pdfSignatureByteRangeSchema,
+  contentsStart: byteOffsetSchema,
+  contentsEnd: byteOffsetSchema,
+  sha256: Schema.Uint8Array,
+  sha512: Schema.optional(Schema.Uint8Array),
+});
+export type PdfCorePreparedSignature = (typeof PdfCorePreparedSignatureSchema)["Type"];
+
+export const PdfCoreSignatureFieldsSchema = Schema.Struct({
+  fields: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      ref: Schema.optional(PdfCoreObjectRefSchema),
+      signed: Schema.Boolean,
+      widgets: Schema.Array(
+        Schema.Struct({
+          ref: Schema.optional(PdfCoreObjectRefSchema),
+          page: Schema.optional(pageIndexSchema),
+          rect: Schema.optional(PdfCoreBoxSchema),
+        }),
+      ),
+      lock: Schema.optional(
+        Schema.Struct({
+          action: Schema.optional(Schema.String),
+          fields: Schema.Array(Schema.String),
+        }),
+      ),
+      signature: Schema.optional(
+        Schema.Struct({
+          byteRange: Schema.optional(pdfSignatureByteRangeSchema),
+          subFilter: Schema.optional(Schema.String),
+          revisionEnd: Schema.optional(byteOffsetSchema),
+        }),
+      ),
+    }),
+  ),
+  docMdp: Schema.optional(pdfSignaturePermissionSchema),
+  revisions: Schema.Array(byteOffsetSchema),
+});
+export type PdfCoreSignatureFields = (typeof PdfCoreSignatureFieldsSchema)["Type"];
+
+export const PdfCoreRevisionChangeKindSchema = Schema.Literals([
+  "signature",
+  "signatureField",
+  "widgetAppearance",
+  "acroForm",
+  "dss",
+  "docTimeStamp",
+  "annotation",
+  "pageContent",
+  "catalogOther",
+  "unknown",
+]);
+export const PdfCoreRevisionEndSchema = byteOffsetSchema;
+export const PdfCoreRevisionChangesSchema = Schema.Struct({
+  changes: Schema.Array(
+    Schema.Struct({
+      ref: PdfCoreObjectRefSchema,
+      kind: PdfCoreRevisionChangeKindSchema,
+      change: Schema.Literals(["added", "modified", "removed"]),
+      revisionEnd: byteOffsetSchema,
+    }),
+  ),
+  pageContentChanged: Schema.Boolean,
+});
+export type PdfCoreRevisionChanges = (typeof PdfCoreRevisionChangesSchema)["Type"];
 
 export const PdfCoreEditOperationSchema = Schema.Union([
   Schema.Struct({
