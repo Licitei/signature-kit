@@ -1,5 +1,3 @@
-"use client";
-
 import posthog, { type CaptureResult, type PostHogConfig, type Properties } from "posthog-js";
 import { installFeedbackSelection } from "../../foldkit/feedback";
 

@@ -1,9 +1,9 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseContent } from "./foldkit/content-parse";
-import { parsePublicUrl } from "./foldkit/routes";
-import { siteOrigin } from "./foldkit/site-origin";
+import { parseContent } from "./foldkit/content-parse.ts";
+import { parsePublicUrl } from "./foldkit/routes.ts";
+import { siteOrigin } from "./foldkit/site-origin.ts";
 import stylex from "@stylexjs/unplugin";
 import { foldkit } from "@foldkit/vite-plugin";
 import { defineConfig } from "vite";

@@ -3,7 +3,7 @@
   "framework": "bun",
   "bunVersion": "1.4.x",
   "installCommand": "rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown && rustup default 1.99.1 && cd ../.. && bun install --frozen-lockfile",
-  "buildCommand": "cd ../.. && bun run site:build",
+  "buildCommand": "cd ../.. && NX_CACHE_DIRECTORY=$PWD/node_modules/.cache/nx PDF_CORE_WASM_CACHE=$PWD/node_modules/.cache/pdf-core-wasm bun run site:build",
   "functions": {
     "server.mjs": {
       "includeFiles": "apps/docs/dist-foldkit/**"
