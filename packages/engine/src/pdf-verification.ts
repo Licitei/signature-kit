@@ -1,3 +1,4 @@
+import { evaluateRevocation } from "./validation/revocation.js";
 import { inspectDetachedSignedData, unpadSignedData } from "./cms/inspect.js";
 import { verifyDetachedSignedDataEvidence } from "./cms/verify.js";
 import type { PdfCoreSigningSession } from "./wasm/pdf-core.js";
@@ -175,19 +176,18 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
                 })),
                 Effect.orElseSucceed(() => undefined),
               );
-        const trust =
+        const trusted =
           roots === undefined || !result.valid
-            ? initial.trust
+            ? undefined
             : yield* verifyDetachedSignedDataEvidence({
                 ...cms,
                 trustedRoots: roots,
                 at,
-              }).pipe(
-                Effect.map(({ result }): PdfSignatureVerification["trust"] =>
-                  result.chainValid && result.valid ? "trusted" : "untrusted",
-                ),
-                Effect.orElseSucceed((): PdfSignatureVerification["trust"] => "untrusted"),
-              );
+              }).pipe(Effect.orElseSucceed(() => undefined));
+        const trustedPath =
+          trusted?.result.valid && trusted.result.chainValid ? trusted.certificatePath : [];
+        const trust =
+          roots === undefined ? "notEvaluated" : trustedPath.length > 0 ? "trusted" : "untrusted";
         return {
           ...covered,
           integrity: result.valid ? "valid" : "invalid",
@@ -195,10 +195,7 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
           claimedSigningTime,
           timestampEvidence: timestampPresent ? "present" : "absent",
           trust,
-          revocation:
-            revocation.ocspCount + revocation.crlCount > 0
-              ? { kind: "embeddedEvidence", ...revocation }
-              : { kind: "notChecked" },
+          revocation: yield* evaluateRevocation(revocation, trustedPath, at),
         };
       }),
   );

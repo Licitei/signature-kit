@@ -1,3 +1,4 @@
+import { RevocationReport } from "./validation/config.js";
 import {
   PdfCoreOperationSchema,
   PdfCoreBoxSchema,
@@ -330,10 +331,7 @@ const PdfSignatureVerification = Schema.Struct({
     }),
   ),
   trust: Schema.Literals(["notEvaluated", "trusted", "untrusted"]),
-  revocation: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("notChecked") }),
-    Schema.Struct({ kind: Schema.Literal("embeddedEvidence"), ocspCount: Count, crlCount: Count }),
-  ]),
+  revocation: RevocationReport,
 });
 export type PdfSignatureVerification = (typeof PdfSignatureVerification)["Type"];
 const pdfSignatureVerificationCodec: Schema.Codec<PdfSignatureVerification> =
