@@ -72,6 +72,7 @@
       "@signature-kit/local/engine": ["../../runtime/local/src/engine.ts"],
       "@signature-kit/local/worker": ["../../runtime/local/src/worker.ts"],
       "@signature-kit/local/client": ["../../runtime/local/src/client.ts"],
+      "@signature-kit/local/viewer": ["../../runtime/local/src/viewer.ts"],
       "@signature-kit/iti/conformance": ["../../validators/iti/src/conformance.ts"],
       "@signature-kit/iti/remote": ["../../validators/iti/src/remote.ts"],
       "@signature-kit/xml/config": ["../../formats/xml/src/config.ts"],

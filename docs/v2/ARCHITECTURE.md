@@ -39,12 +39,14 @@ One package, real subpath modules (no barrels):
 - `@signature-kit/local/protocol` — Schemas, `LocalError` catalog, `LocalRpcs`
   (`RpcGroup`) and the protocol version. Platform-free; safe to import on the page.
 - `@signature-kit/local/engine` — `Context.Service` + `Layer` implementations:
-  `Documents`, `A1Sessions`, `PdfSignatures`, `Receipts`, `Verification`.
+  `Documents`, `A1Sessions`, `PdfEngine`, `PdfSignatures`, `Receipts`, `Verification`.
   Runs in Node tests and in the worker.
 - `@signature-kit/local/worker` — the Web Worker entry (RPC server over
   `@effect/platform-browser` worker transport).
 - `@signature-kit/local/client` — the page-side `RpcClient` layer. Hooks and demo
   use only this.
+- `@signature-kit/local/viewer` — canvas painting through the local client and
+  transforms between PDF user-space rectangles and canvas pixels.
 
 ## Core model
 
