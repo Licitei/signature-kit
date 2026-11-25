@@ -14,8 +14,8 @@ use signature_kit_pdf_core::deflate::zlib_compress;
 use signature_kit_pdf_core::diagnostics::{self, PageDiagnostics, TextLayer};
 use signature_kit_pdf_core::document::{self, PageRequest};
 use signature_kit_pdf_core::edit::signing::{
-    FieldLock, PreparedSignature, SignatureField, SignatureFields, prepare_signature,
-    signature_fields,
+    FieldLock, PreparedSignature, PreparedUpdate, SignatureField, SignatureFields,
+    prepare_signature, prepare_signature_update, signature_fields,
 };
 use signature_kit_pdf_core::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use signature_kit_pdf_core::failure::{Failure, Outcome};
@@ -930,6 +930,19 @@ fn encode_preparation(result: &PreparedSignature) -> Outcome<Writer> {
     out.done()
 }
 
+fn encode_preparation_update(result: &PreparedUpdate) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(result.appendix.len().saturating_add(36));
+    out.u32(0x5550_5350);
+    out.u32(1);
+    for offset in result.byte_range {
+        out.u32(len32(offset)?);
+    }
+    out.u32(len32(result.contents_start)?);
+    out.u32(len32(result.contents_end)?);
+    sized_bytes(&mut out, &result.appendix)?;
+    out.done()
+}
+
 fn encode_revision_changes(report: &RevisionChanges) -> Outcome<Writer> {
     let mut out =
         Writer::with_capacity(16_usize.saturating_add(report.changes.len().saturating_mul(20)));
@@ -1127,6 +1140,29 @@ pub(crate) unsafe extern "C" fn pdf_core_prepare_signature(
     let request = unsafe { view(request_ptr, request_len) };
     finish(pdf.and_then(|bytes| {
         encode_preparation(&prepare_signature(bytes, request?, &Limits::default())?)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` and `request_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_prepare_signature_update(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { view(request_ptr, request_len) };
+    finish(pdf.and_then(|bytes| {
+        encode_preparation_update(&prepare_signature_update(
+            bytes,
+            request?,
+            &Limits::default(),
+        )?)
     }))
 }
 

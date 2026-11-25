@@ -176,12 +176,34 @@ export const CreateDetachedSignedDataInputSchema = Schema.Struct({
 });
 export type CreateDetachedSignedDataInput = (typeof CreateDetachedSignedDataInputSchema)["Type"];
 
+export const DetachedSignerOptionsSchema = Schema.Struct({
+  certificateDer: Schema.Uint8Array,
+  chainDer: Schema.Array(Schema.Uint8Array),
+  hashAlgorithm: Schema.Literals(["sha256", "sha384", "sha512"]),
+});
+export type DetachedSignerOptions = (typeof DetachedSignerOptionsSchema)["Type"];
+
+export const DetachedSignatureOptionsSchema = Schema.Struct({
+  messageDigest: Schema.Uint8Array,
+  signingTime: Schema.optional(Schema.Date),
+  icpBrasil: Schema.optional(IcpBrasilPolicySchema),
+});
+export type DetachedSignatureOptions = (typeof DetachedSignatureOptionsSchema)["Type"];
+
 export const VerifyDetachedSignedDataInputSchema = Schema.Struct({
   cms: Schema.Uint8Array,
   content: Schema.Uint8Array,
   trustedRoots: Schema.optional(Schema.Array(Schema.Uint8Array)),
 });
 export type VerifyDetachedSignedDataInput = (typeof VerifyDetachedSignedDataInputSchema)["Type"];
+
+export const VerifyDetachedSignedDataEvidenceInputSchema =
+  VerifyDetachedSignedDataInputSchema.mapFields((fields) => ({
+    ...fields,
+    at: Schema.optional(Schema.Date),
+  }));
+export type VerifyDetachedSignedDataEvidenceInput =
+  (typeof VerifyDetachedSignedDataEvidenceInputSchema)["Type"];
 
 export const CmsRevocationStatusSchema = Schema.Literals(["checked", "not_checked"]);
 export type CmsRevocationStatus = (typeof CmsRevocationStatusSchema)["Type"];

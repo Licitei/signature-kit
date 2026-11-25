@@ -425,6 +425,21 @@ const inspectAttribute = (
     };
   });
 
+export const unpadSignedData = Effect.fnUntraced(function* (padded: Uint8Array) {
+  const { offset } = asn1js.fromBER(new Uint8Array(padded).buffer, {
+    maxDepth: 64,
+    parseEmbedded: false,
+  });
+  if (padded[0] !== 0x30 || offset < 0 || padded.subarray(offset).some((byte) => byte !== 0)) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.decodeError,
+      operation: CmsOperationValue.parse,
+      reason: "The CMS contents or zero padding are malformed.",
+    });
+  }
+  return padded.subarray(0, offset);
+});
+
 export const inspectDetachedSignedData = (
   input: InspectDetachedSignedDataInput,
 ): Effect.Effect<CmsSignedDataInspection, CmsError> =>

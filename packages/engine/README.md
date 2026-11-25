@@ -545,7 +545,7 @@ Fuzzing uses `cargo-fuzz` on nightly from `crates/pdf` (`cargo +nightly fuzz run
 - `lazy`: drives the range-request planner on the input bytes and asserts every planned range is in bounds, accepted, and that lazy text equals eager text whenever the lazy path answers.
 - `decoders`: filter chains and functions of a single indirect object, raw inflate, CCITT, PNG, CMaps, font programs, Type 1 glyphs, the RC4 and AES ciphers, the content lexer and the object parser.
 
-`bun run build` compiles the WASM crate for `wasm32-unknown-unknown` using the root toolchain pin and Rust’s size optimization (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/wasm/signature-kit.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1144 KiB.
+`bun run build` compiles the WASM crate for `wasm32-unknown-unknown` using the root toolchain pin and Rust `opt-level = 2` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/wasm/signature-kit.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1184 KiB. The [WASM optimization comparison](docs/signing-performance.md#wasm-optimization-comparison) records the size and runtime trade-offs.
 
 ## License
 

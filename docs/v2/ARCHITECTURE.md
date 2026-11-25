@@ -36,7 +36,8 @@ Delivery order is fixed:
   and typed errors. Page-side code can import it without loading WASM or engine
   services.
 - `@signature-kit/engine/engine` owns `Documents`, `A1Sessions` and `PdfEngine`
-  services. The signing and verification services below are planned.
+  services. `@signature-kit/engine/pdf-signatures` owns PDF preparation,
+  confirmation and verification.
 - Engine subpaths under `/wasm/` load and call `signature-kit.wasm`. The Cargo
   workspace builds that asset from the `crates/wasm` cdylib with its `pdf` feature
   enabled by default. `crates/pdf` is an rlib.

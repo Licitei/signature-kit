@@ -18,7 +18,18 @@ export const TelemetryOptionsSchema = Schema.Struct({
 });
 export type TelemetryOptions = (typeof TelemetryOptionsSchema)["Type"];
 
-const isAttribute = Schema.is(Attribute);
+type SpanAttribute = (typeof Attribute)["Type"];
+const attributeValidators = new Map<string, (entry: unknown) => boolean>();
+for (const member of Attribute.members) {
+  const [key] = member.elements;
+  const validate = Schema.is(member);
+  for (const name of "literals" in key ? key.literals : [key.literal]) {
+    attributeValidators.set(name, validate);
+  }
+}
+
+const isAttribute = (entry: readonly [string, unknown]): entry is SpanAttribute =>
+  attributeValidators.get(entry[0])?.(entry) ?? false;
 const isSpan = Schema.is(TelemetrySpan);
 
 class BufferedSpan extends Tracer.NativeSpan {

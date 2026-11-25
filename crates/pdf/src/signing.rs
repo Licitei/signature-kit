@@ -14,7 +14,7 @@ use crate::pdf_hash::{sha256_parts, sha512_parts};
 use crate::png;
 use crate::revision::{Analysis, RevisionIndex, analyze, revision_index};
 use crate::syntax::find_bytes;
-use crate::write::{incremental_with_prefix, number_object, rect_object, serialize};
+use crate::write::{incremental_update, number_object, rect_object, serialize};
 
 const REQUEST_MAGIC: u32 = 0x5250_5350;
 const MAX_APPEARANCE_LINES: u32 = 1024;
@@ -93,6 +93,18 @@ pub struct PreparedSignature {
     pub pdf: Vec<u8>,
     pub sha256: [u8; 32],
     pub sha512: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct PreparedUpdate {
+    pub appendix: Vec<u8>,
+    pub byte_range: [usize; 4],
+    pub contents_end: usize,
+    pub contents_start: usize,
 }
 
 #[derive(Debug)]
@@ -1196,6 +1208,47 @@ pub fn prepare_signature(
     limits: &Limits,
 ) -> Outcome<PreparedSignature> {
     let request = Request::decode(payload)?;
+    let update = prepare_update(pdf, &request, limits)?;
+    let [_, first, second, _] = update.byte_range;
+    let first_tail = first.saturating_sub(pdf.len());
+    let second_tail = second.saturating_sub(pdf.len());
+    let parts = [
+        pdf,
+        update.appendix.get(..first_tail).unwrap_or_default(),
+        update.appendix.get(second_tail..).unwrap_or_default(),
+    ];
+    let sha256 = sha256_parts(&parts);
+    let sha512 = request.sha512.then(|| sha512_parts(&parts, false));
+    let mut bytes = Vec::with_capacity(pdf.len().saturating_add(update.appendix.len()));
+    bytes.extend_from_slice(pdf);
+    bytes.extend_from_slice(&update.appendix);
+    Ok(PreparedSignature {
+        byte_range: update.byte_range,
+        contents_end: update.contents_end,
+        contents_start: update.contents_start,
+        pdf: bytes,
+        sha256,
+        sha512,
+    })
+}
+
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn prepare_signature_update(
+    pdf: &[u8],
+    payload: &[u8],
+    limits: &Limits,
+) -> Outcome<PreparedUpdate> {
+    prepare_update(pdf, &Request::decode(payload)?, limits)
+}
+
+fn prepare_update(pdf: &[u8], request: &Request<'_>, limits: &Limits) -> Outcome<PreparedUpdate> {
     let document = appendable(pdf, limits)?;
     let (certified, permission) = doc_mdp(&document)?;
     if certified && !matches!(permission, Some(2 | 3)) {
@@ -1215,7 +1268,7 @@ pub fn prepare_signature(
         pages: None,
     };
     let signature = objects.reserve()?;
-    let (field, widgets) = select_field(&mut store, &mut objects, &tree, &request)?;
+    let (field, widgets) = select_field(&mut store, &mut objects, &tree, request)?;
     if request.appearance.is_some() && widgets.is_empty() {
         return Err(Failure::request("visible signature field has no widget"));
     }
@@ -1250,22 +1303,22 @@ pub fn prepare_signature(
     }
     store.set_body(
         signature,
-        Object::Dict(signature_dictionary(&request, root)),
+        Object::Dict(signature_dictionary(request, root)),
         None,
     );
-    let (bytes, offset) = incremental_with_prefix(&document, &store.changed, pdf, Some(signature))?;
+    let (bytes, offset) = incremental_update(&document, &store.changed, pdf, Some(signature))?;
     let start = offset.ok_or_else(|| Failure::invalid("missing prepared signature object"))?;
-    patch(bytes, start, request.capacity, request.sha512)
+    patch(bytes, pdf.len(), start, request.capacity)
 }
 
 fn patch(
-    mut pdf: Vec<u8>,
+    mut appendix: Vec<u8>,
+    source_length: usize,
     start: usize,
     capacity: u32,
-    sha512: bool,
-) -> Outcome<PreparedSignature> {
-    let header_end = start.saturating_add(128).min(pdf.len());
-    let header = pdf.get(start..header_end).unwrap_or_default();
+) -> Outcome<PreparedUpdate> {
+    let header_end = start.saturating_add(128).min(appendix.len());
+    let header = appendix.get(start..header_end).unwrap_or_default();
     let range = find_bytes(header, 0, RANGE_START)
         .and_then(|offset| start.checked_add(offset))
         .and_then(|offset| offset.checked_add(RANGE_START.len()))
@@ -1275,24 +1328,24 @@ fn patch(
         .saturating_add(3);
     let contents_start = digits_end.saturating_add(HOLE_START.len());
     let contents_end = contents_start.saturating_add(widen(capacity).saturating_mul(2));
-    if pdf.get(digits_end..contents_start) != Some(HOLE_START)
-        || pdf.get(contents_end) != Some(&b'>')
+    if appendix.get(digits_end..contents_start) != Some(HOLE_START)
+        || appendix.get(contents_end) != Some(&b'>')
     {
         return Err(Failure::invalid("missing prepared Contents hole"));
     }
     let after_hole = contents_end.saturating_add(1);
     let byte_range = [
         0,
-        contents_start.saturating_sub(1),
-        after_hole,
-        pdf.len().saturating_sub(after_hole),
+        source_length.saturating_add(contents_start.saturating_sub(1)),
+        source_length.saturating_add(after_hole),
+        appendix.len().saturating_sub(after_hole),
     ];
     for (index, value) in byte_range.into_iter().enumerate() {
         let mut digits = String::new();
         write!(digits, "{value:010}")
             .map_err(|_cause| Failure::limit("signature ByteRange exceeds its width"))?;
         let offset = range.saturating_add(index.saturating_mul(RANGE_WIDTH.saturating_add(1)));
-        let slot = pdf
+        let slot = appendix
             .get_mut(offset..offset.saturating_add(RANGE_WIDTH))
             .ok_or_else(|| Failure::invalid("invalid prepared ByteRange position"))?;
         if digits.len() != RANGE_WIDTH {
@@ -1300,20 +1353,11 @@ fn patch(
         }
         slot.copy_from_slice(digits.as_bytes());
     }
-    let parts = [
-        pdf.get(..contents_start.saturating_sub(1))
-            .unwrap_or_default(),
-        pdf.get(after_hole..).unwrap_or_default(),
-    ];
-    let digest256 = sha256_parts(&parts);
-    let digest512 = sha512.then(|| sha512_parts(&parts, false));
-    Ok(PreparedSignature {
+    Ok(PreparedUpdate {
         byte_range,
-        contents_end,
-        contents_start,
-        pdf,
-        sha256: digest256,
-        sha512: digest512,
+        contents_end: source_length.saturating_add(contents_end),
+        contents_start: source_length.saturating_add(contents_start),
+        appendix,
     })
 }
 

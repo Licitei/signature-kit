@@ -5,9 +5,12 @@ import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-run
 export default defineConfig({
   assetsInclude: ["**/*.p12"],
   optimizeDeps: {
+    entries: ["packages/**/*.browser.test.ts", "packages/browser/src/worker{,-telemetry}.ts"],
     include: [
+      "@effect/opentelemetry",
       "@effect/platform-browser/BrowserRuntime",
       "@effect/platform-browser/BrowserWorkerRunner",
+      "@opentelemetry/exporter-trace-otlp-http",
       "effect/rpc/RpcServer",
     ],
     exclude: ["@typeonce/effect-machine"],
