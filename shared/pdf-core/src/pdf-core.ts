@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match, Ref, Schema, Semaphore } from "effect";
+import { Context, Effect, Layer, Match, Ref, Schema, Semaphore, Tracer } from "effect";
 import type { Scope } from "effect";
 
 import {
@@ -421,6 +421,7 @@ export const makePdfCore = (
   module: WebAssembly.Module,
 ): Effect.Effect<PdfCoreService, PdfCoreError> =>
   Effect.gen(function* () {
+    const collectCopySizes = (yield* Effect.tracer) !== Tracer.nativeTracer;
     const instance = yield* Effect.tryPromise({
       try: () => WebAssembly.instantiate(module, {}),
       catch: () =>
@@ -481,6 +482,12 @@ export const makePdfCore = (
           yield* Effect.annotateCurrentSpan({
             "signature_kit.pdf.bytes": pdf.byteLength,
             "signature_kit.pdf.requested_pages": pageIndexes.length,
+            ...(collectCopySizes
+              ? {
+                  "signature_kit.wasm.input_bytes":
+                    pageIndexes.length * Uint32Array.BYTES_PER_ELEMENT,
+                }
+              : {}),
           });
           const input = yield* copyIn(operation, pdf);
           const pages = yield* allocate(
@@ -1666,6 +1673,14 @@ export const makePdfCore = (
             });
             cursor += view.getUint32(cursor + 48, true);
           }
+          if (collectCopySizes) {
+            const copiedBytes = pages.reduce(
+              (total, { ops, blobs }) =>
+                total + ops.byteLength + blobs.reduce((sum, blob) => sum + blob.byteLength, 0),
+              0,
+            );
+            yield* Effect.annotateCurrentSpan("signature_kit.wasm.output_bytes", copiedBytes);
+          }
           return yield* Schema.decodeUnknownEffect(PdfCoreDisplayListsSchema)(pages).pipe(
             Effect.mapError(
               (issue) =>
@@ -1990,11 +2005,6 @@ export const makePdfCore = (
                 return yield* Effect.die("Invalid lazy PDF operation.");
               }
               yield* ensureOpen;
-              yield* Effect.annotateCurrentSpan({
-                "signature_kit.pdf.bytes": size,
-                "signature_kit.pdf.lazy": true,
-                "signature_kit.pdf.requested_pages": indexes.length,
-              });
               const limit = (flags & FLAG_PAGE_INDEXES) === 0 ? tuning.pageLimit : undefined;
               const selection = limit === undefined ? indexes : [limit];
               const readFlags =
@@ -2004,6 +2014,12 @@ export const makePdfCore = (
                 selection.length * Uint32Array.BYTES_PER_ELEMENT,
               );
               new Uint32Array(core.memory.buffer, pages.pointer, selection.length).set(selection);
+              yield* Effect.annotateCurrentSpan({
+                "signature_kit.pdf.bytes": size,
+                "signature_kit.pdf.lazy": true,
+                "signature_kit.pdf.requested_pages": indexes.length,
+                ...(collectCopySizes ? { "signature_kit.wasm.input_bytes": pages.length } : {}),
+              });
               let recovery = 0;
               let rounds = 0;
               while (true) {

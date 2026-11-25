@@ -33,7 +33,10 @@ export default defineConfig({
   test: {
     include: ["**/*.browser.test.*"],
     teardownTimeout: 2000,
-    globalSetup: ["tooling/testing/__tests__/packed-browser-setup.ts"],
+    globalSetup: [
+      "tooling/testing/__tests__/packed-browser-setup.ts",
+      "tooling/testing/__tests__/local-telemetry-collector.ts",
+    ],
     deps: {
       optimizer: {
         client: { enabled: false },

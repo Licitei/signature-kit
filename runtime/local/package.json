@@ -14,7 +14,8 @@
   ],
   "type": "module",
   "sideEffects": [
-    "./dist/worker.js"
+    "./dist/worker.js",
+    "./dist/worker-telemetry.js"
   ],
   "exports": {
     "./protocol": {
@@ -36,6 +37,18 @@
     "./viewer": {
       "types": "./dist/viewer.d.ts",
       "import": "./dist/viewer.js"
+    },
+    "./worker-telemetry": {
+      "types": "./dist/worker-telemetry.d.ts",
+      "import": "./dist/worker-telemetry.js"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry.d.ts",
+      "import": "./dist/telemetry.js"
+    },
+    "./telemetry-otlp": {
+      "types": "./dist/telemetry-otlp.d.ts",
+      "import": "./dist/telemetry-otlp.js"
     }
   },
   "publishConfig": {
@@ -54,6 +67,22 @@
   },
   "devDependencies": {
     "pdfjs-dist": "6.3.289"
+  },
+  "peerDependencies": {
+    "@effect/opentelemetry": "4.1.0",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.2"
+  },
+  "peerDependenciesMeta": {
+    "@effect/opentelemetry": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-trace-otlp-http": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=20"

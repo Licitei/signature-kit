@@ -82,3 +82,41 @@ from the test-only pdf.js dependency. A pixel counts as ink if either renderer
 has an RGB channel below 245. Fewer than 5% of those pixels on each page may
 differ by more than 64 in any RGB channel. The test also checks that the widget
 bounds match the oracle and that the mapped interior lands on the same color.
+
+## Local telemetry
+
+The default worker leaves RPC tracing disabled and does not install a telemetry
+tracer. To opt in, use the telemetry worker and provide the page buffer to the
+client layer.
+
+```ts
+import TelemetryWorker from "@signature-kit/local/worker-telemetry?worker";
+import { localClientLayer } from "@signature-kit/local/client";
+import { localTelemetryLayer } from "@signature-kit/local/telemetry";
+import { Layer } from "effect";
+
+const runtime = localClientLayer(() => new TelemetryWorker()).pipe(
+  Layer.provideMerge(localTelemetryLayer()),
+);
+```
+
+Call `LocalClient.collectTelemetry()` to pull finished worker spans into the
+page buffer. `LocalTelemetry.snapshot` reads the current batch.
+`LocalTelemetry.drain` removes it and resets its drop counts. Each buffer keeps
+up to 512 spans and 256 KiB of serialized span records by default, evicting the
+oldest records first. Failed exports can temporarily hold one additional
+bounded batch while new spans continue to accumulate.
+
+`summarizeTelemetry` groups completed worker RPCs by operation and reports
+outcomes, server handling time, queue wait, execution time excluding the measured
+queue wait, instrumented WASM and crypto time,
+and bytes copied at the WASM input and render output boundaries. For matched
+client and server spans, RPC wait is client round-trip time minus worker
+handling time. Truncated traces can leave some measurements unmatched.
+
+For optional OTLP HTTP export, install the optional OpenTelemetry peers and compose
+`localTelemetryOtlpLayer(collectorUrl).pipe(Layer.provideMerge(runtime))` at
+the page assembly boundary. Its scoped background worker pulls and exports
+allowlisted span records periodically. Failed transient exports return their
+batch to the bounded page buffer after a limited retry. The collector must
+allow requests from the page's origin.

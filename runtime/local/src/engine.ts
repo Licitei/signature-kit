@@ -7,7 +7,9 @@ import {
   Context,
   Effect,
   HashMap,
+  Function,
   Layer,
+  Option,
   Redacted,
   Ref,
   Schema,
@@ -25,6 +27,7 @@ import type {
   PdfViewport,
   RevisionRef,
 } from "./protocol.js";
+import { LocalTelemetry, withQueueTiming } from "./telemetry.js";
 
 export class Documents extends Context.Service<
   Documents,
@@ -62,6 +65,10 @@ const documentsLayer = (instanceId: InstanceId) =>
   Layer.effect(
     Documents,
     Effect.gen(function* () {
+      const telemetry = Option.isSome(yield* Effect.serviceOption(LocalTelemetry));
+      const digest: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E> = telemetry
+        ? Effect.withSpan("local.crypto.digest", undefined, { captureStackTrace: false })
+        : Function.identity;
       const prefix = `${instanceId}/`;
       const documents = yield* Ref.make<
         HashMap.HashMap<Handle, Uint8Array<ArrayBuffer>> | undefined
@@ -72,7 +79,7 @@ const documentsLayer = (instanceId: InstanceId) =>
         open: Effect.fn(
           function* (bytes) {
             const owned = new Uint8Array(bytes);
-            const digest = yield* sha256Hex(owned);
+            const fingerprint = yield* sha256Hex(owned).pipe(digest);
             const handle = Handle.make(`${prefix}${crypto.randomUUID()}`);
             const stored = yield* Ref.modify(documents, (current) =>
               current === undefined
@@ -80,7 +87,7 @@ const documentsLayer = (instanceId: InstanceId) =>
                 : [true, HashMap.set(current, handle, owned)],
             );
             if (!stored) return yield* new LocalError({ code: "runtimeClosed" });
-            return { handle, digest, byteLength: owned.byteLength };
+            return { handle, digest: fingerprint, byteLength: owned.byteLength };
           },
           (effect, bytes) =>
             effect.pipe(
@@ -130,13 +137,22 @@ const parseA1Pkcs12 = (bytes: Uint8Array<ArrayBuffer>, password: Redacted.Redact
         }),
     ),
     Effect.tap(({ chain }) => Effect.annotateCurrentSpan("certificateCount", chain.length + 1)),
-    Effect.withSpan("local.a1.parsePkcs12", { attributes: { byteLength: bytes.byteLength } }),
+    Effect.withSpan("local.a1.parsePkcs12"),
   );
 
 const a1SessionsLayer = (hash: A1Hash) =>
   Layer.effect(
     A1Sessions,
     Effect.gen(function* () {
+      const telemetry = Option.isSome(yield* Effect.serviceOption(LocalTelemetry));
+      const trace = (
+        name: "local.crypto.importKey" | "local.crypto.sign",
+      ): (<A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>) =>
+        telemetry
+          ? Effect.withSpan(name, undefined, { captureStackTrace: false })
+          : Function.identity;
+      const importKey = trace("local.crypto.importKey");
+      const sign = trace("local.crypto.sign");
       const state = yield* Ref.make<SessionState | undefined>({ generation: 0 });
       yield* Effect.addFinalizer(() => Ref.set(state, undefined));
 
@@ -164,10 +180,10 @@ const a1SessionsLayer = (hash: A1Hash) =>
         open: Effect.fn("local.a1.open")(function* ({ pfx, password }) {
           const generation = yield* advance;
           const owned = new Uint8Array(Redacted.value(pfx));
-          yield* Effect.annotateCurrentSpan("byteLength", owned.byteLength);
 
           const { certificate, privateKey } = yield* parseA1Pkcs12(owned, password);
           const key = yield* importA1SigningKey(privateKey, hash).pipe(
+            importKey,
             Effect.ensuring(Effect.sync(() => privateKey.fill(0))),
           );
           const profile = yield* a1Profile(certificate);
@@ -184,21 +200,15 @@ const a1SessionsLayer = (hash: A1Hash) =>
           return { sessionId, generation, profile };
         }),
         close: () => advance.pipe(Effect.asVoid, Effect.withSpan("local.a1.close")),
-        sign: Effect.fn(
-          function* (sessionId, generation, data) {
-            const { key } = yield* activeSession(sessionId, generation);
-            const signature = yield* Effect.tryPromise({
-              try: () => crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new Uint8Array(data)),
-              catch: () => new LocalError({ code: "signFailed" }),
-            });
-            yield* activeSession(sessionId, generation);
-            return new Uint8Array(signature);
-          },
-          (effect, _sessionId, _generation, data) =>
-            effect.pipe(
-              Effect.withSpan("local.a1.sign", { attributes: { byteLength: data.byteLength } }),
-            ),
-        ),
+        sign: Effect.fn("local.a1.sign")(function* (sessionId, generation, data) {
+          const { key } = yield* activeSession(sessionId, generation);
+          const signature = yield* Effect.tryPromise({
+            try: () => crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new Uint8Array(data)),
+            catch: () => new LocalError({ code: "signFailed" }),
+          }).pipe(sign);
+          yield* activeSession(sessionId, generation);
+          return new Uint8Array(signature);
+        }),
       });
     }),
   );
@@ -232,7 +242,8 @@ export const pdfEngineLayer = Layer.effectContext(
   Effect.gen(function* () {
     const documents = yield* Documents;
     const core = yield* PdfCore;
-    const lock = yield* Semaphore.make(1);
+    const telemetry = Option.isSome(yield* Effect.serviceOption(LocalTelemetry));
+    const lock = withQueueTiming(yield* Semaphore.make(1), telemetry, "local.queue.pdf");
     const cache = yield* ScopedCache.makeWith({
       capacity: Infinity,
       lookup: Effect.fn("local.pdf.open")(function* (handle: Handle) {
@@ -264,34 +275,30 @@ export const pdfEngineLayer = Layer.effectContext(
       PdfEngine,
       PdfEngine.of({
         inspect: (handle) =>
-          lock
-            .withPermits(1)(getDocument(handle))
-            .pipe(
-              Effect.map(({ inspection }) => inspection),
-              Effect.withSpan("local.pdf.inspect"),
-            ),
-        renderPage: Effect.fn("local.pdf.renderPage")(function* ({
-          handle,
-          pageIndex,
-          scale,
-          rotation = 0,
-        }) {
-          const { pdf, inspection } = yield* getDocument(handle);
-          if (inspection.pages[pageIndex] === undefined) {
-            return yield* new LocalError({ code: "invalidPageIndex" });
-          }
-          const [rendered] = yield* pdf
-            .renderPages({ pageIndexes: [pageIndex], scale })
-            .pipe(
-              Effect.mapError(
-                ({ code }) => new LocalError({ code: "pdfRenderFailed", pdfCode: code }),
-              ),
-            );
-          if (rendered === undefined) return yield* Effect.die("The PDF core omitted a page.");
+          lock(getDocument(handle)).pipe(
+            Effect.map(({ inspection }) => inspection),
+            Effect.withSpan("local.pdf.inspect"),
+          ),
+        renderPage: Effect.fn(
+          function* ({ handle, pageIndex, scale, rotation = 0 }) {
+            const { pdf, inspection } = yield* getDocument(handle);
+            if (inspection.pages[pageIndex] === undefined) {
+              return yield* new LocalError({ code: "invalidPageIndex" });
+            }
+            const [rendered] = yield* pdf
+              .renderPages({ pageIndexes: [pageIndex], scale })
+              .pipe(
+                Effect.mapError(
+                  ({ code }) => new LocalError({ code: "pdfRenderFailed", pdfCode: code }),
+                ),
+              );
+            if (rendered === undefined) return yield* Effect.die("The PDF core omitted a page.");
 
-          const list = { ...rendered, rotate: rendered.rotate + rotation };
-          return { list, viewport: displayListViewport(list) };
-        }, lock.withPermits(1)),
+            const list = { ...rendered, rotate: rendered.rotate + rotation };
+            return { list, viewport: displayListViewport(list) };
+          },
+          (effect) => lock(effect).pipe(Effect.withSpan("local.pdf.renderPage")),
+        ),
       }),
     ).pipe(
       Context.add(
@@ -299,7 +306,7 @@ export const pdfEngineLayer = Layer.effectContext(
         Documents.of({
           ...documents,
           release: (handle) =>
-            lock.withPermits(1)(
+            lock(
               documents
                 .release(handle)
                 .pipe(
