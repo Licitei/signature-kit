@@ -1,5 +1,6 @@
 import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import * as pki from "pkijs";
 import { TimeoutMillisSchema } from "./cms/config.js";
 import { EvidenceFetchError } from "./validation/config.js";
 import type { EvidenceOperation } from "./validation/config.js";
@@ -122,3 +123,32 @@ export const evidenceFetcherHttpLayer = Layer.effect(
     });
   }),
 );
+
+const OcspEvidenceRequestSchema = Schema.Struct({
+  certificate: Schema.Uint8Array,
+  issuer: Schema.Uint8Array,
+  url: Schema.NonEmptyString,
+  timeoutMillis: Schema.optional(TimeoutMillisSchema),
+});
+export type OcspEvidenceRequest = (typeof OcspEvidenceRequestSchema)["Type"];
+
+export const requestOcsp = Effect.fn("evidence.ocsp")(function* (input: OcspEvidenceRequest) {
+  const { certificate, issuer, url, timeoutMillis } = yield* Schema.decodeUnknownEffect(
+    OcspEvidenceRequestSchema,
+  )(input).pipe(
+    Effect.mapError(() => new EvidenceFetchError({ code: "invalidRequest", operation: "ocsp" })),
+  );
+  const request = yield* Effect.tryPromise({
+    try: async () => {
+      const ocspRequest = new pki.OCSPRequest();
+      await ocspRequest.createForCertificate(pki.Certificate.fromBER(new Uint8Array(certificate)), {
+        hashAlgorithm: "SHA-1",
+        issuerCertificate: pki.Certificate.fromBER(new Uint8Array(issuer)),
+      });
+      return new Uint8Array(ocspRequest.toSchema(true).toBER(false));
+    },
+    catch: () => new EvidenceFetchError({ code: "invalidRequest", operation: "ocsp" }),
+  });
+  const fetcher = yield* EvidenceFetcher;
+  return yield* fetcher.ocsp(url, request, timeoutMillis);
+});

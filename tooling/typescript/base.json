@@ -32,6 +32,7 @@
       "@signature-kit/engine/pdf-signatures": ["../../packages/engine/src/pdf-signatures.ts"],
       "@signature-kit/engine/batches": ["../../packages/engine/src/batches.ts"],
       "@signature-kit/engine/batch-storage": ["../../packages/engine/src/batch-storage.ts"],
+      "@signature-kit/engine/evidence-fetcher": ["../../packages/engine/src/evidence-fetcher.ts"],
       "@signature-kit/engine/telemetry": ["../../packages/engine/src/telemetry.ts"],
       "@signature-kit/engine/wasm/config": ["../../packages/engine/src/wasm/config.ts"],
       "@signature-kit/engine/wasm/pdf-core": ["../../packages/engine/src/wasm/pdf-core.ts"],
