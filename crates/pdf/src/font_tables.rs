@@ -47,7 +47,11 @@ impl BuiltinEncoding {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Standard14Font {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum Standard14Font {
     Courier,
     CourierBold,
     CourierBoldOblique,
@@ -65,7 +69,12 @@ pub(crate) enum Standard14Font {
 }
 
 impl Standard14Font {
-    pub(crate) const fn named(name: &[u8]) -> Option<Self> {
+    #[must_use]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub const fn named(name: &[u8]) -> Option<Self> {
         match name {
             b"Courier" => Some(Self::Courier),
             b"Courier-Bold" => Some(Self::CourierBold),
@@ -83,7 +92,12 @@ impl Standard14Font {
         }
     }
 
-    pub(crate) const fn widths(self) -> &'static [u16; 256] {
+    #[must_use]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub const fn widths(self) -> &'static [u16; 256] {
         match self {
             Self::Courier | Self::CourierBold | Self::CourierBoldOblique | Self::CourierOblique => {
                 &STANDARD14_COURIER
@@ -131,7 +145,12 @@ pub(crate) fn encoding_glyph_name(encoding: BuiltinEncoding, code: u8) -> &'stat
         .unwrap_or_default()
 }
 
-pub(crate) fn win_ansi_unicode(code: u8) -> u16 {
+#[must_use]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn win_ansi_unicode(code: u8) -> u16 {
     if matches!(code, 0x20..=0x7E | 0xA0..=0xFF) {
         return u16::from(code);
     }

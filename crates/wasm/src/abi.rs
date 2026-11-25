@@ -10,27 +10,27 @@ use core::mem;
 use core::ptr;
 use core::slice;
 
-use crate::deflate::zlib_compress;
-use crate::diagnostics::{self, PageDiagnostics, TextLayer};
-use crate::document::{self, PageRequest};
-use crate::edit::{
-    DocumentInfo, FieldLock, FieldTarget, PreparedSignature, SignatureField, SignatureFields, Slot,
-    document_info, edit, prepare_signature, signature_fields,
+use signature_kit_pdf_core::deflate::zlib_compress;
+use signature_kit_pdf_core::diagnostics::{self, PageDiagnostics, TextLayer};
+use signature_kit_pdf_core::document::{self, PageRequest};
+use signature_kit_pdf_core::edit::signing::{
+    FieldLock, PreparedSignature, SignatureField, SignatureFields, prepare_signature,
+    signature_fields,
 };
-use crate::failure::{Failure, Outcome};
-use crate::font_tables::{Standard14Font, win_ansi_unicode};
-use crate::inspection::{InspectOptions, Inspection, Limits};
-use crate::layout::{self, TextOptions};
-use crate::lazy::{Lazy, Plan, Tuning};
-use crate::num::{u64_to_f64, widen};
-use crate::object::ObjRef;
-use crate::png;
-use crate::render::{self, RenderedPage};
-use crate::revision::{
-    Analysis, Report, RevisionChanges, analyze, revision_changes, revision_complete,
-};
-use crate::table::Table;
-use crate::write::{Packing, create, merge};
+use signature_kit_pdf_core::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
+use signature_kit_pdf_core::failure::{Failure, Outcome};
+use signature_kit_pdf_core::font_tables::{Standard14Font, win_ansi_unicode};
+use signature_kit_pdf_core::inspection::{InspectOptions, Inspection, Limits};
+use signature_kit_pdf_core::layout::{self, TextOptions};
+use signature_kit_pdf_core::lazy::{Lazy, Plan, Tuning};
+use signature_kit_pdf_core::num::{u64_to_f64, widen};
+use signature_kit_pdf_core::object::ObjRef;
+use signature_kit_pdf_core::png;
+use signature_kit_pdf_core::render::{self, RenderedPage};
+use signature_kit_pdf_core::revision::changes::{RevisionChanges, revision_changes};
+use signature_kit_pdf_core::revision::{Analysis, Report, analyze, revision_complete};
+use signature_kit_pdf_core::table::Table;
+use signature_kit_pdf_core::write::{Packing, create, merge};
 
 const MAGIC: u32 = 0x4346_4450;
 const VERSION: u32 = 3;
@@ -1470,17 +1470,17 @@ pub(crate) extern "C" fn pdf_core_lazy_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::failure::FailureCode;
-    use crate::inspection::{LinkInfo, PageInfo, PageText, TextItem};
     use crate::test_pdf::assert_exact;
     use crate::test_pdf::document;
     use crate::test_pdf::page;
     use core::fmt::Write as _;
     use core::iter;
+    use signature_kit_pdf_core::failure::FailureCode;
+    use signature_kit_pdf_core::inspection::{LinkInfo, PageInfo, PageText, TextItem};
 
-    const LINKS_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/links.pdf");
+    const LINKS_PDF: &[u8] = include_bytes!("../../pdf/tests/fixtures/pdf/links.pdf");
 
-    const ROTATED_PDF: &[u8] = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
+    const ROTATED_PDF: &[u8] = include_bytes!("../../pdf/tests/fixtures/pdf/rotated-cropped.pdf");
 
     struct Reader<'data> {
         at: usize,
@@ -2102,7 +2102,7 @@ mod tests {
         let pages = reopened.pages().unwrap();
         assert_eq!(pages.len(), 2);
         assert_eq!(
-            pages[1].info.media_box,
+            pages[1].info().media_box,
             [0.0_f64, 0.0_f64, 200.5_f64, 100.0_f64]
         );
         release(&block);

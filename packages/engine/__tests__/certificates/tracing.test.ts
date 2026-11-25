@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Redacted } from "effect";
 
-import { parseCertificate } from "../src/index";
-import { childSpans, recordSpans, spanNamed } from "../../../tooling/testing/tracing.ts";
+import { parseCertificate } from "../../src/certificates/certificate";
+import { childSpans, recordSpans, spanNamed } from "../../../../tooling/testing/tracing.ts";
 
 const readFixture = (name: string): Effect.Effect<Uint8Array> =>
   Effect.promise(

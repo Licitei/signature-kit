@@ -2,10 +2,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import type { PdfCoreTextOptions } from "../dist/config.js";
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
+import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import type { PdfCoreTextOptions } from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore, pdfCoreBytesSource } from "../../dist/wasm/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 

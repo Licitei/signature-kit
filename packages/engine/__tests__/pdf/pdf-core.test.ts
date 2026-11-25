@@ -4,9 +4,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Result } from "effect";
 
-import { PdfCoreError, PdfCoreErrorCodeValue } from "../dist/config.js";
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore, makePdfCore } from "../dist/pdf-core.js";
+import { PdfCoreError, PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore, makePdfCore } from "../../dist/wasm/pdf-core.js";
 import {
   CORPUS_FIXTURE_NAMES,
   LINK_FIXTURE_URIS,
@@ -15,7 +15,7 @@ import {
 } from "./corpus.ts";
 
 const MAX_WASM_BYTES = 1144 * 1024;
-const wasmUrl = new URL("../dist/pdf-core.wasm", import.meta.url);
+const wasmUrl = new URL("../../dist/wasm/signature-kit.wasm", import.meta.url);
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 
 const readFixture = (name: CorpusFixtureName): Uint8Array =>

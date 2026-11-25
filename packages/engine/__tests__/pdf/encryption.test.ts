@@ -7,10 +7,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import type { PdfCoreLazyStats } from "../dist/config.js";
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
+import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import type { PdfCoreLazyStats } from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore, pdfCoreBytesSource } from "../../dist/wasm/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const id = "<31415926535897932384626433832795>";
@@ -389,7 +389,9 @@ describe("PdfCore encrypted PDFs", () => {
   it.effect("leaves signature Contents untouched when rewriting an encrypted PDF", () =>
     Effect.gen(function* () {
       const core = yield* PdfCore;
-      const input = readFileSync(new URL("./fixtures/encryption/signed.pdf", import.meta.url));
+      const input = readFileSync(
+        new URL("../../../../crates/pdf/tests/fixtures/pdf/encryption/signed.pdf", import.meta.url),
+      );
       const report = yield* core.signatures(input, "dictionaries");
       expect(report.failure).toBeUndefined();
       const signature = report.dictionaries[0];

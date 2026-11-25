@@ -2,12 +2,12 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { vi } from "vitest";
-import { MAX_NATIVE_TIMEOUT_MILLIS } from "../src/config";
+import { MAX_NATIVE_TIMEOUT_MILLIS } from "../../src/cms/config";
 import {
   IcpBrasilPadesPolicy,
   fetchIcpBrasilPadesPolicy,
   parseIcpBrasilPadesPolicy,
-} from "../src/icp-brasil";
+} from "../../src/cms/icp-brasil";
 
 const invalidTimeoutMillis: ReadonlyArray<number> = [
   Number.NaN,

@@ -1,4 +1,4 @@
-import { bytesOf, childrenOf, decode, oidString } from "@signature-kit/asn1";
+import { bytesOf, childrenOf, decode, oidString } from "../asn1/asn1.js";
 import { Effect, Schema } from "effect";
 import { CmsError, CmsErrorCodeValue, CmsOperationValue, TimeoutMillisSchema } from "./config.js";
 import type { CmsHashAlgorithm, IcpBrasilPolicy } from "./config.js";

@@ -1,3 +1,10 @@
+## @signature-kit/engine@2.0.0-alpha.1 (alpha)
+
+### Engine and browser packages
+
+The engine provides the RPC contract, local services and WebAssembly bindings.
+The browser package provides the worker, client and viewer.
+
 ## @signature-kit/pdf-core@0.4.0
 
 ### Sign already-signed PDFs with trailing bytes, and name damaged ones

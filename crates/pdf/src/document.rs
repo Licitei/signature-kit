@@ -5,6 +5,7 @@ use crate::text::Session;
 use crate::text::{Capture, Reposition, extract_content};
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
+use core::fmt;
 use core::mem;
 use std::collections::{HashMap, HashSet};
 
@@ -62,15 +63,24 @@ pub(crate) struct Section {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Page {
-    pub dict: Dict,
-    pub info: PageInfo,
-    pub obj_ref: Option<ObjRef>,
-    pub resources: Rc<Object>,
-    pub resources_ref: Option<ObjRef>,
+pub struct Page {
+    pub(crate) dict: Dict,
+    pub(crate) info: PageInfo,
+    pub(crate) obj_ref: Option<ObjRef>,
+    pub(crate) resources: Rc<Object>,
+    pub(crate) resources_ref: Option<ObjRef>,
 }
 
 impl Page {
+    #[must_use]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub const fn info(&self) -> &PageInfo {
+        &self.info
+    }
+
     pub(crate) fn resources_for_write(&self) -> Object {
         self.resources_ref.map_or_else(
             || Object::Dict(self.resources.as_dict().cloned().unwrap_or_default()),
@@ -80,7 +90,11 @@ impl Page {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PageRequest<T> {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum PageRequest<T> {
     First(usize),
     Indexes(Option<T>),
 }
@@ -181,7 +195,7 @@ struct SparseDocument<'data> {
     trailer: &'data Dict,
 }
 
-pub(crate) struct Document<'data> {
+pub struct Document<'data> {
     bytes: &'data [u8],
     cache: DocumentCache,
     depth: Cell<u32>,
@@ -192,6 +206,16 @@ pub(crate) struct Document<'data> {
     sparse: Option<SparseDocument<'data>>,
     table: RefCell<Vec<Entry>>,
     trailer: RefCell<Dict>,
+}
+
+impl fmt::Debug for Document<'_> {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Document").finish_non_exhaustive()
+    }
 }
 
 impl<'data> Document<'data> {
@@ -640,7 +664,15 @@ impl<'data> Document<'data> {
         Ok(parsed)
     }
 
-    pub(crate) fn open(bytes: &'data [u8], limits: &Limits) -> Outcome<Self> {
+    #[expect(
+        clippy::missing_errors_doc,
+        reason = "the TypeScript bindings document the public error contract"
+    )]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn open(bytes: &'data [u8], limits: &Limits) -> Outcome<Self> {
         if bytes.len() > limits.max_pdf_bytes {
             return Err(Failure::limit("pdf exceeds size limit"));
         }
@@ -754,7 +786,15 @@ impl<'data> Document<'data> {
         Ok(())
     }
 
-    pub(crate) fn pages(&self) -> Outcome<Vec<Page>> {
+    #[expect(
+        clippy::missing_errors_doc,
+        reason = "the TypeScript bindings document the public error contract"
+    )]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn pages(&self) -> Outcome<Vec<Page>> {
         let mut pages = Vec::new();
         let mut collect = |_, obj_ref, dict: &Dict, inherited: &Inherited| {
             pages.push(self.page(obj_ref, dict, inherited)?);
@@ -1765,11 +1805,15 @@ pub(crate) fn select_pages(count: usize, page_indexes: Option<&[u32]>) -> Outcom
     Ok(chosen)
 }
 
-pub(crate) fn inspect(
-    bytes: &[u8],
-    options: &InspectOptions,
-    limits: &Limits,
-) -> Outcome<Inspection> {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn inspect(bytes: &[u8], options: &InspectOptions, limits: &Limits) -> Outcome<Inspection> {
     let document = Document::open(bytes, limits)?;
     let pages = document.pages()?;
     let mut inspection = Inspection {
@@ -2957,7 +3001,7 @@ mod tests {
             lazy_contents(&plan_first(&bytes).unwrap()),
             b"BT (Updated) Tj ET"
         );
-        assert!(plan_first(include_bytes!("../../__tests__/fixtures/broken-xref.pdf")).is_none());
+        assert!(plan_first(include_bytes!("../tests/fixtures/pdf/broken-xref.pdf")).is_none());
     }
 
     #[test]

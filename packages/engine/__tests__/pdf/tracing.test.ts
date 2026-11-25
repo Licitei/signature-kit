@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit } from "effect";
 
-import { PdfCoreOperationValue } from "../dist/config.js";
-import { makePdfCore, pdfCoreBytesSource } from "../dist/pdf-core.js";
-import { childSpans, recordSpans, spanNamed } from "../../../tooling/testing/tracing.ts";
+import { PdfCoreOperationValue } from "../../dist/wasm/config.js";
+import { makePdfCore, pdfCoreBytesSource } from "../../dist/wasm/pdf-core.js";
+import { childSpans, recordSpans, spanNamed } from "../../../../tooling/testing/tracing.ts";
 import { PDF_CORE_FIXTURES_DIR } from "./corpus.ts";
 
-const wasm = readFileSync(new URL("../dist/pdf-core.wasm", import.meta.url));
+const wasm = readFileSync(new URL("../../dist/wasm/signature-kit.wasm", import.meta.url));
 const pdf = new Uint8Array(readFileSync(join(PDF_CORE_FIXTURES_DIR, "habilitacao-150.pdf")));
 const compile = Effect.promise(() => WebAssembly.compile(wasm));
 

@@ -8,6 +8,10 @@ export const createReleaseProject = (cwd = process.cwd()) =>
   tegami({
     cwd,
     changelogDir: ".tegami",
+    packages: {
+      "@signature-kit/engine": { prerelease: "alpha" },
+      "@signature-kit/browser": { prerelease: "alpha" },
+    },
     npm: {
       client: "bun",
       onBreakPeerDep: "error",

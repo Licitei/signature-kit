@@ -40,7 +40,7 @@ jobs:
           rust=true
           if [[ "$EVENT" == "pull_request" ]]; then
             if files="$(gh api --paginate "repos/$REPO/pulls/$PULL_REQUEST/files" --jq '.[].filename')"; then
-              if ! grep -qE '^(shared/pdf-core/(rust|__tests__/fixtures)/|\.github/)' <<<"$files"; then
+              if ! grep -qE '^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|clippy\.toml$|rustfmt\.toml$|\.github/)' <<<"$files"; then
                 rust=false
               fi
             fi
@@ -150,7 +150,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: shared/pdf-core/rust
+          workspaces: .
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run Rust static checks
@@ -195,7 +195,7 @@ jobs:
           exit 1
 
       - name: Verify pdf-core harnesses
-        working-directory: shared/pdf-core/rust
+        working-directory: crates/pdf
         env:
           RUSTFLAGS: --cap-lints=warn
         run: |

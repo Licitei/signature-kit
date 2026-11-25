@@ -1,6 +1,6 @@
 import * as asn1js from "asn1js";
-import { decode, oidString } from "@signature-kit/asn1";
-import type { Asn1Error, Asn1Node } from "@signature-kit/asn1";
+import { decode, oidString } from "../asn1/asn1.js";
+import type { Asn1Error, Asn1Node } from "../asn1/asn1.js";
 import { Effect, Option, Schema } from "effect";
 import * as pkijs from "pkijs";
 import { CmsError, CmsErrorCodeValue, CmsOid, CmsOperationValue } from "./config.js";

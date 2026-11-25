@@ -15,21 +15,21 @@ mod tests {
 
     fn fixture(name: &str) -> &'static [u8] {
         match name {
-            "links.pdf" => include_bytes!("../../__tests__/fixtures/links.pdf"),
-            "rotated-cropped.pdf" => include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf"),
-            "broken-xref.pdf" => include_bytes!("../../__tests__/fixtures/broken-xref.pdf"),
-            "object-streams.pdf" => include_bytes!("../../__tests__/fixtures/object-streams.pdf"),
+            "links.pdf" => include_bytes!("../tests/fixtures/pdf/links.pdf"),
+            "rotated-cropped.pdf" => include_bytes!("../tests/fixtures/pdf/rotated-cropped.pdf"),
+            "broken-xref.pdf" => include_bytes!("../tests/fixtures/pdf/broken-xref.pdf"),
+            "object-streams.pdf" => include_bytes!("../tests/fixtures/pdf/object-streams.pdf"),
             "incremental-update.pdf" => {
-                include_bytes!("../../__tests__/fixtures/incremental-update.pdf")
+                include_bytes!("../tests/fixtures/pdf/incremental-update.pdf")
             }
-            "icp-signed.pdf" => include_bytes!("../../__tests__/fixtures/icp-signed.pdf"),
+            "icp-signed.pdf" => include_bytes!("../tests/fixtures/pdf/icp-signed.pdf"),
             "helvetica-winansi.pdf" => {
-                include_bytes!("../../__tests__/fixtures/helvetica-winansi.pdf")
+                include_bytes!("../tests/fixtures/pdf/helvetica-winansi.pdf")
             }
             "react-pdf-declaration.pdf" => {
-                include_bytes!("../../__tests__/fixtures/react-pdf-declaration.pdf")
+                include_bytes!("../tests/fixtures/pdf/react-pdf-declaration.pdf")
             }
-            "habilitacao-150.pdf" => include_bytes!("../../__tests__/fixtures/habilitacao-150.pdf"),
+            "habilitacao-150.pdf" => include_bytes!("../tests/fixtures/pdf/habilitacao-150.pdf"),
             _ => panic!("unknown fixture"),
         }
     }

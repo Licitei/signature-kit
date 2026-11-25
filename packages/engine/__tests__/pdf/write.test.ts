@@ -2,9 +2,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore } from "../../dist/wasm/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const encoder = new TextEncoder();

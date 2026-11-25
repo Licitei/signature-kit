@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { LocalClient } from "./client.js";
-import { LocalError } from "./protocol.js";
-import type { PdfRenderInput, PdfViewport } from "./protocol.js";
+import { LocalError } from "@signature-kit/engine/rpc";
+import type { PdfRenderInput, PdfViewport } from "@signature-kit/engine/rpc";
 
 type Rectangle = readonly [number, number, number, number];
 

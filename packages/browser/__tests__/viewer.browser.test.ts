@@ -6,15 +6,15 @@ import { expect, it } from "vitest";
 import { commands } from "vitest/browser";
 import { LocalClient, localClientLayer } from "../src/client.js";
 import { canvasToPdfRect, paintPage, pdfToCanvasRect } from "../src/viewer.js";
-import { createPages, marker } from "./fixtures/pdf.js";
-import signedUrl from "./fixtures/visible-signature.pdf?url";
+import { createPages, marker } from "../../../tooling/testing/fixtures/local/pdf.js";
+import signedUrl from "../../../tooling/testing/fixtures/local/visible-signature.pdf?url";
 
 const createWorker = () =>
   new Worker(new URL("../src/worker.ts", import.meta.url), { type: "module" });
 const fixtures = import.meta.glob<string>(
   [
-    "../../../shared/pdf-core/__tests__/fixtures/render/{embedded-fonts,images,masks,rotated}.pdf",
-    "../../../shared/pdf-core/__tests__/fixtures/habilitacao-150.pdf",
+    "../../../crates/pdf/tests/fixtures/pdf/render/{embedded-fonts,images,masks,rotated}.pdf",
+    "../../../crates/pdf/tests/fixtures/pdf/habilitacao-150.pdf",
   ],
   { query: "?url", import: "default", eager: true },
 );
@@ -139,7 +139,9 @@ it("matches the pdf.js oracle at two zooms while the local viewer is offline", a
         yield* Effect.gen(function* () {
           const client = yield* LocalClient;
           const start = yield* Effect.promise(() => commands.trackLocalRuntimeRequests("read"));
-          expect(start.some((url) => new URL(url).pathname.endsWith("/pdf-core.wasm"))).toBe(true);
+          expect(start.some((url) => new URL(url).pathname.endsWith("/signature-kit.wasm"))).toBe(
+            true,
+          );
           yield* offline;
           const blocked = yield* Effect.promise(() =>
             fetch("/__offline_viewer_probe").then(

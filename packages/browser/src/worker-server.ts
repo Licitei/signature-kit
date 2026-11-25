@@ -1,6 +1,6 @@
 import * as BrowserWorkerRunner from "@effect/platform-browser/BrowserWorkerRunner";
-import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
-import { paintDisplayList, prepareDisplayListImages } from "@signature-kit/pdf-core/canvas";
+import { pdfCoreBrowserLayer } from "@signature-kit/engine/wasm/browser";
+import { paintDisplayList, prepareDisplayListImages } from "@signature-kit/engine/wasm/canvas";
 import { Effect, Layer, Option, References, Semaphore } from "effect";
 import * as RpcServer from "effect/rpc/RpcServer";
 import {
@@ -10,9 +10,9 @@ import {
   PdfEngine,
   localRuntimeLayer,
   pdfEngineLayer,
-} from "./engine.js";
-import { LocalError, LocalRpcs, PROTOCOL_VERSION } from "./protocol.js";
-import { LocalTelemetry, localTelemetryLayer, withQueueTiming } from "./telemetry.js";
+} from "@signature-kit/engine/engine";
+import { LocalTelemetry, LocalError, LocalRpcs, PROTOCOL_VERSION } from "@signature-kit/engine/rpc";
+import { localTelemetryLayer, withQueueTiming } from "@signature-kit/engine/telemetry";
 
 const localHandlersLayer = LocalRpcs.toLayer(
   Effect.gen(function* () {

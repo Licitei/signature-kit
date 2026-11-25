@@ -1,6 +1,6 @@
 {
-  "name": "@signature-kit/pdf-core",
-  "version": "0.4.0",
+  "name": "@signature-kit/engine",
+  "version": "2.0.0-alpha.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,35 +15,47 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    "./config": {
-      "types": "./dist/config.d.ts",
-      "import": "./dist/config.js"
+    "./rpc": {
+      "types": "./dist/rpc.d.ts",
+      "import": "./dist/rpc.js"
     },
-    "./pdf-core": {
-      "types": "./dist/pdf-core.d.ts",
-      "import": "./dist/pdf-core.js"
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.js"
     },
-    "./browser": {
-      "types": "./dist/browser.d.ts",
-      "import": "./dist/browser.js"
+    "./telemetry": {
+      "types": "./dist/telemetry.d.ts",
+      "import": "./dist/telemetry.js"
     },
-    "./file": {
-      "types": "./dist/file.d.ts",
-      "import": "./dist/file.js"
+    "./wasm/config": {
+      "types": "./dist/wasm/config.d.ts",
+      "import": "./dist/wasm/config.js"
     },
-    "./promise": {
-      "types": "./dist/promise.d.ts",
-      "import": "./dist/promise.js"
+    "./wasm/pdf-core": {
+      "types": "./dist/wasm/pdf-core.d.ts",
+      "import": "./dist/wasm/pdf-core.js"
     },
-    "./node": {
-      "types": "./dist/node.d.ts",
-      "import": "./dist/node.js"
+    "./wasm/browser": {
+      "types": "./dist/wasm/browser.d.ts",
+      "import": "./dist/wasm/browser.js"
     },
-    "./canvas": {
-      "types": "./dist/canvas.d.ts",
-      "import": "./dist/canvas.js"
+    "./wasm/file": {
+      "types": "./dist/wasm/file.d.ts",
+      "import": "./dist/wasm/file.js"
     },
-    "./pdf-core.wasm": "./dist/pdf-core.wasm"
+    "./wasm/promise": {
+      "types": "./dist/wasm/promise.d.ts",
+      "import": "./dist/wasm/promise.js"
+    },
+    "./wasm/node": {
+      "types": "./dist/wasm/node.d.ts",
+      "import": "./dist/wasm/node.js"
+    },
+    "./wasm/canvas": {
+      "types": "./dist/wasm/canvas.d.ts",
+      "import": "./dist/wasm/canvas.js"
+    },
+    "./signature-kit.wasm": "./dist/wasm/signature-kit.wasm"
   },
   "publishConfig": {
     "access": "public"
@@ -52,7 +64,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "effect": "4.1.0"
+    "asn1js": "3.1.0",
+    "effect": "4.1.0",
+    "pkijs": "3.4.3"
   },
   "devDependencies": {
     "binaryen": "130.0.0",
@@ -64,53 +78,51 @@
         "executor": "nx:run-commands",
         "cache": true,
         "inputs": [
-          "{projectRoot}/rust/Cargo.toml",
-          "{projectRoot}/rust/Cargo.lock",
-          "{projectRoot}/rust/build.rs",
-          "{projectRoot}/rust/rust-toolchain.toml",
-          "{projectRoot}/rust/data/**/*",
-          "{projectRoot}/rust/src/**/*",
-          "{projectRoot}/scripts/build-wasm.sh",
-          "{projectRoot}/scripts/build-wasm-cached.sh",
-          "{projectRoot}/node_modules/binaryen/package.json",
+          "{workspaceRoot}/Cargo.toml",
+          "{workspaceRoot}/Cargo.lock",
+          "{workspaceRoot}/rust-toolchain.toml",
+          "{workspaceRoot}/crates/pdf/Cargo.toml",
+          "{workspaceRoot}/crates/pdf/build.rs",
+          "{workspaceRoot}/crates/pdf/src/**/*",
+          "{workspaceRoot}/crates/pdf/data/**/*",
+          "{workspaceRoot}/crates/wasm/Cargo.toml",
+          "{workspaceRoot}/crates/wasm/src/**/*",
+          "{workspaceRoot}/crates/wasm/scripts/*.sh",
+          "{workspaceRoot}/bun.lock",
           {
             "runtime": "rustc --version"
           }
         ],
         "outputs": [
-          "{projectRoot}/dist/pdf-core.wasm"
+          "{projectRoot}/dist/wasm/signature-kit.wasm"
         ],
         "options": {
-          "command": "bash scripts/build-wasm-cached.sh",
-          "cwd": "{projectRoot}"
+          "command": "bash crates/wasm/scripts/build-wasm-cached.sh",
+          "cwd": "{workspaceRoot}"
         }
       },
       "build": {
         "dependsOn": [
           "...",
           "build-wasm"
+        ],
+        "inputs": [
+          "...",
+          "{workspaceRoot}/Cargo.toml",
+          "{workspaceRoot}/Cargo.lock",
+          "{workspaceRoot}/rust-toolchain.toml",
+          "{workspaceRoot}/crates/pdf/Cargo.toml",
+          "{workspaceRoot}/crates/pdf/build.rs",
+          "{workspaceRoot}/crates/pdf/src/**/*",
+          "{workspaceRoot}/crates/pdf/data/**/*",
+          "{workspaceRoot}/crates/wasm/Cargo.toml",
+          "{workspaceRoot}/crates/wasm/src/**/*",
+          "{workspaceRoot}/crates/wasm/scripts/*.sh",
+          "{workspaceRoot}/bun.lock",
+          {
+            "runtime": "rustc --version"
+          }
         ]
-      },
-      "rust-check": {
-        "executor": "nx:run-commands",
-        "cache": false,
-        "options": {
-          "commands": [
-            "cargo fmt --check",
-            "cargo clippy --all-targets --all-features -- -D warnings",
-            "RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps"
-          ],
-          "parallel": false,
-          "cwd": "{projectRoot}/rust"
-        }
-      },
-      "rust-test": {
-        "executor": "nx:run-commands",
-        "cache": false,
-        "options": {
-          "command": "cargo test",
-          "cwd": "{projectRoot}/rust"
-        }
       },
       "npm-pack": {
         "executor": "nx:run-commands",
@@ -126,6 +138,10 @@
           "cwd": "{projectRoot}"
         }
       }
-    }
+    },
+    "tags": [
+      "npm:public",
+      "layer:engine"
+    ]
   }
 }

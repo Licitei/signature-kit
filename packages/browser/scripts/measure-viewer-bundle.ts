@@ -1,39 +1,13 @@
-import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
 import { Effect } from "effect";
 import { build } from "vite";
 
-const run = promisify(execFile);
-const baseline = process.argv[2] ?? "origin/v2-02-local-runtime";
 const root = resolve(import.meta.dirname, "../../..");
-const cache = resolve(root, "runtime/local/.cache");
-const baselineFiles = ["a1-certificate.ts", "engine.ts", "protocol.ts", "worker.ts"];
-
-const measure = (directory: string, worker: string) =>
-  Effect.gen(function* () {
-    yield* Effect.promise(() =>
-      writeFile(
-        resolve(directory, "index.html"),
-        `<script type="module">import LocalWorker from "${worker}?worker"; new LocalWorker();</script>`,
-      ),
-    );
-    yield* Effect.promise(() =>
-      build({ root: directory, configFile: false, build: { assetsInlineLimit: 0 } }),
-    );
-    const assets = resolve(directory, "dist/assets");
-    const filenames = yield* Effect.promise(() => readdir(assets));
-    return yield* Effect.forEach(
-      filenames.filter((name) => name.startsWith("worker-") || name.endsWith(".wasm")),
-      (name) =>
-        Effect.promise(async () => {
-          const file = await readFile(resolve(assets, name));
-          return { name, bytes: file.byteLength, gzipBytes: gzipSync(file).byteLength };
-        }),
-    );
-  });
+const browser = resolve(root, process.argv[2] ?? "packages/browser/dist");
+const rpc = resolve(root, process.argv[3] ?? "packages/engine/dist/rpc.js");
+const cache = resolve(root, ".cache");
 
 await Effect.runPromise(
   Effect.scoped(
@@ -43,26 +17,37 @@ await Effect.runPromise(
         Effect.promise(() => mkdtemp(resolve(cache, "viewer-bundle-"))),
         (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
       );
-      const beforeDir = resolve(directory, "before");
-      const afterDir = resolve(directory, "after");
-      yield* Effect.promise(() => mkdir(beforeDir));
-      yield* Effect.promise(() => mkdir(afterDir));
-      yield* Effect.forEach(
-        baselineFiles,
-        (filename) =>
-          Effect.promise(async (signal) => {
-            const { stdout } = await run(
-              "git",
-              ["show", `${baseline}:runtime/local/src/${filename}`],
-              { cwd: root, signal },
-            );
-            await writeFile(resolve(beforeDir, filename), stdout);
-          }),
-        { discard: true },
+      yield* Effect.promise(() =>
+        writeFile(
+          resolve(directory, "index.html"),
+          '<script type="module" src="/entry.js"></script>',
+        ),
       );
-      const before = yield* measure(beforeDir, "./worker.ts");
-      const after = yield* measure(afterDir, "@signature-kit/local/worker");
-      console.info(JSON.stringify({ baseline, before, after }, null, 2));
+      yield* Effect.promise(() =>
+        writeFile(
+          resolve(directory, "entry.js"),
+          `import Worker from "${resolve(browser, "worker.js")}?worker";
+import { LocalClient, localClientLayer } from "${resolve(browser, "client.js")}";
+import { LocalRpcs, PROTOCOL_VERSION } from "${rpc}";
+Object.assign(globalThis, { LocalClient, LocalRpcs, PROTOCOL_VERSION, layer: localClientLayer(() => new Worker()) });`,
+        ),
+      );
+      yield* Effect.promise(() =>
+        build({
+          root: directory,
+          configFile: false,
+          build: { target: "chrome111", assetsInlineLimit: 0 },
+        }),
+      );
+      const assets = resolve(directory, "dist/assets");
+      const filenames = yield* Effect.promise(() => readdir(assets));
+      const measured = yield* Effect.forEach(filenames.toSorted(), (name) =>
+        Effect.promise(async () => {
+          const file = await readFile(resolve(assets, name));
+          return { name, bytes: file.byteLength, gzipBytes: gzipSync(file).byteLength };
+        }),
+      );
+      console.info(JSON.stringify(measured, null, 2));
     }),
   ),
 );

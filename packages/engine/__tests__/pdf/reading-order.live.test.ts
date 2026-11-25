@@ -2,8 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore } from "../../dist/wasm/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 

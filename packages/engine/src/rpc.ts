@@ -1,8 +1,103 @@
-import { Schema } from "effect";
+import { Context, Schema } from "effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Transferable from "effect/workers/Transferable";
-import { TelemetryBatch } from "./telemetry.js";
+import type { Effect } from "effect";
+import { PdfCoreOperationSchema } from "./wasm/config.js";
+
+export const RpcMethod = Schema.Literals([
+  "Hello",
+  "DocumentsOpen",
+  "DocumentsExport",
+  "DocumentsRelease",
+  "PdfInspect",
+  "PdfRenderPage",
+  "A1Open",
+  "A1Close",
+]);
+const SpanName = Schema.Union([
+  Schema.TemplateLiteral([Schema.Literals(["local.client.", "local.worker."]), RpcMethod]),
+  PdfCoreOperationSchema,
+  Schema.Literals([
+    "local.hello",
+    "local.documents.open",
+    "local.documents.export",
+    "local.documents.release",
+    "local.pdf.open",
+    "local.pdf.inspect",
+    "local.pdf.renderPage",
+    "local.viewer.paintPage",
+    "local.queue.pdf",
+    "local.queue.raster",
+    "local.a1.open",
+    "local.a1.close",
+    "local.a1.sign",
+    "local.a1.parsePkcs12",
+    "local.crypto.digest",
+    "local.crypto.importKey",
+    "local.crypto.sign",
+    "pdfCore.wasm.instantiate",
+    "pdfCore.wasm.run",
+    "pdfCore.wasm.decode",
+    "pdfCore.wasm.copyIn",
+    "pdfCore.lazy.supply",
+    "pdfCore.lazy.plan",
+  ]),
+]);
+export const Attribute = Schema.Union([
+  Schema.Tuple([
+    Schema.Literals([
+      "byteLength",
+      "certificateCount",
+      "signature_kit.wasm.input_bytes",
+      "signature_kit.wasm.output_bytes",
+      "signature_kit.wasm.result_bytes",
+      "signature_kit.wasm.memory_bytes",
+      "signature_kit.pdf.requested_pages",
+    ]),
+    Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  ]),
+  Schema.Tuple([Schema.Literal("holderKind"), Schema.Literals(["e-cpf", "e-cnpj", "other"])]),
+  Schema.Tuple([Schema.Literal("rpc.system.name"), Schema.Literal("effect_rpc")]),
+  Schema.Tuple([Schema.Literal("rpc.method"), RpcMethod]),
+  Schema.Tuple([Schema.Literal("signature_kit.pdf_core.operation"), PdfCoreOperationSchema]),
+]);
+export const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const SpanId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/));
+const Nanoseconds = Schema.String.check(Schema.isPattern(/^[0-9]{1,20}$/));
+const Outcome = Schema.Literals(["success", "failure", "interrupted"]);
+export const TelemetrySpan = Schema.Struct({
+  name: SpanName,
+  traceId: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
+  spanId: SpanId,
+  parentSpanId: Schema.optional(SpanId),
+  kind: Schema.Literals(["internal", "server", "client", "producer", "consumer"]),
+  startTime: Nanoseconds,
+  endTime: Nanoseconds,
+  outcome: Outcome,
+  attributes: Schema.Array(Attribute).check(Schema.isMaxLength(32)),
+  droppedAttributes: Count,
+});
+export type TelemetrySpan = (typeof TelemetrySpan)["Type"];
+
+export const MAX_SPANS = 4096;
+export const TelemetryBatch = Schema.Struct({
+  spans: Schema.Array(TelemetrySpan).check(Schema.isMaxLength(MAX_SPANS)),
+  bytes: Count,
+  droppedSpans: Count,
+  droppedAttributes: Count,
+});
+export type TelemetryBatch = (typeof TelemetryBatch)["Type"];
+
+export class LocalTelemetry extends Context.Service<
+  LocalTelemetry,
+  {
+    readonly snapshot: Effect.Effect<TelemetryBatch>;
+    readonly drain: Effect.Effect<TelemetryBatch>;
+    readonly receive: (batch: TelemetryBatch) => Effect.Effect<void>;
+    readonly restore: (batch: TelemetryBatch) => Effect.Effect<void>;
+  }
+>()("@signature-kit/engine/LocalTelemetry") {}
 
 export const PROTOCOL_VERSION = 3;
 export const InstanceId = Schema.String.check(Schema.isUUID());

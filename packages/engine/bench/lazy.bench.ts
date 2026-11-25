@@ -1,14 +1,14 @@
 import { open, readFile, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
-import type { PdfCoreLazyOptions } from "../dist/config.js";
-import { pdfCoreNodeSource } from "../dist/node.js";
-import { createPdfCoreClient } from "../dist/promise.js";
-import type { PdfCoreClient, PdfCorePromiseRangeSource } from "../dist/promise.js";
+import type { PdfCoreLazyOptions } from "../dist/wasm/config.js";
+import { pdfCoreNodeSource } from "../dist/wasm/node.js";
+import { createPdfCoreClient } from "../dist/wasm/promise.js";
+import type { PdfCoreClient, PdfCorePromiseRangeSource } from "../dist/wasm/promise.js";
 
 const RTT_MS = 40;
 const HTTP_SAMPLE_SIZE = 12;
-const wasmUrl = new URL("../dist/pdf-core.wasm", import.meta.url);
+const wasmUrl = new URL("../dist/wasm/signature-kit.wasm", import.meta.url);
 const { PDF_PROBE_BYTES, PDF_GAP_BYTES, PDF_MAX_ROUND_BYTES } = process.env;
 const tuning: PdfCoreLazyOptions = {
   ...(PDF_PROBE_BYTES === undefined ? {} : { probeBytes: Number(PDF_PROBE_BYTES) }),

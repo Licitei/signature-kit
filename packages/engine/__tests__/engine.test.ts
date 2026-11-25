@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
+import { parsePkcs12 } from "../src/crypto/pkcs12.js";
 import { Effect, Redacted } from "effect";
 import { createHash, verify, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -11,7 +11,12 @@ import { A1Sessions, Documents, localRuntimeLayer } from "../src/engine.js";
 const password = Redacted.make("changeit");
 const readSanFixture = (name: "ecpf" | "ecnpj") =>
   Effect.promise(
-    async () => new Uint8Array(await readFile(new URL(`./fixtures/${name}.p12`, import.meta.url))),
+    async () =>
+      new Uint8Array(
+        await readFile(
+          new URL(`../../../tooling/testing/fixtures/local/${name}.p12`, import.meta.url),
+        ),
+      ),
   );
 
 describe("local documents", () => {

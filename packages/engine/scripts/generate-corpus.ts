@@ -7,11 +7,11 @@ import type {
   PdfCoreEditTarget,
   PdfCoreFontMetrics,
   PdfCoreObjectRef,
-} from "../src/config.ts";
-import { PdfCore, pdfCoreLayer } from "../src/pdf-core.ts";
+} from "../src/wasm/config.ts";
+import { PdfCore, pdfCoreLayer } from "../src/wasm/pdf-core.ts";
 import { Effect } from "effect";
 
-import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
+import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/pdf/corpus.ts";
 
 const PAGE_SIZE: readonly [number, number] = [612, 792];
 const encoder = new TextEncoder();
@@ -1262,7 +1262,7 @@ const program = Effect.gen(function* () {
 });
 
 const pdfCoreModule = await WebAssembly.compile(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../dist/pdf-core.wasm")),
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../dist/wasm/signature-kit.wasm")),
 );
 
 await Effect.runPromise(program.pipe(Effect.provide(pdfCoreLayer(pdfCoreModule))));

@@ -5,13 +5,13 @@
  *
  * Usage:
  *   MEM_WASMS=a.wasm,b.wasm MEM_PDFS=x.pdf,y.pdf [MEM_MODES=text,markdown,tables,lazy,render] \
- *     bun shared/pdf-core/bench/measure-memory.ts
+ *     bun packages/engine/bench/measure-memory.ts
  */
 import { open, readFile } from "node:fs/promises";
 import { basename } from "node:path";
 
-import { pdfCoreNodeSource } from "../dist/node.js";
-import { createPdfCoreClient } from "../dist/promise.js";
+import { pdfCoreNodeSource } from "../dist/wasm/node.js";
+import { createPdfCoreClient } from "../dist/wasm/promise.js";
 
 const MODES = ["load", "text", "markdown", "tables", "lazy", "render"];
 const MIB = 1048576;

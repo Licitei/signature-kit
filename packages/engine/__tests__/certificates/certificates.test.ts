@@ -7,7 +7,7 @@ import {
   isCertificateValid,
   parseCertificate,
   parseX509,
-} from "../src/index";
+} from "../../src/certificates/certificate";
 import { Effect, Redacted, Result } from "effect";
 
 const testPassword = Redacted.make("test1234");

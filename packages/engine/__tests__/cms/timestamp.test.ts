@@ -3,9 +3,9 @@ import * as asn1js from "asn1js";
 import { Effect, Result, Schema } from "effect";
 import * as pkijs from "pkijs";
 import { vi } from "vitest";
-import { CmsOid, MAX_NATIVE_TIMEOUT_MILLIS, TimestampOptionsSchema } from "../src/config";
-import type { TimestampOptions } from "../src/config";
-import { requestTimestamp } from "../src/timestamp";
+import { CmsOid, MAX_NATIVE_TIMEOUT_MILLIS, TimestampOptionsSchema } from "../../src/cms/config";
+import type { TimestampOptions } from "../../src/cms/config";
+import { requestTimestamp } from "../../src/cms/timestamp";
 
 type TimestampSigner = {
   readonly certificate: pkijs.Certificate;

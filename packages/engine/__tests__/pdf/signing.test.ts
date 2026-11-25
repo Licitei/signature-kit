@@ -7,10 +7,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import type { PdfCorePrepareSignatureRequest, PdfCorePreparedSignature } from "../dist/config.js";
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import type {
+  PdfCorePrepareSignatureRequest,
+  PdfCorePreparedSignature,
+} from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore } from "../../dist/wasm/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 

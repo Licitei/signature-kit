@@ -1,5 +1,5 @@
 #[path = "signing.rs"]
-mod signing;
+pub mod signing;
 
 use alloc::rc::Rc;
 use core::str;
@@ -15,11 +15,6 @@ use crate::png::{self, Image};
 use crate::revision::revision_complete;
 use crate::syntax::{Parser, skip_whitespace_at};
 use crate::write::{Body, Changes, Packing, incremental, rewrite};
-
-pub(crate) use signing::{
-    FieldLock, PreparedSignature, SignatureField, SignatureFields, prepare_signature,
-    signature_fields, signature_references,
-};
 
 const EDIT_MAGIC: u32 = 0x4445_4450;
 const EDIT_VERSION: u32 = 1;
@@ -97,21 +92,33 @@ enum Probe {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FieldTarget {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum FieldTarget {
     Ref(ObjRef),
     Widget,
     WidgetParent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Slot {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum Slot {
     Malformed(u32),
     None,
     Open(FieldTarget),
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AnnotationInfo {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct AnnotationInfo {
     pub index: u32,
     pub page_index: u32,
     pub rect: Option<[f64; 4]>,
@@ -123,14 +130,22 @@ pub(crate) struct AnnotationInfo {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PageEntry {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct PageEntry {
     pub annotation_count: u32,
     pub info: PageInfo,
     pub reference: Option<ObjRef>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct DocumentInfo {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct DocumentInfo {
     pub acro_form: bool,
     pub annotations: Vec<AnnotationInfo>,
     pub field_name: Option<Result<String, u32>>,
@@ -693,7 +708,15 @@ impl Store<'_, '_> {
     }
 }
 
-pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u8>> {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u8>> {
     let mut reader = Reader {
         data: payload,
         pos: 0,
@@ -742,7 +765,15 @@ pub(crate) fn edit(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u
     }
 }
 
-pub(crate) fn document_info(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn document_info(
     pdf: &[u8],
     annotation_pages: Option<&[u32]>,
     field_prefix: &[u8],

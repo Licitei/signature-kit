@@ -2,7 +2,7 @@
 /**
  * Parse a wasm module's code + optional name section and list function sizes.
  * Prefer an unstripped build (`strip = false`) so the name section is present.
- * Usage: bun shared/pdf-core/bench/wasm-symbols.ts [wasm-path] [--top N]
+ * Usage: bun packages/engine/bench/wasm-symbols.ts [wasm-path] [--top N]
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -24,7 +24,7 @@ const pathArg = args.find((argument, index) => {
   const previous = args[index - 1];
   return previous === undefined || previous.startsWith("--") === false;
 });
-const wasmPath = resolve(pathArg ?? join(pkg, "dist/pdf-core.wasm"));
+const wasmPath = resolve(pathArg ?? join(pkg, "dist/wasm/signature-kit.wasm"));
 
 const data = new Uint8Array(readFileSync(wasmPath));
 

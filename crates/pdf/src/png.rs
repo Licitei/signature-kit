@@ -19,7 +19,11 @@ const ADAM7: [[u32; 4]; 7] = [
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Image {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Image {
     pub alpha: bool,
     pub components: u32,
     pub height: u32,
@@ -191,7 +195,15 @@ impl Header {
     }
 }
 
-pub(crate) fn decode(png: &[u8]) -> Outcome<Image> {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn decode(png: &[u8]) -> Outcome<Image> {
     if png.len() > MAX_INPUT || png.get(..8) != Some(SIGNATURE.as_slice()) {
         return Err(Failure::request("not a PNG image"));
     }

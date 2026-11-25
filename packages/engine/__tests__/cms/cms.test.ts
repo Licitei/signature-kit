@@ -1,12 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { buildSignedAttributes } from "../src/attributes";
+import { buildSignedAttributes } from "../../src/cms/attributes";
 import {
   CmsHashAlgorithmValue,
   CmsOid,
   CmsVerifyResultSchema,
   hashAlgorithmOid,
   webCryptoHashName,
-} from "../src/config";
+} from "../../src/cms/config";
 import { Effect, Schema } from "effect";
 const containsBytes = (haystack: Uint8Array, needle: Uint8Array): boolean => {
   if (needle.length === 0) return true;

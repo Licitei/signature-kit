@@ -169,27 +169,28 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
 The local browser runtime comes first, followed by the server runtime. External
 providers are rebuilt last on 2.0 contracts. See [the architecture](docs/v2/ARCHITECTURE.md).
 
-- `runtime/local` owns the RPC protocol, document revisions, A1 sessions, worker,
-  and client. Private signing keys stay inside the worker as non-extractable
-  WebCrypto keys.
-- `core/certificates` owns certificate parsing and schemas. `shared/*` owns the
-  low-level engines and codecs. Dependencies point from runtime to core and shared.
-- Package exports point at real modules in `dist/`, built by `tsc`. Avoid pure
-  re-export barrels. Keep workspace dependencies, TypeScript references, and source
-  aliases aligned. Imports used exclusively in tests belong in `devDependencies`.
-- Keep tests with the packages that own their behavior. Docs may assemble public
-  capabilities. Use Foldkit and the existing UI primitives in the docs app.
+## Layers
+
+- `crates/pdf` owns Rust PDF operations and fixtures. `crates/wasm` owns the C
+  ABI and assembles the enabled Rust engines into `signature-kit.wasm`.
+- `packages/engine` owns the RPC contract, document revisions, A1 sessions,
+  telemetry, codecs, and WASM bindings. Private signing keys stay inside the
+  worker as non-extractable WebCrypto keys.
+- `packages/browser` owns the Web Worker, client, and viewer. The worker uses
+  public engine subpaths. Page-side client modules import the engine RPC
+  contract. The engine has no browser package dependency.
+- Package exports point at real modules in `dist/`, built by `tsc`. Keep
+  workspace dependencies, TypeScript references, and source aliases aligned.
+  Imports used exclusively in tests belong in `devDependencies`.
+- Keep tests with their behavior. Docs assemble public capabilities using
+  Foldkit and the app's existing UI primitives.
 
 ## Packages
 
-| Directory | Package | Responsibility |
+| Directory | npm package | Responsibility |
 | --- | --- | --- |
-| `runtime/local` | `@signature-kit/local` | Local RPC and worker engine |
-| `core/certificates` | `@signature-kit/certificates` | PKCS#12 and X.509 parsing |
-| `shared/pdf-core` | `@signature-kit/pdf-core` | Rust/WASM PDF engine |
-| `shared/asn1` | `@signature-kit/asn1` | ASN.1 DER codec |
-| `shared/crypto` | `@signature-kit/crypto` | Crypto and PKCS#12 primitives |
-| `shared/cms` | `@signature-kit/cms` | CMS/PKCS#7 and RFC 3161 |
+| `packages/engine` | `@signature-kit/engine` | RPC contract, engine services, codecs and WASM bindings |
+| `packages/browser` | `@signature-kit/browser` | Browser worker, client, viewer and OTLP export |
 
 ## Validation
 
@@ -214,7 +215,7 @@ providers are rebuilt last on 2.0 contracts. See [the architecture](docs/v2/ARCH
   - secrets use `Redacted`
 - Tests for Effect workflows use `@effect/vitest` or Bun. Use a scoped local
   HTTP server for network behavior.
-- For PDF changes run the relevant `shared/pdf-core` and `runtime/local` suites
+- For PDF changes run the relevant Rust and `packages/engine` suites
   and `bun run test:integration:browser`. Run `bun run test:performance` when
   changing hot paths. Use independent readers to check PDF interoperability.
 

@@ -19,8 +19,8 @@ if (root === undefined) {
   throw new Error("Set SIGNATURE_KIT_ROOT to the absolute path of the built checkout.");
 }
 
-const { createPdfCoreClient } = await import(join(root, "shared/pdf-core/dist/promise.js"));
-const wasm = await Bun.file(join(root, "shared/pdf-core/dist/pdf-core.wasm")).bytes();
+const { createPdfCoreClient } = await import(join(root, "packages/engine/dist/wasm/promise.js"));
+const wasm = await Bun.file(join(root, "packages/engine/dist/wasm/signature-kit.wasm")).bytes();
 const core = await createPdfCoreClient(await WebAssembly.compile(wasm));
 const inspectorBinary = await Bun.file(
   new URL(import.meta.resolve("@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm_bg.wasm")),
@@ -28,7 +28,7 @@ const inspectorBinary = await Bun.file(
 const inspectorWasm = initSync({ module: inspectorBinary });
 const corpus = process.env.PDF_CORPUS;
 const folder =
-  corpus === undefined ? join(root, "shared/pdf-core/__tests__/fixtures") : join(corpus, "pdfs");
+  corpus === undefined ? join(root, "crates/pdf/tests/fixtures/pdf") : join(corpus, "pdfs");
 const files = (await readdir(folder)).filter((name) => name.endsWith(".pdf")).sort();
 if (files.length === 0) {
   throw new Error("The benchmark requires at least one PDF.");

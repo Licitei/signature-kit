@@ -1,5 +1,13 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FailureCode {
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum FailureCode {
     DamagedXref,
     EncryptedPdf,
     InvalidPdf,
@@ -23,20 +31,32 @@ impl From<FailureCode> for u32 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Failure {
-    pub(crate) code: FailureCode,
-    pub(crate) reason: String,
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Failure {
+    pub code: FailureCode,
+    pub reason: String,
 }
 
 impl Failure {
-    pub(crate) fn invalid<R>(reason: R) -> Self
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn invalid<R>(reason: R) -> Self
     where
         R: Into<String>,
     {
         Self::new(FailureCode::InvalidPdf, reason)
     }
 
-    pub(crate) fn limit<R>(reason: R) -> Self
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn limit<R>(reason: R) -> Self
     where
         R: Into<String>,
     {
@@ -53,7 +73,11 @@ impl Failure {
         }
     }
 
-    pub(crate) fn request<R>(reason: R) -> Self
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn request<R>(reason: R) -> Self
     where
         R: Into<String>,
     {
@@ -61,4 +85,4 @@ impl Failure {
     }
 }
 
-pub(crate) type Outcome<T> = Result<T, Failure>;
+pub type Outcome<T> = Result<T, Failure>;

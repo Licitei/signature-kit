@@ -736,7 +736,12 @@ fn write_stored(writer: &mut BitWriter, raw: &[u8], last: bool) {
     }
 }
 
-pub(crate) fn zlib_compress(data: &[u8]) -> Vec<u8> {
+#[must_use]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn zlib_compress(data: &[u8]) -> Vec<u8> {
     let mut writer = BitWriter {
         buffer: 0,
         count: 0,

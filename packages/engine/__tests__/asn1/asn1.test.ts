@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
-import { decode, encode, integerBigInt, oidString } from "../src/asn1";
-import type { Asn1Error } from "../src/asn1";
+import { decode, encode, integerBigInt, oidString } from "../../src/asn1/asn1";
+import type { Asn1Error } from "../../src/asn1/asn1";
 
 const expectDecodeError = (bytes: Uint8Array) =>
   Effect.gen(function* () {

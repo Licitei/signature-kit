@@ -1,14 +1,14 @@
 import * as TestClock from "effect/testing/TestClock";
 import { webcrypto } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
-import { childrenOf, decode, encode, oidString } from "@signature-kit/asn1";
-import type { Asn1Node } from "@signature-kit/asn1";
+import { childrenOf, decode, encode, oidString } from "../../src/asn1/asn1.js";
+import type { Asn1Node } from "../../src/asn1/asn1.js";
 import { Effect, Option, Redacted, Result } from "effect";
-import { readSigningFixture } from "../../../tooling/testing/fixtures";
-import { parsePkcs12 } from "../src/pkcs12";
-import { hmac } from "../src/primitives/hmac";
-import { pbkdf2 } from "../src/primitives/pbkdf2";
-import { sha1 } from "../src/primitives/sha1";
+import { readSigningFixture } from "../../../../tooling/testing/fixtures";
+import { parsePkcs12 } from "../../src/crypto/pkcs12";
+import { hmac } from "../../src/crypto/primitives/hmac";
+import { pbkdf2 } from "../../src/crypto/primitives/pbkdf2";
+import { sha1 } from "../../src/crypto/primitives/sha1";
 
 const PASSWORD = Redacted.make("changeit");
 const LIMIT = 10_000_000;

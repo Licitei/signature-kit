@@ -3,12 +3,12 @@ import * as asn1js from "asn1js";
 import { Effect, Exit } from "effect";
 import * as pkijs from "pkijs";
 
-import { CmsOperationValue } from "../src/config";
-import { inspectDetachedSignedData } from "../src/inspect";
-import { createDetachedSignedData } from "../src/sign";
-import { verifyDetachedSignedData } from "../src/verify";
-import { localHttpServer } from "../../../tooling/testing/local-http";
-import { childSpans, recordSpans, spanNamed } from "../../../tooling/testing/tracing.ts";
+import { CmsOperationValue } from "../../src/cms/config";
+import { inspectDetachedSignedData } from "../../src/cms/inspect";
+import { createDetachedSignedData } from "../../src/cms/sign";
+import { verifyDetachedSignedData } from "../../src/cms/verify";
+import { localHttpServer } from "../../../../tooling/testing/local-http";
+import { childSpans, recordSpans, spanNamed } from "../../../../tooling/testing/tracing.ts";
 
 const SIGNER_NAME = "Tracing Signer Person";
 

@@ -14,7 +14,7 @@ import {
 import type { Duration } from "effect";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
-import { LocalError, LocalRpcs, PROTOCOL_VERSION } from "./protocol.js";
+import { LocalTelemetry, LocalError, LocalRpcs, PROTOCOL_VERSION } from "@signature-kit/engine/rpc";
 import type {
   A1OpenInput,
   A1SessionInfo,
@@ -24,8 +24,7 @@ import type {
   PdfPagePixels,
   PdfRenderInput,
   RevisionRef,
-} from "./protocol.js";
-import { LocalTelemetry } from "./telemetry.js";
+} from "@signature-kit/engine/rpc";
 
 export class LocalClient extends Context.Service<
   LocalClient,
@@ -40,7 +39,7 @@ export class LocalClient extends Context.Service<
     readonly collectTelemetry: () => Effect.Effect<void, LocalError>;
     readonly closeA1: () => Effect.Effect<void, LocalError>;
   }
->()("@signature-kit/local/LocalClient") {}
+>()("@signature-kit/browser/LocalClient") {}
 
 export const LocalClientOptionsSchema = Schema.Struct({
   requestTimeout: Schema.optional(Schema.Duration),

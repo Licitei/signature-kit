@@ -28,7 +28,11 @@ const MIN_PROBE: usize = 128;
 const ROUND_SLACK: usize = 256;
 
 #[derive(Debug)]
-pub(crate) enum Plan {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum Plan {
     Failed(Failure),
     Fallback,
     Full(Vec<Range<usize>>),
@@ -49,10 +53,14 @@ impl Segment {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Tuning {
-    pub(crate) gap: usize,
-    pub(crate) probe: usize,
-    pub(crate) round_bytes: usize,
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Tuning {
+    pub gap: usize,
+    pub probe: usize,
+    pub round_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -487,7 +495,7 @@ struct Index {
 }
 
 #[derive(Debug)]
-pub(crate) struct Lazy {
+pub struct Lazy {
     cache: DocumentCache,
     fallback: bool,
     frontier: Option<Frontier>,
@@ -543,11 +551,18 @@ impl Lazy {
         )
     }
 
-    pub(crate) fn execute<A>(
-        &self,
-        limits: &Limits,
-        run: impl FnOnce(&Document<'_>, &[(usize, &Page)]) -> Outcome<A>,
-    ) -> Outcome<Option<A>> {
+    #[expect(
+        clippy::missing_errors_doc,
+        reason = "the TypeScript bindings document the public error contract"
+    )]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn execute<A, Run>(&self, limits: &Limits, run: Run) -> Outcome<Option<A>>
+    where
+        Run: FnOnce(&Document<'_>, &[(usize, &Page)]) -> Outcome<A>,
+    {
         let document = self.document(limits, self.phase == Phase::Probe)?;
         let frontier = self
             .frontier
@@ -567,11 +582,19 @@ impl Lazy {
         result.map(Some)
     }
 
-    pub(crate) fn feed(&mut self, offset: usize, bytes: &[u8]) -> bool {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn feed(&mut self, offset: usize, bytes: &[u8]) -> bool {
         self.sparse.feed(offset, bytes)
     }
 
-    pub(crate) fn full_bytes(&self) -> Option<&[u8]> {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn full_bytes(&self) -> Option<&[u8]> {
         if !self.fallback {
             return None;
         }
@@ -696,11 +719,20 @@ impl Lazy {
         None
     }
 
-    pub(crate) fn needs_ranges(&self) -> bool {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn needs_ranges(&self) -> bool {
         self.sparse.misses() != 0
     }
 
-    pub(crate) fn new(size: usize, tuning: Tuning) -> Self {
+    #[must_use]
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn new(size: usize, tuning: Tuning) -> Self {
         Self {
             cache: DocumentCache::new(),
             fallback: false,
@@ -807,7 +839,11 @@ impl Lazy {
         }
     }
 
-    pub(crate) fn plan_with_recovery(
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn plan_with_recovery(
         &mut self,
         requested: PageRequest<&[u32]>,
         render: bool,
@@ -853,7 +889,11 @@ impl Lazy {
                 .min(self.sparse.size)
     }
 
-    pub(crate) fn trim(&mut self, limit: usize) -> usize {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
+    pub fn trim(&mut self, limit: usize) -> usize {
         let cached = self.sparse.cached_bytes();
         if cached <= limit || self.fallback && cached == self.sparse.size {
             return cached;

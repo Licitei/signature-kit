@@ -1916,12 +1916,8 @@ mod tests {
     macro_rules! fixture {
         ($name:literal) => {
             (
-                include_bytes!(concat!("../../__tests__/fixtures/", $name, ".pdf")).as_slice(),
-                include_str!(concat!(
-                    "../../__tests__/fixtures/",
-                    $name,
-                    ".liteparse.json"
-                )),
+                include_bytes!(concat!("../tests/fixtures/pdf/", $name, ".pdf")).as_slice(),
+                include_str!(concat!("../tests/fixtures/pdf/", $name, ".liteparse.json")),
             )
         };
     }

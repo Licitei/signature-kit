@@ -3,9 +3,9 @@ import { Duration, Effect, Layer, Redacted } from "effect";
 import * as RpcClient from "effect/rpc/RpcClient";
 import { expect, it } from "vitest";
 import { commands } from "vitest/browser";
-import ecpfUrl from "./fixtures/ecpf.p12?inline";
+import ecpfUrl from "../../../tooling/testing/fixtures/local/ecpf.p12?inline";
 import { LocalClient, localClientLayer } from "../src/client.js";
-import { LocalRpcs, PROTOCOL_VERSION } from "../src/protocol.js";
+import { LocalRpcs, PROTOCOL_VERSION } from "@signature-kit/engine/rpc";
 
 const createWorker = () =>
   new Worker(new URL("../src/worker.ts", import.meta.url), { type: "module" });

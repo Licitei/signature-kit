@@ -8,7 +8,7 @@ const WASM_CONTENT_TYPE = "application/wasm";
 export const pdfCoreBrowserModule: Effect.Effect<WebAssembly.Module, PdfCoreError> = Effect.gen(
   function* () {
     const response = yield* Effect.tryPromise({
-      try: (signal) => fetch(new URL("./pdf-core.wasm", import.meta.url), { signal }),
+      try: (signal) => fetch(new URL("./signature-kit.wasm", import.meta.url), { signal }),
       catch: () =>
         new PdfCoreError({
           code: PdfCoreErrorCodeValue.wasmLoadFailed,

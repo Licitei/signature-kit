@@ -29,7 +29,11 @@ pub(crate) struct Body {
 pub(crate) struct Changes(Vec<(u32, Body)>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Packing {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum Packing {
     Classic,
     ObjectStreams,
 }
@@ -547,7 +551,15 @@ impl RefValue for Option<&Object> {
     }
 }
 
-pub(crate) fn create(sizes: &[[f64; 2]]) -> Outcome<Vec<u8>> {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn create(sizes: &[[f64; 2]]) -> Outcome<Vec<u8>> {
     if sizes.is_empty() || sizes.len() > MAX_CREATED_PAGES {
         return Err(Failure::request("page count is out of range"));
     }
@@ -706,7 +718,15 @@ pub(crate) fn rewrite(
     graph.emit(document, final_trailer, layout)
 }
 
-pub(crate) fn merge(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn merge(
     sources: &[&[u8]],
     selections: &[Option<Vec<u32>>],
     drop_widgets: bool,

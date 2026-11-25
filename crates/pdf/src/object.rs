@@ -9,7 +9,11 @@ use crate::num::i64_to_f64;
     clippy::arbitrary_source_item_ordering,
     reason = "derived Ord must compare the object number before the generation"
 )]
-pub(crate) struct ObjRef {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct ObjRef {
     pub number: u32,
     pub generation: u16,
 }

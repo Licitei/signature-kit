@@ -4,13 +4,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer, Ref } from "effect";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import { pdfCoreFileLayer, pdfCoreFileSource } from "../dist/file.js";
-import { loadPdfCoreNode } from "../dist/node.js";
-import { PdfCore, pdfCoreBlobSource, pdfCoreBytesSource } from "../dist/pdf-core.js";
+import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer, pdfCoreFileSource } from "../../dist/wasm/file.js";
+import { loadPdfCoreNode } from "../../dist/wasm/node.js";
+import { PdfCore, pdfCoreBlobSource, pdfCoreBytesSource } from "../../dist/wasm/pdf-core.js";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provideMerge(NodeServices.layer));
-const fixtures = new URL("./fixtures/", import.meta.url);
+const fixtures = new URL("../../../../crates/pdf/tests/fixtures/pdf/", import.meta.url);
 const paths = [
   ...readdirSync(fixtures).filter((name) => name.endsWith(".pdf")),
   ...readdirSync(new URL("render/", fixtures))

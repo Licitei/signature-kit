@@ -165,7 +165,15 @@ pub(crate) struct ImageRef {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct DisplayList {
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct DisplayList {
     pub blob_bytes: usize,
     pub blobs: Vec<Vec<u8>>,
     pub ops: Vec<u8>,

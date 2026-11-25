@@ -1,10 +1,10 @@
-# @signature-kit/local
+# @signature-kit/browser
 
 Local document revisions and A1 signing sessions for SignatureKit 2.0. The browser client takes a factory for a dedicated module worker. The same engine runs on Node 20+ and in the worker.
 
 ```ts
-import LocalWorker from "@signature-kit/local/worker?worker";
-import { LocalClient, localClientLayer } from "@signature-kit/local/client";
+import LocalWorker from "@signature-kit/browser/worker?worker";
+import { LocalClient, localClientLayer } from "@signature-kit/browser/client";
 import { Effect } from "effect";
 
 const readBack = (bytes: Uint8Array) =>
@@ -29,14 +29,14 @@ Pass PFX bytes and passwords to `openA1` as `Redacted` values. A successful open
 ## Offline PDF viewer
 
 Host the Vite-built worker and its emitted WASM asset with your application. The
-worker loads the bundled `pdf-core.wasm` before the handshake completes. After
+worker loads the bundled `signature-kit.wasm` before the handshake completes. After
 bootstrap, opening, inspecting, rendering and releasing local documents need no
 network access.
 
 ```ts
 import { Effect } from "effect";
-import { LocalClient } from "@signature-kit/local/client";
-import { paintPage, pdfToCanvasRect } from "@signature-kit/local/viewer";
+import { LocalClient } from "@signature-kit/browser/client";
+import { paintPage, pdfToCanvasRect } from "@signature-kit/browser/viewer";
 
 const preview = (pdf: Uint8Array, canvas: HTMLCanvasElement) =>
   Effect.gen(function* () {
@@ -69,7 +69,7 @@ pixels with an opaque white page background and transfers the buffer over RPC.
 A raster may have up to 8,192 pixels on an edge and 16,777,216 pixels total.
 `renderTooLarge` lets callers retry at a smaller scale.
 
-For a non-browser engine, provide `pdfEngineLayer` with `localRuntimeLayer()`
+For a non-browser engine, import `pdfEngineLayer` from `@signature-kit/engine/engine` and provide it with `localRuntimeLayer()`
 and your platform's `PdfCore` layer. Use the `Documents` service returned by
 `pdfEngineLayer`; its release also closes the corresponding parsed WASM
 document. The display list returned by the engine can be painted at the
@@ -83,6 +83,9 @@ has an RGB channel below 245. Fewer than 5% of those pixels on each page may
 differ by more than 64 in any RGB channel. The test also checks that the widget
 bounds match the oracle and that the mapped interior lands on the same color.
 
+To measure the Chromium-targeted worker, WASM and protocol/client bundles after
+building the packages, run `bun run bench:bundle`.
+
 ## Local telemetry
 
 The default worker leaves RPC tracing disabled and does not install a telemetry
@@ -90,9 +93,9 @@ tracer. To opt in, use the telemetry worker and provide the page buffer to the
 client layer.
 
 ```ts
-import TelemetryWorker from "@signature-kit/local/worker-telemetry?worker";
-import { localClientLayer } from "@signature-kit/local/client";
-import { localTelemetryLayer } from "@signature-kit/local/telemetry";
+import TelemetryWorker from "@signature-kit/browser/worker-telemetry?worker";
+import { localClientLayer } from "@signature-kit/browser/client";
+import { localTelemetryLayer } from "@signature-kit/engine/telemetry";
 import { Layer } from "effect";
 
 const runtime = localClientLayer(() => new TelemetryWorker()).pipe(

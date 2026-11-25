@@ -13,7 +13,7 @@ export const pdfCoreFileLayer: Layer.Layer<
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const location = yield* path.fromFileUrl(new URL("./pdf-core.wasm", import.meta.url)).pipe(
+    const location = yield* path.fromFileUrl(new URL("./signature-kit.wasm", import.meta.url)).pipe(
       Effect.mapError(
         () =>
           new PdfCoreError({

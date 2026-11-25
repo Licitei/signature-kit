@@ -1,0 +1,33 @@
+core:changelogs:
+  - content: "---\npackages:\n  \"@signature-kit/engine\":\n    type: patch\n  \"@signature-kit/browser\":\n    type: patch\n---\n\n## Engine and browser packages\n\nThe engine provides the RPC contract, local services and WebAssembly bindings.\nThe browser package provides the worker, client and viewer.\n"
+    filename: engine-browser-layout.md
+    v: 0.0.0
+core:packages:
+  - id: npm:signature-kit
+    updated: false
+  - id: npm:@signature-kit/docs
+    updated: false
+  - id: npm:@tooling/oxc
+    updated: false
+  - changelogIds:
+      - engine-browser-layout.md
+    id: npm:@signature-kit/engine
+    updated: true
+  - id: npm:@tooling/static-checks
+    updated: false
+  - changelogIds:
+      - engine-browser-layout.md
+    id: npm:@signature-kit/browser
+    updated: true
+  - id: npm:@tooling/typescript
+    updated: false
+npm:packages:
+  - id: npm:signature-kit
+  - id: npm:@signature-kit/docs
+  - id: npm:@tooling/oxc
+  - distTag: alpha
+    id: npm:@signature-kit/engine
+  - id: npm:@tooling/static-checks
+  - distTag: alpha
+    id: npm:@signature-kit/browser
+  - id: npm:@tooling/typescript

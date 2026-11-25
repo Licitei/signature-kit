@@ -5,16 +5,16 @@ import standardFontUrl from "pdfjs-dist/standard_fonts/LiberationSans-Regular.tt
 import jbig2WasmUrl from "pdfjs-dist/wasm/jbig2.wasm?url";
 import { describe, expect, it } from "vitest";
 
-import { pdfCoreBrowserLayer } from "../dist/browser.js";
+import { pdfCoreBrowserLayer } from "../../dist/wasm/browser.js";
 import {
   displayListViewport,
   paintDisplayList,
   prepareDisplayListImages,
   renderDisplayListImage,
-} from "../dist/canvas.js";
-import type { PdfCoreImageSource } from "../dist/canvas.js";
-import type { PdfCoreDisplayList } from "../dist/config.js";
-import { PdfCore } from "../dist/pdf-core.js";
+} from "../../dist/wasm/canvas.js";
+import type { PdfCoreImageSource } from "../../dist/wasm/canvas.js";
+import type { PdfCoreDisplayList } from "../../dist/wasm/config.js";
+import { PdfCore } from "../../dist/wasm/pdf-core.js";
 
 const SCALE = 1;
 const INK = 245;
@@ -25,14 +25,20 @@ const TOLERANCES = {
 };
 const MIN_REFERENCE_INK = 200;
 
-const fixtures = import.meta.glob<string>(["./fixtures/*.pdf", "./fixtures/render/*.pdf"], {
-  query: "?url",
-  import: "default",
-  eager: true,
-});
+const fixtures = import.meta.glob<string>(
+  [
+    "../../../../crates/pdf/tests/fixtures/pdf/*.pdf",
+    "../../../../crates/pdf/tests/fixtures/pdf/render/*.pdf",
+  ],
+  {
+    query: "?url",
+    import: "default",
+    eager: true,
+  },
+);
 
 GlobalWorkerOptions.workerPort = new Worker(
-  new URL("../node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url),
+  new URL("../../node_modules/pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url),
   { type: "module" },
 );
 
@@ -184,7 +190,10 @@ describe("pdf-core page rendering", () => {
       "rotated",
       "optional-content",
     ]) {
-      expect(fixtures[`./fixtures/render/${name}.pdf`], name).toBeDefined();
+      expect(
+        fixtures[`../../../../crates/pdf/tests/fixtures/pdf/render/${name}.pdf`],
+        name,
+      ).toBeDefined();
     }
   });
 
@@ -195,7 +204,7 @@ describe("pdf-core page rendering", () => {
       const task = openReference(pdf);
       const reference = await task.promise;
       expect(lists).toHaveLength(reference.numPages);
-      const tolerance = path.startsWith("./fixtures/render/")
+      const tolerance = path.startsWith("../../../../crates/pdf/tests/fixtures/pdf/render/")
         ? TOLERANCES.exact
         : TOLERANCES.substitutedFonts;
       let inked = 0;
@@ -225,7 +234,7 @@ describe("pdf-core page rendering", () => {
   }
 
   it("keeps upscaled 1-bit images crisp", async () => {
-    const url = fixtures["./fixtures/render/qr-upscaled.pdf"];
+    const url = fixtures["../../../../crates/pdf/tests/fixtures/pdf/render/qr-upscaled.pdf"];
     if (url === undefined) return expect.fail("qr fixture missing");
     const [list] = await renderList(await fetchBytes(url));
     if (list === undefined) return expect.fail("missing display list");
@@ -243,7 +252,7 @@ describe("pdf-core page rendering", () => {
   }, 30_000);
 
   it("releases decoded images when the paint scope closes", async () => {
-    const url = fixtures["./fixtures/render/images.pdf"];
+    const url = fixtures["../../../../crates/pdf/tests/fixtures/pdf/render/images.pdf"];
     if (url === undefined) return expect.fail("images fixture missing");
     const [list] = await renderList(await fetchBytes(url));
     if (list === undefined) return expect.fail("missing display list");
@@ -290,7 +299,7 @@ describe("pdf-core page rendering", () => {
   }, 60_000);
 
   it("encodes a page image as PNG at the requested scale", async () => {
-    const url = fixtures["./fixtures/links.pdf"];
+    const url = fixtures["../../../../crates/pdf/tests/fixtures/pdf/links.pdf"];
     if (url === undefined) return expect.fail("links fixture missing");
     const pdf = await fetchBytes(url);
     const image = await Effect.runPromise(

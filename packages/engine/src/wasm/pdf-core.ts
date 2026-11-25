@@ -186,7 +186,7 @@ export type PdfCoreService = {
 };
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
-  "@signature-kit/pdf-core/PdfCore",
+  "@signature-kit/engine/PdfCore",
 ) {}
 
 const FLAG_TEXT = 1;

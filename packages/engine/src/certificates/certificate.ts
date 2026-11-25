@@ -1,8 +1,8 @@
-import { decode, encode, oidString } from "@signature-kit/asn1";
-import type { Asn1Error, Asn1Node } from "@signature-kit/asn1";
-import type { CryptoError } from "@signature-kit/crypto/config";
-import { derToPem } from "@signature-kit/crypto/pem";
-import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
+import { decode, encode, oidString } from "../asn1/asn1.js";
+import type { Asn1Error, Asn1Node } from "../asn1/asn1.js";
+import type { CryptoError } from "../crypto/config.js";
+import { derToPem } from "../crypto/pem.js";
+import { parsePkcs12 } from "../crypto/pkcs12.js";
 import {
   CertificateIssuerSchema,
   CertificateSubjectSchema,

@@ -32,7 +32,11 @@ describe("browser integration test placement", () => {
       .map((path) => relative(process.cwd(), path).replaceAll("\\", "/"))
       .filter((path) => path.endsWith(".browser.test.ts") || path.endsWith(".browser.test.tsx"))
       .sort();
-    const allowedRoots = ["apps/docs/", "runtime/local/__tests__/", "shared/pdf-core/__tests__/"];
+    const allowedRoots = [
+      "apps/docs/",
+      "packages/engine/__tests__/",
+      "packages/browser/__tests__/",
+    ];
 
     expect(browserTests.length).toBeGreaterThan(0);
     expect(browserTests.every((path) => allowedRoots.some((root) => path.startsWith(root)))).toBe(
@@ -62,7 +66,7 @@ describe("browser integration test placement", () => {
       .map(([, script]) => script)
       .join(" ");
 
-    expect(command).toContain("tooling/vitest/browser.config.ts shared runtime");
+    expect(command).toContain("tooling/vitest/browser.config.ts packages");
     expect(command).toContain("apps/docs/vitest.browser.config.ts apps/docs");
     expect(command).not.toContain(".browser.test.");
   });

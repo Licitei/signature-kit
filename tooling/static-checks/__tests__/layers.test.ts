@@ -63,29 +63,28 @@ describe("workspace layer checks", () => {
     expect(collectWorkspaceLayerDiagnostics()).toEqual([]);
   });
 
-  it("rejects runtime dependencies from lower layers to higher layers", async () => {
+  it("rejects runtime dependencies from engine to browser", async () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "core/certificates",
-      "@signature-kit/certificates",
+      "packages/browser",
+      "@signature-kit/browser",
       {},
       [],
       "export const signatures = true;\n",
     );
     await writePackage(
       root,
-      "shared/asn1",
-      "@signature-kit/asn1",
-      { "@signature-kit/certificates": "workspace:*" },
-      ["../../core/certificates"],
-      "import { signatures } from '@signature-kit/certificates';\nexport const value = signatures;\n",
+      "packages/engine",
+      "@signature-kit/engine",
+      { "@signature-kit/browser": "workspace:*" },
+      ["../browser"],
+      "import { signatures } from '@signature-kit/browser';\nexport const value = signatures;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "shared/asn1/package.json",
-      message:
-        "@signature-kit/asn1 is a shared package and cannot depend on @signature-kit/certificates (core).",
+      path: "packages/engine/package.json",
+      message: "@signature-kit/engine (engine) cannot depend on @signature-kit/browser (browser).",
     });
   });
 
@@ -93,8 +92,8 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const pem = true;\n",
@@ -109,13 +108,13 @@ describe("workspace layer checks", () => {
     });
     await writeFile(
       join(root, "apps/docs/app/page.ts"),
-      "import { pem } from '@signature-kit/crypto/pem';\nexport const value = pem;\n",
+      "import { pem } from '@signature-kit/engine/pem';\nexport const value = pem;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
       path: "apps/docs/app/page.ts",
       message:
-        "@signature-kit/docs imports @signature-kit/crypto without declaring it in package.json.",
+        "@signature-kit/docs imports @signature-kit/engine without declaring it in package.json.",
     });
   });
 
@@ -123,8 +122,8 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const crypto = true;\n",
@@ -141,7 +140,7 @@ describe("workspace layer checks", () => {
       type: "module",
       dependencies: {},
     });
-    const invalidImport = 'import "@signature-kit/crypto";\n';
+    const invalidImport = 'import "@signature-kit/engine";\n';
     await writeFile(join(root, "apps/docs/foldkit/main.ts"), invalidImport);
     await writeFile(join(root, "apps/docs/foldkit/dist-foldkit/source.ts"), invalidImport);
     await writeFile(join(root, "apps/docs/foldkit/paraglide/source.ts"), invalidImport);
@@ -154,17 +153,17 @@ describe("workspace layer checks", () => {
         {
           path: "apps/docs/foldkit/dist-foldkit/source.ts",
           message:
-            "@signature-kit/docs imports @signature-kit/crypto without declaring it in package.json.",
+            "@signature-kit/docs imports @signature-kit/engine without declaring it in package.json.",
         },
         {
           path: "apps/docs/foldkit/main.ts",
           message:
-            "@signature-kit/docs imports @signature-kit/crypto without declaring it in package.json.",
+            "@signature-kit/docs imports @signature-kit/engine without declaring it in package.json.",
         },
         {
           path: "apps/docs/foldkit/paraglide/source.ts",
           message:
-            "@signature-kit/docs imports @signature-kit/crypto without declaring it in package.json.",
+            "@signature-kit/docs imports @signature-kit/engine without declaring it in package.json.",
         },
       ]),
     );
@@ -174,25 +173,25 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/asn1",
-      "@signature-kit/asn1",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const asn1 = true;\n",
     );
     await writePackage(
       root,
-      "core/certificates",
-      "@signature-kit/certificates",
-      { "@signature-kit/asn1": "workspace:*" },
+      "packages/browser",
+      "@signature-kit/browser",
+      { "@signature-kit/engine": "workspace:*" },
       [],
-      "import { asn1 } from '@signature-kit/asn1';\nexport const value = asn1;\n",
+      "import { asn1 } from '@signature-kit/engine';\nexport const value = asn1;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "core/certificates/tsconfig.json",
+      path: "packages/browser/tsconfig.json",
       message:
-        "@signature-kit/certificates depends on @signature-kit/asn1 but does not reference its tsconfig project.",
+        "@signature-kit/browser depends on @signature-kit/engine but does not reference its tsconfig project.",
     });
   });
 
@@ -200,25 +199,25 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "core/certificates",
-      "@signature-kit/certificates",
+      "packages/browser",
+      "@signature-kit/browser",
       {},
       [],
       "export const signer = true;\n",
     );
     await writePackage(
       root,
-      "runtime/local",
-      "@signature-kit/local",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
-      "import { signer } from '../../../core/certificates/src/index';\nexport const value = signer;\n",
+      "import { signer } from '../../browser/src/index.js';\nexport const value = signer;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "runtime/local/src/index.ts",
+      path: "packages/engine/src/index.ts",
       message:
-        "@signature-kit/local reaches into @signature-kit/certificates through a relative import; import the package entry point instead.",
+        "@signature-kit/engine reaches into @signature-kit/browser through a relative import; import the package entry point instead.",
     });
   });
 
@@ -226,15 +225,15 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const index = true;\n",
     );
-    await writeFile(join(root, "shared/crypto/src/pem.ts"), "export const pem = true;\n");
-    await writeJson(join(root, "shared/crypto/package.json"), {
-      name: "@signature-kit/crypto",
+    await writeFile(join(root, "packages/engine/src/pem.ts"), "export const pem = true;\n");
+    await writeJson(join(root, "packages/engine/package.json"), {
+      name: "@signature-kit/engine",
       version: "0.0.0",
       private: true,
       type: "module",
@@ -251,7 +250,7 @@ describe("workspace layer checks", () => {
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
       path: "tooling/typescript/base.json",
       message:
-        "@signature-kit/crypto/pem is exported by @signature-kit/crypto but does not resolve to shared/crypto/src/pem.ts in tooling/typescript/base.json.",
+        "@signature-kit/engine/pem is exported by @signature-kit/engine but does not resolve to packages/engine/src/pem.ts in tooling/typescript/base.json.",
     });
   });
 
@@ -259,45 +258,45 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const index = true;\n",
     );
-    await mkdir(join(root, "shared/crypto/dist"), { recursive: true });
-    await writeFile(join(root, "shared/crypto/dist/hash.js"), "export const hash = true;\n");
+    await mkdir(join(root, "packages/engine/dist"), { recursive: true });
+    await writeFile(join(root, "packages/engine/dist/hash.js"), "export const hash = true;\n");
     await writeBaseConfig(root, {});
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "shared/crypto/dist/hash.js",
+      path: "packages/engine/dist/hash.js",
       message:
-        "shared/crypto/dist/hash.js is committed generated output without a matching source module.",
+        "packages/engine/dist/hash.js is committed generated output without a matching source module.",
     });
   });
   it("parses side-effect imports for package dependency diagnostics", async () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/dep",
-      "@signature-kit/dep",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const dep = true;\n",
     );
     await writePackage(
       root,
-      "core/use",
-      "@signature-kit/use",
+      "packages/browser",
+      "@signature-kit/browser",
       {},
       [],
-      'import "@signature-kit/dep";\nexport const use = true;\n',
+      'import "@signature-kit/engine";\nexport const use = true;\n',
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "core/use/src/index.ts",
+      path: "packages/browser/src/index.ts",
       message:
-        "@signature-kit/use imports @signature-kit/dep without declaring it in package.json.",
+        "@signature-kit/browser imports @signature-kit/engine without declaring it in package.json.",
     });
   });
 
@@ -305,21 +304,21 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const crypto = true;\n",
     );
-    await writeFile(join(root, "shared/crypto/src/pem.ts"), "export const pem = true;\n");
+    await writeFile(join(root, "packages/engine/src/pem.ts"), "export const pem = true;\n");
     await writeBaseConfig(root, {
-      "@signature-kit/crypto/pem": ["../../shared/crypto/src/pem.ts"],
+      "@signature-kit/engine/pem": ["../../packages/engine/src/pem.ts"],
     });
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
       path: "tooling/typescript/base.json",
       message:
-        "@signature-kit/crypto/pem is configured as a path alias but is not exported by @signature-kit/crypto.",
+        "@signature-kit/engine/pem is configured as a path alias but is not exported by @signature-kit/engine.",
     });
   });
 
@@ -327,32 +326,32 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       'import "./pem";\nexport const crypto = true;\n',
     );
-    await writeFile(join(root, "shared/crypto/src/pem.ts"), "export const pem = true;\n");
+    await writeFile(join(root, "packages/engine/src/pem.ts"), "export const pem = true;\n");
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "shared/crypto/src/index.ts",
+      path: "packages/engine/src/index.ts",
       message:
-        "shared/crypto/src/index.ts uses extensionless relative import ./pem; emitted library modules must use an explicit .js, .mjs, .cjs, .json, or asset extension.",
+        "packages/engine/src/index.ts uses extensionless relative import ./pem; emitted library modules must use an explicit .js, .mjs, .cjs, .json, or asset extension.",
     });
   });
   it("rejects exported dist entries that have no source module", async () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/crypto",
-      "@signature-kit/crypto",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const crypto = true;\n",
     );
-    await writeJson(join(root, "shared/crypto/package.json"), {
-      name: "@signature-kit/crypto",
+    await writeJson(join(root, "packages/engine/package.json"), {
+      name: "@signature-kit/engine",
       version: "0.0.0",
       private: true,
       type: "module",
@@ -362,13 +361,13 @@ describe("workspace layer checks", () => {
       dependencies: {},
     });
     await writeBaseConfig(root, {
-      "@signature-kit/crypto/missing": ["../../shared/crypto/src/missing.ts"],
+      "@signature-kit/engine/missing": ["../../packages/engine/src/missing.ts"],
     });
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "shared/crypto/package.json",
+      path: "packages/engine/package.json",
       message:
-        "@signature-kit/crypto/missing is exported by @signature-kit/crypto but has no matching source module.",
+        "@signature-kit/engine/missing is exported by @signature-kit/engine but has no matching source module.",
     });
   });
 
@@ -376,8 +375,8 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/dep",
-      "@signature-kit/dep",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const dep = true;\n",
@@ -388,7 +387,7 @@ describe("workspace layer checks", () => {
       version: "0.0.0",
       private: true,
       type: "module",
-      dependencies: { "@signature-kit/dep": "workspace:*" },
+      dependencies: { "@signature-kit/engine": "workspace:*" },
     });
     await writeJson(join(root, "apps/docs/tsconfig.json"), {
       extends: "../../tooling/typescript/core.json",
@@ -398,7 +397,7 @@ describe("workspace layer checks", () => {
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
       path: "apps/docs/tsconfig.json",
       message:
-        "@signature-kit/docs depends on @signature-kit/dep but does not reference its tsconfig project.",
+        "@signature-kit/docs depends on @signature-kit/engine but does not reference its tsconfig project.",
     });
   });
 
@@ -406,19 +405,19 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "shared/dep",
-      "@signature-kit/dep",
+      "packages/engine",
+      "@signature-kit/engine",
       {},
       [],
       "export const dep = true;\n",
     );
     await writePackage(
       root,
-      "core/use",
-      "@signature-kit/use",
+      "packages/browser",
+      "@signature-kit/browser",
       {},
       [],
-      "// import '@signature-kit/dep';\n/* from '@signature-kit/dep' */\nexport const use = true;\n",
+      "// import '@signature-kit/engine';\n/* from '@signature-kit/engine' */\nexport const use = true;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toEqual([]);

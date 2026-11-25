@@ -287,7 +287,11 @@ impl PageLayout {
 type LinkRect = ([f64; 4], usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TextOptions {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct TextOptions {
     pub drop_running: bool,
     pub markdown: bool,
     pub merge_across_pages: bool,
@@ -1786,7 +1790,12 @@ fn page_layout(
     }
     layout
 }
-pub(crate) fn text_limits() -> Limits {
+#[must_use]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn text_limits() -> Limits {
     Limits {
         max_items_per_page: 250_000,
         max_items: usize::MAX,
@@ -1833,7 +1842,15 @@ fn single_page(
     }
 }
 
-pub(crate) fn document_text(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn document_text(
     bytes: &[u8],
     page_indexes: PageRequest<&[u32]>,
     limits: &Limits,
@@ -1845,7 +1862,11 @@ pub(crate) fn document_text(
 }
 
 #[inline(never)]
-pub(crate) fn opened_text(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+pub fn opened_text(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
     limits: &Limits,
@@ -2166,7 +2187,15 @@ fn markdown_pages(
     Ok(texts)
 }
 
-pub(crate) fn document_tables(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn document_tables(
     bytes: &[u8],
     page_indexes: PageRequest<&[u32]>,
     limits: &Limits,
@@ -2185,7 +2214,11 @@ pub(crate) fn document_tables(
 }
 
 #[inline(never)]
-pub(crate) fn opened_tables(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+pub fn opened_tables(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
     limits: &Limits,
@@ -2610,11 +2643,11 @@ mod tests {
     #[test]
     fn mutated_documents_never_panic() {
         let fixtures: [&[u8]; 5] = [
-            include_bytes!("../../__tests__/fixtures/links.pdf"),
-            include_bytes!("../../__tests__/fixtures/helvetica-winansi.pdf"),
-            include_bytes!("../../__tests__/fixtures/react-pdf-declaration.pdf"),
-            include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf"),
-            include_bytes!("../../__tests__/fixtures/object-streams.pdf"),
+            include_bytes!("../tests/fixtures/pdf/links.pdf"),
+            include_bytes!("../tests/fixtures/pdf/helvetica-winansi.pdf"),
+            include_bytes!("../tests/fixtures/pdf/react-pdf-declaration.pdf"),
+            include_bytes!("../tests/fixtures/pdf/rotated-cropped.pdf"),
+            include_bytes!("../tests/fixtures/pdf/object-streams.pdf"),
         ];
         let limits = text_limits();
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
@@ -2772,8 +2805,8 @@ mod structure_tests {
             ($name:literal) => {
                 (
                     $name,
-                    include_bytes!(concat!("../../__tests__/fixtures/", $name, ".pdf")).as_slice(),
-                    include_str!(concat!("../../__tests__/fixtures/", $name, ".md")),
+                    include_bytes!(concat!("../tests/fixtures/pdf/", $name, ".pdf")).as_slice(),
+                    include_str!(concat!("../tests/fixtures/pdf/", $name, ".md")),
                 )
             };
         }
@@ -2962,7 +2995,7 @@ mod structure_tests {
             ($name:literal) => {
                 (
                     $name,
-                    include_bytes!(concat!("../../__tests__/fixtures/", $name, ".pdf")).as_slice(),
+                    include_bytes!(concat!("../tests/fixtures/pdf/", $name, ".pdf")).as_slice(),
                 )
             };
         }

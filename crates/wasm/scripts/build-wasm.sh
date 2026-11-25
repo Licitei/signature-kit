@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MANIFEST="$ROOT/rust/Cargo.toml"
-TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/rust/target}"
-BUILT="$TARGET_DIR/wasm32-unknown-unknown/release/signature_kit_pdf_core.wasm"
-OUT_DIR="$ROOT/dist"
-OUT="$OUT_DIR/pdf-core.wasm"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$ROOT"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+if [[ "$TARGET_DIR" != /* ]]; then
+  TARGET_DIR="$ROOT/$TARGET_DIR"
+fi
+BUILT="$TARGET_DIR/wasm32-unknown-unknown/release/signature_kit_wasm.wasm"
+ENGINE="$ROOT/packages/engine"
+OUT_DIR="$ENGINE/dist/wasm"
+OUT="$OUT_DIR/signature-kit.wasm"
 
-if [[ -x "$ROOT/node_modules/binaryen/bin/wasm-opt" ]]; then
-  WASM_OPT="$ROOT/node_modules/binaryen/bin/wasm-opt"
+if [[ -x "$ENGINE/node_modules/binaryen/bin/wasm-opt" ]]; then
+  WASM_OPT="$ENGINE/node_modules/binaryen/bin/wasm-opt"
 elif command -v wasm-opt >/dev/null 2>&1; then
   WASM_OPT="$(command -v wasm-opt)"
 else
@@ -17,7 +21,7 @@ else
   exit 1
 fi
 
-CARGO_PROFILE_RELEASE_OPT_LEVEL=2 cargo build --release --target wasm32-unknown-unknown --manifest-path "$MANIFEST"
+CARGO_TARGET_DIR="$TARGET_DIR" CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo build --locked --release --target wasm32-unknown-unknown --package signature-kit-wasm
 mkdir -p "$OUT_DIR"
 "$WASM_OPT" -O3 \
   --enable-bulk-memory \

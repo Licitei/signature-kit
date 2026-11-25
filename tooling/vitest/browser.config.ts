@@ -13,7 +13,7 @@ export default defineConfig({
     exclude: ["@typeonce/effect-machine"],
   },
   test: {
-    include: ["{shared,runtime}/**/*.browser.test.*"],
+    include: ["packages/**/*.browser.test.*"],
     teardownTimeout: 2000,
     globalSetup: ["tooling/testing/__tests__/local-telemetry-collector.ts"],
     deps: {

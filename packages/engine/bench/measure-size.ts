@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Build (optional) and report raw / gzip -9 / brotli -q 11 sizes for pdf-core.wasm.
- * Usage: bun shared/pdf-core/bench/measure-size.ts [--build] [--label NAME] [--wasm PATH]
+ * Build (optional) and report raw / gzip -9 / brotli -q 11 sizes for signature-kit.wasm.
+ * Usage: bun packages/engine/bench/measure-size.ts [--build] [--label NAME] [--wasm PATH]
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:z
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, "..");
 const repo = resolve(pkg, "../..");
-const defaultWasm = join(pkg, "dist/pdf-core.wasm");
+const defaultWasm = join(pkg, "dist/wasm/signature-kit.wasm");
 
 const args: string[] = process.argv.slice(2);
 const doBuild: boolean = args.includes("--build");
@@ -22,10 +22,8 @@ const wasmIdx = args.indexOf("--wasm");
 const wasmPath = resolve(wasmIdx >= 0 ? (args[wasmIdx + 1] ?? defaultWasm) : defaultWasm);
 
 if (doBuild) {
-  const env = { ...process.env, TMPDIR: process.env.TMPDIR ?? join(repo, ".cache/t") };
-  const result = spawnSync("bash", [join(pkg, "scripts/build-wasm.sh")], {
-    cwd: pkg,
-    env,
+  const result = spawnSync("bash", [join(repo, "crates/wasm/scripts/build-wasm.sh")], {
+    cwd: repo,
     stdio: "inherit",
   });
   if (result.status !== 0) process.exit(result.status ?? 1);

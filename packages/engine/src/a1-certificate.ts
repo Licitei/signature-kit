@@ -1,9 +1,9 @@
-import { decode, oidString } from "@signature-kit/asn1";
-import type { Asn1Node } from "@signature-kit/asn1";
-import { parseX509 } from "@signature-kit/certificates";
+import { decode, oidString } from "./asn1/asn1.js";
+import type { Asn1Node } from "./asn1/asn1.js";
+import { parseX509 } from "./certificates/certificate.js";
 import { Effect, Schema } from "effect";
-import { LocalError } from "./protocol.js";
-import type { A1Profile } from "./protocol.js";
+import { LocalError } from "./rpc.js";
+import type { A1Profile } from "./rpc.js";
 
 export const A1Hash = Schema.Literals(["SHA-256", "SHA-384", "SHA-512"]);
 export type A1Hash = (typeof A1Hash)["Type"];

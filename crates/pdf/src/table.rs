@@ -20,7 +20,11 @@ pub(crate) struct Rule {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Cell {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Cell {
     pub bbox: [f64; 4],
     pub col: u32,
     pub col_span: u32,
@@ -31,7 +35,11 @@ pub(crate) struct Cell {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Table {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Table {
     pub bbox: [f64; 4],
     pub cells: Vec<Cell>,
     pub cols: u32,
@@ -45,8 +53,16 @@ pub(crate) struct Table {
     pub ruled: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct TableEdges {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct TableEdges {
     pub near_bottom: bool,
     pub near_top: bool,
 }

@@ -6,7 +6,7 @@ import {
   encode,
   integerBigInt,
   oidString,
-} from "@signature-kit/asn1";
+} from "../asn1/asn1.js";
 import { Effect, Redacted } from "effect";
 import { CryptoError, CryptoErrorCodeValue, CryptoOperationValue } from "./config.js";
 import type { Pkcs12Result } from "./config.js";

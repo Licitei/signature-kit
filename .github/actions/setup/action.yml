@@ -1,9 +1,9 @@
 name: Set up workspace
-description: Installs Bun and dependencies and restores the cached pdf-core wasm, building it only on a cache miss.
+description: Installs Bun and dependencies and restores the cached SignatureKit WASM, building it only on a cache miss.
 
 inputs:
   wasm:
-    description: Restore pdf-core.wasm from the content-addressed cache so `bun run build` skips the Rust build.
+    description: Restore signature-kit.wasm from the content-addressed cache so `bun run build` skips the Rust build.
     default: "true"
 
 runs:
@@ -18,21 +18,21 @@ runs:
       shell: bash
       run: bun install --frozen-lockfile
 
-    - name: Compute pdf-core wasm key
+    - name: Compute SignatureKit WASM key
       if: inputs.wasm == 'true'
       id: wasm-key
       shell: bash
       run: |
-        echo "key=$(bash shared/pdf-core/scripts/build-wasm-cached.sh --key)" >> "$GITHUB_OUTPUT"
-        echo "PDF_CORE_WASM_CACHE=$HOME/.cache/pdf-core-wasm" >> "$GITHUB_ENV"
+        echo "key=$(bash crates/wasm/scripts/build-wasm-cached.sh --key)" >> "$GITHUB_OUTPUT"
+        echo "SIGNATURE_KIT_WASM_CACHE=$HOME/.cache/signature-kit-wasm" >> "$GITHUB_ENV"
 
-    - name: Restore pdf-core wasm
+    - name: Restore SignatureKit WASM
       if: inputs.wasm == 'true'
       id: wasm-cache
       uses: actions/cache@v4
       with:
-        path: ~/.cache/pdf-core-wasm
-        key: pdf-core-wasm-${{ steps.wasm-key.outputs.key }}
+        path: ~/.cache/signature-kit-wasm
+        key: signature-kit-wasm-${{ steps.wasm-key.outputs.key }}
 
     - name: Set up Rust for the wasm build
       if: inputs.wasm == 'true' && steps.wasm-cache.outputs.cache-hit != 'true'
@@ -43,5 +43,4 @@ runs:
     - name: Install the pinned Rust toolchain
       if: inputs.wasm == 'true' && steps.wasm-cache.outputs.cache-hit != 'true'
       shell: bash
-      working-directory: shared/pdf-core/rust
       run: rustup toolchain install --no-self-update

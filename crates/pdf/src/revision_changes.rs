@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{Entry, MAX_REVISION_WORK, RevisionIndex, SourceKind, Terminal, revision_index};
 use crate::document::{Document, Page};
-use crate::edit::signature_references;
+use crate::edit::signing::signature_references;
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
 use crate::object::{Dict, ObjRef, Object};
@@ -23,7 +23,11 @@ const FIELD_WIDGET: u16 = FIELD | ANNOTATION;
 const FORM_FIELDS: u16 = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ChangeKind {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum ChangeKind {
     AcroForm,
     Annotation,
     CatalogOther,
@@ -55,7 +59,11 @@ impl From<ChangeKind> for u32 {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Change {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Change {
     pub added: bool,
     pub kind: ChangeKind,
     pub reference: ObjRef,
@@ -64,7 +72,15 @@ pub(crate) struct Change {
 }
 
 #[derive(Debug)]
-pub(crate) struct RevisionChanges {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+pub struct RevisionChanges {
     pub changes: Vec<Change>,
     pub page_content_changed: bool,
 }
@@ -578,11 +594,19 @@ fn page_dependencies_changed(old: &[Page], new: &[Page]) -> bool {
         })
 }
 
-pub(crate) fn revision_changes(
-    pdf: &[u8],
-    from: usize,
-    limits: &Limits,
-) -> Outcome<RevisionChanges> {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+pub fn revision_changes(pdf: &[u8], from: usize, limits: &Limits) -> Outcome<RevisionChanges> {
     let index = revision_index(pdf)?;
     if !index.contains_end(from) {
         return Err(Failure::request(

@@ -6,7 +6,7 @@
  *   - wasm renderPages ms/page on 5 editais
  *   - signatures() + document() on habilitacao-150 and a ~30 MB edital
  *
- * Usage: bun shared/pdf-core/bench/measure-speed.ts [--label NAME] [--quick]
+ * Usage: bun packages/engine/bench/measure-speed.ts [--label NAME] [--quick]
  */
 import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -22,15 +22,15 @@ const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "step") : "step";
 const quick: boolean = args.includes("--quick");
 
 const pdfDir = process.env.PDF_CORPUS ?? join(repo, ".cache/bench/pdfs");
-const fixtureDir = join(pkg, "__tests__/fixtures");
+const fixtureDir = join(repo, "crates/pdf/tests/fixtures/pdf");
 
 async function loadCore() {
   const effectUrl = pathToFileURL(join(repo, "node_modules/effect/dist/index.js")).href;
   const nodeUrl = pathToFileURL(
     join(repo, "node_modules/@effect/platform-node/dist/NodeServices.js"),
   ).href;
-  const coreUrl = pathToFileURL(join(pkg, "dist/pdf-core.js")).href;
-  const fileUrl = pathToFileURL(join(pkg, "dist/file.js")).href;
+  const coreUrl = pathToFileURL(join(pkg, "dist/wasm/pdf-core.js")).href;
+  const fileUrl = pathToFileURL(join(pkg, "dist/wasm/file.js")).href;
   const { Effect, Layer } = await import(effectUrl);
   const NodeServices = await import(nodeUrl);
   const { PdfCore } = await import(coreUrl);

@@ -1,9 +1,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
-    clippy::struct_field_names,
-    reason = "the max_ prefix names what kind of bound each field is"
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
 )]
-pub(crate) struct Limits {
+pub struct Limits {
     pub max_decoded_stream_bytes: usize,
     pub max_items: usize,
     pub max_items_per_page: usize,
@@ -15,6 +15,10 @@ pub(crate) struct Limits {
 }
 
 impl Default for Limits {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "release LTO chooses inlining across the internal Rust boundary"
+    )]
     fn default() -> Self {
         Self {
             max_pdf_bytes: 512 * 1024 * 1024,
@@ -30,7 +34,11 @@ impl Default for Limits {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct InspectOptions {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct InspectOptions {
     pub links: bool,
     pub page_indexes: Option<Vec<u32>>,
     pub runs: bool,
@@ -38,21 +46,33 @@ pub(crate) struct InspectOptions {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PageInfo {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct PageInfo {
     pub crop_box: [f64; 4],
     pub media_box: [f64; 4],
     pub rotate: i32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LinkInfo {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct LinkInfo {
     pub page_index: u32,
     pub rect: [f64; 4],
     pub uri: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TextItem {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct TextItem {
     pub font_size: f64,
     pub rect: [f64; 4],
     pub style: u8,
@@ -60,13 +80,21 @@ pub(crate) struct TextItem {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct PageText {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct PageText {
     pub items: Vec<TextItem>,
     pub page_index: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Inspection {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Inspection {
     pub links: Vec<LinkInfo>,
     pub pages: Vec<PageInfo>,
     pub text: Vec<PageText>,

@@ -6,14 +6,26 @@ use crate::text::{Session, scan_page};
 type Rect = [f64; 4];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TextLayer {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum TextLayer {
     None,
     Usable,
     Weak,
 }
 
 #[derive(Debug)]
-pub(crate) struct PageDiagnostics {
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct PageDiagnostics {
     pub glyphs: u32,
     pub image_count: u32,
     pub page_index: u32,
@@ -146,7 +158,19 @@ fn unmapped_character(ch: char) -> bool {
         )
 }
 
-pub(crate) fn document_diagnostics(
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn document_diagnostics(
     bytes: &[u8],
     selection: PageRequest<&[u32]>,
     limits: &Limits,
@@ -157,7 +181,15 @@ pub(crate) fn document_diagnostics(
 }
 
 #[inline(never)]
-pub(crate) fn opened_diagnostics(
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+pub fn opened_diagnostics(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
     limits: &Limits,

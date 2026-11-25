@@ -1,43 +1,47 @@
-# @signature-kit/pdf-core
+# @signature-kit/engine
 
-In-house PDF engine compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text, renders pages, analyzes signature revisions, and writes PDFs (incremental updates, full rewrites, page merges) without any third-party PDF library. The Rust crate lives in `rust/` and has zero external dependencies; TypeScript talks to it through a tiny C ABI (no wasm-bindgen).
+SignatureKit’s RPC contract and engine services for document revisions, A1 sessions and PDF operations. Internal TypeScript modules implement ASN.1, PKCS#12, CMS and X.509 codecs. The in-house PDF engine is compiled to WebAssembly. It inspects page geometry, link annotations, and positioned text, renders pages, analyzes signature revisions, and writes PDFs (incremental updates, full rewrites, page merges) without any third-party PDF library. The Rust PDF crate lives in `crates/pdf`. TypeScript calls it through the C ABI in `crates/wasm`.
 
 ## Install
 
 ```sh
-bun add @signature-kit/pdf-core effect
+bun add @signature-kit/engine effect
 ```
 
 Apps that do not use Effect skip `effect` and use the Promise client (see [Without Effect](#without-effect)).
 
 ## Public surface
 
-- `@signature-kit/pdf-core/config` — `PdfCoreError`, `PdfCoreErrorCodeValue`, `pdfCoreErrorMessages`, and the option and inspection schemas.
-- `@signature-kit/pdf-core/pdf-core` — the `PdfCore` service, `makePdfCore(module)`, and `pdfCoreLayer(module)`.
-- `@signature-kit/pdf-core/browser` — `pdfCoreBrowserLayer` (and `pdfCoreBrowserModule`, the loader behind it): fetches `pdf-core.wasm` next to the module, compiles it with `WebAssembly.compileStreaming`, and falls back to `WebAssembly.compile` when the response is not served as `application/wasm`.
-- `@signature-kit/pdf-core/file` — `pdfCoreFileLayer`: reads `pdf-core.wasm` through the Effect `FileSystem` and `Path` services. The caller provides the Node or Bun platform layer.
-- `@signature-kit/pdf-core/promise` — `loadPdfCoreBrowser()` and `createPdfCoreClient(module)`: the same operations as `PdfCore`, returning Promises.
-- `@signature-kit/pdf-core/node` — `loadPdfCoreNode()`: reads `pdf-core.wasm` next to the module with `node:fs` and returns the Promise client.
-- `@signature-kit/pdf-core/canvas` — browser painter for render display lists: `paintDisplayList`, `prepareDisplayListImages`, `renderDisplayListImage`, `displayListViewport`, and `displayListImageBlobs`. It uses Canvas 2D (`OffscreenCanvas`, `Path2D`, `createImageBitmap`), so it runs in windows and workers.
-- `@signature-kit/pdf-core/pdf-core.wasm` — the compiled module for bundlers and custom loaders.
+- `@signature-kit/engine/rpc` — wire schemas, typed errors, the RPC group and protocol version.
+- `@signature-kit/engine/engine` — Effect services for documents, sessions and PDF operations.
+- `@signature-kit/engine/telemetry` — bounded tracing and telemetry summaries.
+
+- `@signature-kit/engine/wasm/config` — `PdfCoreError`, `PdfCoreErrorCodeValue`, `pdfCoreErrorMessages`, and the option and inspection schemas.
+- `@signature-kit/engine/wasm/pdf-core` — the `PdfCore` service, `makePdfCore(module)`, and `pdfCoreLayer(module)`.
+- `@signature-kit/engine/wasm/browser` — `pdfCoreBrowserLayer` (and `pdfCoreBrowserModule`, the loader behind it): fetches `signature-kit.wasm` next to the module, compiles it with `WebAssembly.compileStreaming`, and falls back to `WebAssembly.compile` when the response is not served as `application/wasm`.
+- `@signature-kit/engine/wasm/file` — `pdfCoreFileLayer`: reads `signature-kit.wasm` through the Effect `FileSystem` and `Path` services. The caller provides the Node or Bun platform layer.
+- `@signature-kit/engine/wasm/promise` — `loadPdfCoreBrowser()` and `createPdfCoreClient(module)`: the same operations as `PdfCore`, returning Promises.
+- `@signature-kit/engine/wasm/node` — `loadPdfCoreNode()`: reads `signature-kit.wasm` next to the module with `node:fs` and returns the Promise client.
+- `@signature-kit/engine/wasm/canvas` — browser painter for render display lists: `paintDisplayList`, `prepareDisplayListImages`, `renderDisplayListImage`, `displayListViewport`, and `displayListImageBlobs`. It uses Canvas 2D (`OffscreenCanvas`, `Path2D`, `createImageBitmap`), so it runs in windows and workers.
+- `@signature-kit/engine/signature-kit.wasm` — the compiled module for bundlers and custom loaders.
 
 `WebAssembly`, `fetch`, `TextEncoder`, and `TextDecoder` are standard Web APIs and are part of this package's declared cross-runtime contract. Each layer compiles the module once when the layer is built.
 
 ## Bundling
 
-`pdfCoreFileLayer` reads `new URL("./pdf-core.wasm", import.meta.url)` through the file system. The npm package ships `dist/pdf-core.wasm` next to `dist/file.js`. When deploying a server bundle, keep the package external and ship its files together so the relative URL still points to the Wasm file.
+`pdfCoreFileLayer` reads `new URL("./signature-kit.wasm", import.meta.url)` through the file system. The npm package ships `dist/wasm/signature-kit.wasm` next to `dist/wasm/file.js`. When deploying a server bundle, keep the package external and ship its files together so the relative URL still points to the Wasm file.
 
-- **Nitro 3 / Vercel.** With the `vercel` preset, include `traceDeps: ["@signature-kit/pdf-core"]` in the Nitro config (or the `nitro({ ... })` Vite plugin options). Check that the traced package in the function output includes `dist/pdf-core.wasm`. [Nitro dependency tracing](https://nitro.build/config/build#tracedeps)
-- **Next.js.** Use the Node.js runtime and add `"@signature-kit/pdf-core"` to `serverExternalPackages`. For a traced deployment, check the route's trace and, if necessary, add `"./node_modules/@signature-kit/pdf-core/dist/pdf-core.wasm"` to `outputFileTracingIncludes` for the routes that use the layer. [External packages](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverExternalPackages) · [Output file tracing](https://nextjs.org/docs/app/api-reference/config/next-config-js/output)
-- **esbuild.** Use `--platform=node --format=esm --external:@signature-kit/pdf-core` and deploy the installed package with the bundle. The external flag also covers the `/file` subpath. [esbuild external](https://esbuild.github.io/api/#external)
-- **Vite.** For client and worker builds, use `pdfCoreBrowserLayer`. Vite 8's static asset handling rewrites its `new URL("./pdf-core.wasm", import.meta.url)` to the emitted Wasm asset in production, including when imported by the A1 worker. For a Vite SSR server using the file layer, keep the package external and ship the installed files. [Vite asset handling](https://vite.dev/guide/assets.html#new-url-url-import-meta-url)
+- **Nitro 3 / Vercel.** With the `vercel` preset, include `traceDeps: ["@signature-kit/engine"]` in the Nitro config (or the `nitro({ ... })` Vite plugin options). Check that the traced package in the function output includes `dist/wasm/signature-kit.wasm`. [Nitro dependency tracing](https://nitro.build/config/build#tracedeps)
+- **Next.js.** Use the Node.js runtime and add `"@signature-kit/engine"` to `serverExternalPackages`. For a traced deployment, check the route's trace and, if necessary, add `"./node_modules/@signature-kit/engine/wasm/dist/wasm/signature-kit.wasm"` to `outputFileTracingIncludes` for the routes that use the layer. [External packages](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverExternalPackages) · [Output file tracing](https://nextjs.org/docs/app/api-reference/config/next-config-js/output)
+- **esbuild.** Use `--platform=node --format=esm --external:@signature-kit/engine` and deploy the installed package with the bundle. The external flag also covers the `/file` subpath. [esbuild external](https://esbuild.github.io/api/#external)
+- **Vite.** For client and worker builds, use `pdfCoreBrowserLayer`. Vite 8's static asset handling rewrites its `new URL("./signature-kit.wasm", import.meta.url)` to the emitted Wasm asset in production, including when imported by the A1 worker. For a Vite SSR server using the file layer, keep the package external and ship the installed files. [Vite asset handling](https://vite.dev/guide/assets.html#new-url-url-import-meta-url)
 
 ## Example
 
 ```ts
 import { NodeServices } from "@effect/platform-node";
-import { PdfCore } from "@signature-kit/pdf-core/pdf-core";
-import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
+import { PdfCore } from "@signature-kit/engine/wasm/pdf-core";
+import { pdfCoreFileLayer } from "@signature-kit/engine/wasm/file";
 import { Effect, Layer } from "effect";
 
 declare const pdf: Uint8Array;
@@ -54,15 +58,15 @@ program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.lay
 ### Without Effect
 
 ```ts
-import { PdfCoreErrorCodeValue } from "@signature-kit/pdf-core/config";
-import { loadPdfCoreNode } from "@signature-kit/pdf-core/node";
+import { PdfCoreErrorCodeValue } from "@signature-kit/engine/wasm/config";
+import { loadPdfCoreNode } from "@signature-kit/engine/wasm/node";
 
 const core = await loadPdfCoreNode();
 const { pages } = await core.document(pdf);
 const chunk = await core.merge([{ pdf, pageIndexes: [0, 1] }]);
 ```
 
-In the browser use `loadPdfCoreBrowser()` from `@signature-kit/pdf-core/promise`. Load the client once and reuse it. Each method has the same arguments and result as the `PdfCore` method of the same name, and rejects with the `PdfCoreError` (`error.code` is a `PdfCoreErrorCodeValue`). `effect` is installed as a dependency of this package; the app does not import it.
+In the browser use `loadPdfCoreBrowser()` from `@signature-kit/engine/wasm/promise`. Load the client once and reuse it. Each method has the same arguments and result as the `PdfCore` method of the same name, and rejects with the `PdfCoreError` (`error.code` is a `PdfCoreErrorCodeValue`). `effect` is installed as a dependency of this package; the app does not import it.
 
 `text` returns one reading-order plain-text string per page (pdftotext style). It clusters positioned runs into lines, splits lines into cells on wide gaps, groups cells into blocks, orders blocks with an XY-cut (columns are read column by column, table rows row by row), honours `/Rotate` and sideways text, and ignores content streams that cannot show text. A gap between two glyphs becomes a space when it exceeds half the width of the font's space (clamped to 0.1–0.2 em; a subset font that leaves the space without a width uses the width of `.` or `,`, and a font without a space in its encoding uses 0.2 em), so tightly justified `TJ` arrays keep their word breaks while kerning stays inside words. A line split into cells whose neighbours above and below are single cells starting at the same left edge, such as a numbered code line with an indented statement, stays one line.
 
@@ -184,7 +188,7 @@ PNG input is bounded to 16 MiB, 16 Mi pixels, 64 MiB of decoded scanlines and 4,
 `renderPages` turns pages into compact display lists; the browser painter draws them with Canvas 2D, so JPEG decoding and anti-aliased rasterization stay in the browser and the wasm module stays small.
 
 ```ts
-import { renderDisplayListImage } from "@signature-kit/pdf-core/canvas";
+import { renderDisplayListImage } from "@signature-kit/engine/wasm/canvas";
 
 const lists = yield * core.renderPages(pdf, { pageIndexes: [0], scale: 150 / 72 });
 const thumbnail = yield * renderDisplayListImage(lists[0]); // { pageIndex, width, height, image: Blob }
@@ -214,7 +218,7 @@ Use `openLazy` when the PDF lives on disk, in a Blob, or behind a byte-range API
 
 ```ts
 import { Effect } from "effect";
-import { PdfCore, pdfCoreBlobSource } from "@signature-kit/pdf-core/pdf-core";
+import { PdfCore, pdfCoreBlobSource } from "@signature-kit/engine/wasm/pdf-core";
 
 const firstPageMarkdown = (pdf: Blob) =>
   Effect.scoped(
@@ -227,11 +231,11 @@ const firstPageMarkdown = (pdf: Blob) =>
   );
 ```
 
-The service also exports `pdfCoreBytesSource(bytes)`. For disk files, `pdfCoreFileSource(path)` from `@signature-kit/pdf-core/file` opens a scoped Effect `FileSystem` handle and uses positional reads. Provide the platform's file system as you do for `pdfCoreFileLayer`.
+The service also exports `pdfCoreBytesSource(bytes)`. For disk files, `pdfCoreFileSource(path)` from `@signature-kit/engine/wasm/file` opens a scoped Effect `FileSystem` handle and uses positional reads. Provide the platform's file system as you do for `pdfCoreFileLayer`.
 
 ```ts
 import { open } from "node:fs/promises";
-import { loadPdfCoreNode, pdfCoreNodeSource } from "@signature-kit/pdf-core/node";
+import { loadPdfCoreNode, pdfCoreNodeSource } from "@signature-kit/engine/wasm/node";
 
 const core = await loadPdfCoreNode();
 await using file = await open("notice.pdf");
@@ -283,7 +287,8 @@ if (sourcePageIndexes.length > 0) {
 }
 ```
 
-After building the repository, run `PDF_CORPUS=/path/to/pdfs bun shared/pdf-core/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
+Run `PDF_CORPUS=/path/to/pdfs bun run bench:pdf --quick` to measure PDF operations.
+After building the repository, run `PDF_CORPUS=/path/to/pdfs bun packages/engine/bench/lazy.bench.ts` to compare Markdown output and measure a fresh process per path and PDF. Append `--warm` for a long-lived Wasm instance with one warm-up and the median of three trials per PDF, `--rtt` for a real 40 ms timer per request with four concurrent range reads, or `--http` for real loopback HTTP Range requests on up to twelve evenly spaced files. Set `PDF_PROBE_BYTES`, `PDF_GAP_BYTES`, and `PDF_MAX_ROUND_BYTES` to compare tuning. The benchmark exits nonzero on mismatches or failed extractions.
 
 ## Extraction benchmarks
 
@@ -291,12 +296,12 @@ The benchmark exercises text and Markdown extraction with all input bytes alread
 
 ### Reproduce the comparison
 
-Build the checkout with `bun run build`. The [benchmark runner](https://github.com/Licitei/signature-kit/tree/main/shared/pdf-core/bench/comparison) uses an isolated lockfile for the comparison engines. The example uses Bun 1.4.5 on Linux x64.
+Build the checkout with `bun run build`. The [benchmark runner](https://github.com/Licitei/signature-kit/tree/main/packages/engine/bench/comparison) uses an isolated lockfile for the comparison engines. The example uses Bun 1.4.5 on Linux x64.
 
 ```sh
 export SIGNATURE_KIT_ROOT="$PWD"
 bench_dir=$(mktemp -d)
-cp shared/pdf-core/bench/comparison/{package.json,bun.lock,run.ts} "$bench_dir/"
+cp packages/engine/bench/comparison/{package.json,bun.lock,run.ts} "$bench_dir/"
 (
   cd "$bench_dir"
   bun install --frozen-lockfile
@@ -498,7 +503,7 @@ Raw image blobs are RGBA (`width × height × 4`); stencil masks carry the opaqu
 ## Development
 
 ```sh
-cd shared/pdf-core/rust
+cd crates/pdf
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
@@ -506,7 +511,7 @@ cargo fmt --check
 
 ### Formal verification
 
-Kani 0.68 runs from `shared/pdf-core/rust` as `cargo kani -Z stubbing --exact --harness <name>` with `RUSTFLAGS=--cap-lints=warn` (Kani's injected prelude trips the crate's deny lints). The `Kani proofs (pdf-core)` CI job lists the proven harnesses explicitly, every row below except the one marked not in CI: 11 harnesses, about 155 s of CBMC time and 3 minutes wall locally including the build. Times are CBMC verification times with the default CaDiCaL solver.
+Kani 0.68 runs from `crates/pdf` as `cargo kani -Z stubbing --exact --harness <name>` with `RUSTFLAGS=--cap-lints=warn` (Kani's injected prelude trips the crate's deny lints). The `Kani proofs (pdf-core)` CI job lists the proven harnesses explicitly, every row below except the one marked not in CI: 11 harnesses, about 155 s of CBMC time and 3 minutes wall locally including the build. Times are CBMC verification times with the default CaDiCaL solver.
 
 Proven (every input within the stated bound):
 
@@ -533,14 +538,14 @@ Tested only (randomized properties, fuzzing and fixtures; CBMC does not converge
 - Stream predictors: `png_predictors_invert_png_filtering` (1 to 4 colours, every row tag, Predictor 10 to 15) and `tiff_predictor_inverts_tiff_differencing` (1, 2, 4, 8 and 16 bits per component).
 - The object parser, content lexer and `startxref` lookup on arbitrary input: the fuzz targets below. Their Kani harnesses ran past the 10-minute budget.
 
-Fuzzing uses `cargo-fuzz` on nightly from `shared/pdf-core/rust` (`cargo +nightly fuzz run <target> --fuzz-dir fuzz fuzz/corpus/<target>`, seeded with `__tests__/fixtures/**/*.pdf`). The entry points live in `src/fuzzing.rs` behind `cfg(fuzzing)`:
+Fuzzing uses `cargo-fuzz` on nightly from `crates/pdf` (`cargo +nightly fuzz run <target> --fuzz-dir fuzz fuzz/corpus/<target>`, seeded with `tests/fixtures/pdf/**/*.pdf`). The entry points live in `src/fuzzing.rs` behind `cfg(fuzzing)`:
 
 - `markdown`, `tables`, `inspect` (inspection, diagnostics and form fields), `render` (first page), `signatures` (all three analyses and `revision_complete`).
 - `edit_and_merge`: an empty incremental, rewrite or object-stream edit and a two-source merge; every written PDF must reopen.
 - `lazy`: drives the range-request planner on the input bytes and asserts every planned range is in bounds, accepted, and that lazy text equals eager text whenever the lazy path answers.
 - `decoders`: filter chains and functions of a single indirect object, raw inflate, CCITT, PNG, CMaps, font programs, Type 1 glyphs, the RC4 and AES ciphers, the content lexer and the object parser.
 
-`bun run build` compiles the crate for `wasm32-unknown-unknown` (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/pdf-core.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1144 KiB.
+`bun run build` compiles the WASM crate for `wasm32-unknown-unknown` using the root toolchain pin and Rust’s size optimization (the `build-wasm` Nx target), shrinks it with Binaryen `wasm-opt -O3`, and copies it to `dist/wasm/signature-kit.wasm`; it requires a Rust toolchain with that target installed. The size test caps the module at 1144 KiB.
 
 ## License
 

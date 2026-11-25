@@ -53,7 +53,11 @@ const RULE_NONZERO: u8 = 0;
 const RULE_EVENODD: u8 = 1;
 
 #[derive(Debug)]
-pub(crate) struct RenderedPage {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct RenderedPage {
     pub list: DisplayList,
     pub page_index: u32,
     pub rotate: i32,
@@ -2133,7 +2137,19 @@ fn tile_color(data: &[u8]) -> [u8; 3] {
     [191, 191, 191]
 }
 
-pub(crate) fn render_pages(
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn render_pages(
     bytes: &[u8],
     page_indexes: PageRequest<&[u32]>,
     scale: f64,
@@ -2169,7 +2185,19 @@ fn render_document(
     render_selected(&document, &borrow_pages(&pages), selection, limits, session)
 }
 
-pub(crate) fn opened_render(
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn opened_render(
     document: &Document<'_>,
     selected: &[(usize, &Page)],
     scale: f64,
@@ -2529,7 +2557,7 @@ mod tests {
 
     #[test]
     fn embedded_truetype_glyphs_are_defined_once_and_reused() {
-        let bytes = include_bytes!("../../__tests__/fixtures/react-pdf-declaration.pdf");
+        let bytes = include_bytes!("../tests/fixtures/pdf/react-pdf-declaration.pdf");
         let ops = render(bytes);
         let defined = ops
             .iter()
@@ -2722,7 +2750,7 @@ mod tests {
 
     #[test]
     fn page_view_intersects_crop_and_media_boxes() {
-        let bytes = include_bytes!("../../__tests__/fixtures/rotated-cropped.pdf");
+        let bytes = include_bytes!("../tests/fixtures/pdf/rotated-cropped.pdf");
         let pages =
             render_pages(bytes, PageRequest::Indexes(None), 1.0, &Limits::default()).unwrap();
         assert_eq!(pages.len(), 2);

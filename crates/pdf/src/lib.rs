@@ -1,42 +1,49 @@
+#![cfg_attr(
+    test,
+    expect(
+        dead_code_pub_in_binary,
+        reason = "the WASM ABI tests link a separate crate"
+    )
+)]
+
 extern crate alloc;
 
-mod abi;
 mod ccitt;
 mod cff;
 mod cmap;
 mod color;
 mod columns;
-mod deflate;
-mod diagnostics;
-mod display;
-mod document;
-mod edit;
+pub mod deflate;
+pub mod diagnostics;
+pub mod display;
+pub mod document;
+pub mod edit;
 mod encryption;
-mod failure;
+pub mod failure;
 mod filters;
 mod font;
-mod font_tables;
+pub mod font_tables;
 mod fontprog;
 mod function;
 mod glyph;
 mod image;
 mod inflate;
-mod inspection;
-mod layout;
-mod lazy;
+pub mod inspection;
+pub mod layout;
+pub mod lazy;
 mod markdown;
-mod num;
-mod object;
+pub mod num;
+pub mod object;
 mod pdf_cipher;
 mod pdf_hash;
-mod png;
-mod render;
-mod revision;
+pub mod png;
+pub mod render;
+pub mod revision;
 mod shading;
 mod syntax;
-mod table;
+pub mod table;
 mod text;
-mod write;
+pub mod write;
 
 #[cfg(test)]
 mod fixture_corpus;

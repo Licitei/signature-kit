@@ -2,10 +2,11 @@ import { Duration, Effect, Layer, Schema } from "effect";
 import { expect, inject, it } from "vitest";
 import { commands } from "vitest/browser";
 import { LocalClient, localClientLayer } from "../src/client.js";
-import { LocalTelemetry, localTelemetryLayer, summarizeTelemetry } from "../src/telemetry.js";
+import { LocalTelemetry } from "@signature-kit/engine/rpc";
+import { localTelemetryLayer, summarizeTelemetry } from "@signature-kit/engine/telemetry";
 import { localTelemetryOtlpLayer } from "../src/telemetry-otlp.js";
 import { paintPage } from "../src/viewer.js";
-import { createPages } from "./fixtures/pdf.js";
+import { createPages } from "../../../tooling/testing/fixtures/local/pdf.js";
 
 const createWorker = () =>
   new Worker(new URL("../src/worker.ts", import.meta.url), { type: "module" });

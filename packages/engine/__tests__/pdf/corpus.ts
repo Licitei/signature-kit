@@ -2,7 +2,10 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Schema } from "effect";
 
-export const PDF_CORE_FIXTURES_DIR = join(import.meta.dirname, "fixtures");
+export const PDF_CORE_FIXTURES_DIR = join(
+  import.meta.dirname,
+  "../../../../crates/pdf/tests/fixtures/pdf",
+);
 
 export const CorpusFixtureNameSchema = Schema.Literals([
   "helvetica-winansi.pdf",

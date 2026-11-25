@@ -9,7 +9,11 @@ const _: () = assert!(
     clippy::as_conversions,
     reason = "usize is at least 32 bits wide, asserted at compile time above"
 )]
-pub(crate) fn widen<T>(value: T) -> usize
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn widen<T>(value: T) -> usize
 where
     T: Into<u32>,
 {
@@ -67,7 +71,12 @@ pub(crate) const fn usize_to_f64(value: usize) -> f64 {
     clippy::cast_precision_loss,
     reason = "PDF numbers beyond 2^53 are approximations by definition"
 )]
-pub(crate) const fn u64_to_f64(value: u64) -> f64 {
+#[must_use]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub const fn u64_to_f64(value: u64) -> f64 {
     value as f64
 }
 

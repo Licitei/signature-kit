@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-import { PdfCoreErrorCodeValue } from "../dist/config.js";
-import { loadPdfCoreNode } from "../dist/node.js";
-import { createPdfCoreClient } from "../dist/promise.js";
+import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
+import { loadPdfCoreNode } from "../../dist/wasm/node.js";
+import { createPdfCoreClient } from "../../dist/wasm/promise.js";
 
 describe("Promise client", () => {
   it("runs PdfCore operations from Node without Effect", async () => {
@@ -36,7 +36,7 @@ describe("Promise client", () => {
   });
 
   it("builds a client from a compiled module", async () => {
-    const wasm = await readFile(new URL("../dist/pdf-core.wasm", import.meta.url));
+    const wasm = await readFile(new URL("../../dist/wasm/signature-kit.wasm", import.meta.url));
     const core = await createPdfCoreClient(await WebAssembly.compile(wasm));
 
     expect(await core.deflate(new Uint8Array(0))).toBeInstanceOf(Uint8Array);

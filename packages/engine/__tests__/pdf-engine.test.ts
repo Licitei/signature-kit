@@ -1,13 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { pdfCoreFileLayer } from "@signature-kit/pdf-core/file";
-import { PdfCore, pdfCoreBytesSource } from "@signature-kit/pdf-core/pdf-core";
+import { pdfCoreFileLayer } from "@signature-kit/engine/wasm/file";
+import { PdfCore, pdfCoreBytesSource } from "@signature-kit/engine/wasm/pdf-core";
 import { Cause, Context, Effect, Exit, Layer } from "effect";
 import { readFile } from "node:fs/promises";
 import { expect } from "vitest";
 import { recordSpans } from "../../../tooling/testing/tracing.ts";
 import { Documents, PdfEngine, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
-import { createPages } from "./fixtures/pdf.js";
+import { createPages } from "../../../tooling/testing/fixtures/local/pdf.js";
 
 const layer = pdfEngineLayer.pipe(
   Layer.provide(localRuntimeLayer()),
@@ -102,10 +102,7 @@ it.effect("measures reopening versus keeping the parsed document between renders
       async () =>
         new Uint8Array(
           await readFile(
-            new URL(
-              "../../../shared/pdf-core/__tests__/fixtures/habilitacao-150.pdf",
-              import.meta.url,
-            ),
+            new URL("../../../crates/pdf/tests/fixtures/pdf/habilitacao-150.pdf", import.meta.url),
           ),
         ),
     );

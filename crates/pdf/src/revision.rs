@@ -1,5 +1,5 @@
 #[path = "revision_changes.rs"]
-mod changes;
+pub mod changes;
 
 use alloc::rc::Rc;
 use core::mem;
@@ -15,8 +15,6 @@ use crate::inspection::Limits;
 use crate::num::{f64_to_i64, sort_total, u64_to_f64};
 use crate::object::{Dict, Object};
 use crate::syntax::hex_value;
-
-pub(crate) use changes::{RevisionChanges, revision_changes};
 
 const MAX_REVISIONS: usize = 128;
 const MAX_SIGNATURE_DICTIONARIES: usize = 1024;
@@ -37,14 +35,22 @@ const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 const PLACEHOLDER_NAME: &[u8] = b"**********";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Analysis {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum Analysis {
     Dictionaries,
     Scan,
     Verification,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reason {
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the internal ABI shares these variants with the WASM crate"
+)]
+pub enum Reason {
     CrossReferenceStream,
     DictionaryParse,
     IndirectLengths,
@@ -80,7 +86,11 @@ impl From<Reason> for u32 {
     clippy::struct_excessive_bools,
     reason = "each flag is an independent scanner outcome reported over the ABI"
 )]
-pub(crate) struct ScanFlags {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct ScanFlags {
     pub limit: bool,
     pub parse_failed: bool,
     pub stream_failed: bool,
@@ -88,14 +98,22 @@ pub(crate) struct ScanFlags {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FieldSpan {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct FieldSpan {
     pub key_start: usize,
     pub value_end: usize,
     pub value_start: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SignatureDictionary {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct SignatureDictionary {
     pub byte_range: Option<FieldSpan>,
     pub byte_range_values: Option<[f64; 4]>,
     pub contents: Option<FieldSpan>,
@@ -108,7 +126,11 @@ pub(crate) struct SignatureDictionary {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Report {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Report {
     pub dictionaries: Vec<SignatureDictionary>,
     pub failure: Option<Reason>,
     pub flags: ScanFlags,
@@ -1788,7 +1810,12 @@ impl Terminal {
     }
 }
 
-pub(crate) fn analyze(pdf: &[u8], analysis: Analysis) -> Report {
+#[must_use]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn analyze(pdf: &[u8], analysis: Analysis) -> Report {
     match analysis {
         Analysis::Scan => {
             let mut scanner = Scanner::new(pdf, Mode::Signatures, None);
@@ -1836,7 +1863,16 @@ pub(crate) fn analyze(pdf: &[u8], analysis: Analysis) -> Report {
     }
 }
 
-pub(crate) fn revision_complete(pdf: &[u8], end: usize) -> bool {
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the internal ABI retains the existing PDF operation names"
+)]
+#[must_use]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn revision_complete(pdf: &[u8], end: usize) -> bool {
     if end == 0 || end > pdf.len() {
         return false;
     }

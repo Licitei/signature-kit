@@ -25,14 +25,22 @@ const HOLE_START: &[u8] = b"]/Contents <";
 const RANGE_PLACEHOLDER: i64 = 9_999_999_999;
 
 #[derive(Debug)]
-pub(crate) struct SignatureFields {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct SignatureFields {
     pub doc_mdp: Option<u32>,
     pub fields: Vec<SignatureField>,
     pub revisions: Vec<usize>,
 }
 
 #[derive(Debug)]
-pub(crate) struct SignatureField {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct SignatureField {
     pub lock: Option<FieldLock>,
     pub name: String,
     pub reference: Option<ObjRef>,
@@ -42,27 +50,43 @@ pub(crate) struct SignatureField {
 }
 
 #[derive(Debug)]
-pub(crate) struct SignatureValue {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct SignatureValue {
     pub byte_range: Option<[u64; 4]>,
     pub revision_end: Option<usize>,
     pub sub_filter: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
-pub(crate) struct FieldLock {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct FieldLock {
     pub action: Option<String>,
     pub fields: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Widget {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct Widget {
     pub page: Option<u32>,
     pub rect: Option<[f64; 4]>,
     pub reference: Option<ObjRef>,
 }
 
 #[derive(Debug)]
-pub(crate) struct PreparedSignature {
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the internal ABI shares this struct with the WASM crate"
+)]
+pub struct PreparedSignature {
     pub byte_range: [usize; 4],
     pub contents_end: usize,
     pub contents_start: usize,
@@ -699,7 +723,15 @@ fn signature_value(
     }))
 }
 
-pub(crate) fn signature_fields(pdf: &[u8], limits: &Limits) -> Outcome<SignatureFields> {
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn signature_fields(pdf: &[u8], limits: &Limits) -> Outcome<SignatureFields> {
     let index = revision_index(pdf)?;
     let document = Document::open(index.current(), limits)?;
     let tree = FieldTree::read(&document, true)?;
@@ -1150,7 +1182,15 @@ pub(crate) fn signature_references(
     Ok((fields, values))
 }
 
-pub(crate) fn prepare_signature(
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn prepare_signature(
     pdf: &[u8],
     payload: &[u8],
     limits: &Limits,
@@ -1437,7 +1477,7 @@ mod tests {
 
     #[test]
     fn appends_invisible_co_signature_to_xref_stream_pdf_with_trailing_garbage() {
-        let pdf = include_bytes!("../../__tests__/fixtures/object-streams.pdf");
+        let pdf = include_bytes!("../tests/fixtures/pdf/object-streams.pdf");
         let limits = Limits::default();
         let mut first = prepare_signature(pdf, &request("First", true, 0, false), &limits).unwrap();
         assert!(first.pdf.starts_with(pdf));

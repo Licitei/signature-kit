@@ -1,8 +1,8 @@
-import { CryptoErrorCodeValue } from "@signature-kit/crypto/config";
-import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
-import { displayListViewport } from "@signature-kit/pdf-core/canvas";
-import type { PdfCoreDisplayList } from "@signature-kit/pdf-core/config";
-import { PdfCore, pdfCoreBytesSource } from "@signature-kit/pdf-core/pdf-core";
+import { CryptoErrorCodeValue } from "./crypto/config.js";
+import { parsePkcs12 } from "./crypto/pkcs12.js";
+import { displayListViewport } from "./wasm/canvas.js";
+import type { PdfCoreDisplayList } from "./wasm/config.js";
+import { PdfCore, pdfCoreBytesSource } from "./wasm/pdf-core.js";
 import {
   Context,
   Effect,
@@ -17,7 +17,7 @@ import {
   Semaphore,
 } from "effect";
 import { A1Hash, a1Profile, importA1SigningKey, sha256Hex } from "./a1-certificate.js";
-import { Handle, LocalError } from "./protocol.js";
+import { LocalTelemetry, Handle, LocalError } from "./rpc.js";
 import type {
   A1OpenInput,
   A1SessionInfo,
@@ -26,8 +26,8 @@ import type {
   PdfRenderInput,
   PdfViewport,
   RevisionRef,
-} from "./protocol.js";
-import { LocalTelemetry, withQueueTiming } from "./telemetry.js";
+} from "./rpc.js";
+import { withQueueTiming } from "./telemetry.js";
 
 export class Documents extends Context.Service<
   Documents,
@@ -36,7 +36,7 @@ export class Documents extends Context.Service<
     readonly export: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly release: (handle: Handle) => Effect.Effect<void, LocalError>;
   }
->()("@signature-kit/local/Documents") {}
+>()("@signature-kit/engine/Documents") {}
 
 export class A1Sessions extends Context.Service<
   A1Sessions,
@@ -49,7 +49,7 @@ export class A1Sessions extends Context.Service<
       data: Uint8Array,
     ) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
   }
->()("@signature-kit/local/A1Sessions") {}
+>()("@signature-kit/engine/A1Sessions") {}
 
 export const RuntimeOptionsSchema = Schema.Struct({
   a1Hash: Schema.optional(A1Hash),
@@ -59,7 +59,7 @@ export type RuntimeOptions = (typeof RuntimeOptionsSchema)["Type"];
 export class LocalRuntime extends Context.Service<
   LocalRuntime,
   { readonly instanceId: InstanceId }
->()("@signature-kit/local/LocalRuntime") {}
+>()("@signature-kit/engine/LocalRuntime") {}
 
 const documentsLayer = (instanceId: InstanceId) =>
   Layer.effect(
@@ -236,7 +236,7 @@ export class PdfEngine extends Context.Service<
       LocalError
     >;
   }
->()("@signature-kit/local/PdfEngine") {}
+>()("@signature-kit/engine/PdfEngine") {}
 
 export const pdfEngineLayer = Layer.effectContext(
   Effect.gen(function* () {

@@ -47,7 +47,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: shared/pdf-core/rust
+          workspaces: .
 
       - name: Build packages
         run: bun run build

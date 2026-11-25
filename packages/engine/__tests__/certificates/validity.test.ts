@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Duration, Effect, Result } from "effect";
 import * as TestClock from "effect/testing/TestClock";
-import { inspectCertificateValidity } from "../src/index";
+import { inspectCertificateValidity } from "../../src/certificates/certificate";
 
 describe("certificate validity inspection", () => {
   it.effect("uses the Effect clock and includes both validity boundaries", () =>

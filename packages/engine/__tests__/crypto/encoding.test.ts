@@ -1,12 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
-import { base64ToBytes } from "../src/base64";
-import { CryptoErrorCodeValue, CryptoOperationValue } from "../src/config";
-import { pemToDer } from "../src/pem";
-import { aesCbcDecrypt } from "../src/primitives/aes";
-import { tripleDesCbcDecrypt } from "../src/primitives/des";
-import { removePkcs7Padding } from "../src/primitives/padding";
-import { rc2CbcDecrypt } from "../src/primitives/rc2";
+import { base64ToBytes } from "../../src/crypto/base64";
+import { CryptoErrorCodeValue, CryptoOperationValue } from "../../src/crypto/config";
+import { pemToDer } from "../../src/crypto/pem";
+import { aesCbcDecrypt } from "../../src/crypto/primitives/aes";
+import { tripleDesCbcDecrypt } from "../../src/crypto/primitives/des";
+import { removePkcs7Padding } from "../../src/crypto/primitives/padding";
+import { rc2CbcDecrypt } from "../../src/crypto/primitives/rc2";
 
 describe("crypto encoding hardening", () => {
   it.effect("decodes valid padded, unpadded, and whitespace-separated Base64", () =>

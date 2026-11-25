@@ -4,8 +4,8 @@ import type { HrTime } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Cause, Duration, Effect, Layer, Match, Option, Schedule, Schema } from "effect";
 import { LocalClient } from "./client.js";
-import { LocalTelemetry, TelemetryBatch } from "./telemetry.js";
-import type { TelemetrySpan } from "./telemetry.js";
+import { LocalTelemetry, TelemetryBatch } from "@signature-kit/engine/rpc";
+import type { TelemetrySpan } from "@signature-kit/engine/rpc";
 
 export class LocalTelemetryExportError extends Schema.TaggedError<
   LocalTelemetryExportError,
@@ -164,7 +164,7 @@ export const localTelemetryOtlpLayer = (url: string, options: ExportOptions = {}
                   events: [],
                   ended: true,
                   resource,
-                  instrumentationScope: { name: "@signature-kit/local" },
+                  instrumentationScope: { name: "@signature-kit/browser" },
                   droppedAttributesCount: span.droppedAttributes,
                   droppedEventsCount: 0,
                   droppedLinksCount: 0,

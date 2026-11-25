@@ -18,22 +18,21 @@ export const skippedSegments: Record<string, true> = {
 };
 export const skippedSuffixes: readonly string[] = [".d.ts", ".tsbuildinfo", "README.md"];
 
-export const packageToolingPathPattern =
-  /(?:^|\/)(?:core|shared|runtime)\/[^/]+\/(?:scripts|bench)\//;
+export const packageToolingPathPattern = /(?:^|\/)packages\/[^/]+\/(?:scripts|bench)\//;
 
-export const roots = ["core", "shared", "runtime"];
+export const roots = ["packages"];
 
 export const promiseBoundaryModules: readonly string[] = [
-  "shared/pdf-core/src/promise.ts",
-  "shared/pdf-core/src/node.ts",
+  "packages/engine/src/wasm/promise.ts",
+  "packages/engine/src/wasm/node.ts",
 ];
 
-export const nodeBoundaryModules: readonly string[] = ["shared/pdf-core/src/node.ts"];
+export const nodeBoundaryModules: readonly string[] = ["packages/engine/src/wasm/node.ts"];
 
 export const allowedEffectProvideSites: Record<string, readonly string[]> = {
-  "runtime/local/src/client.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
-  "runtime/local/src/telemetry-otlp.ts": ["Resource.layer"],
-  "runtime/local/src/worker-server.ts": [
+  "packages/browser/src/client.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
+  "packages/browser/src/telemetry-otlp.ts": ["Resource.layer"],
+  "packages/browser/src/worker-server.ts": [
     "localHandlersLayer",
     "localTelemetryLayer",
     "Layer.succeed",
@@ -61,4 +60,4 @@ export const contractSuffixes: readonly string[] = [
 export const exportContractDeclarationPattern = new RegExp(
   `^\\s*export\\s+(?:interface|type)\\s+([A-Za-z_$][\\w$]*(?:${contractSuffixes.join("|")}))\\b`,
 );
-export const adapterOrPackagePathPrefixes: readonly string[] = ["core/", "runtime/"];
+export const adapterOrPackagePathPrefixes: readonly string[] = ["packages/"];

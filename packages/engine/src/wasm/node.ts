@@ -11,7 +11,7 @@ export const loadPdfCoreNode = (): Promise<PdfCoreClient> =>
   Effect.runPromise(
     Effect.tryPromise({
       try: async () =>
-        WebAssembly.compile(await readFile(new URL("./pdf-core.wasm", import.meta.url))),
+        WebAssembly.compile(await readFile(new URL("./signature-kit.wasm", import.meta.url))),
       catch: () =>
         new PdfCoreError({
           code: PdfCoreErrorCodeValue.wasmLoadFailed,

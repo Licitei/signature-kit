@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/dist/pdf-core.wasm"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+OUT="$ROOT/packages/engine/dist/wasm/signature-kit.wasm"
 
 cd "$ROOT"
-BINARYEN_MANIFEST="$(readlink -f node_modules/binaryen/package.json 2>/dev/null || true)"
+BINARYEN_MANIFEST="$(readlink -f packages/engine/node_modules/binaryen/package.json 2>/dev/null || true)"
 KEY="$(
   {
-    find rust/src rust/data -type f
-    printf '%s\n' rust/Cargo.toml rust/Cargo.lock rust/build.rs rust/rust-toolchain.toml scripts/build-wasm.sh
+    find crates/wasm/src crates/pdf/src crates/pdf/data -type f
+    printf '%s\n' Cargo.toml Cargo.lock rust-toolchain.toml crates/pdf/Cargo.toml crates/pdf/build.rs crates/wasm/Cargo.toml crates/wasm/scripts/build-wasm.sh
   } | LC_ALL=C sort | xargs sha256sum | {
     cat
     if [[ -n "$BINARYEN_MANIFEST" ]]; then sha256sum "$BINARYEN_MANIFEST" | cut -d' ' -f1; fi
@@ -21,18 +21,17 @@ if [[ "${1:-}" == "--key" ]]; then
   exit 0
 fi
 
-CACHE_DIR="${PDF_CORE_WASM_CACHE:-}"
+CACHE_DIR="${SIGNATURE_KIT_WASM_CACHE:-}"
 if [[ -n "$CACHE_DIR" && -f "$CACHE_DIR/$KEY.wasm" ]]; then
   mkdir -p "$(dirname "$OUT")"
   cp "$CACHE_DIR/$KEY.wasm" "$OUT"
-  echo "pdf-core.wasm restored from cache $KEY"
+  echo "signature-kit.wasm restored from cache $KEY"
   exit 0
 fi
 
-bash "$ROOT/scripts/build-wasm.sh"
+bash "$ROOT/crates/wasm/scripts/build-wasm.sh"
 
 if [[ -n "$CACHE_DIR" ]]; then
   mkdir -p "$CACHE_DIR"
-  find "$CACHE_DIR" -type f -name '*.wasm' -delete
   cp "$OUT" "$CACHE_DIR/$KEY.wasm"
 fi

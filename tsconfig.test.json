@@ -14,9 +14,7 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "core/**/__tests__/**/*.ts",
-    "shared/**/__tests__/**/*.ts",
-    "runtime/**/__tests__/**/*.ts",
+    "packages/**/__tests__/**/*.ts",
     "tooling/static-checks/**/*.ts",
     "tooling/testing/**/*.ts",
     "tooling/vitest/**/*.ts"

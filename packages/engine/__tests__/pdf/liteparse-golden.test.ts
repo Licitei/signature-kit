@@ -4,9 +4,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 
-import type { PdfCoreInspection } from "../dist/config.js";
-import { pdfCoreFileLayer } from "../dist/file.js";
-import { PdfCore } from "../dist/pdf-core.js";
+import type { PdfCoreInspection } from "../../dist/wasm/config.js";
+import { pdfCoreFileLayer } from "../../dist/wasm/file.js";
+import { PdfCore } from "../../dist/wasm/pdf-core.js";
 import { CORPUS_FIXTURE_NAMES, PDF_CORE_FIXTURES_DIR } from "./corpus.ts";
 
 const layer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));

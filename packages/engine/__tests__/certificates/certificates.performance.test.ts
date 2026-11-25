@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { readFile } from "node:fs/promises";
-import { parseCertificate } from "@signature-kit/certificates";
+import { parseCertificate } from "../../src/certificates/certificate.js";
 import { Effect, Redacted } from "effect";
 
 const testPassword = Redacted.make("test1234");

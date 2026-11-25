@@ -2,8 +2,9 @@ import { it } from "@effect/vitest";
 import { Deferred, Duration, Effect, Layer, Option, Tracer } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { expect } from "vitest";
-import { Documents, localRuntimeLayer } from "../src/engine.js";
-import { LocalTelemetry, localTelemetryLayer } from "../src/telemetry.js";
+import { Documents, localRuntimeLayer } from "@signature-kit/engine/engine";
+import { LocalTelemetry } from "@signature-kit/engine/rpc";
+import { localTelemetryLayer } from "@signature-kit/engine/telemetry";
 import { LocalTelemetryExportError, localTelemetryExportLayer } from "../src/telemetry-otlp.js";
 
 const openSpan = "local.documents.open";

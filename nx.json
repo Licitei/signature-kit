@@ -62,7 +62,7 @@
   "plugins": [
     {
       "plugin": "@nx/js/typescript",
-      "include": ["core/**/tsconfig.json", "shared/**/tsconfig.json", "runtime/**/tsconfig.json"],
+      "include": ["packages/**/tsconfig.json"],
       "options": {
         "compiler": "tsc",
         "typecheck": {

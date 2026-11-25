@@ -3,7 +3,7 @@ import { dirname, relative, resolve } from "node:path";
 import * as ts from "typescript";
 import { parseSourceFile } from "./source-context";
 
-export type WorkspaceLayer = "shared" | "core" | "runtime" | "apps";
+export type WorkspaceLayer = "engine" | "browser" | "apps";
 
 type JsonObject = { readonly [key: string]: unknown };
 
@@ -14,6 +14,7 @@ type WorkspacePackage = {
   readonly dependencies: readonly string[];
   readonly devDependencies: readonly string[];
   readonly tsconfigReferences: readonly string[];
+  readonly exports: readonly string[];
 };
 
 type WorkspaceExport = {
@@ -26,13 +27,12 @@ export type WorkspaceLayerDiagnostic = {
   readonly message: string;
 };
 
-const workspaceRoots: readonly string[] = ["shared", "core", "runtime", "apps"];
+const workspaceRoots: readonly string[] = ["packages", "apps"];
 
 const allowedDependencyLayers: Record<WorkspaceLayer, readonly WorkspaceLayer[]> = {
-  shared: ["shared"],
-  core: ["shared", "core"],
-  runtime: ["shared", "core", "runtime"],
-  apps: ["shared", "core", "runtime", "apps"],
+  engine: [],
+  browser: ["engine"],
+  apps: ["engine", "browser", "apps"],
 };
 
 const sourceExtensions: Record<string, true> = {
@@ -50,16 +50,10 @@ const isJsonObject = (value: unknown): value is JsonObject =>
 const normalizePath = (path: string): string => path.replaceAll("\\", "/");
 
 const layerForDirectory = (directory: string): WorkspaceLayer | undefined => {
-  const segment = normalizePath(directory).split("/")[0];
-  switch (segment) {
-    case "shared":
-    case "core":
-    case "apps":
-    case "runtime":
-      return segment;
-    default:
-      return undefined;
-  }
+  const [root, name] = normalizePath(directory).split("/");
+  if (root === "apps") return "apps";
+  if (root === "packages" && (name === "engine" || name === "browser")) return name;
+  return undefined;
 };
 
 const readJsonObject = (path: string): JsonObject | undefined => {
@@ -346,8 +340,7 @@ const packageForRelativePath = (
     (workspacePackage) =>
       path === workspacePackage.directory || path.startsWith(`${workspacePackage.directory}/`),
   );
-const librarySourcePathPattern =
-  /^(?:core|shared|runtime)\/[^/]+\/src\/.+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+const librarySourcePathPattern = /^packages\/[^/]+\/src\/.+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
 
 const hasPublishedModuleExtension = (specifier: string): boolean => {
   const extension = /\.([A-Za-z0-9]+)$/.exec(specifier)?.[1]?.toLowerCase();
@@ -391,6 +384,7 @@ export const collectWorkspacePackages = (
         dependencies: workspaceDependencyNames(packageJson.dependencies),
         devDependencies: workspaceDependencyNames(packageJson.devDependencies),
         tsconfigReferences: tsconfigReferences(rootDirectory, directory),
+        exports: isJsonObject(packageJson.exports) ? Object.keys(packageJson.exports) : [],
       },
     ];
   });
@@ -412,7 +406,7 @@ const dependencyDiagnostics = (
     return [
       {
         path: `${workspacePackage.directory}/package.json`,
-        message: `${workspacePackage.name} is a ${workspacePackage.layer} package and cannot depend on ${dependency.name} (${dependency.layer}).`,
+        message: `${workspacePackage.name} (${workspacePackage.layer}) cannot depend on ${dependency.name} (${dependency.layer}).`,
       },
     ];
   });
@@ -479,7 +473,8 @@ const packageImportDiagnostics = (
     return [];
   }
 
-  const importedPackage = packageForImportSpecifier(packagesByName, specifier);
+  const [moduleName = specifier] = specifier.split("?");
+  const importedPackage = packageForImportSpecifier(packagesByName, moduleName);
   if (importedPackage === undefined || importedPackage.name === workspacePackage.name) {
     return [];
   }
@@ -494,14 +489,29 @@ const packageImportDiagnostics = (
       message: `${workspacePackage.name} imports ${importedPackage.name} without declaring it in package.json.`,
     });
   }
-  if (
-    !sourcePath.includes("/__tests__/") &&
-    !allowedDependencyLayers[workspacePackage.layer].includes(importedPackage.layer)
-  ) {
+  if (!allowedDependencyLayers[workspacePackage.layer].includes(importedPackage.layer)) {
     diagnostics.push({
       path: sourcePath,
-      message: `${workspacePackage.name} is a ${workspacePackage.layer} package and cannot import ${importedPackage.name} (${importedPackage.layer}).`,
+      message: `${workspacePackage.name} (${workspacePackage.layer}) cannot import ${importedPackage.name} (${importedPackage.layer}).`,
     });
+  }
+  if (workspacePackage.layer === "browser" && importedPackage.layer === "engine") {
+    const subpath = moduleName.slice(importedPackage.name.length);
+    if (!subpath.startsWith("/") || !importedPackage.exports.includes(`.${subpath}`)) {
+      diagnostics.push({
+        path: sourcePath,
+        message: `${workspacePackage.name} must use a public ${importedPackage.name} subpath: ${specifier}.`,
+      });
+    }
+    if (
+      /^packages\/browser\/src\/(?:client|viewer|telemetry-otlp)\.ts$/.test(sourcePath) &&
+      subpath !== "/rpc"
+    ) {
+      diagnostics.push({
+        path: sourcePath,
+        message: `Page-side browser modules may only import ${importedPackage.name}/rpc.`,
+      });
+    }
   }
   return diagnostics;
 };

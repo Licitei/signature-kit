@@ -134,6 +134,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature-kit-wasm"
+version = "0.0.0"
+dependencies = [
+ "signature-kit-pdf-core",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

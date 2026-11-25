@@ -2,7 +2,7 @@ import { adapterOrPackagePathPrefixes } from "../config";
 
 export const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export const isCoreOrRuntimeFile = (path: string): boolean =>
+export const isLibraryFile = (path: string): boolean =>
   adapterOrPackagePathPrefixes.some((prefix) => path.startsWith(prefix));
 
 export const isTaggedErrorName = (name: string): boolean => {
