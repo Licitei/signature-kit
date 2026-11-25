@@ -1,9 +1,9 @@
 ---
-title: react-pdf preview
-description: "Render unsigned and signed PDFs beside the signer, and feed page-click rectangles into the PDF workflow."
+title: Preview com react-pdf
+description: "Renderize PDFs assinados e não assinados ao lado do signer e envie retângulos clicados para o workflow de PDF."
 ---
 
-`react-pdf` belongs in your app, not in SignatureKit packages. Use it as a preview surface, keep object URLs owned by the action that creates them, and pass the selected rectangle to `prepareAndSignPdf`.
+`react-pdf` pertence à sua app, não aos pacotes SignatureKit. Use-o como superfície de preview, mantenha object URLs na ação que os cria e passe o retângulo selecionado para `prepareAndSignPdf`.
 
 ```tsx title="PdfPreviewIsland.tsx"
 import type { PdfPreviewProps } from "./PdfPreview"
@@ -22,7 +22,7 @@ function useHydrated() {
 }
 
 function PdfPreviewFallback() {
-  return <p role="status" aria-live="polite">Loading PDF preview…</p>
+  return <p role="status" aria-live="polite">Carregando preview do PDF…</p>
 }
 
 export function PdfPreviewIsland(props: PdfPreviewProps) {
@@ -36,7 +36,7 @@ export function PdfPreviewIsland(props: PdfPreviewProps) {
 }
 ```
 
-`PdfPreviewIsland` is the cross-framework boundary: Waku renders the server snapshot as `false`, so the `lazy` callback (and the `react-pdf`/pdf.js module it loads) is never evaluated during SSR or the initial hydration pass. Once the browser snapshot is `true`, `Suspense` keeps the fallback visible until the client chunk resolves. The same React contract works in other SSR frameworks without a framework-specific dynamic helper.
+`PdfPreviewIsland` é o boundary cross-framework: o Waku renderiza o snapshot do servidor como `false`, então o callback `lazy` (e o módulo `react-pdf`/pdf.js que ele carrega) nunca é avaliado durante SSR ou na passagem inicial de hidratação. Quando o snapshot do navegador vira `true`, `Suspense` mantém o fallback visível até o chunk do cliente ser resolvido. O mesmo contrato React funciona em outros frameworks SSR sem um helper `dynamic` específico de framework.
 
 ```tsx title="PdfPreview.tsx"
 import { type PdfSignaturePage, type PdfSignatureRect } from "@signature-kit/pdf/config"
@@ -93,9 +93,9 @@ export function PdfPreview({ unsignedPdf, pages, sign }: PdfPreviewProps) {
 
   return (
     <section>
-      <button type="button" onClick={() => showBytes(unsignedPdf)}>Preview unsigned</button>
-      <button type="button" onClick={signPlaced}>Sign placed rectangle</button>
-      <button type="button" onClick={clearPreview}>Close preview</button>
+      <button type="button" onClick={() => showBytes(unsignedPdf)}>Preview sem assinatura</button>
+      <button type="button" onClick={signPlaced}>Assinar retângulo</button>
+      <button type="button" onClick={clearPreview}>Fechar preview</button>
       {previewUrl === undefined ? null : (
         <Document file={previewUrl}>
           {pages.map((page) => (
@@ -113,7 +113,6 @@ export function PdfPreview({ unsignedPdf, pages, sign }: PdfPreviewProps) {
 ```ts title="sign-from-preview.ts"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
 import { type PdfSignatureRect } from "@signature-kit/pdf/config"
-import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser"
 import { prepareAndSignPdf } from "@signature-kit/pdf/workflow"
 import { Effect, Layer, Redacted } from "effect"
 
@@ -137,4 +136,4 @@ const sign = (rect: PdfSignatureRect): Promise<Uint8Array> =>
   )
 ```
 
-The app owns preview state and `react-pdf`; SignatureKit still owns parsing, stamping, rubrics, and signing.
+A app controla preview e `react-pdf`; SignatureKit continua responsável por parsing, carimbos, rubricas e assinatura.

@@ -1,15 +1,19 @@
 ---
-title: Link-annotation signature anchors
+title: Âncoras de assinatura por anotação de link
 date: 2026-11-16T17:52:44.687Z
 packages:
   "@signature-kit/pdf":
     version: 0.5.0
   "@signature-kit/react":
     version: 0.1.2
+cover:
+  kind: anchor
+  caption: O carimbo cai no retângulo do link
+  code: '{ link: "https://signature.invalid/anchor" }'
 ---
 
-## Link-annotation signature anchors
+## Âncoras de assinatura por anotação de link
 
-Text anchors accept a `{ link: "<uri>" }` matcher. It places the stamp from the rectangle of a PDF link annotation with that URI, read directly from the document instead of parsed text, so generated PDFs can mark the signature spot without loading LiteParse or hitting its per-document parse timeout. Crop boxes and page rotation are respected.
+As âncoras de texto aceitam o matcher `{ link: "<uri>" }`. Ele posiciona o carimbo pelo retângulo de uma anotação de link do PDF com essa URI, lido direto do documento em vez do texto extraído. Assim, PDFs gerados podem marcar o lugar da assinatura sem carregar o LiteParse nem esbarrar no timeout de extração por documento. Crop boxes e rotação de página são respeitados.
 
-`prepareAndSignPdf` removes the matched link annotation, and its URI action, before stamping, so the signed PDF keeps no clickable anchor. PDFs that already carry a signature are left untouched to preserve earlier byte ranges.
+`prepareAndSignPdf` remove a anotação de link encontrada, e a ação de URI dela, antes de carimbar, então o PDF assinado não fica com uma âncora clicável. PDFs que já têm assinatura não são alterados, para preservar os byte ranges anteriores.

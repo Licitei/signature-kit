@@ -94,11 +94,11 @@ describe("feedback HTTP integration", () => {
               return expect.fail("Missing endpoint address");
             const origin = `http://127.0.0.1:${address.port}`;
             for (const [path, body] of [
-              ["page", { route: "/pt-BR/docs", opinion: "good", message: "comentário privado" }],
+              ["page", { route: "/docs", opinion: "good", message: "comentário privado" }],
               [
                 "text",
                 {
-                  route: "/pt-BR/docs",
+                  route: "/docs",
                   blockId: "intro",
                   blockBody: "texto selecionado",
                   message: "comentário privado",
@@ -122,7 +122,7 @@ describe("feedback HTTP integration", () => {
               fetch(`${origin}/api/feedback/page`, {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify({ route: "/pt-BR/docs", opinion: "bad", message: "" }),
+                body: JSON.stringify({ route: "/docs", opinion: "bad", message: "" }),
               }),
             );
             expect(failed.status).toBe(503);

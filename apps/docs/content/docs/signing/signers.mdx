@@ -1,14 +1,14 @@
 ---
-title: The signing boundary
-description: "The SignerAdapter is the capability seam that decides where signing power comes from, swappable without touching document formats."
+title: A camada de assinatura
+description: "O SignerAdapter é a costura de capacidade que decide de onde vem o poder de assinar, trocável sem mexer nos formatos de documento."
 ---
 
-**The core idea:** the `SignerAdapter` is the seam where local signing power enters. It answers _where_ bytes are signed — an A1 `.pfx` or HSM — while document formats (core, XML, PDF) talk to one fixed shape. Provider APIs own upstream remote ceremonies separately.
+**A ideia central:** o `SignerAdapter` é a costura por onde o poder local de assinar entra. Ele responde _onde_ os bytes são assinados — um `.pfx` A1 ou HSM — enquanto os formatos de documento (core, XML, PDF) conversam com um único formato fixo. APIs de provedores possuem cerimônias remotas separadas.
 
 ```mermaid
 flowchart TD
   consumer["core / XML / PDF"]
-  adapter["SignerAdapter<br/>capability seam"]
+  adapter["SignerAdapter<br/>costura de capacidade"]
   a1["A1 (.pfx)"]
   hsm["HSM"]
 
@@ -17,9 +17,9 @@ flowchart TD
   adapter --> hsm
 ```
 
-## The SignerAdapter contract
+## O contrato do SignerAdapter
 
-The type below is the literal definition from `@signature-kit/signatures`. Its doc-comment pins the rule this page details: the signer owns where signing power comes from, and **never** owns format mutation.
+O tipo abaixo é a definição literal exportada por `@signature-kit/signatures`. Seu doc-comment fixa a regra que esta página detalha: o `SignerAdapter` é dono de onde vem o poder de assinar e **nunca** da mutação de formato.
 
 ```ts title="core/signatures/src/signatures.ts"
 /**
@@ -36,25 +36,25 @@ export type SignerAdapter = {
 };
 ```
 
-## The six members of the seam
+## Os seis membros da costura
 
-Every `SignerAdapter` implementation delivers exactly these six members:
+Toda implementação de `SignerAdapter` entrega exatamente estes seis membros:
 
-- `id: string` — identity of the signing backend. A1 uses `"a1"`. Provider APIs such as Clicksign, Assinafy, ZapSign, DocuSeal, and Documenso are declared through the Alchemy Resource constructor pattern (for example `ClicksignSignatureRequest("id", props)`) and do not go through this XML/PDF mutation seam.
-- `inspect()` — returns `Effect<SignerIdentity, SignatureKitError>` with `subject`, `issuer`, `serialNumber`, `thumbprint`, `validFrom`, `validTo` and `document?` (CPF/CNPJ when ICP-Brasil).
-- `certificate()` — returns `Effect<Certificate, SignatureKitError>`, the full certificate (`certPem`, `certificateDer`, `publicKeyDer` and the `privateKeyPem: Redacted<string>`).
-- `importSigningKey(algorithm)` — materializes the signing `CryptoKey` for the requested `SignatureAlgorithm` (`"rsa-sha256"` or `"rsa-sha512"`; the catalog also accepts the legacy, discouraged `"rsa-sha1"`).
-- `sign(input)` — takes `SignInput` (`{ content, algorithm }`) and returns a `SignatureArtifact` (`{ algorithm, signature }`).
-- `verify(input)` — takes `VerifyInput` (`{ content, signature, algorithm }`) and returns `VerificationResult` (`{ valid: boolean, algorithm: SignatureAlgorithm }`).
+- `id: string` — identidade do backend de assinatura. O A1 usa `"a1"`. APIs de provedores como Clicksign, Assinafy, ZapSign, DocuSeal e Documenso são declaradas pelo padrão de constructor de Resource da Alchemy (por exemplo `ClicksignSignatureRequest("id", props)`) e não passam por esta costura de mutação de XML/PDF.
+- `inspect()` — retorna `Effect<SignerIdentity, SignatureKitError>` com `subject`, `issuer`, `serialNumber`, `thumbprint`, `validFrom`, `validTo` e `document?` (CPF/CNPJ quando ICP-Brasil).
+- `certificate()` — retorna `Effect<Certificate, SignatureKitError>`, o certificado completo (`certPem`, `certificateDer`, `publicKeyDer` e a `privateKeyPem: Redacted<string>`).
+- `importSigningKey(algorithm)` — materializa a `CryptoKey` de assinatura para o `SignatureAlgorithm` solicitado (`"rsa-sha256"` ou `"rsa-sha512"`; o catálogo também aceita o legado e desencorajado `"rsa-sha1"`).
+- `sign(input)` — recebe `SignInput` (`{ content, algorithm }`) e retorna um `SignatureArtifact` (`{ algorithm, signature }`).
+- `verify(input)` — recebe `VerifyInput` (`{ content, signature, algorithm }`) e retorna `VerificationResult` (`{ valid: boolean, algorithm: SignatureAlgorithm }`).
 
 <Callout type="info">
-  Every member fails through the typed `SignatureKitError` error channel — never through a loose exception. The `retryable`
-  flag is decided per call, not fixed by code.
+  Todo membro falha pelo canal de erro tipado `SignatureKitError` — nunca por uma exceção solta. A flag `retryable`
+  é decidida por chamada, não fixada no código.
 </Callout>
 
-## Building an A1
+## Construindo um A1
 
-The `@signature-kit/a1` package implements the seam from a `.pfx`/`.p12` file. `loadA1SignerAdapter(options)` parses it asynchronously and returns a ready `SignerAdapter` with `id` `"a1"`.
+O pacote `@signature-kit/a1` implementa a costura a partir de um arquivo `.pfx`/`.p12`. `loadA1SignerAdapter(options)` faz o parsing assíncrono e retorna um `SignerAdapter` pronto, com `id` `"a1"`.
 
 ```package-install
 @signature-kit/signatures @signature-kit/a1
@@ -76,13 +76,13 @@ const artifact = yield* signer.sign({ content, algorithm: "rsa-sha256" })
 ```
 
 <Callout type="warn">
-  `A1SignerOptions` has exactly two keys — `pfx: Uint8Array` and `password: Redacted.Redacted<string>`. The bytes
-  must be raw PKCS#12 (start at `0x30`); an empty buffer is rejected.
+  `A1SignerOptions` tem exatamente duas chaves — `pfx: Uint8Array` e `password: Redacted.Redacted<string>`. Os bytes
+  precisam ser PKCS#12 cru (começando em `0x30`); um buffer vazio é rejeitado.
 </Callout>
 
-## Providing it as a service
+## Disponibilizando como serviço
 
-The signatures package defines `Signatures` as a `Context.Service` with tag `"@signature-kit/signatures/Signatures"`. You never implement it by hand: pass a `SignerAdapter` to `signaturesLayer(signer)` and get a `Layer<Signatures>` back (via `Layer.succeed`). The accessors `signatures.{inspect, certificate, importSigningKey, sign, verify}` declare the dependency on `Signatures`; the layer satisfies it.
+O pacote signatures define `Signatures` como um `Context.Service` com a tag `"@signature-kit/signatures/Signatures"`. Você nunca o implementa na mão: passe um `SignerAdapter` para `signaturesLayer(signer)` e receba de volta um `Layer<Signatures>` (via `Layer.succeed`). Os accessors `signatures.{inspect, certificate, importSigningKey, sign, verify}` declaram a dependência de `Signatures`; a layer a satisfaz.
 
 ```ts title="provide.ts"
 import { signaturesLayer, signatures } from "@signature-kit/signatures"
@@ -111,9 +111,9 @@ const run = Effect.gen(function* () {
 await Effect.runPromise(run)
 ```
 
-## Automatic provider for formats
+## Provedor automático para formatos
 
-For formats, A1 offers a shortcut: `a1SignaturesLayer(options)` returns a `Layer<Signatures, SignatureKitError>` directly, with no adapter to instantiate first. `signXml` and `signPdf` require `Signatures` in their requirements channel; hand over that layer via `Effect.provide`.
+Para os formatos, o A1 oferece um atalho: `a1SignaturesLayer(options)` retorna um `Layer<Signatures, SignatureKitError>` diretamente, sem instanciar o adapter antes. `signXml` e `signPdf` exigem `Signatures` no canal de requisitos; basta entregar essa layer via `Effect.provide`.
 
 ```package-install
 @signature-kit/xml @signature-kit/pdf
@@ -148,13 +148,13 @@ await Effect.runPromise(program)
 ```
 
 <Callout type="info">
-  `verifyXml` and `verifyPdf` do _not_ require `Signatures` — verification doesn't need the seam, because the public key comes
-  from the document itself.
+  `verifyXml` e `verifyPdf` _não_ exigem `Signatures` — a verificação não precisa da costura, porque a chave pública vem
+  do próprio documento.
 </Callout>
 
-## Swapping the backend
+## Trocando o backend
 
-Because the seam is a fixed-shape port, swapping where signing power comes from means swapping the argument of `signaturesLayer(...)`. The signing work is identical; nothing about the format changes.
+Como a costura é uma porta de formato fixo, trocar de onde vem o poder de assinar é trocar o argumento de `signaturesLayer(...)`. O trabalho de assinatura é idêntico; nada do formato muda.
 
 ```ts title="swap-backend.ts"
 import { signPdf } from "@signature-kit/pdf/sign"
@@ -183,24 +183,24 @@ await Effect.runPromise(program)
 ```
 
 <Callout type="info">
-  Any value that satisfies `SignerAdapter` works. Here the A1 comes from `loadA1SignerAdapter`; another backend just needs to
-  deliver the same six members and an `id`.
+  Qualquer valor que satisfaça `SignerAdapter` funciona. Aqui o A1 vem de `loadA1SignerAdapter`; outro backend só precisa
+  entregar os mesmos seis membros e um `id`.
 </Callout>
 
-## Where the seam ends
+## Onde a costura termina
 
-The doc-comment's rule is deliberate: the `SignerAdapter` owns **where** signing power comes from, and **never** document mutation. It operates over `content: Uint8Array` and returns a `signature: Uint8Array` — opaque bytes. Embedding a signature into an enveloped XML or a PAdES PDF is the job of the format modules (`@signature-kit/xml`, `@signature-kit/pdf`), which consume the seam through `Effect.provide` and stay backend-neutral because of it.
+A regra do doc-comment é deliberada: o `SignerAdapter` é dono de **onde** vem o poder de assinar e **nunca** da mutação do documento. Ele opera sobre `content: Uint8Array` e retorna uma `signature: Uint8Array` — bytes opacos. Embutir uma assinatura em um XML envelopado ou em um PDF PAdES é trabalho dos módulos de formato (`@signature-kit/xml`, `@signature-kit/pdf`), que consomem a costura via `Effect.provide` e por isso permanecem neutros ao backend.
 
-That cut keeps the application stable: the XML doesn't know whether the key came from a `.pfx` or an HSM, and the signer doesn't know whether its bytes are an NF-e or a PDF. Each side knows only its half of the boundary.
+Esse corte mantém a aplicação estável: o XML não sabe se a chave veio de um `.pfx` ou de um HSM, e o signer não sabe se os bytes que recebeu são uma NF-e ou um PDF. Cada lado conhece apenas a sua metade da fronteira.
 
-## Errors you might see
+## Erros que você pode encontrar
 
-Every seam failure is a typed `SignatureKitError`. The most common ones when building and using the signer:
+Toda falha da costura é um `SignatureKitError` tipado. Os mais comuns ao construir e usar o signer:
 
 <Cards>
-  <Card title="signature-kit.WRONG_PASSWORD" href="/en-US/docs/signing/errors#error-catalog">Incorrect certificate password in loadA1SignerAdapter.</Card>
-  <Card title="signature-kit.NO_PRIVATE_KEY" href="/en-US/docs/signing/errors#error-catalog">The file contains no private key, so importSigningKey and sign have nothing to sign with.</Card>
-  <Card title="signature-kit.UNSUPPORTED_ALGORITHM" href="/en-US/docs/signing/errors#error-catalog">The loaded PKCS#12 container itself uses an unsupported encryption algorithm, raised while parsing the certificate/key — not for picking a `SignatureAlgorithm` outside the sign catalog, which instead fails as `signature-kit.INVALID_INPUT`.</Card>
-  <Card title="signature-kit.KEY_IMPORT_FAILED" href="/en-US/docs/signing/errors#error-catalog">The CryptoKey could not be materialized in importSigningKey.</Card>
-  <Card title="signature-kit.SIGN_FAILED" href="/en-US/docs/signing/errors#error-catalog">The sign operation failed in the backend.</Card>
+  <Card title="signature-kit.WRONG_PASSWORD" href="/docs/signing/errors#error-catalog">Senha do certificado incorreta em loadA1SignerAdapter.</Card>
+  <Card title="signature-kit.NO_PRIVATE_KEY" href="/docs/signing/errors#error-catalog">O arquivo contém no chave privada, então importSigningKey e sign não têm com o que assinar.</Card>
+  <Card title="signature-kit.UNSUPPORTED_ALGORITHM" href="/docs/signing/errors#error-catalog">O próprio container PKCS#12 carregado usa um algoritmo de criptografia não suportado, levantado ao fazer o parsing do certificado/chave — não ao escolher uma `SignatureAlgorithm` fora do catálogo de assinatura, que falha como `signature-kit.INVALID_INPUT`.</Card>
+  <Card title="signature-kit.KEY_IMPORT_FAILED" href="/docs/signing/errors#error-catalog">A CryptoKey não pôde ser materializada em importSigningKey.</Card>
+  <Card title="signature-kit.SIGN_FAILED" href="/docs/signing/errors#error-catalog">A operação sign falhou no backend.</Card>
 </Cards>

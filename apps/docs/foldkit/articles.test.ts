@@ -1,4 +1,3 @@
-import { Popover } from "@foldkit/ui";
 import { describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -6,7 +5,7 @@ import { DOMParser } from "@xmldom/xmldom";
 import { Effect, Schema } from "effect";
 import * as Server from "foldkit/experimental/server";
 import { parseContent, renderContent } from "./content";
-import { createView, Flags, init, Message, update } from "./main";
+import { Flags, init } from "./main";
 import type { HtmlBuilder } from "foldkit/html";
 import {
   ArticleDate,
@@ -23,7 +22,6 @@ import {
   renderDocument,
   renderPage,
 } from "./entry.server";
-import type { Locale } from "./content";
 
 const alternateLanguages = (html: string) => {
   const document = new DOMParser({ onError: () => {} }).parseFromString(html, "text/html");
@@ -34,33 +32,31 @@ const alternateLanguages = (html: string) => {
   );
 };
 
+const formatDate = (value: string) =>
+  new Date(value).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+
 const fixtureSource = () => {
   const sources = new Map([
     [
       "blog/ação & api",
       parseContent(
-        '---\ntitle: English article\ndate: 2026-01-01\ntags: ["São Paulo & 100%"]\n---\nEnglish',
-      ),
-    ],
-    [
-      "blog/ação & api.pt-BR",
-      parseContent(
         '---\ntitle: Artigo português\ndate: 2026-01-02\ntags: ["São Paulo & 100%", "Só Brasil"]\n---\nPortuguês',
       ),
     ],
     [
-      "blog/fallback",
-      parseContent(
-        '---\ntitle: Fallback English\ndate: 2026-01-03\ntags: ["English Only"]\n---\nFallback',
-      ),
+      "blog/outro",
+      parseContent('---\ntitle: Outro artigo\ndate: 2026-01-03\ntags: ["Só Outro"]\n---\nOutro'),
     ],
   ]);
-  const source = {
+  return {
     paths: () => [...sources.keys()],
-    resolve: (locale: Locale, section: string, slug: string) =>
-      sources.get(`${section}/${slug || "index"}${locale === "pt-BR" ? ".pt-BR" : ""}`),
+    resolve: (section: string, slug: string) => sources.get(`${section}/${slug || "index"}`),
   };
-  return source;
 };
 
 describe("Foldkit articles", () => {
@@ -68,55 +64,45 @@ describe("Foldkit articles", () => {
     "renders fixture tags through the production server composition",
     { timeout: 15_000 },
     async () => {
-      const source = fixtureSource();
-      const server = createServerComposition(source);
+      const server = createServerComposition(fixtureSource());
       const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
       const shared = "s%C3%A3o-paulo-%26-100%25";
       const portuguese = "s%C3%B3-brasil";
+      const other = "s%C3%B3-outro";
       const render = async (path: string) => {
         const result = await server.renderPage(new Request(`https://example.test${path}`), "test");
         if (result._tag !== "Rendered") return expect.fail(`Missing ${path}`);
         return server.renderDocument(result.application, assets);
       };
-      for (const locale of ["en-US", "pt-BR"]) {
-        const index = await render(`/${locale}/blog/tags`);
-        expect(index).toContain(`/${locale}/blog/tags/${shared}`);
-        expect(server.prerenderPaths).toContain(`/${locale}/blog/tags/${shared}`);
-        const head = await server.renderPage(
-          new Request(`https://example.test/${locale}/blog/tags/${shared}`, { method: "HEAD" }),
-          "test",
-        );
-        expect(head._tag).toBe("Rendered");
-        if (head._tag === "Rendered") {
-          expect(server.renderDocument(head.application, assets)).toContain(
-            `rel="canonical" href="https://signaturekit.dev/${locale}/blog/tags/${shared}"`,
-          );
-        }
-        const detail = await render(`/${locale}/blog/tags/${shared}`);
-        expect(detail).toContain(locale === "pt-BR" ? "Artigo português" : "English article");
-        expect(detail).toContain(`/${locale}/blog/a%C3%A7%C3%A3o%20%26%20api`);
-        expect(detail).toContain(
-          `rel="canonical" href="https://signaturekit.dev/${locale}/blog/tags/${shared}"`,
-        );
-        expect(alternateLanguages(detail)).toEqual(["en-US", "pt-BR", "x-default"]);
-        expect(detail).not.toContain('name="robots"');
+      const index = await render("/blog/tags");
+      for (const tag of [shared, portuguese, other]) {
+        expect(index).toContain(`/blog/tags/${tag}`);
+        expect(server.prerenderPaths).toContain(`/blog/tags/${tag}`);
       }
-      const ptOnly = await render(`/pt-BR/blog/tags/${portuguese}`);
-      expect(alternateLanguages(ptOnly)).toEqual(["pt-BR", "x-default"]);
-      expect(server.prerenderPaths).not.toContain(`/en-US/blog/tags/${portuguese}`);
+      const head = await server.renderPage(
+        new Request(`https://example.test/blog/tags/${shared}`, { method: "HEAD" }),
+        "test",
+      );
+      expect(head._tag).toBe("Rendered");
+      if (head._tag === "Rendered")
+        expect(server.renderDocument(head.application, assets)).toContain(
+          `rel="canonical" href="https://signaturekit.dev/blog/tags/${shared}"`,
+        );
+      const detail = await render(`/blog/tags/${shared}`);
+      expect(detail).toContain("Artigo português");
+      expect(detail).not.toContain("Outro artigo");
+      expect(detail).toContain("/blog/a%C3%A7%C3%A3o%20%26%20api");
+      expect(detail).toContain(
+        `rel="canonical" href="https://signaturekit.dev/blog/tags/${shared}"`,
+      );
+      expect(alternateLanguages(detail)).toEqual([]);
+      expect(detail).not.toContain('name="robots"');
       const missing = await server.renderPage(
-        new Request(`https://example.test/en-US/blog/tags/${portuguese}`),
+        new Request("https://example.test/blog/tags/not-a-real-tag"),
         "test",
       );
       expect(missing._tag).toBe("Responded");
       if (missing._tag === "Responded") expect(missing.response.status).toBe(404);
-      const fallback = await render("/pt-BR/blog/fallback");
-      expect(fallback).toContain(
-        'rel="canonical" href="https://signaturekit.dev/en-US/blog/fallback"',
-      );
-      expect(fallback).toContain('name="robots" content="noindex"');
-      expect(alternateLanguages(fallback)).toEqual(["en-US", "x-default"]);
-      expect(await render("/pt-BR/blog/tags")).not.toContain("English Only");
       const sitemapHead = await server.renderPage(
         new Request("https://example.test/sitemap.xml", { method: "HEAD" }),
         "test",
@@ -132,62 +118,21 @@ describe("Foldkit articles", () => {
       );
       if (sitemap._tag !== "Responded") return expect.fail("Missing sitemap");
       const xml = new DOMParser().parseFromString(await sitemap.response.text(), "application/xml");
-      const urls = Array.from(xml.getElementsByTagName("url"));
-      const tagUrls = urls.filter((item) =>
+      const tagUrls = Array.from(xml.getElementsByTagName("url")).filter((item) =>
         item.getElementsByTagName("loc")[0]?.textContent?.includes("/blog/tags/"),
       );
-      expect(tagUrls.map((item) => item.getElementsByTagName("loc")[0]?.textContent)).toEqual([
-        "https://signaturekit.dev/en-US/blog/tags/english-only",
-        `https://signaturekit.dev/en-US/blog/tags/${shared}`,
-        `https://signaturekit.dev/pt-BR/blog/tags/${shared}`,
-        `https://signaturekit.dev/pt-BR/blog/tags/${portuguese}`,
-      ]);
       expect(
-        Array.from(tagUrls[1]?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
-          link.getAttribute("hreflang"),
-        ),
-      ).toEqual(["en-US", "pt-BR"]);
-      expect(
-        Array.from(tagUrls[3]?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
-          link.getAttribute("hreflang"),
-        ),
-      ).toEqual(["pt-BR"]);
+        tagUrls
+          .map((item) => item.getElementsByTagName("loc")[0]?.textContent)
+          .sort((left, right) => String(left).localeCompare(String(right))),
+      ).toEqual(
+        [shared, portuguese, other]
+          .map((tag) => `https://signaturekit.dev/blog/tags/${tag}`)
+          .sort(),
+      );
+      for (const item of tagUrls) expect(item.getElementsByTagName("xhtml:link").length).toBe(0);
     },
   );
-  it("routes the language menu to available tags while preserving other destinations", async () => {
-    const source = fixtureSource();
-    const server = createServerComposition(source);
-    const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
-    const portuguese = "s%C3%B3-brasil";
-    const shared = "s%C3%A3o-paulo-%26-100%25";
-    const menu = async (locale: Locale, path: string, query = "") => {
-      const application = await Effect.runPromise(
-        Server.renderToString(
-          {
-            Flags,
-            init: (flags: typeof Flags.Type) => ({
-              model: update(
-                init(flags).model,
-                Message.GotLanguagePopoverMessage({ message: Popover.Message.RequestedOpen() }),
-              ).model,
-            }),
-            view: createView(source),
-          },
-          { flags: { locale, path, query }, buildId: "test" },
-        ),
-      );
-      return server.renderDocument(application, assets);
-    };
-    const ptMenu = await menu("pt-BR", `/blog/tags/${portuguese}`);
-    expect(ptMenu).toContain('href="/en-US/blog/tags"');
-    expect(ptMenu).toContain(`href="/pt-BR/blog/tags/${portuguese}"`);
-    const sharedMenu = await menu("pt-BR", `/blog/tags/${shared}`);
-    expect(sharedMenu).toContain(`href="/en-US/blog/tags/${shared}"`);
-    const searchMenu = await menu("pt-BR", "/search", "ação & api");
-    expect(searchMenu).toContain('href="/en-US/search?q=a%C3%A7%C3%A3o+%26+api"');
-    const signingMenu = await menu("pt-BR", "/assine-documentos-gratis");
-    expect(signingMenu).toContain('href="/en-US/sign-free"');
-  });
   it("serves fixture canonical images and page HEAD over HTTP", async () => {
     const app = createServerComposition(fixtureSource());
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
@@ -237,15 +182,9 @@ describe("Foldkit articles", () => {
           yield* Effect.promise(async (signal) => {
             const base = `http://127.0.0.1:${address.port}`;
             for (const [page, image] of [
-              ["/pt-BR/blog/fallback", "/en-US/blog/fallback.webp"],
-              [
-                "/pt-BR/blog/a%C3%A7%C3%A3o%20%26%20api",
-                "/pt-BR/blog/a%C3%A7%C3%A3o%20%26%20api.webp",
-              ],
-              [
-                "/pt-BR/blog/tags/s%C3%A3o-paulo-%26-100%25",
-                "/pt-BR/blog/tags/s%C3%A3o-paulo-%26-100%25.webp",
-              ],
+              ["/blog/outro", "/blog/outro.webp"],
+              ["/blog/a%C3%A7%C3%A3o%20%26%20api", "/blog/a%C3%A7%C3%A3o%20%26%20api.webp"],
+              ["/blog/tags/s%C3%A3o-paulo-%26-100%25", "/blog/tags/s%C3%A3o-paulo-%26-100%25.webp"],
             ]) {
               const pageResponse = await fetch(`${base}${page}`, { signal });
               if (pageResponse.status !== 200)
@@ -271,157 +210,118 @@ describe("Foldkit articles", () => {
       ).pipe(Effect.timeout("30 seconds")),
     );
   }, 35000);
-  it("groups parsed localized articles without indexing fallback tags", () => {
-    const english = parseContent(
-      '---\ntitle: English\ndate: 2026-01-01\ntags: ["São Paulo & Effect", TypeScript]\n---\n',
+  it("groups parsed articles into tags", () => {
+    const first = parseContent(
+      '---\ntitle: Primeiro\ndate: 2026-01-01\ntags: ["São Paulo & Effect", TypeScript]\n---\n',
     );
-    const portuguese = parseContent(
-      '---\ntitle: Português\ndate: 2026-01-02\ntags: ["São Paulo & Effect"]\n---\n',
+    const second = parseContent(
+      '---\ntitle: Segundo\ndate: 2026-01-02\ntags: ["São Paulo & Effect"]\n---\n',
     );
-    const fallback = parseContent(
-      "---\ntitle: Fallback\ndate: 2026-01-03\ntags: [EnglishOnly]\n---\n",
-    );
-    const instant = (content: typeof english) => {
+    const instant = (content: typeof first) => {
       const date = Effect.runSync(Schema.decodeUnknownEffect(ArticleDate)(content)).date;
       return { ...content, date: date.toISOString(), timestamp: date.getTime() };
     };
-    const enEntries = indexArticles("en-US", "blog", [
-      { slug: "ação & api", content: instant(english) },
-      { slug: "fallback", content: instant(fallback) },
+    const entries = indexArticles("blog", [
+      { slug: "ação & api", content: instant(first) },
+      { slug: "segundo", content: instant(second) },
     ]);
-    const ptEntries = indexArticles("pt-BR", "blog", [
-      { slug: "ação & api", content: instant(portuguese) },
-      { slug: "fallback", content: instant(fallback) },
-    ]);
-    const enTags = indexTags(enEntries, (slug) =>
-      slug === "ação & api" ? english : slug === "fallback" ? fallback : undefined,
+    const tags = indexTags(entries, (slug) =>
+      slug === "ação & api" ? first : slug === "segundo" ? second : undefined,
     );
-    const ptTags = indexTags(ptEntries, (slug) => (slug === "ação & api" ? portuguese : undefined));
-    expect(enTags.map(({ slug }) => slug)).toEqual([
-      "englishonly",
-      "são-paulo-&-effect",
-      "typescript",
+    expect(tags.map(({ slug }) => slug)).toEqual(["são-paulo-&-effect", "typescript"]);
+    expect(tags[0]?.entries.map(({ title, href }) => ({ title, href }))).toEqual([
+      { title: "Segundo", href: "/blog/segundo" },
+      { title: "Primeiro", href: "/blog/a%C3%A7%C3%A3o%20%26%20api" },
     ]);
-    expect(ptTags.map(({ slug }) => slug)).toEqual(["são-paulo-&-effect"]);
-    expect(ptTags[0]?.entries.map(({ title, href }) => ({ title, href }))).toEqual([
-      { title: "Português", href: "/pt-BR/blog/a%C3%A7%C3%A3o%20%26%20api" },
-    ]);
-    expect(enTags.find(({ slug }) => slug === "são-paulo-&-effect")?.entries[0]?.href).toBe(
-      "/en-US/blog/a%C3%A7%C3%A3o%20%26%20api",
-    );
+    expect(indexTags(entries, () => undefined)).toEqual([]);
   });
-  it("indexes legacy tag slugs and exposes only real localized tag routes", async () => {
+  it("indexes legacy tag slugs and exposes only real tag routes", async () => {
     expect(
       parseContent('---\ntitle: Example\ntags: ["São Paulo & Effect", TypeScript]\n---\n').tags,
     ).toEqual(["São Paulo & Effect", "TypeScript"]);
     expect(tagSlug("São Paulo & Effect")).toBe("são-paulo-&-effect");
-    for (const locale of ["en-US", "pt-BR"] satisfies ("en-US" | "pt-BR")[]) {
-      const index = await renderPage(
-        new Request(`https://example.test/${locale}/blog/tags`),
-        "test",
+    const index = await renderPage(new Request("https://example.test/blog/tags"), "test");
+    expect(index._tag).toBe("Rendered");
+    expect(prerenderPaths).toContain("/blog/tags");
+    for (const tag of blogTags()) {
+      const path = `/blog/tags/${encodeURIComponent(tag.slug)}`;
+      expect(prerenderPaths).toContain(path);
+      expect((await renderPage(new Request(`https://example.test${path}`), "test"))._tag).toBe(
+        "Rendered",
       );
-      expect(index._tag).toBe("Rendered");
-      expect(prerenderPaths).toContain(`/${locale}/blog/tags`);
-      for (const tag of blogTags(locale)) {
-        const path = `/${locale}/blog/tags/${encodeURIComponent(tag.slug)}`;
-        expect(prerenderPaths).toContain(path);
-        expect((await renderPage(new Request(`https://example.test${path}`), "test"))._tag).toBe(
-          "Rendered",
-        );
-      }
-      const missing = await renderPage(
-        new Request(`https://example.test/${locale}/blog/tags/not-a-real-tag`),
-        "test",
-      );
-      expect(missing._tag).toBe("Responded");
-      if (missing._tag === "Responded") expect(missing.response.status).toBe(404);
     }
+    const missing = await renderPage(
+      new Request("https://example.test/blog/tags/not-a-real-tag"),
+      "test",
+    );
+    expect(missing._tag).toBe("Responded");
+    if (missing._tag === "Responded") expect(missing.response.status).toBe(404);
   });
 
-  it("indexes localized articles and falls back to English for missing translations", () => {
-    expect(articles("en-US", "blog")[0]?.title).toContain("signing in the browser");
-    expect(articles("pt-BR", "blog")[0]?.title).toContain("assinar com A1");
-    const changelog = articles("pt-BR", "changelog");
+  it("indexes Portuguese articles in reverse chronological order", () => {
+    expect(articles("blog")[0]?.title).toContain("assinar com A1");
+    const changelog = articles("changelog");
     expect(changelog.length).toBeGreaterThan(1);
     expect(changelog.map((entry) => entry.timestamp)).toEqual(
       changelog.map((entry) => entry.timestamp).sort((a, b) => b - a),
     );
-    expect(resolveArticle("pt-BR", "changelog", "a1-node-esm-release")?.title).toBe(
-      "Publish A1 with Node-resolvable imports",
+    expect(resolveArticle("changelog", "a1-node-esm-release")?.title).toBe(
+      "Publicar o A1 com imports resolvíveis pelo Node",
     );
-    expect(changelog.some((entry) => entry.href === "/pt-BR/changelog/a1-node-esm-release")).toBe(
-      true,
-    );
-    expect(prerenderPaths).toContain("/pt-BR/changelog/a1-node-esm-release");
+    expect(changelog.some((entry) => entry.href === "/changelog/a1-node-esm-release")).toBe(true);
+    expect(prerenderPaths).toContain("/changelog/a1-node-esm-release");
   });
 
-  for (const locale of ["en-US", "pt-BR"] satisfies Locale[]) {
-    for (const section of ["blog", "changelog"] satisfies ("blog" | "changelog")[]) {
-      it(`renders every ${locale} ${section} article and index through the server`, async () => {
-        const index = await renderPage(
-          new Request(`https://signaturekit.dev/${locale}/${section}`),
+  for (const section of ["blog", "changelog"] satisfies ("blog" | "changelog")[]) {
+    it(`renders every ${section} article and index through the server`, async () => {
+      const index = await renderPage(new Request(`https://signaturekit.dev/${section}`), "test");
+      expect(index._tag).toBe("Rendered");
+      const indexHtml = JSON.stringify(index);
+      for (const entry of articles(section)) {
+        expect(indexHtml).toContain(entry.title);
+        expect(indexHtml).toContain(entry.href);
+        const result = await renderPage(
+          new Request(`https://signaturekit.dev${entry.href}`),
           "test",
         );
-        expect(index._tag).toBe("Rendered");
-        const indexHtml = JSON.stringify(index);
-        for (const entry of articles(locale, section)) {
-          expect(indexHtml).toContain(entry.title);
-          expect(indexHtml).toContain(entry.href);
-          const result = await renderPage(
-            new Request(`https://signaturekit.dev${entry.href}`),
-            "test",
-          );
-          expect(result._tag).toBe("Rendered");
-          const html = JSON.stringify(result);
-          expect(html).toContain(entry.title);
-          expect(html).toContain(entry.date);
-          expect(html).toContain(
-            `https://signaturekit.dev/${locale === "pt-BR" && section === "changelog" ? "en-US" : locale}/${section}/${entry.slug}`,
-          );
-          if (locale === "pt-BR" && section === "blog" && entry.slug === "signature-kit-x-licitei")
-            expect(html).toContain("/pt-BR/docs/signing/certificates");
-        }
-      }, 30_000);
-    }
+        expect(result._tag).toBe("Rendered");
+        const html = JSON.stringify(result);
+        expect(html).toContain(entry.title);
+        expect(html).toContain(
+          section === "changelog"
+            ? new Date(entry.date)
+                .toLocaleDateString("pt-BR", { day: "numeric", month: "short", timeZone: "UTC" })
+                .replace(".", "")
+            : formatDate(entry.date),
+        );
+        expect(html).toContain(`https://signaturekit.dev/${section}/${entry.slug}`);
+        if (section === "blog" && entry.slug === "signature-kit-x-licitei")
+          expect(html).toContain("/docs/signing/certificates");
+      }
+    }, 30_000);
   }
 
-  it("renders source canonical, noindex and actual translation alternates", async () => {
+  it("renders canonical metadata without translation alternates", async () => {
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
-    const fallback = await renderPage(
-      new Request("https://signaturekit.dev/pt-BR/changelog/a1-node-esm-release"),
-      "test",
-    );
-    expect(fallback._tag).toBe("Rendered");
-    if (fallback._tag === "Rendered") {
-      const html = renderDocument(fallback.application, assets);
-      expect(html).toContain(
-        'rel="canonical" href="https://signaturekit.dev/en-US/changelog/a1-node-esm-release"',
-      );
-      expect(html).toContain('name="robots" content="noindex"');
-      expect(alternateLanguages(html)).toContain("en-US");
-      expect(alternateLanguages(html)).toContain("x-default");
-      expect(alternateLanguages(html)).not.toContain("pt-BR");
-    }
-    const translated = await renderPage(
-      new Request("https://signaturekit.dev/pt-BR/blog/signature-kit-x-licitei"),
-      "test",
-    );
-    if (translated._tag === "Rendered") {
-      const html = renderDocument(translated.application, assets);
-      expect(alternateLanguages(html)).toContain("pt-BR");
-      expect(alternateLanguages(html)).toContain("en-US");
+    for (const path of ["/changelog/a1-node-esm-release", "/blog/signature-kit-x-licitei"]) {
+      const result = await renderPage(new Request(`https://signaturekit.dev${path}`), "test");
+      if (result._tag !== "Rendered") return expect.fail(`Missing ${path}`);
+      const html = renderDocument(result.application, assets);
+      expect(html).toContain(`rel="canonical" href="https://signaturekit.dev${path}"`);
+      expect(html).toContain('lang="pt-BR"');
       expect(html).not.toContain('name="robots"');
-    } else expect.fail("Expected rendered article");
+      expect(alternateLanguages(html)).toEqual([]);
+    }
   });
 
-  it("renders social metadata and localized collection alternates with a fixed origin", async () => {
+  it("renders social metadata with a fixed origin", async () => {
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
     for (const path of [
-      "/en-US/blog",
-      "/pt-BR/blog/tags",
-      "/en-US/sign-free",
-      "/pt-BR/assine-documentos-gratis",
-      "/en-US/blog/signature-kit-x-licitei",
+      "/",
+      "/blog",
+      "/blog/tags",
+      "/assine-documentos-gratis",
+      "/blog/signature-kit-x-licitei",
     ]) {
       const result = await renderPage(new Request(`https://hostile.example${path}`), "test");
       if (result._tag !== "Rendered") return expect.fail(`Missing ${path}`);
@@ -430,16 +330,12 @@ describe("Foldkit articles", () => {
       expect(html).toContain('property="og:title"');
       expect(html).toContain('property="og:description"');
       expect(html).toContain('property="og:url"');
-      expect(html).toContain('property="og:locale"');
+      expect(html).toContain('property="og:locale" content="pt_BR"');
       expect(html).toContain('property="og:site_name"');
       expect(html).toContain('name="twitter:title"');
-      expect(alternateLanguages(html)).toContain("x-default");
       expect(html).not.toContain("hostile.example");
     }
-    const search = await renderPage(
-      new Request("https://hostile.example/en-US/search?q=test"),
-      "test",
-    );
+    const search = await renderPage(new Request("https://hostile.example/search?q=test"), "test");
     if (search._tag !== "Rendered") return expect.fail("Missing search");
     expect(renderDocument(search.application, assets)).toContain('name="robots" content="noindex"');
     const escaped = renderDocument({ ...search.application, title: 'A & "<script>' }, assets);
@@ -462,26 +358,20 @@ describe("Foldkit articles", () => {
       const instant = Effect.runSync(Schema.decodeUnknownEffect(ArticleDate)(content)).date;
       return { slug, content: { ...content, date, timestamp: instant.getTime() } };
     });
-    const indexed = indexArticles("pt-BR", "blog", entries);
+    const indexed = indexArticles("blog", entries);
     expect(indexed.map((entry) => entry.slug)).toEqual(["newest", "same-a", "same-b", "older"]);
-    expect(indexed[0]?.href).toBe("/pt-BR/blog/newest");
+    expect(indexed[0]?.href).toBe("/blog/newest");
     expect(indexed[1]?.timestamp).toBe(indexed[2]?.timestamp);
     const first = entries[0];
     if (first === undefined) return expect.fail("Missing entry");
-    expect(indexArticles("en-US", "blog", [{ ...first, slug: "ação & api" }])[0]?.href).toBe(
-      "/en-US/blog/a%C3%A7%C3%A3o%20%26%20api",
+    expect(indexArticles("blog", [{ ...first, slug: "ação & api" }])[0]?.href).toBe(
+      "/blog/a%C3%A7%C3%A3o%20%26%20api",
     );
   });
 
-  it("fails malformed localized metadata before an English fallback can be read", () => {
-    let fallbackRead = false;
-    const english = () => {
-      fallbackRead = true;
-      return parseContent("---\ntitle: English\ndate: 2026-01-01\n---\n");
-    };
-    for (const localized of ["---\ntitle: Português\ndate: 123\n---\n", "---\ntitle: [\n---\n"]) {
-      expect(() => parseContent(localized) ?? english()).toThrow();
-      expect(fallbackRead).toBe(false);
+  it("fails malformed article metadata", () => {
+    for (const source of ["---\ntitle: Português\ndate: 123\n---\n", "---\ntitle: [\n---\n"]) {
+      expect(() => parseContent(source)).toThrow();
     }
   });
 
@@ -497,20 +387,19 @@ describe("Foldkit articles", () => {
     const result = await Effect.runPromise(
       Server.renderToString(
         { Flags, init, view },
-        { flags: { locale: "en-US", path: "/blog" }, isHydratable: false },
+        { flags: { path: "/blog" }, isHydratable: false },
       ),
     );
     expect(JSON.stringify(result)).toContain('href=\\"next-page\\"');
     expect(JSON.stringify(result)).not.toContain('href=\\"javascript:');
   });
 
-  it("rejects unknown articles and noncanonical locales", async () => {
+  it("rejects unknown articles and unsupported locale paths", async () => {
     for (const path of [
-      "/en-US/blog/missing",
-      "/pt-BR/changelog/missing",
+      "/blog/missing",
+      "/changelog/missing",
       "/pt-br/blog",
-      "/en-US/blog/signature-kit-x-licitei.pt-BR",
-      "/pt-BR/blog/signature-kit-x-licitei.pt-BR",
+      "/blog/signature-kit-x-licitei.pt-BR",
     ]) {
       const result = await renderPage(new Request(`https://signaturekit.dev${path}`), "test");
       expect(result._tag).toBe("Responded");

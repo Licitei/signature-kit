@@ -1,8 +1,7 @@
 import { pageRoute } from "./routes";
-import type { Locale } from "./routes";
-export type { Locale } from "./routes";
 import { Effect, Schema } from "effect";
-import { signatureKitErrorCatalog } from "@signature-kit/signatures";
+import { signatureKitErrorCatalog, signatureKitErrorMessages } from "@signature-kit/signatures";
+import { errorMessage } from "@signature-kit/i18n";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
 import remarkGfm from "remark-gfm";
@@ -14,6 +13,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { prose } from "./styles/prose";
 import { sx } from "./styles/sx";
 import { mermaidView } from "./mermaid";
+import { icon } from "./icons";
 
 const sources = import.meta.glob<string>("../content/{docs,blog,changelog}/**/*.mdx", {
   eager: true,
@@ -25,12 +25,64 @@ const metadata = import.meta.glob<string>("../content/docs/**/meta*.json", {
   query: "?raw",
   import: "default",
 });
+export const ReleaseCover = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("spans"),
+    caption: Schema.String,
+    package: Schema.optional(Schema.String),
+    spans: Schema.Array(
+      Schema.Struct({ name: Schema.String, start: Schema.Finite, width: Schema.Finite }),
+    ),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("pages"),
+    caption: Schema.String,
+    package: Schema.optional(Schema.String),
+    total: Schema.Finite,
+    selected: Schema.Array(Schema.Finite),
+    code: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("metric"),
+    caption: Schema.String,
+    package: Schema.optional(Schema.String),
+    before: Schema.String,
+    after: Schema.String,
+    delta: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("anchor"),
+    caption: Schema.String,
+    package: Schema.optional(Schema.String),
+    code: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("states"),
+    caption: Schema.String,
+    package: Schema.optional(Schema.String),
+    states: Schema.Array(Schema.String),
+    code: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("bytes"),
+    caption: Schema.String,
+    package: Schema.optional(Schema.String),
+    bytes: Schema.String,
+    highlight: Schema.Tuple([Schema.Finite, Schema.Finite]),
+    code: Schema.String,
+  }),
+]);
+export type ReleaseCover = typeof ReleaseCover.Type;
 const Frontmatter = Schema.Struct({
   title: Schema.String,
   description: Schema.optional(Schema.String),
   date: Schema.optional(Schema.String),
   author: Schema.optional(Schema.String),
   tags: Schema.optional(Schema.Array(Schema.String)),
+  cover: Schema.optional(ReleaseCover),
+  packages: Schema.optional(
+    Schema.Record(Schema.String, Schema.Struct({ version: Schema.String })),
+  ),
 });
 const ParsedFrontmatter = Schema.Struct({ valid: Schema.Literal(true), value: Frontmatter });
 const Navigation = Schema.Struct({ title: Schema.String, pages: Schema.Array(Schema.String) });
@@ -54,17 +106,18 @@ export const parseContent = (source: string) => {
   return { ...value, nodes: tree.children };
 };
 
+export const contentSource = (section: string, slug: string) =>
+  sources[`../content/${section}/${slug || "index"}.mdx`];
 export const contentPaths = () =>
   Object.keys(sources).map((path) => path.slice("../content/".length, -4));
-export const resolveContent = (locale: Locale, section: string, slug: string) => {
-  const path = `../content/${section}/${slug || "index"}${locale === "pt-BR" ? ".pt-BR" : ""}.mdx`;
+export const resolveContent = (section: string, slug: string) => {
+  const path = `../content/${section}/${slug || "index"}.mdx`;
   const source = sources[path];
   return source === undefined ? undefined : parseContent(source);
 };
-export const docsNavigation = (locale: Locale) => {
-  const suffix = locale === "pt-BR" ? ".pt-BR" : "";
+export const docsNavigation = () => {
   const read = (dir: string) => {
-    const raw = metadata[`../content/docs/${dir}meta${suffix}.json`];
+    const raw = metadata[`../content/docs/${dir}meta.json`];
     if (raw === undefined) return undefined;
     const parsed = Schema.decodeUnknownOption(Navigation)(JSON.parse(raw));
     return parsed._tag === "Some" ? parsed.value : undefined;
@@ -78,19 +131,19 @@ export const docsNavigation = (locale: Locale) => {
         {
           title: group.title,
           links: group.pages.flatMap((page) => {
-            const content = resolveContent(locale, "docs", `${part}/${page}`);
+            const content = resolveContent("docs", `${part}/${page}`);
             return content !== undefined
               ? [
                   {
                     title: content.title,
-                    href: pageRoute({ locale, path: `docs/${part}/${page}` }),
+                    href: pageRoute({ path: `docs/${part}/${page}` }),
                   },
                 ]
               : [];
           }),
         },
       ];
-    const content = resolveContent(locale, "docs", part);
+    const content = resolveContent("docs", part);
     return content !== undefined
       ? [
           {
@@ -98,7 +151,7 @@ export const docsNavigation = (locale: Locale) => {
             links: [
               {
                 title: content.title,
-                href: pageRoute({ locale, path: `docs${part === "index" ? "" : `/${part}`}` }),
+                href: pageRoute({ path: `docs${part === "index" ? "" : `/${part}`}` }),
               },
             ],
           },
@@ -125,6 +178,44 @@ export const expressionText = (
   )
     return "";
   throw new Error(`Unsupported MDX expression: ${node.value}`);
+};
+
+const headingAnchor = (slugger: GithubSlugger, node: Extract<ContentNode, { type: "heading" }>) => {
+  const children = [...(node.children ?? [])];
+  const last = children.at(-1);
+  const marker = last?.type === "text" ? last.value?.match(/\s*\[#([^\]\s]+)\]\s*$/) : undefined;
+  if (marker !== null && marker !== undefined && last?.type === "text")
+    children[children.length - 1] = { ...last, value: last.value?.slice(0, marker.index) };
+  let id = marker?.[1];
+  if (id !== undefined) {
+    const base = id;
+    let suffix = 0;
+    while (Object.hasOwn(slugger.occurrences, id)) id = `${base}-${++suffix}`;
+    slugger.occurrences[id] = 0;
+  } else id = slugger.slug(toString({ type: "root", children }));
+  return { id, children };
+};
+
+export const tableOfContents = (nodes: ContentNode[]) => {
+  const slugger = new GithubSlugger();
+  const entries: { id: string; title: string }[] = [];
+  const visit = (list: ContentNode[]) => {
+    for (const node of list) {
+      if (node.type === "heading") {
+        const { id, children } = headingAnchor(slugger, node);
+        if (node.depth === 2) entries.push({ id, title: toString({ type: "root", children }) });
+      } else if ("children" in node) visit(node.children);
+    }
+  };
+  visit(nodes);
+  return entries;
+};
+
+const codeLabel = (meta: string | null | undefined, lang: string | null | undefined) => {
+  const title = /title="([^"]+)"/.exec(meta ?? "")?.[1];
+  if (title !== undefined) return title;
+  if (meta !== null && meta !== undefined && meta.length > 0) return meta;
+  return lang ?? "texto";
 };
 
 export const renderContent = <Message>(
@@ -223,22 +314,7 @@ export const renderContent = <Message>(
       case "paragraph":
         return h.p([...sx(h, prose.p)], children);
       case "heading": {
-        const headingChildren = [...(node.children ?? [])];
-        const last = headingChildren.at(-1);
-        const marker =
-          last?.type === "text" ? last.value?.match(/\s*\[#([^\]\s]+)\]\s*$/) : undefined;
-        if (marker !== null && marker !== undefined && last?.type === "text")
-          headingChildren[headingChildren.length - 1] = {
-            ...last,
-            value: last.value?.slice(0, marker.index),
-          };
-        let id = marker?.[1];
-        if (id !== undefined) {
-          const base = id;
-          let suffix = 0;
-          while (Object.hasOwn(slugger.occurrences, id)) id = `${base}-${++suffix}`;
-          slugger.occurrences[id] = 0;
-        } else id = slugger.slug(toString({ type: "root", children: headingChildren }));
+        const { id, children: headingChildren } = headingAnchor(slugger, node);
         const heading = render(headingChildren);
         switch (node.depth) {
           case 1:
@@ -264,12 +340,28 @@ export const renderContent = <Message>(
       case "inlineCode":
         return h.code([...sx(h, prose.inlineCode)], [node.value ?? ""]);
       case "code":
+        if (node.lang === "package-install")
+          return h.div(
+            [...sx(h, prose.codeBlock)],
+            [
+              h.p([...sx(h, prose.codeHead)], ["terminal"]),
+              h.pre(
+                [...sx(h, prose.pre)],
+                [
+                  h.code(
+                    [...sx(h, "language-bash", prose.blockCode)],
+                    [`bun add ${node.value ?? ""}`],
+                  ),
+                ],
+              ),
+            ],
+          );
         return node.lang === "mermaid"
           ? mermaidView(h, node.value ?? "", node.meta)
           : h.div(
-              [],
+              [...sx(h, prose.codeBlock)],
               [
-                node.meta != null && node.meta.length > 0 ? h.p([], [node.meta]) : null,
+                h.p([...sx(h, prose.codeHead)], [codeLabel(node.meta, node.lang)]),
                 h.pre(
                   [...sx(h, prose.pre)],
                   [
@@ -315,7 +407,10 @@ export const renderContent = <Message>(
                 h.tr(
                   [],
                   (header?.children ?? []).map((cell) =>
-                    h.th([h.Scope("col"), ...sx(h, prose.cell)], render(cell.children ?? [])),
+                    h.th(
+                      [h.Scope("col"), ...sx(h, prose.cell, prose.headCell)],
+                      render(cell.children ?? []),
+                    ),
                   ),
                 ),
               ],
@@ -398,26 +493,57 @@ export const renderContent = <Message>(
             return h.div(
               [...sx(h, "error-catalog", prose.catalog)],
               [
-                h.div([], [h.span([], ["Code"]), h.span([], ["Default message"])]),
+                h.div([], [h.span([], ["Código"]), h.span([], ["Mensagem padrão"])]),
                 ...signatureKitErrorCatalog.map((entry) =>
                   h.div(
                     [h.Id(entry.code.replace("signature-kit.", "err-"))],
                     [
                       h.code([], [entry.code]),
-                      h.span([], [entry.message, entry.overridable ? " · editable" : ""]),
+                      h.span(
+                        [],
+                        [
+                          errorMessage(
+                            { _tag: "SignatureKitError", code: entry.code },
+                            { locale: "pt-BR", catalogs: [signatureKitErrorMessages] },
+                          ),
+                          entry.overridable ? " · editável" : "",
+                        ],
+                      ),
                     ],
                   ),
                 ),
               ],
             );
-          case "Callout":
+          case "Callout": {
+            const tone =
+              attr("type") === "warn" ? "warn" : attr("type") === "error" ? "error" : "info";
             return h.aside(
-              [...sx(h, `callout ${attr("type") ?? "info"}`, prose.callout)],
+              [...sx(h, `callout ${tone}`, prose.callout)],
               [
-                (attr("title")?.length ?? 0) > 0 ? h.strong([], [attr("title") ?? ""]) : null,
-                ...children,
+                h.span(
+                  [
+                    ...sx(
+                      h,
+                      prose.calloutIcon,
+                      tone === "warn" && prose.calloutIconWarn,
+                      tone === "error" && prose.calloutIconError,
+                    ),
+                    h.AriaHidden(true),
+                  ],
+                  [icon(h, tone)],
+                ),
+                h.div(
+                  [...sx(h, prose.calloutBody)],
+                  [
+                    (attr("title")?.length ?? 0) > 0
+                      ? h.strong([...sx(h, prose.calloutTitle)], [attr("title") ?? ""])
+                      : null,
+                    ...children,
+                  ],
+                ),
               ],
             );
+          }
           case "Steps":
             return h.ol(
               [...sx(h, "steps", prose.steps)],
@@ -433,7 +559,9 @@ export const renderContent = <Message>(
             return h.li(
               [...sx(h, prose.step)],
               [
-                (attr("title")?.length ?? 0) > 0 ? h.h3([], [attr("title") ?? ""]) : null,
+                (attr("title")?.length ?? 0) > 0
+                  ? h.h3([...sx(h, prose.stepTitle)], [attr("title") ?? ""])
+                  : null,
                 ...children,
               ],
             );

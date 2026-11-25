@@ -1,17 +1,17 @@
 ---
-title: Effect runtime
-description: "SignatureKit APIs return typed Effect values so runtime requirements and recoverable errors stay explicit."
+title: Runtime Effect
+description: "As APIs do SignatureKit retornam Effects tipados para manter requisitos e erros recuperáveis explícitos."
 ---
 
-SignatureKit keeps recoverable technical failures in the typed Effect error channel. Mandatory invariants stay hard failures. Services are `Context.Service` + `Layer`, so internals do not hide `Effect.provide` deep inside library code.
+SignatureKit mantém falhas técnicas recuperáveis no canal de erro tipado do Effect. Invariantes obrigatórios continuam falhas duras. Serviços usam `Context.Service` + `Layer`, então os internos não escondem `Effect.provide` dentro da biblioteca.
 
-## What this buys
+## O que isso compra
 
-- Call sites can see required services in the Effect environment.
-- Secrets stay `Redacted` until an explicit import or transport boundary.
-- Tests can swap layers without mocking global state.
-- HTTP, schema, and provider failures carry stable structured facts.
+- Call sites enxergam os serviços exigidos no ambiente do Effect.
+- Segredos ficam em `Redacted` até uma borda explícita de importação ou transporte.
+- Testes trocam layers sem mockar estado global.
+- Falhas HTTP, de schema e provider carregam fatos estruturados estáveis.
 
-<Callout type="info" title="Boundary rule">
-  Applications run Effects. Libraries return Effects. That is why docs examples put `Effect.runPromise` at event handlers, scripts, tests, or app boundaries.
+<Callout type="info" title="Regra de borda">
+  Aplicações executam Effects. Bibliotecas retornam Effects. Por isso os exemplos colocam `Effect.runPromise` em handlers, scripts, testes ou bordas da app.
 </Callout>

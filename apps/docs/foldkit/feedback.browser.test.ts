@@ -38,7 +38,7 @@ it("sends a real selected docs block after focusing the comment and clicking the
   onTestFinished(releaseSelection);
   const handle = Runtime.embed(
     Runtime.makeApplication({ Flags, Model, init, update, view, container }),
-    { flags: Effect.succeed(Flags.make({ locale: "pt-BR", path: "/docs" })) },
+    { flags: Effect.succeed(Flags.make({ path: "/docs" })) },
   );
   onTestFinished(() => handle.dispose());
   await expect
@@ -74,7 +74,7 @@ it("sends a real selected docs block after focusing the comment and clicking the
   if (input === null) return;
   await userEvent.fill(input, "comentário privado");
   const button = [...host.querySelectorAll("button")].find((element) =>
-    element.textContent?.includes("Enviar sobre texto"),
+    element.textContent?.includes("Enviar comentário"),
   );
   expect(button).toBeDefined();
   if (button === undefined) return;
@@ -88,7 +88,7 @@ it("sends a real selected docs block after focusing the comment and clicking the
   expect(events).toContain(text.slice(0, 80));
   expect(events).toContain("comentário privado");
   const good = [...host.querySelectorAll("button")].find(
-    (element) => element.textContent === "Bom",
+    (element) => element.textContent === "Sim",
   );
   expect(good).toBeDefined();
   if (good === undefined) return;
@@ -100,9 +100,7 @@ it("sends a real selected docs block after focusing the comment and clicking the
     .poll(() => host.querySelector('[role="status"]')?.textContent, { timeout: 15_000 })
     .toContain("Obrigado pelo feedback!");
   await fetch(`${origin}/reject`);
-  const bad = [...host.querySelectorAll("button")].find(
-    (element) => element.textContent === "Ruim",
-  );
+  const bad = [...host.querySelectorAll("button")].find((element) => element.textContent === "Não");
   expect(bad).toBeDefined();
   if (bad === undefined) return;
   await userEvent.click(bad);
@@ -111,7 +109,7 @@ it("sends a real selected docs block after focusing the comment and clicking the
     .toContain("Não foi possível enviar");
   await fetch(`${origin}/offline`);
   const retry = [...host.querySelectorAll("button")].find(
-    (element) => element.textContent === "Bom",
+    (element) => element.textContent === "Sim",
   );
   expect(retry).toBeDefined();
   if (retry === undefined) return;
@@ -120,14 +118,10 @@ it("sends a real selected docs block after focusing the comment and clicking the
     .poll(() => host.querySelector('[role="status"]')?.textContent, { timeout: 15_000 })
     .toContain("Não foi possível enviar");
   expect(
-    JSON.stringify(
-      update(init({ locale: "pt-BR", path: "/docs" }).model, Message.TextFeedbackSubmitted()).model,
-    ),
+    JSON.stringify(update(init({ path: "/docs" }).model, Message.TextFeedbackSubmitted()).model),
   ).not.toContain("comentário privado");
   expect(JSON.stringify(Message.TextFeedbackSubmitted())).not.toContain("comentário privado");
-  expect(JSON.stringify(init({ locale: "pt-BR", path: "/docs" }).model)).not.toContain(
-    text.slice(0, 80),
-  );
+  expect(JSON.stringify(init({ path: "/docs" }).model)).not.toContain(text.slice(0, 80));
 }, 30_000);
 
 it("retains feedback selection ownership after a real BFCache restoration", async () => {

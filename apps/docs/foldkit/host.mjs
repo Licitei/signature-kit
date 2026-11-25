@@ -30,7 +30,10 @@ export const fetch = async (request) => {
   const route = Schema.decodeUnknownOption(
     Schema.Struct({ _tag: Schema.Literal("Page"), path: Schema.String }),
   )(handler.parsePublicUrl(request.url));
-  if (Option.isSome(route) && route.value.path.endsWith(".webp")) {
+  const wantsMarkdown =
+    path.startsWith("/docs") === true &&
+    String(request.headers.get("accept") ?? "").includes("text/markdown") === true;
+  if ((Option.isSome(route) && route.value.path.endsWith(".webp") === true) || wantsMarkdown) {
     const result = await handler.renderPage(request);
     return result._tag === "Responded" ? result.response : new Response(null, { status: 404 });
   }

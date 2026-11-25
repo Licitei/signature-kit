@@ -1,5 +1,5 @@
 ---
-title: Declare the ETSI SubFilter for ICP-Brasil PAdES
+title: Declarar o SubFilter ETSI no PAdES ICP-Brasil
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
@@ -10,8 +10,8 @@ packages:
     version: 0.2.0
 ---
 
-## Declare the ETSI SubFilter for ICP-Brasil PAdES
+## Declarar o SubFilter ETSI no PAdES ICP-Brasil
 
-Signing with `policy: "pades-icp-brasil"` now writes `/SubFilter /ETSI.CAdES.detached`. Local AD-RB validation accepts `ETSI.CAdES.detached` and `PBAD.PAdES` and rejects older signatures with `adbe.pkcs7.detached`. Generic CMS signing still writes `adbe.pkcs7.detached`.
+Assinar com `policy: "pades-icp-brasil"` agora grava `/SubFilter /ETSI.CAdES.detached`. A validação AD-RB local aceita `ETSI.CAdES.detached` e `PBAD.PAdES` e rejeita assinaturas antigas com `adbe.pkcs7.detached`. A assinatura CMS genérica continua gravando `adbe.pkcs7.detached`.
 
-Signature dictionary reports and extracted PDF signatures now expose the optional `subFilter` name in place of `usesEtsiCadesDetached`.
+Os relatórios do dicionário de assinatura e as assinaturas extraídas do PDF agora expõem o nome opcional `subFilter` no lugar de `usesEtsiCadesDetached`.

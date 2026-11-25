@@ -15,7 +15,6 @@ const input = {
   title: 'Assinatura <A> & "B"',
   description: "Descrição em português",
   site: "SignatureKit",
-  locale: "pt-BR",
 } satisfies SocialImageInput;
 
 const pixels = async (data: Uint8Array) => {
@@ -61,8 +60,9 @@ describe("social images", () => {
       await new Renderer().render(
         {
           type: "container",
+          lang: "pt-BR",
           style: {
-            backgroundColor: "#0c0c0c",
+            backgroundColor: "#0a3d58",
             color: "#ffffff",
             display: "flex",
             flexDirection: "column",
@@ -100,8 +100,8 @@ describe("social images", () => {
     expect(differences(original.data, site.data, 64, 330)).toBe(0);
   });
 
-  it("rejects invalid locales at the schema boundary", async () => {
-    const result = await Effect.runPromise(Effect.result(render({ ...input, locale: "pt-br" })));
+  it("rejects invalid input at the schema boundary", async () => {
+    const result = await Effect.runPromise(Effect.result(render({ ...input, title: 42 })));
     expect(Result.isFailure(result)).toBe(true);
   });
 });

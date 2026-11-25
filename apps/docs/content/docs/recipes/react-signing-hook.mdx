@@ -1,19 +1,19 @@
 ---
-title: React signing hook
-description: "Use @signature-kit/react hooks for certificate loading, sequential PDF signing, progress rows, and raw typed errors."
+title: Hook React de assinatura
+description: "Use os hooks de @signature-kit/react para carregar certificado, assinar PDFs em sequência, acompanhar progresso e manter erros tipados."
 ---
 
-`@signature-kit/react` is now the app boundary for browser A1 signing. It stays headless: no storage, no fetch/tRPC, no toasts, no modals, no `react-pdf`, and no npm-published UI components.
+`@signature-kit/react` agora é a fronteira de app para assinatura A1 no navegador. Ele continua headless: sem storage, sem fetch/tRPC, sem toasts, sem modais, sem `react-pdf` e sem componentes publicados no npm.
 
-Fast path: install the registry UI into your app and edit the generated files.
+Caminho rápido: instale a UI do registry no seu app e edite os arquivos gerados.
 
-```bash title="Install the direct signing dialog"
+```bash title="Instalar o dialog de assinatura direta"
 npx shadcn@latest add https://signaturekit.dev/r/signature-dialog.json
 ```
 
-Need custom UI? Use the hooks directly.
+Precisa de UI customizada? Use os hooks diretamente.
 
-## Certificate state
+## Estado do certificado
 
 ```tsx title="certificate-form.tsx"
 import { useA1Certificate } from "@signature-kit/react/a1"
@@ -34,7 +34,7 @@ export function CertificateForm() {
     >
       <input name="certificate" type="file" accept=".pfx,.p12" />
       <input name="password" type="password" />
-      <button type="submit" disabled={certificate.status === "loading"}>Load</button>
+      <button type="submit" disabled={certificate.status === "loading"}>Carregar</button>
       {certificate.profile ? <p>{certificate.profile.subject}</p> : null}
       {certificate.error ? <p>{certificate.error.code}</p> : null}
     </form>
@@ -42,9 +42,9 @@ export function CertificateForm() {
 }
 ```
 
-`load(pfx, password)` wraps the password with `Redacted.make` inside the action and stores the last valid certificate credentials only in the hook store. Persistence is intentionally absent; apps own encrypted storage and password retention policy.
+`load(pfx, password)` envolve a senha com `Redacted.make` dentro da action e guarda as últimas credenciais válidas só no store do hook. Persistência fica fora do pacote; o app define storage criptografado e política de retenção de senha.
 
-## Sequential signing
+## Assinatura sequencial
 
 ```tsx title="sign-documents.tsx"
 import { useA1Signer } from "@signature-kit/react/a1"
@@ -70,35 +70,35 @@ export function SignDocuments({ pfx, pdf }: { pfx: Uint8Array; pdf: Uint8Array }
             },
           ],
           credentials: { pfx, password: "changeit" },
-          signing: { policy: "pades-icp-brasil", reason: "Signed with SignatureKit" },
+          signing: { policy: "pades-icp-brasil", reason: "Assinado com SignatureKit" },
           stamp: {
             badge: {
-              header: { text: "DIGITALLY SIGNED" },
-              rows: [[{ label: "Signer", value: "Current user" }]],
+              header: { text: "ASSINADO DIGITALMENTE" },
+              rows: [[{ label: "Signatário", value: "Usuário atual" }]],
               footer: [{ text: "ICP-Brasil" }, { text: "SignatureKit" }],
             },
-            rubric: { initials: "CU" },
+            rubric: { initials: "UA" },
           },
         })
       }}
     >
-      Sign {signer.rows.length} document(s)
+      Assinar {signer.rows.length} documento(s)
     </button>
   )
 }
 ```
 
-Rows update in order: `pending → signing → signed | failed`. Signing runs at concurrency 1, and row failures keep the raw typed error (`PdfError`, `CmsError`, or `SignatureKitError`) so apps can call `@signature-kit/i18n` `errorMessage(...)` with their locale and catalogs.
+As linhas evoluem em ordem: `pending → signing → signed | failed`. A assinatura roda com concorrência 1, e falhas por linha preservam o erro tipado bruto (`PdfError`, `CmsError` ou `SignatureKitError`) para o app chamar `@signature-kit/i18n` `errorMessage(...)` com locale e catálogos próprios.
 
-## PDF object URLs
+## Object URLs de PDF
 
 ```tsx title="signed-preview.tsx"
 import { usePdfObjectUrl } from "@signature-kit/react/browser-pdf"
 
 export function SignedPreview({ bytes }: { bytes: Uint8Array | null }) {
   const url = usePdfObjectUrl(bytes)
-  return url ? <a href={url} download="signed.pdf">Download signed PDF</a> : null
+  return url ? <a href={url} download="signed.pdf">Baixar PDF assinado</a> : null
 }
 ```
 
-The hook creates and revokes object URLs with a minimal cleanup effect because the browser resource itself requires cleanup.
+O hook cria e revoga object URLs com um effect mínimo de cleanup porque o recurso do navegador exige limpeza explícita.

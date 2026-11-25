@@ -41,10 +41,21 @@ const application = Effect.gen(function* () {
       host.append(container);
       const program = Runtime.makeApplication({ Flags, Model, init, update, view, container });
       return Runtime.embed(program, {
-        flags: Effect.succeed({ locale: "pt-BR", path: "/assine-documentos-gratis" }),
+        flags: Effect.succeed({ path: "/assine-documentos-gratis" }),
       });
     }),
     (runtime) => Effect.sync(() => runtime.dispose()),
+  );
+  yield* Effect.promise(() =>
+    expect
+      .poll(() => host.querySelector<HTMLButtonElement>("[data-signing-mode-option=completa]"))
+      .not.toBeNull(),
+  );
+  host.querySelector<HTMLButtonElement>("[data-signing-mode-option=completa]")?.click();
+  yield* Effect.promise(() =>
+    expect
+      .poll(() => host.querySelector("[data-signing-mode]")?.getAttribute("data-signing-mode"))
+      .toBe("completa"),
   );
   return { host, dispose: () => handle.dispose() };
 });
@@ -466,7 +477,7 @@ it("hydrates the server-rendered signing form in its own browser document", asyn
         const rendered = yield* Server.renderToString(
           { Flags, init, view },
           {
-            flags: { locale: "pt-BR", path: "/assine-documentos-gratis" },
+            flags: { path: "/assine-documentos-gratis" },
             buildId: "signing-browser-test",
           },
         );

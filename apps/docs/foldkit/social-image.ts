@@ -6,15 +6,14 @@ export const SocialImageInput = Schema.Struct({
   title: Schema.String,
   description: Schema.optional(Schema.String),
   site: Schema.String,
-  locale: Schema.Literals(["en-US", "pt-BR"]),
 });
 export type SocialImageInput = typeof SocialImageInput.Type;
 
 export const socialImageTree = (input: SocialImageInput): Node => ({
   type: "container",
-  lang: input.locale,
+  lang: "pt-BR",
   style: {
-    backgroundColor: "#0c0c0c",
+    backgroundColor: "#0a3d58",
     color: "#ffffff",
     display: "flex",
     flexDirection: "column",

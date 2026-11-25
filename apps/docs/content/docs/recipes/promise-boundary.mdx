@@ -1,9 +1,9 @@
 ---
-title: Promise boundary
-description: "Run SignatureKit Effects at the app boundary and keep typed failures as values."
+title: Fronteira Promise
+description: "Execute Effects do SignatureKit na fronteira da app e mantenha falhas tipadas como valores."
 ---
 
-SignatureKit APIs return `Effect` programs. In React handlers, server actions, route handlers, and job workers, run the program once at the boundary and convert the typed error channel into a `Result` value.
+As APIs do SignatureKit retornam programas `Effect`. Em handlers React, server actions, rotas e workers, execute o programa uma vez na fronteira e transforme o canal de erro tipado em um valor `Result`.
 
 ```ts title="promise-boundary.ts"
 import { cmsErrorMessages } from "@signature-kit/cms/config"
@@ -26,8 +26,8 @@ if (Result.isFailure(result)) {
 return { ok: true, value: result.success }
 ```
 
-Use this shape instead of `try/catch` and string sniffing. The failure remains the real tagged error (`PdfError`, `CmsError`, or `SignatureKitError`), so UI copy can come from `@signature-kit/i18n` while telemetry still receives the structured `code`, `operation`, and schema metadata.
+Use esse formato em vez de `try/catch` e leitura de strings. A falha continua sendo o tagged error real (`PdfError`, `CmsError` ou `SignatureKitError`), então a UI usa `@signature-kit/i18n` e a telemetria ainda recebe `code`, `operation` e metadados de Schema.
 
 <Callout type="info">
-  Library internals should keep returning `Effect`. `Effect.runPromise` belongs at the app/runtime boundary.
+  Internos de pacote devem continuar retornando `Effect`. `Effect.runPromise` pertence à fronteira da aplicação/runtime.
 </Callout>

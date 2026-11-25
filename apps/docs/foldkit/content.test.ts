@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
-import { signatureKitErrorCatalog } from "@signature-kit/signatures";
+import { signatureKitErrorCatalog, signatureKitErrorMessages } from "@signature-kit/signatures";
+import { errorMessage } from "@signature-kit/i18n";
 import * as Server from "foldkit/experimental/server";
 import {
   contentPaths,
@@ -8,6 +9,7 @@ import {
   parseContent,
   renderContent,
   resolveContent,
+  tableOfContents,
 } from "./content";
 import type { HtmlBuilder } from "foldkit/html";
 import { Flags, init, view } from "./main";
@@ -25,7 +27,7 @@ describe("Foldkit content", () => {
       await Effect.runPromise(
         Server.renderToString<Model, never, typeof Flags.Type>(
           { Flags, init, view: fixtureView },
-          { flags: { locale: "en-US", path: "/docs" }, isHydratable: false },
+          { flags: { path: "/docs" }, isHydratable: false },
         ),
       ),
     );
@@ -34,35 +36,30 @@ describe("Foldkit content", () => {
     const result = await Effect.runPromise(
       Server.renderToString<Model, Message, typeof Flags.Type>(
         { Flags, init, view },
-        { flags: { locale: "en-US", path: "/search", query: "certificate" }, isHydratable: false },
+        { flags: { path: "/search", query: "certificate" }, isHydratable: false },
       ),
     );
     expect(result.html).toContain('value="certificate"');
   });
 
-  it("resolves both locales and the navigation from the existing corpus", () => {
-    expect(resolveContent("en-US", "docs", "")?.title).toBe("Introduction");
-    expect(resolveContent("pt-BR", "docs", "")?.title).toBeTruthy();
-    expect(
-      docsNavigation("en-US")
-        .flatMap((group) => group.links)
-        .some((link) => link.href === "/en-US/docs/get-started/quickstart"),
-    ).toBe(true);
-    expect(resolveContent("en-US", "docs", "missing")).toBeUndefined();
+  it("resolves the pt-BR corpus and the navigation without a locale prefix", () => {
+    expect(resolveContent("docs", "")?.title).toBe("Introdução");
+    expect(resolveContent("docs", "index")?.title).toBe("Introdução");
+    const links = docsNavigation().flatMap((group) => group.links);
+    expect(links.some((link) => link.href === "/docs/get-started/quickstart")).toBe(true);
+    expect(links.every((link) => !/^\/(en-US|pt-BR)\//.test(link.href))).toBe(true);
+    expect(resolveContent("docs", "missing")).toBeUndefined();
+    expect(contentPaths().some((path) => path.endsWith(".pt-BR"))).toBe(false);
   });
 
   it("renders every corpus file through the native server entry", async () => {
     for (const path of contentPaths()) {
-      const locale = path.endsWith(".pt-BR") ? "pt-BR" : "en-US";
       const [section, ...parts] = path.split("/");
-      const slug = parts.join("/").replace(/\.pt-BR$/, "");
-      const page = resolveContent(locale, section ?? "", slug);
+      const slug = parts.join("/");
+      const page = resolveContent(section ?? "", slug);
       expect(page, path).toBeDefined();
       const route = `/${section}${section === "docs" && slug === "index" ? "" : `/${slug}`}`;
-      const validated = await renderPage(
-        new Request(`https://signaturekit.dev/${locale}${route}`),
-        "test",
-      );
+      const validated = await renderPage(new Request(`https://signaturekit.dev${route}`), "test");
       expect(validated._tag, path).toBe("Rendered");
       if (validated._tag === "Rendered")
         expect(validated.application.html, path).toContain(page?.title);
@@ -98,15 +95,15 @@ describe("Foldkit content", () => {
     const result = await Effect.runPromise(
       Server.renderToString<Model, never, typeof Flags.Type>(
         { Flags, init, view: fixtureView },
-        { flags: { locale: "en-US", path: "/docs" }, buildId: "test" },
+        { flags: { path: "/docs" }, buildId: "test" },
       ),
     );
     const html = result.html;
     expect(html).toMatch(
-      /<p[^>]*>Before <\/p><ol class="steps[^"]*"><li[^>]*><h3>One<\/h3>Body<\/li><\/ol><p[^>]*> after<\/p>/,
+      /<p[^>]*>Before <\/p><ol class="steps[^"]*"><li[^>]*><h3[^>]*>One<\/h3>Body<\/li><\/ol><p[^>]*> after<\/p>/,
     );
     expect(html).toMatch(
-      /<p[^>]*><em>Em before <\/em><\/p><aside class="callout info[^"]*"><strong>Notice<\/strong>Inside <strong>bold<\/strong><\/aside><p[^>]*><em> em after<\/em><\/p>/,
+      /<p[^>]*><em>Em before <\/em><\/p><aside class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*><strong[^>]*>Notice<\/strong>Inside <strong>bold<\/strong><\/div><\/aside><p[^>]*><em> em after<\/em><\/p>/,
     );
     expect(html).toContain('List before </p><div class="cards');
     expect(html).toContain("Card body</span></div><p");
@@ -114,7 +111,7 @@ describe("Foldkit content", () => {
     expect(html).toMatch(/<p[^>]*>Catalog before <\/p><div class="error-catalog/);
     expect(html).toMatch(/<p[^>]*> catalog after<\/p>/);
     expect(html).toMatch(
-      /Outer before <\/p><ol class="steps[^"]*"><li[^>]*><h3>Nested<\/h3>Nested body<\/li><\/ol><p[^>]*> outer after/,
+      /Outer before <\/p><ol class="steps[^"]*"><li[^>]*><h3[^>]*>Nested<\/h3>Nested body<\/li><\/ol><p[^>]*> outer after/,
     );
   });
 
@@ -129,14 +126,14 @@ describe("Foldkit content", () => {
     const result = await Effect.runPromise(
       Server.renderToString<Model, never, typeof Flags.Type>(
         { Flags, init, view: fixtureView },
-        { flags: { locale: "en-US", path: "/docs" }, buildId: "test" },
+        { flags: { path: "/docs" }, buildId: "test" },
       ),
     );
     expect(result.html).toMatch(
-      /<p[^>]*><a[^>]*href="\/ok"[^>]*>Link before <\/a><\/p><aside class="callout info[^"]*">Notice<\/aside><p[^>]*><a[^>]*href="\/ok"[^>]*> link after<\/a><\/p>/,
+      /<p[^>]*><a[^>]*href="\/ok"[^>]*>Link before <\/a><\/p><aside class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*>Notice<\/div><\/aside><p[^>]*><a[^>]*href="\/ok"[^>]*> link after<\/a><\/p>/,
     );
     expect(result.html).toMatch(
-      /<p[^>]*>Before <\/p><div class="card[^"]*"><strong>Outer<\/strong><p[^>]*>card before <em>em <\/em><\/p><ol class="steps[^"]*"><li[^>]*><h3>One<\/h3>Body<\/li><\/ol><p[^>]*><em> tail<\/em><\/p><\/div><p[^>]*> after<\/p>/,
+      /<p[^>]*>Before <\/p><div class="card[^"]*"><strong>Outer<\/strong><p[^>]*>card before <em>em <\/em><\/p><ol class="steps[^"]*"><li[^>]*><h3[^>]*>One<\/h3>Body<\/li><\/ol><p[^>]*><em> tail<\/em><\/p><\/div><p[^>]*> after<\/p>/,
     );
     await expect(
       render(
@@ -173,12 +170,29 @@ describe("Foldkit content", () => {
             body: h.main([], renderContent(page.nodes, h)),
           }),
         },
-        { flags: { locale: "en-US", path: "/docs" }, buildId: "test" },
+        { flags: { path: "/docs" }, buildId: "test" },
       ),
     );
     expect(result.html).toContain('href="">link</a>');
     expect(result.html).toContain('<img src="" alt="image">');
     expect(result.html).not.toContain("example.com/a");
+  });
+
+  it("builds a table of contents whose ids match the rendered heading anchors", async () => {
+    const source =
+      "---\ntitle: Toc\n---\n\n## Same\n\n### Nested only\n\n## First [#same]\n\n## Same\n\n<Callout>\n\n## Inside callout\n\n</Callout>\n\n## Último [#Mixed.ID]";
+    const toc = tableOfContents(parseContent(source).nodes);
+    expect(toc).toEqual([
+      { id: "same", title: "Same" },
+      { id: "same-1", title: "First" },
+      { id: "same-2", title: "Same" },
+      { id: "inside-callout", title: "Inside callout" },
+      { id: "Mixed.ID", title: "Último" },
+    ]);
+    const html = await render(source);
+    for (const entry of toc)
+      expect(html).toMatch(new RegExp(`<h2[^>]*id=\\\\"${entry.id.replace(/[.]/g, "\\.")}\\\\"`));
+    expect(html).toContain('id=\\"nested-only\\"');
   });
 
   it("deduplicates explicit and automatic headings in document order", async () => {
@@ -196,29 +210,29 @@ describe("Foldkit content", () => {
         await Effect.runPromise(
           Server.renderToString<Model, Message, typeof Flags.Type>(
             { Flags, init, view },
-            { flags: { locale: "en-US", path }, buildId: "test" },
+            { flags: { path }, buildId: "test" },
           ),
         ),
       );
     const introduction = await page("/docs");
-    expect(introduction).toContain("SignatureKit is a library from");
-    expect(introduction).toContain("Choose the path");
+    expect(introduction).toContain("SignatureKit é uma biblioteca da");
+    expect(introduction).toContain("Escolha o caminho");
     expect(introduction).toContain('href=\\"https://licitei.com.br\\"');
     expect(introduction).toContain("language-ts");
+    expect(introduction).toMatch(/<p[^>]*>signature-kit.ts<\/p><pre/);
     const recipe = await page("/docs/recipes/react-components");
-    expect(recipe).toContain("Install UI with the shadcn registry");
-    expect(recipe).toContain("Registry items");
+    expect(recipe).toContain("Itens do registry");
     expect(recipe).toContain("<table");
     expect(recipe).toContain("signature-certificate-form");
     expect(recipe).toContain("language-tsx");
-    expect(recipe).toContain('href=\\"/en-US/docs/recipes/react-pdf-preview\\"');
+    expect(recipe).toContain("react-pdf-preview");
   });
 
   it("renders the real error catalog and stable Portuguese anchor", async () => {
     const result = await Effect.runPromise(
       Server.renderToString<Model, Message, typeof Flags.Type>(
         { Flags, init, view },
-        { flags: { locale: "pt-BR", path: "/docs/signing/errors" }, buildId: "test" },
+        { flags: { path: "/docs/signing/errors" }, buildId: "test" },
       ),
     );
     const html = JSON.stringify(result);
@@ -226,10 +240,11 @@ describe("Foldkit content", () => {
     expect(signatureKitErrorCatalog).toHaveLength(21);
     for (const entry of signatureKitErrorCatalog) {
       expect(html).toContain(
-        `<div id=\\"${entry.code.replace("signature-kit.", "err-")}\\"><code>${entry.code}</code><span>${entry.message}${entry.overridable ? " · editable" : ""}</span></div>`,
+        `<div id=\\"${entry.code.replace("signature-kit.", "err-")}\\"><code>${entry.code}</code><span>${errorMessage({ _tag: "SignatureKitError", code: entry.code }, { locale: "pt-BR", catalogs: [signatureKitErrorMessages] })}${entry.overridable ? " · editável" : ""}</span></div>`,
       );
     }
     expect(html.split('id=\\"err-')).toHaveLength(signatureKitErrorCatalog.length + 1);
+    expect(html).toContain("<span>Código</span><span>Mensagem padrão</span>");
     expect(html).not.toContain("Unsupported MDX component");
   });
 
@@ -256,22 +271,20 @@ describe("Foldkit content", () => {
     );
   });
 
-  it("renders both error routes through the hydratable SSR structural validator", async () => {
-    for (const locale of ["en-US", "pt-BR"]) {
-      const result = await renderPage(
-        new Request(`https://signaturekit.dev/${locale}/docs/signing/errors`),
-        "test",
-      );
-      expect(result._tag).toBe("Rendered");
-      if (result._tag === "Rendered") {
-        expect(result.application.html).toContain("XmlError");
-        expect(result.application.html).toContain("PdfError");
-      }
+  it("renders the error route through the hydratable SSR structural validator", async () => {
+    const result = await renderPage(
+      new Request("https://signaturekit.dev/docs/signing/errors"),
+      "test",
+    );
+    expect(result._tag).toBe("Rendered");
+    if (result._tag === "Rendered") {
+      expect(result.application.html).toContain("XmlError");
+      expect(result.application.html).toContain("PdfError");
     }
   });
 
   it("returns 404 for missing content", async () => {
-    const result = await renderPage(new Request("https://signaturekit.dev/en-US/docs/missing"));
+    const result = await renderPage(new Request("https://signaturekit.dev/docs/missing"));
     expect(result._tag).toBe("Responded");
     if (result._tag === "Responded") expect(result.response.status).toBe(404);
   });

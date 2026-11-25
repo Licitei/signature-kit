@@ -1,5 +1,5 @@
 ---
-title: OpenTelemetry spans for every public operation
+title: Spans OpenTelemetry em todas as operações públicas
 date: 2026-11-24T15:38:32.058Z
 packages:
   "@signature-kit/pdf-core":
@@ -34,8 +34,18 @@ packages:
     version: 0.3.0
   "@signature-kit/iti":
     version: 0.3.0
+cover:
+  kind: spans
+  caption: Spans do Effect por operação pública
+  spans:
+    - { name: pdf.sign, start: 0, width: 100 }
+    - { name: pdfCore.text, start: 6, width: 38 }
+    - { name: pdfCore.wasm.copyIn, start: 8, width: 7 }
+    - { name: pdfCore.wasm.run, start: 15, width: 21 }
+    - { name: pdfCore.wasm.decode, start: 36, width: 7 }
+    - { name: crypto.pkcs12.parse, start: 48, width: 18 }
 ---
 
-## OpenTelemetry spans for every public operation
+## Spans OpenTelemetry em todas as operações públicas
 
-Public operations now run inside named Effect spans, for example `pdfCore.text`, `pdf.sign`, `crypto.pkcs12.parse` and `assinafy.reconcile`. PDF core calls split into `pdfCore.wasm.copyIn`, `pdfCore.wasm.run` and `pdfCore.wasm.decode`. HTTP calls are client spans with method, status and server attributes. Attributes record sizes, counts and algorithm or status literals, never document content, certificate identity, secrets or URLs with paths. No new runtime dependency: provide `@effect/opentelemetry` at the app boundary to export spans. See the OpenTelemetry tracing recipe.
+As operações públicas agora rodam dentro de spans nomeados do Effect, por exemplo `pdfCore.text`, `pdf.sign`, `crypto.pkcs12.parse` e `assinafy.reconcile`. As chamadas ao núcleo de PDF se dividem em `pdfCore.wasm.copyIn`, `pdfCore.wasm.run` e `pdfCore.wasm.decode`. Chamadas HTTP são spans de cliente com atributos de método, status e servidor. Os atributos registram tamanhos, contagens e literais de algoritmo ou status, nunca o conteúdo do documento, a identidade do certificado, segredos ou URLs com caminho. Não há nova dependência de runtime: forneça `@effect/opentelemetry` na fronteira da aplicação para exportar os spans. Veja a receita de tracing com OpenTelemetry.

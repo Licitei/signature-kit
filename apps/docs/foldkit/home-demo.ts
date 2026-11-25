@@ -7,7 +7,6 @@ import * as Mount from "foldkit/mount";
 import { pdfCoreBrowserLayer } from "@signature-kit/pdf-core/browser";
 import { createIllustrativePdf } from "@signature-kit/pdf/stamp";
 import { captureDocsEvent } from "../lib/posthog/client";
-import type { Locale } from "./content";
 import { landing } from "./styles/landing";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
@@ -24,16 +23,12 @@ const DemoMount = Mount.define("DemoMount", {
       const context = yield* Effect.context<never>();
       yield* Effect.acquireRelease(
         Effect.sync(() => {
-          const locale = element.getAttribute("data-locale") === "pt-BR" ? "pt-BR" : "en-US";
-          const names =
-            locale === "pt-BR"
-              ? ["Contrato de serviços", "Aditivo contratual", "Procuração", "Termo de adesão"]
-              : [
-                  "Service agreement",
-                  "Contract amendment",
-                  "Power of attorney",
-                  "Terms of adhesion",
-                ];
+          const names = [
+            "Contrato de serviços",
+            "Aditivo contratual",
+            "Procuração",
+            "Termo de adesão",
+          ];
           const variants = ["line", "field", "witnessed", "initials"] satisfies (
             | "line"
             | "field"
@@ -68,32 +63,23 @@ const DemoMount = Mount.define("DemoMount", {
             controller?.abort();
             controller = new AbortController();
             const signal = controller.signal;
-            if (status !== null)
-              status.textContent =
-                locale === "pt-BR" ? "Preparando exemplos…" : "Preparing examples…";
+            if (status !== null) status.textContent = "Preparando exemplos…";
             if (run !== null) run.disabled = true;
             if (reset !== null) reset.disabled = true;
             const program = Effect.forEach(variants, (variant, index) =>
               createIllustrativePdf({
                 title: names[index] ?? "Example",
-                body:
-                  locale === "pt-BR"
-                    ? "Documento demonstrativo. Este conteúdo é apenas um exemplo visual."
-                    : "Demonstration document. This content is only a visual example.",
+                body: "Documento demonstrativo. Este conteúdo é apenas um exemplo visual.",
                 variant,
                 marked,
-                markLabel: locale === "pt-BR" ? "MARCA ILUSTRATIVA" : "ILLUSTRATIVE MARK",
+                markLabel: "MARCA ILUSTRATIVA",
               }),
             ).pipe(Effect.provide(pdfCoreBrowserLayer));
             Effect.runPromiseExitWith(context)(program, { signal }).then(
               (result) => {
                 if (closed || current !== generation) return;
                 if (Exit.isFailure(result)) {
-                  if (status !== null)
-                    status.textContent =
-                      locale === "pt-BR"
-                        ? "Não foi possível gerar os exemplos."
-                        : "Could not generate examples.";
+                  if (status !== null) status.textContent = "Não foi possível gerar os exemplos.";
                 } else {
                   const old = urls;
                   urls = result.value.map((bytes) =>
@@ -105,23 +91,15 @@ const DemoMount = Mount.define("DemoMount", {
                   revoke(old);
                   if (status !== null)
                     status.textContent = marked
-                      ? locale === "pt-BR"
-                        ? "Marcas ilustrativas aplicadas. Não são assinaturas digitais."
-                        : "Illustrative marks applied. These are not digital signatures."
-                      : locale === "pt-BR"
-                        ? "Exemplos prontos, sem assinatura digital."
-                        : "Examples ready, without digital signatures.";
+                      ? "Marcas ilustrativas aplicadas. Não são assinaturas digitais."
+                      : "Exemplos prontos, sem assinatura digital.";
                 }
                 if (run !== null) run.disabled = false;
                 if (reset !== null) reset.disabled = false;
               },
               () => {
                 if (closed || current !== generation) return;
-                if (status !== null)
-                  status.textContent =
-                    locale === "pt-BR"
-                      ? "Não foi possível gerar os exemplos."
-                      : "Could not generate examples.";
+                if (status !== null) status.textContent = "Não foi possível gerar os exemplos.";
                 if (run !== null) run.disabled = false;
                 if (reset !== null) reset.disabled = false;
               },
@@ -233,145 +211,135 @@ export const homeDemoUpdate = (model: HomeDemoModel, message: Message) =>
     }),
   });
 
-export const homeDemoView = defineView<HomeDemoModel, Message, { readonly locale: Locale }>(
-  (model, { locale }, h) => {
-    const pt = locale === "pt-BR";
-    const names = pt
-      ? ["Contrato de serviços", "Aditivo contratual", "Procuração", "Termo de adesão"]
-      : ["Service agreement", "Contract amendment", "Power of attorney", "Terms of adhesion"];
-    return h.div(
-      [
-        ...sx(h, "home-demo", landing.demo),
-        h.Attribute("data-locale", locale),
-        h.Attribute("data-active", String(model.active)),
-        h.Attribute("data-request", String(model.request)),
-        h.Attribute("data-marked", String(model.marked)),
-        h.OnMount(Mount.mapMessage(DemoMount(), () => Message.DemoMounted())),
-      ],
-      [
-        h.p(
-          [...sx(h, landing.demoNote)],
-          [
-            pt
-              ? "Exemplo visual ilustrativo: não é assinatura digital e não usa certificado."
-              : "Illustrative visual example: not a digital signature and no certificate is used.",
-          ],
-        ),
-        h.submodel({
-          slotId: "home-demo-documents",
-          model: model.documents,
-          view: DemoTabs.view,
-          viewInputs: {
-            tabs: demoIndexes,
-            selectedValue: Option.getOrElse(
-              Schema.decodeUnknownOption(DemoIndex)(String(model.active)),
-              (): typeof DemoIndex.Type => "0",
-            ),
-            ariaLabel: pt ? "Documentos de exemplo" : "Example documents",
-            panelMount: "ActiveOnly",
-            toView: ({ tablist, tabs }) =>
-              h.div(
-                [...tablist, ...sx(h, "home-demo-controls", landing.tabs, landing.toolbar)],
-                tabs.map((tab) =>
-                  h.button(
-                    [
-                      ...tab.tab,
-                      h.Attribute("data-demo-index", tab.value),
-                      ...sx(h, landing.tab, tab.isActive && landing.tabOn),
-                    ],
-                    [names[tab.index] ?? ""],
-                  ),
+export const homeDemoView = defineView<HomeDemoModel, Message>((model, h) => {
+  const names = ["Contrato de serviços", "Aditivo contratual", "Procuração", "Termo de adesão"];
+  return h.div(
+    [
+      ...sx(h, "home-demo", landing.demo),
+      h.Attribute("data-active", String(model.active)),
+      h.Attribute("data-request", String(model.request)),
+      h.Attribute("data-marked", String(model.marked)),
+      h.OnMount(Mount.mapMessage(DemoMount(), () => Message.DemoMounted())),
+    ],
+    [
+      h.p(
+        [...sx(h, landing.demoNote)],
+        ["Exemplo visual ilustrativo: não é assinatura digital e não usa certificado."],
+      ),
+      h.submodel({
+        slotId: "home-demo-documents",
+        model: model.documents,
+        view: DemoTabs.view,
+        viewInputs: {
+          tabs: demoIndexes,
+          selectedValue: Option.getOrElse(
+            Schema.decodeUnknownOption(DemoIndex)(String(model.active)),
+            (): typeof DemoIndex.Type => "0",
+          ),
+          ariaLabel: "Documentos de exemplo",
+          panelMount: "ActiveOnly",
+          toView: ({ tablist, tabs }) =>
+            h.div(
+              [...tablist, ...sx(h, "home-demo-controls", landing.tabs, landing.toolbar)],
+              tabs.map((tab) =>
+                h.button(
+                  [
+                    ...tab.tab,
+                    h.Attribute("data-demo-index", tab.value),
+                    ...sx(h, landing.tab, tab.isActive && landing.tabOn),
+                  ],
+                  [names[tab.index] ?? ""],
                 ),
               ),
-          },
-          toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
-        }),
-        h.div(
-          [...sx(h, landing.stage)],
-          [
-            h.iframe([
-              h.Attribute("data-demo-preview", ""),
-              ...sx(h, landing.preview),
-              h.Attribute("title", pt ? "Prévia do exemplo" : "Example preview"),
-            ]),
-          ],
-        ),
-        h.div(
-          [...sx(h, "home-demo-controls", landing.toolbar)],
-          [
-            Button.view(
-              {
-                onClick: Message.MarkRequested(),
-                toView: ({ button }) =>
-                  h.button(
-                    [...button, ...sx(h, shell.primary), h.Attribute("data-demo-run", "")],
-                    [pt ? "Aplicar marcas ilustrativas" : "Apply illustrative marks"],
-                  ),
-              },
-              h,
             ),
-            Button.view(
-              {
-                onClick: Message.ResetRequested(),
-                toView: ({ button }) =>
-                  h.button(
-                    [...button, ...sx(h, shell.ghost), h.Attribute("data-demo-reset", "")],
-                    [pt ? "Reiniciar" : "Reset"],
-                  ),
-              },
-              h,
-            ),
-            Button.view(
-              {
-                onClick: Message.PreviousRequested(),
-                toView: ({ button }) =>
-                  h.button(
-                    [
-                      ...button,
-                      ...sx(h, shell.ghost),
-                      h.Attribute("data-demo-previous", ""),
-                      h.AriaLabel(pt ? "Documento anterior" : "Previous document"),
-                    ],
-                    ["←"],
-                  ),
-              },
-              h,
-            ),
-            Button.view(
-              {
-                onClick: Message.NextRequested(),
-                toView: ({ button }) =>
-                  h.button(
-                    [
-                      ...button,
-                      ...sx(h, shell.ghost),
-                      h.Attribute("data-demo-next", ""),
-                      h.AriaLabel(pt ? "Próximo documento" : "Next document"),
-                    ],
-                    ["→"],
-                  ),
-              },
-              h,
-            ),
-            h.a(
-              [
-                ...sx(h, landing.link),
-                h.Attribute("data-demo-download", ""),
-                h.OnClick(Message.DownloadRequested()),
-              ],
-              [pt ? "Baixar exemplo" : "Download example"],
-            ),
-            h.p(
-              [...sx(h, landing.status), h.Attribute("data-demo-label", "")],
-              [`${names[model.active] ?? ""} · ${model.active + 1} / 4`],
-            ),
-          ],
-        ),
-        h.p(
-          [h.Attribute("data-demo-status", ""), h.Role("status"), ...sx(h, landing.status)],
-          [pt ? "Preparando exemplos…" : "Preparing examples…"],
-        ),
-      ],
-    );
-  },
-);
+        },
+        toParentMessage: (message) => Message.GotDemoTabsMessage({ message }),
+      }),
+      h.div(
+        [...sx(h, landing.stage)],
+        [
+          h.iframe([
+            h.Attribute("data-demo-preview", ""),
+            ...sx(h, landing.preview),
+            h.Attribute("title", "Prévia do exemplo"),
+          ]),
+        ],
+      ),
+      h.div(
+        [...sx(h, "home-demo-controls", landing.toolbar)],
+        [
+          Button.view(
+            {
+              onClick: Message.MarkRequested(),
+              toView: ({ button }) =>
+                h.button(
+                  [...button, ...sx(h, shell.primary), h.Attribute("data-demo-run", "")],
+                  ["Aplicar marcas ilustrativas"],
+                ),
+            },
+            h,
+          ),
+          Button.view(
+            {
+              onClick: Message.ResetRequested(),
+              toView: ({ button }) =>
+                h.button(
+                  [...button, ...sx(h, shell.ghost), h.Attribute("data-demo-reset", "")],
+                  ["Reiniciar"],
+                ),
+            },
+            h,
+          ),
+          Button.view(
+            {
+              onClick: Message.PreviousRequested(),
+              toView: ({ button }) =>
+                h.button(
+                  [
+                    ...button,
+                    ...sx(h, shell.ghost),
+                    h.Attribute("data-demo-previous", ""),
+                    h.AriaLabel("Documento anterior"),
+                  ],
+                  ["←"],
+                ),
+            },
+            h,
+          ),
+          Button.view(
+            {
+              onClick: Message.NextRequested(),
+              toView: ({ button }) =>
+                h.button(
+                  [
+                    ...button,
+                    ...sx(h, shell.ghost),
+                    h.Attribute("data-demo-next", ""),
+                    h.AriaLabel("Próximo documento"),
+                  ],
+                  ["→"],
+                ),
+            },
+            h,
+          ),
+          h.a(
+            [
+              ...sx(h, landing.link),
+              h.Attribute("data-demo-download", ""),
+              h.OnClick(Message.DownloadRequested()),
+            ],
+            ["Baixar exemplo"],
+          ),
+          h.p(
+            [...sx(h, landing.status), h.Attribute("data-demo-label", "")],
+            [`${names[model.active] ?? ""} · ${model.active + 1} / 4`],
+          ),
+        ],
+      ),
+      h.p(
+        [h.Attribute("data-demo-status", ""), h.Role("status"), ...sx(h, landing.status)],
+        ["Preparando exemplos…"],
+      ),
+    ],
+  );
+});

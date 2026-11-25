@@ -1,5 +1,5 @@
 ---
-title: Text anchors run on the in-house WASM core
+title: Âncoras de texto rodam no núcleo WASM próprio
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf":
@@ -8,10 +8,10 @@ packages:
     version: 0.1.4
 ---
 
-## Text anchors run on the in-house WASM core
+## Âncoras de texto rodam no núcleo WASM próprio
 
-`findPdfTextAnchors`, `prepareAndSignPdf`, and `preparePdfVisualPreview` now read page geometry, text items, and link annotations through `@signature-kit/pdf-core` instead of LiteParse. There is no per-document worker and no 5 s cap, and text and digit anchors also work in Node and Bun.
+`findPdfTextAnchors`, `prepareAndSignPdf` e `preparePdfVisualPreview` agora leem a geometria das páginas, os itens de texto e as anotações de link pelo `@signature-kit/pdf-core` em vez do LiteParse. Não há mais worker por documento nem o limite de 5 s, e as âncoras de texto e de dígitos também funcionam no Node e no Bun.
 
-The requirement `LiteParseWorkerFactory` becomes `PdfCore`: provide `pdfCoreBrowserLayer` in the browser or `pdfCoreFileLayer` on Node/Bun. Calls that pass `pages` and `textBoxes` with only `text`/`digits` matchers still need no service. `parsePdfTextBoxesBrowser` and the LiteParse text-result schemas are removed.
+O requisito `LiteParseWorkerFactory` passa a ser `PdfCore`: forneça `pdfCoreBrowserLayer` no navegador ou `pdfCoreFileLayer` no Node/Bun. Chamadas que passam `pages` e `textBoxes` só com matchers `text`/`digits` continuam sem precisar de serviço. `parsePdfTextBoxesBrowser` e os schemas de resultado de texto do LiteParse foram removidos.
 
-`findPdfTextAnchors` reports documents that exceed a pdf-core processing limit as the new `pdf.LIMIT_EXCEEDED` error code (en-US/pt-BR messages included) instead of `pdf.INVALID_PDF`.
+`findPdfTextAnchors` informa documentos que passam de um limite de processamento do pdf-core com o novo código de erro `pdf.LIMIT_EXCEEDED` (com mensagens en-US/pt-BR) em vez de `pdf.INVALID_PDF`.

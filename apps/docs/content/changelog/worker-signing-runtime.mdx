@@ -1,5 +1,5 @@
 ---
-title: Publish the worker signing runtime
+title: Publicar o runtime de assinatura em worker
 date: 2026-11-16T18:02:51.564Z
 packages:
   "@signature-kit/signatures":
@@ -32,8 +32,8 @@ packages:
     version: 0.4.1
 ---
 
-## Publish the worker signing runtime
+## Publicar o runtime de assinatura em worker
 
-Publish `@signature-kit/signatures/session`, which `@signature-kit/react` 0.1.2 imports to sign A1 documents in a Domain RPC worker. Without it, bundlers fail to resolve the react worker entry.
+Publicamos `@signature-kit/signatures/session`, que o `@signature-kit/react` 0.1.2 importa para assinar documentos com A1 em um worker Domain RPC. Sem ele, os bundlers não conseguem resolver a entrada do worker do react.
 
-A1 signing makes the WebCrypto sign step uninterruptible. CMS builds the signing-certificate-v2 attribute directly with asn1js. All packages move to Effect 4.1.0 so applications load a single Effect runtime.
+A assinatura com A1 torna a etapa de assinatura WebCrypto não interrompível. O CMS monta o atributo signing-certificate-v2 direto com asn1js. Todos os pacotes passam para o Effect 4.1.0, para que as aplicações carreguem um único runtime Effect.

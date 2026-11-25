@@ -1,9 +1,7 @@
-import { homeRoute, pageRoute, parsePublicUrl } from "./routes";
+import { homeRoute, legacyLocaleRedirect, pageRoute, parsePublicUrl } from "./routes";
 export { parsePublicUrl } from "./routes";
 import { Effect, Schema } from "effect";
 import { DOMImplementation, XMLSerializer } from "@xmldom/xmldom";
-import en from "../messages/en-US.json";
-import pt from "../messages/pt-BR.json";
 import * as Server from "foldkit/experimental/server";
 import { Flags, init, createView } from "./main";
 import { createArticleCatalog } from "./articles";
@@ -16,6 +14,7 @@ import {
   defaultServerAnalyticsLayer,
 } from "../lib/posthog/server";
 import { feedbackResponse } from "./feedback-server";
+import { agentMeta, agentResponse } from "./agents";
 import { signFreeDescription, signFreeFaqs, signFreeSteps } from "./home";
 import { siteOrigin } from "./site-origin";
 
@@ -30,19 +29,16 @@ export const createServerComposition = (
   const { feedResponse } = createFeeds(source);
   const view = createView(source);
   const prerenderPaths = [
-    homeRoute({ locale: "en-US" }),
-    homeRoute({ locale: "pt-BR" }),
-    pageRoute({ locale: "pt-BR", path: "assine-documentos-gratis" }),
-    pageRoute({ locale: "en-US", path: "sign-free" }),
+    homeRoute({}),
+    pageRoute({ path: "assine-documentos-gratis" }),
     ...articlePaths(),
     ...tagPaths(),
     ...source
       .paths()
       .filter((path) => path.startsWith("docs/"))
       .map((path) => {
-        const locale = path.endsWith(".pt-BR") ? "pt-BR" : "en-US";
-        const slug = path.slice(5).replace(/\.pt-BR$/, "");
-        return pageRoute({ locale, path: slug === "index" ? "docs" : `docs/${slug}` });
+        const slug = path.slice(5);
+        return pageRoute({ path: slug === "index" ? "docs" : `docs/${slug}` });
       }),
   ];
   const MetadataSchema = Schema.Union([
@@ -52,7 +48,6 @@ export const createServerComposition = (
       value: Schema.String,
       property: Schema.Boolean,
     }),
-    Schema.Struct({ kind: Schema.Literal("link"), language: Schema.String, href: Schema.String }),
   ]);
   type Metadata = typeof MetadataSchema.Type;
 
@@ -62,91 +57,48 @@ export const createServerComposition = (
         ? new URL(application.canonical)
         : undefined;
     if (url === undefined) return undefined;
-    const locale = application.lang === "pt-BR" ? "pt-BR" : "en-US";
     const route = parsePublicUrl(url.href);
     const path = route?._tag === "Page" ? `/${route.path}` : "";
     const articleMatch = /^\/(blog|changelog)\/([^/]+)$/.exec(path);
     const section = articleMatch?.[1] === "blog" ? "blog" : "changelog";
     const slug =
       articleMatch !== null
-        ? (articles(route?.locale === "pt-BR" ? "pt-BR" : "en-US", section).find(
-            (entry) => encodeURIComponent(entry.slug) === articleMatch[2],
-          )?.slug ?? "")
+        ? (articles(section).find((entry) => encodeURIComponent(entry.slug) === articleMatch[2])
+            ?.slug ?? "")
         : "";
     const article =
-      articleMatch !== null && slug !== "tags"
-        ? source.resolve(route?.locale === "pt-BR" ? "pt-BR" : "en-US", section, slug)
-        : undefined;
+      articleMatch !== null && slug !== "tags" ? source.resolve(section, slug) : undefined;
     const docs =
       path === "/docs" || path.startsWith("/docs/")
-        ? source.resolve(locale, "docs", path.slice(6))
+        ? source.resolve("docs", path.slice(6))
         : undefined;
     const tagPath = path === "/blog/tags" || path.startsWith("/blog/tags/");
-    const descriptions =
-      locale === "pt-BR"
-        ? {
-            blog: "Artigos sobre assinaturas digitais, TypeScript e infraestrutura Effect-native.",
-            tags: "Explore os artigos por assunto.",
-            changelog: "Notas de versão dos pacotes SignatureKit.",
-            signing:
-              "Assine documentos PDF grátis no navegador com certificado digital A1. O arquivo, o .p12/.pfx e a senha ficam no seu dispositivo.",
-          }
-        : {
-            blog: "Articles about digital signatures, TypeScript, and Effect-native infrastructure.",
-            tags: "Explore articles by topic.",
-            changelog: "Release notes for SignatureKit packages.",
-            signing: "Sign PDF documents for free in your browser with an A1 certificate.",
-          };
     const description =
       article?.description ??
       docs?.description ??
       (tagPath
-        ? descriptions.tags
+        ? "Explore os artigos por assunto."
         : path === "/blog"
-          ? descriptions.blog
+          ? "Artigos sobre assinaturas digitais, TypeScript e infraestrutura Effect-native."
           : path === "/changelog"
-            ? descriptions.changelog
-            : path === "/sign-free" || path === "/assine-documentos-gratis"
-              ? descriptions.signing
+            ? "Notas de versão dos pacotes SignatureKit."
+            : path === "/assine-documentos-gratis"
+              ? signFreeDescription
               : path === "/search"
-                ? locale === "pt-BR"
-                  ? "Busque na documentação do SignatureKit."
-                  : "Search the SignatureKit documentation."
-                : path === ""
-                  ? locale === "pt-BR"
-                    ? "Uma fronteira tipada para certificados A1/PKCS#12, PDF/PAdES, XML-DSig e provedores remotos."
-                    : "One typed signing boundary for A1/PKCS#12 certificates, PDF/PAdES, XML-DSig, and remote providers."
-                  : locale === "pt-BR"
-                    ? pt.hero_subhead
-                    : en.hero_subhead);
+                ? "Busque na documentação do SignatureKit."
+                : "Assinatura digital com certificado A1 em TypeScript: PDF/PAdES, XML-DSig e integração com Clicksign, Assinafy, ZapSign, DocuSeal e Documenso.");
     const meta = (key: string, value: string, property = false): Metadata => ({
       kind: "meta",
       key,
       value,
       property,
     });
-    const link = (language: string, href: string): Metadata => ({ kind: "link", language, href });
-    const candidates = (["en-US", "pt-BR"] satisfies ("en-US" | "pt-BR")[]).filter((candidate) => {
-      if (article !== undefined) return Boolean(source.resolve(candidate, section, slug));
-      if (tagPath && path !== "/blog/tags")
-        return blogTags(candidate).some((tag) => encodeURIComponent(tag.slug) === path.slice(11));
-      if (docs !== undefined) return Boolean(source.resolve(candidate, "docs", path.slice(6)));
-      return true;
-    });
-    const alternatePath = (candidate: string) =>
-      path === "/sign-free" || path === "/assine-documentos-gratis"
-        ? candidate === "pt-BR"
-          ? "/assine-documentos-gratis"
-          : "/sign-free"
-        : path;
-    const alternate = (candidate: string) =>
-      `${siteOrigin}${alternatePath(candidate) === "" ? homeRoute({ locale: candidate === "pt-BR" ? "pt-BR" : "en-US" }) : pageRoute({ locale: candidate === "pt-BR" ? "pt-BR" : "en-US", path: alternatePath(candidate).slice(1) })}`;
     const elements = [
       meta("og:site_name", "SignatureKit", true),
       meta("og:type", article !== undefined ? "article" : "website", true),
-      meta("og:locale", locale === "pt-BR" ? "pt_BR" : "en_US", true),
+      meta("og:locale", "pt_BR", true),
       meta("og:title", application.title, true),
-      meta("og:image", `${siteOrigin}${url.pathname}${path === "" ? "/index" : ""}.webp`, true),
+      meta("og:image", `${siteOrigin}${url.pathname === "/" ? "/index" : url.pathname}.webp`, true),
       meta("twitter:card", "summary"),
       meta("twitter:title", application.title),
       ...(description !== ""
@@ -156,18 +108,9 @@ export const createServerComposition = (
             meta("twitter:description", description),
           ]
         : []),
-      ...candidates.map((candidate) => link(candidate, alternate(candidate))),
-      ...(candidates.length > 0
-        ? [
-            link(
-              "x-default",
-              alternate(candidates.includes("en-US") ? "en-US" : (candidates[0] ?? "en-US")),
-            ),
-          ]
-        : []),
-      ...(path === "/search" || route?.locale !== locale ? [meta("robots", "noindex")] : []),
+      ...(path === "/search" ? [meta("robots", "noindex")] : []),
     ];
-    return { elements, description, locale };
+    return { elements, description };
   };
   const renderDocument: Server.DocumentRenderer = (application, assets) => {
     const data = metadata(application);
@@ -177,18 +120,12 @@ export const createServerComposition = (
     const head = data.elements
       .map((metadata) => {
         const element = document.createElement(metadata.kind);
-        if (metadata.kind === "meta") {
-          element.setAttribute(metadata.property ? "property" : "name", metadata.key);
-          element.setAttribute("content", metadata.value);
-        } else {
-          element.setAttribute("rel", "alternate");
-          element.setAttribute("hreflang", metadata.language);
-          element.setAttribute("href", metadata.href);
-        }
+        element.setAttribute(metadata.property ? "property" : "name", metadata.key);
+        element.setAttribute("content", metadata.value);
         return serializer.serializeToString(element);
       })
       .join("");
-    const signFreeUrl = `${siteOrigin}/pt-BR/assine-documentos-gratis`;
+    const signFreeUrl = `${siteOrigin}/assine-documentos-gratis`;
     const structuredData =
       application.canonical === signFreeUrl
         ? {
@@ -231,16 +168,30 @@ export const createServerComposition = (
       structuredData === undefined
         ? ""
         : `<script type="application/ld+json">${JSON.stringify(structuredData).replaceAll("<", "\\u003c")}</script>`;
-    return Server.renderDocument(application, assets, { head: head + jsonLd });
+    const pathname = new URL(application.canonical ?? siteOrigin).pathname;
+    const markdownLink =
+      pathname === "/docs" || pathname.startsWith("/docs/")
+        ? `<link rel="alternate" type="text/markdown" href="${pathname}.md">`
+        : "";
+    const agentTags = Object.entries(agentMeta)
+      .map(
+        ([key, value]) =>
+          `<meta name="agent:${key}" content="${value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;")}">`,
+      )
+      .join("");
+    const agentHead = `${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
+    return Server.renderDocument(application, assets, { head: head + jsonLd + agentHead });
   };
   const renderPage = async (request: Request, buildId?: string): Promise<Server.EntryResult> => {
+    const agent = await Effect.runPromise(agentResponse(request));
+    if (agent !== undefined) return Server.Responded(agent);
     const feedback = await Effect.runPromise(feedbackResponse(request));
     if (feedback !== undefined) return Server.Responded(feedback);
     const feed = await Effect.runPromise(feedResponse(request));
     if (feed !== undefined) {
       const parsed = parsePublicUrl(request.url);
       if (parsed?._tag === "Page" && parsed.path === "blog/rss.xml" && feed.status === 200)
-        await captureServerEvent("blog_rss_requested", request, { locale: parsed.locale });
+        await captureServerEvent("blog_rss_requested", request, {});
       return Server.Responded(feed);
     }
     const path = new URL(request.url).pathname;
@@ -248,10 +199,7 @@ export const createServerComposition = (
     if (parsedImage?._tag === "Page" && parsedImage.path.endsWith(".webp")) {
       const imagePath = parsedImage.path.slice(0, -5);
       if (imagePath === "") return Server.Responded(new Response("Not found", { status: 404 }));
-      const pagePath =
-        imagePath === "index"
-          ? homeRoute({ locale: parsedImage.locale })
-          : pageRoute({ locale: parsedImage.locale, path: imagePath });
+      const pagePath = imagePath === "index" ? homeRoute({}) : pageRoute({ path: imagePath });
       const page = await renderPage(new Request(`${siteOrigin}${pagePath}`), buildId);
       if (page._tag !== "Rendered")
         return Server.Responded(new Response("Not found", { status: 404 }));
@@ -269,7 +217,6 @@ export const createServerComposition = (
             title: page.application.title,
             description: data.description,
             site: "SignatureKit",
-            locale: data.locale,
           });
         }).pipe(Effect.provide(socialImageLayer)),
         { signal: request.signal },
@@ -280,14 +227,15 @@ export const createServerComposition = (
         }),
       );
     }
-    if (path === "/")
-      return Server.Responded(
-        Response.redirect(new URL(homeRoute({ locale: "en-US" }), request.url), 302),
-      );
+    const legacy = legacyLocaleRedirect(path);
+    if (legacy !== undefined) {
+      const target = new URL(legacy, request.url);
+      target.search = new URL(request.url).search;
+      return Server.Responded(Response.redirect(target, 301));
+    }
     const parsedRoute = parsePublicUrl(request.url);
     if (parsedRoute === undefined)
       return Server.Responded(new Response("Not found", { status: 404 }));
-    const locale = parsedRoute.locale;
     const route = parsedRoute._tag === "Page" ? `/${parsedRoute.path}` : "";
     const docs = route === "/docs" || route.startsWith("/docs/");
     const section =
@@ -296,27 +244,23 @@ export const createServerComposition = (
         : route === "/changelog" || route.startsWith("/changelog/")
           ? "changelog"
           : undefined;
-    const signing =
-      (locale === "pt-BR" && route === "/assine-documentos-gratis") ||
-      (locale === "en-US" && route === "/sign-free");
+    const signing = route === "/assine-documentos-gratis";
     if (route !== "" && route !== "/search" && !docs && section === undefined && !signing)
       return Server.Responded(new Response("Not found", { status: 404 }));
-    if (docs && source.resolve(locale, "docs", route.slice(6)) === undefined)
+    if (docs && source.resolve("docs", route.slice(6)) === undefined)
       return Server.Responded(new Response("Not found", { status: 404 }));
     const tagRoute = route === "/blog/tags" || route.startsWith("/blog/tags/");
     if (
       tagRoute &&
       route !== "/blog/tags" &&
-      !blogTags(locale).some((tag) => encodeURIComponent(tag.slug) === route.slice(11))
+      !blogTags().some((tag) => encodeURIComponent(tag.slug) === route.slice(11))
     )
       return Server.Responded(new Response("Not found", { status: 404 }));
     if (
       section !== undefined &&
       !tagRoute &&
       route !== `/${section}` &&
-      !articles(locale, section).some(
-        (entry) => entry.href === pageRoute({ locale, path: route.slice(1) }),
-      )
+      !articles(section).some((entry) => entry.href === pageRoute({ path: route.slice(1) }))
     )
       return Server.Responded(new Response("Not found", { status: 404 }));
     const rawQuery = route === "/search" ? (new URL(request.url).searchParams.get("q") ?? "") : "";
@@ -330,10 +274,7 @@ export const createServerComposition = (
     const decodedQuery = Schema.decodeUnknownOption(SearchQuery)(rawQuery);
     const query = decodedQuery._tag === "Some" ? decodedQuery.value : "";
     const application = await Effect.runPromise(
-      Server.renderToString(
-        { Flags, init, view },
-        { flags: { locale, path: route, query }, buildId },
-      ),
+      Server.renderToString({ Flags, init, view }, { flags: { path: route, query }, buildId }),
     );
     return Server.Rendered(application);
   };

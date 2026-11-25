@@ -87,9 +87,7 @@ export const feedbackBfcache = defineBrowserCommand(async ({ context, page }, pr
         yield* Effect.promise(() =>
           tab.locator("[data-feedback-message]").fill("feedback depois do retorno"),
         );
-        yield* Effect.promise(() =>
-          tab.getByRole("button", { name: "Enviar sobre texto selecionado" }).click(),
-        );
+        yield* Effect.promise(() => tab.getByRole("button", { name: "Enviar comentário" }).click());
         yield* Effect.promise(() =>
           tab
             .getByRole("status")

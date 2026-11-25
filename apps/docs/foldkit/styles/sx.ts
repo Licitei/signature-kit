@@ -46,3 +46,6 @@ export const sx = <Message>(
   }
   return attributes;
 };
+
+export const className = (...styles: ReadonlyArray<StyleArg>): string =>
+  readStyles(...styles).className ?? "";

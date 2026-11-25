@@ -4,7 +4,7 @@ import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
 import { contentPaths, expressionText, resolveContent } from "./content";
-import type { ContentNode, Locale } from "./content";
+import type { ContentNode } from "./content";
 
 export const SearchQuery = Schema.String.check(Schema.isMaxLength(200));
 export const SearchResult = Schema.Struct({
@@ -21,16 +21,11 @@ const normalize = (value: string) =>
     .toLowerCase();
 
 export const searchDocs = (
-  locale: Locale,
   query: string,
   pages = contentPaths().flatMap((path) => {
-    if (
-      !path.startsWith("docs/") ||
-      (locale === "pt-BR" ? !path.endsWith(".pt-BR") : path.endsWith(".pt-BR"))
-    )
-      return [];
-    const slug = path.slice(5).replace(/\.pt-BR$/, "");
-    const page = resolveContent(locale, "docs", slug);
+    if (!path.startsWith("docs/")) return [];
+    const slug = path.slice(5);
+    const page = resolveContent("docs", slug);
     return page === undefined ? [] : [{ slug, page }];
   }),
 ): typeof SearchResults.Type => {
@@ -50,7 +45,6 @@ export const searchDocs = (
   }[] = [];
   for (const { slug, page } of pages) {
     const base = pageRoute({
-      locale,
       path: `docs${slug === "index" ? "" : `/${slug.split("/").map(encodeURIComponent).join("/")}`}`,
     });
     const slugger = new GithubSlugger();

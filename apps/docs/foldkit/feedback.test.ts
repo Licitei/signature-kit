@@ -39,19 +39,21 @@ const handleRequest = async (request: IncomingMessage, response: ServerResponse)
 describe("feedback", () => {
   it("rejects malformed payloads and routes before delivery", async () => {
     for (const body of [
-      { route: "/en-US/sign-free", opinion: "good", message: "" },
-      { route: "/en-US/docs?secret=x", opinion: "good", message: "" },
-      { route: "/en-US/docs/missing", opinion: "good", message: "" },
-      { route: "/en-US/docs", opinion: "other", message: "" },
-      { route: "/en-US/docs", opinion: "good", message: "x".repeat(2001) },
-      { route: "/en-US/docs", opinion: "good", message: "", extra: "secret" },
+      { route: "/assine-documentos-gratis", opinion: "good", message: "" },
+      { route: "/en-US/docs", opinion: "good", message: "" },
+      { route: "/pt-BR/docs", opinion: "good", message: "" },
+      { route: "/docs?secret=x", opinion: "good", message: "" },
+      { route: "/docs/missing", opinion: "good", message: "" },
+      { route: "/docs", opinion: "other", message: "" },
+      { route: "/docs", opinion: "good", message: "x".repeat(2001) },
+      { route: "/docs", opinion: "good", message: "", extra: "secret" },
     ])
       expect((await send("/api/feedback/page", body))?.status).toBe(400);
     for (const body of [
-      { route: "/en-US/docs", blockId: "x".repeat(201), blockBody: "body", message: "" },
-      { route: "/en-US/docs", blockId: "id", blockBody: "x".repeat(2001), message: "" },
-      { route: "/en-US/docs#secret", blockId: "id", blockBody: "body", message: "" },
-      { route: "/en-US/docs", blockId: "id", blockBody: "body", message: "", extra: "secret" },
+      { route: "/docs", blockId: "x".repeat(201), blockBody: "body", message: "" },
+      { route: "/docs", blockId: "id", blockBody: "x".repeat(2001), message: "" },
+      { route: "/docs#secret", blockId: "id", blockBody: "body", message: "" },
+      { route: "/docs", blockId: "id", blockBody: "body", message: "", extra: "secret" },
     ])
       expect((await send("/api/feedback/text", body))?.status).toBe(400);
     expect((await send("/api/feedback/page", {}, "GET"))?.status).toBe(405);
@@ -71,7 +73,7 @@ describe("feedback", () => {
     expect(
       (
         await send("/api/feedback/text", {
-          route: "/en-US/docs",
+          route: "/docs",
           blockId: "",
           blockBody: "",
           message: "",
@@ -81,8 +83,7 @@ describe("feedback", () => {
   });
   it("does not claim success when delivery is unconfigured", async () => {
     expect(
-      (await send("/api/feedback/page", { route: "/en-US/docs", opinion: "good", message: "" }))
-        ?.status,
+      (await send("/api/feedback/page", { route: "/docs", opinion: "good", message: "" }))?.status,
     ).toBe(503);
   });
   it("returns protocol status over local HTTP", async () => {
@@ -106,7 +107,7 @@ describe("feedback", () => {
             fetch(`http://127.0.0.1:${address.port}/api/feedback/page`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ route: "/en-US/docs", opinion: "good", message: "" }),
+              body: JSON.stringify({ route: "/docs", opinion: "good", message: "" }),
             }),
           );
           expect(response.status).toBe(503);
@@ -149,11 +150,11 @@ describe("feedback", () => {
           yield* Effect.gen(function* () {
             const analytics = yield* ServerAnalytics;
             for (const [path, body] of [
-              ["page", { route: "/en-US/docs", opinion: "good", message: "private page" }],
+              ["page", { route: "/docs", opinion: "good", message: "private page" }],
               [
                 "text",
                 {
-                  route: "/pt-BR/docs",
+                  route: "/docs",
                   blockId: "intro",
                   blockBody: "selected block",
                   message: "private text",
@@ -177,7 +178,7 @@ describe("feedback", () => {
           expect(payload).toContain("selected block");
           expect(payload).toContain("private page");
           expect(payload).toContain('"block_id":"intro"');
-          expect(payload).toContain('"route":"/pt-BR/docs"');
+          expect(payload).toContain('"route":"/docs"');
           expect(payload).not.toContain("$current_url");
           expect(payload).not.toContain("$referrer");
           expect(payload).not.toContain("query");
@@ -215,7 +216,7 @@ describe("feedback", () => {
               new Request("http://localhost/api/feedback/page", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify({ route: "/en-US/docs", opinion: "good", message: "" }),
+                body: JSON.stringify({ route: "/docs", opinion: "good", message: "" }),
               }),
               analytics,
             );
@@ -233,7 +234,7 @@ describe("feedback", () => {
     );
   });
   it("starts a command and reports failed delivery in the model", () => {
-    const model = init({ locale: "en-US", path: "/docs" }).model;
+    const model = init({ path: "/docs" }).model;
     const sending = update(model, Message.FeedbackSubmitted({ opinion: "good" }));
     expect(sending.model.feedbackStatus).toBe("sending");
     expect(sending.commands).toHaveLength(1);

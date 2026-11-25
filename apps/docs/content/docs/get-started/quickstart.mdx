@@ -1,24 +1,24 @@
 ---
-title: First Use
-description: "Load an A1 certificate, inspect the identity, and sign your first bytes — then an XML and a PDF — in a single Effect program."
+title: Primeiro Uso
+description: "Carregue um certificado A1, inspecione a identidade e assine seus primeiros bytes — depois um XML e um PDF — em um único programa Effect."
 ---
 
-**What you'll do:** assemble an Effect program that loads the A1 certificate, reads the identity, signs and verifies bytes — then signs an XML and a PDF reusing the same boundary.
+**O que você vai fazer:** montar um programa Effect que carrega o certificado A1, lê a identidade, assina e verifica bytes — depois assina um XML e um PDF reaproveitando a mesma camada de assinatura.
 
 <Steps>
-  <Step title="Install">
-    Add the core boundary and the A1 signer. Pull in `effect` for the `Effect` runtime and `Redacted`.
+  <Step title="Instalar">
+    Adicione a camada de assinatura central e o signer A1. Inclua `effect` para o runtime do `Effect` e o `Redacted`.
 
     ```bash
     bun add @signature-kit/signatures @signature-kit/a1 effect
     ```
   </Step>
 
-  <Step title="Load the A1, inspect, sign and verify">
-    `a1SignaturesLayer` takes the `.pfx` bytes and the `Redacted` password and provides the `Signatures` service. Inside one `Effect.gen`, `signatures.inspect()` returns a normalized `SignerIdentity` — `document` carries the e-CPF or e-CNPJ when present — then `signatures.sign` and `signatures.verify` run over the same boundary. `verify` returns a value: `result.valid` is a `boolean`, and a real failure surfaces as a `SignatureKitError` in the error channel, never a thrown exception.
+  <Step title="Carregue o A1, inspecione, assine e verifique">
+    O `a1SignaturesLayer` recebe os bytes do `.pfx` e a senha em `Redacted` e fornece o serviço `Signatures`. Dentro de um único `Effect.gen`, o `signatures.inspect()` retorna um `SignerIdentity` normalizado — o `document` traz o e-CPF ou o e-CNPJ quando presente — e então `signatures.sign` e `signatures.verify` rodam sobre a mesma camada de assinatura. O `verify` retorna um valor: `result.valid` é um `boolean`, e uma falha real surge como um `SignatureKitError` no canal de erro, nunca uma exceção lançada.
 
-    <Callout type="error" title="The .pfx bytes, not the path">
-      `pfx` is a `Uint8Array` holding the binary contents of the `.pfx`/`.p12` — not the file path string. Keep these bytes and the password out of logs and version control.
+    <Callout type="error" title="Os bytes do .pfx, não o caminho">
+      `pfx` é um `Uint8Array` com o conteúdo binário do `.pfx`/`.p12` — não a string com o caminho do arquivo. Mantenha esses bytes e a senha fora de logs e do controle de versão.
     </Callout>
 
     ```ts title="quickstart.ts"
@@ -28,12 +28,12 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
 
     const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
     const layer = a1SignaturesLayer({
-      pfx,                                          // Uint8Array — bytes of the .pfx/.p12
+      pfx,                                          // Uint8Array — bytes do .pfx/.p12
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
     })
 
     export const program = Effect.gen(function* () {
-      // normalized identity — identity.document carries e-CPF / e-CNPJ
+      // identidade normalizada — identity.document traz e-CPF / e-CNPJ
       const identity = yield* signatures.inspect()
 
       const content = new TextEncoder().encode("content to sign")
@@ -53,19 +53,19 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
     ```
   </Step>
 
-  <Step title="Run the program">
-    Run the `Effect` with `Effect.runPromise`, or call it from another Effect program.
+  <Step title="Execute o programa">
+    Execute o `Effect` com `Effect.runPromise`, ou chame-o a partir de outro programa Effect.
 
     ```ts title="run.ts"
     import { Effect } from "effect"
 
     const { result } = await Effect.runPromise(program)
-    console.log(result.valid) // boolean — true if the signature checks out
+    console.log(result.valid) // boolean — true se a assinatura for válida
     ```
   </Step>
 
-  <Step title="Sign XML and PDF">
-    Both formats consume the same boundary via `Effect.provide`; the `layer` line is identical to the previous step. XML also needs `xmlRuntimeLayer` and PDF needs the `PdfCore` engine layer (`pdfCoreFileLayer` on Node/Bun, `pdfCoreBrowserLayer` in browsers); `verifyXml` / `verifyPdf` read the public key from the document and do not require the boundary.
+  <Step title="Assine XML e PDF">
+    Ambos os formatos consomem a mesma camada de assinatura via `Effect.provide`; a linha do `layer` é idêntica à da etapa anterior. O XML também precisa do `xmlRuntimeLayer` e o PDF precisa da camada do motor `PdfCore` (`pdfCoreFileLayer` no Node/Bun, `pdfCoreBrowserLayer` no navegador); `verifyXml` / `verifyPdf` leem a chave pública do documento e não exigem a camada de assinatura.
 
     ```ts title="documents.ts"
     import { signXml } from "@signature-kit/xml/sign"
@@ -77,7 +77,7 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
     import { Effect, Redacted } from "effect"
 
     const layer = a1SignaturesLayer({
-      pfx,                                          // Uint8Array — bytes of the .pfx/.p12
+      pfx,                                          // Uint8Array — bytes do .pfx/.p12
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
     })
 
@@ -90,21 +90,21 @@ description: "Load an A1 certificate, inspect the identity, and sign your first 
   </Step>
 </Steps>
 
-## Errors you might see
+## Erros que você pode encontrar
 
-<Callout type="warn" title="Incorrect certificate password">
-  If the `.pfx` password is wrong, the boundary fails with [`signature-kit.WRONG_PASSWORD`](/en-US/docs/signing/errors#error-catalog) in the error channel — not an exception. Check the secret before proceeding.
+<Callout type="warn" title="Senha do certificado incorreta">
+  Se a senha do `.pfx` estiver errada, a camada de assinatura falha com [`signature-kit.WRONG_PASSWORD`](/docs/signing/errors#error-catalog) no canal de erro — e não com uma exceção. Verifique o segredo antes de prosseguir.
 </Callout>
 
-- [`signature-kit.WRONG_PASSWORD`](/en-US/docs/signing/errors#error-catalog) — incorrect certificate password.
-- [`signature-kit.SIGN_FAILED`](/en-US/docs/signing/errors#error-catalog) — failed to sign the content.
-- [`signature-kit.VERIFY_FAILED`](/en-US/docs/signing/errors#error-catalog) — failed to verify the signature.
+- [`signature-kit.WRONG_PASSWORD`](/docs/signing/errors#error-catalog) — senha do certificado incorreta.
+- [`signature-kit.SIGN_FAILED`](/docs/signing/errors#error-catalog) — falha ao assinar o conteúdo.
+- [`signature-kit.VERIFY_FAILED`](/docs/signing/errors#error-catalog) — falha ao verificar a assinatura.
 
-## Further reading
+## Leitura complementar
 
 <Cards>
-  <Card title="The signing boundary" href="/en-US/docs/signing/signers">The SignerAdapter: the seam through which the power to sign enters.</Card>
-  <Card title="XML-DSig & PDF/PAdES" href="/en-US/docs/signing/xml">Sign NF-e and PAdES PDFs reusing the same A1 boundary.</Card>
-  <Card title="A1 certificates" href="/en-US/docs/signing/certificates">PKCS#12, X.509, and ICP-Brasil identity (e-CPF / e-CNPJ).</Card>
-  <Card title="Typed error channel" href="/en-US/docs/signing/errors">The SignatureKitError and the catalog of literal codes.</Card>
+  <Card title="A camada de assinatura" href="/docs/signing/signers">O SignerAdapter: a junção por onde o poder de assinar entra.</Card>
+  <Card title="XML-DSig & PDF/PAdES" href="/docs/signing/xml">Assine NF-e e PDFs PAdES reaproveitando a mesma camada de assinatura A1.</Card>
+  <Card title="Certificados A1" href="/docs/signing/certificates">PKCS#12, X.509 e identidade ICP-Brasil (e-CPF / e-CNPJ).</Card>
+  <Card title="Canal de erro tipado" href="/docs/signing/errors">O SignatureKitError e o catálogo de códigos literais.</Card>
 </Cards>

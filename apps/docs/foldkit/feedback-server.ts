@@ -68,11 +68,8 @@ const feedbackResponseWithAnalytics = (
     )(json.value).pipe(Effect.option);
     if (decoded._tag === "None") return new Response(null, { status: 400 });
     const data = decoded.value;
-    const match = /^\/(en-US|pt-BR)\/docs(?:\/(.*))?$/.exec(data.route);
-    if (
-      match === null ||
-      resolveContent(match[1] === "pt-BR" ? "pt-BR" : "en-US", "docs", match[2] ?? "") === undefined
-    )
+    const match = /^\/docs(?:\/(.*))?$/.exec(data.route);
+    if (match === null || resolveContent("docs", match[1] ?? "") === undefined)
       return new Response(null, { status: 400 });
     const analytics = yield* ServerAnalytics;
     const result = yield* analytics

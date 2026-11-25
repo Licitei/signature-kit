@@ -1,13 +1,12 @@
-import { homeRoute, pageRoute, Locale } from "./routes";
-import { Button, Dialog, Input, Nav, Popover, Switch, Tabs, Textarea, Tooltip } from "@foldkit/ui";
-import { Option, Schema } from "effect";
+import { homeRoute, pageRoute } from "./routes";
+import { Button, Dialog, Input, Menu, Nav, Popover, Switch, Textarea, Tooltip } from "@foldkit/ui";
+import { Effect, Option, Schema } from "effect";
 import { Command, Dom, Subscription, Update } from "foldkit";
 import * as Mount from "foldkit/mount";
-import type { Document, HtmlBuilder } from "foldkit/html";
+import type { Document, Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
-import en from "../messages/en-US.json";
-import pt from "../messages/pt-BR.json";
 import { createArticleCatalog } from "./articles";
+import { groupReleases, releaseView } from "./changelog";
 import {
   SigningFormModel,
   Message as SigningFormMessage,
@@ -22,63 +21,114 @@ import {
   homeDemoUpdate,
   homeDemoView,
 } from "./home-demo";
-import { contentPaths, docsNavigation, renderContent, resolveContent } from "./content";
+import {
+  contentPaths,
+  docsNavigation,
+  renderContent,
+  resolveContent,
+  tableOfContents,
+} from "./content";
 import { SearchQuery, SearchResults, searchDocs } from "./search";
 import { SubmitFeedback, SubmitTextFeedback } from "./feedback";
 import {
   CopyHome,
   CopyToast,
   ExpireHomeCopy,
-  HomeInstallTabs,
-  HomeProviderTabs,
-  SelectHomeProvider,
-  autoSignSection,
-  brandMark,
-  homeOverlayPanels,
-  copyToastView,
+  HomeCopyRequest,
   SaveTheme,
   Theme,
   ThemeMount,
-  HomeCopyTarget,
-  HomeCopyLocation,
-  HomeCopyRequest,
-  HomeProvider,
-  InstallManager,
-  homeProviders,
+  autoSignSection,
+  brandMark,
+  copyToastView,
+  githubLink,
   homeView,
-  installSnippets,
+  installPill,
   signFreeLanding,
+  signFreePath,
 } from "./home";
 import { OverlayKind, overlayView } from "./overlay";
 import { siteOrigin } from "./site-origin";
+import { brand, groupIcon, icon } from "./icons";
+import { NavMenuKind, navMenuInit, navMenuView } from "./navbar";
 import { overlay } from "./styles/overlay";
 import { darkTheme } from "./styles/tokens.stylex";
-import { landing } from "./styles/landing";
 import { prose } from "./styles/prose";
 import { shell } from "./styles/shell";
-import { sx } from "./styles/sx";
+import { className, sx } from "./styles/sx";
+
+export const PageCopyMode = Schema.Literals(["markdown", "prompt"]);
+export const PageMarkdownCopied = Schema.TaggedStruct("PageMarkdownCopied", {
+  ok: Schema.Boolean,
+  mode: PageCopyMode,
+});
+export const CopyPageMarkdown = Command.define("CopyPageMarkdown", {
+  args: { path: Schema.String, mode: PageCopyMode },
+  messages: [PageMarkdownCopied],
+  execute: ({ path, mode }) =>
+    Effect.tryPromise({
+      try: async () => {
+        const response = await fetch(`${path}.md`);
+        if (!response.ok) return PageMarkdownCopied.make({ ok: false, mode });
+        const markdown = await response.text();
+        await navigator.clipboard.writeText(
+          mode === "markdown"
+            ? markdown
+            : [
+                "Você vai me ajudar a usar o SignatureKit, biblioteca open source de assinatura digital com certificado A1 em TypeScript.",
+                `Use a página da documentação abaixo como referência. Para outras páginas, consulte ${siteOrigin}/llms.txt.`,
+                `<pagina url="${siteOrigin}${path}">`,
+                markdown,
+                "</pagina>",
+                "Minha pergunta: ",
+              ].join("\n\n"),
+        );
+        return PageMarkdownCopied.make({ ok: true, mode });
+      },
+      catch: () => PageMarkdownCopied.make({ ok: false, mode }),
+    }).pipe(Effect.catch((failure) => Effect.succeed(failure))),
+});
+
+export const PageMenuItem = Schema.Literals([
+  "markdown",
+  "view",
+  "chatgpt",
+  "claude",
+  "perplexity",
+  "llms",
+]);
+export type PageMenuItem = typeof PageMenuItem.Type;
+const PageMenu = Menu.create<PageMenuItem>();
+export const PageTargetOpened = Schema.TaggedStruct("PageTargetOpened", {});
+export const OpenPageTarget = Command.define("OpenPageTarget", {
+  args: { url: Schema.String, external: Schema.Boolean },
+  messages: [PageTargetOpened],
+  execute: ({ url, external }) =>
+    Effect.sync(() => {
+      if (external) window.open(url, "_blank", "noopener,noreferrer");
+      else window.location.assign(url);
+      return PageTargetOpened.make({});
+    }),
+});
 
 export const Flags = Schema.Struct({
-  locale: Locale,
   path: Schema.String,
   query: Schema.optional(SearchQuery),
 });
 export const Model = Schema.Struct({
-  locale: Flags.fields.locale,
   path: Schema.String,
-  languagePopover: Popover.Model,
   signingForm: SigningFormModel,
   homeDemo: HomeDemoModel,
   theme: Theme,
   query: SearchQuery,
   results: SearchResults,
   feedbackStatus: Schema.Literals(["idle", "sending", "success", "error"]),
-  homeProvider: HomeProvider,
-  homeCopied: Schema.Union([HomeCopyTarget, Schema.Literals(["none", "failed"])]),
+  homeCopied: Schema.Boolean,
+  pageMenu: Menu.Model,
+  navDocs: Popover.Model,
+  navProviders: Popover.Model,
+  navResources: Popover.Model,
   homeCopyRequest: HomeCopyRequest,
-  providerTabs: Tabs.Model,
-  installTabs: Tabs.Model,
-  installManager: InstallManager,
   openFaq: Schema.Option(Schema.Literals([0, 1, 2])),
   copyToast: CopyToast.Model,
   overlay: Dialog.Model,
@@ -87,28 +137,24 @@ export const Model = Schema.Struct({
 });
 export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
-  GotLanguagePopoverMessage: { message: Popover.Message },
   ThemeToggled: {},
   ThemeLoaded: { theme: Theme },
   ThemeSaved: {},
   GotSigningFormMessage: { message: SigningFormMessage },
   GotHomeDemoMessage: { message: HomeDemoMessage },
-  HomeProviderSelected: { provider: HomeProvider },
-  HomeCopyRequested: { target: HomeCopyTarget, location: HomeCopyLocation },
-  HomeCopyFinished: {
-    target: HomeCopyTarget,
-    request: HomeCopyRequest,
-    provider: HomeProvider,
-    ok: Schema.Boolean,
-  },
-  HomeCopyExpired: { request: HomeCopyRequest, provider: HomeProvider },
+  HomeCopyRequested: {},
+  GotPageMenuMessage: { message: Menu.Message },
+  GotNavMenuMessage: { menuId: NavMenuKind, message: Popover.Message },
+  PageTargetOpened: {},
+  PageMarkdownRequested: { mode: PageCopyMode },
+  PageMarkdownCopied: { ok: Schema.Boolean, mode: PageCopyMode },
+  HomeCopyFinished: { request: HomeCopyRequest, ok: Schema.Boolean },
+  HomeCopyExpired: { request: HomeCopyRequest },
   QueryChanged: { value: Schema.String },
   SearchSubmitted: {},
   TextFeedbackSubmitted: {},
   FeedbackSubmitted: { opinion: Schema.Literals(["good", "bad"]) },
   FeedbackFinished: { ok: Schema.Boolean },
-  GotProviderTabsMessage: { message: Tabs.Message },
-  GotInstallTabsMessage: { message: Tabs.Message },
   FaqToggled: { index: Schema.Literals([0, 1, 2]), open: Schema.Boolean },
   GotCopyToastMessage: { message: CopyToast.Message },
   OverlayRequested: { kind: OverlayKind },
@@ -119,21 +165,19 @@ export const Message = defineMessageUnion({
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
   model: {
-    locale: flags.locale,
     path: flags.path,
-    languagePopover: Popover.init({ id: "language" }),
     signingForm: signingFormInit(),
     homeDemo: homeDemoInit(),
     theme: "light",
     query: flags.query ?? "",
-    results: searchDocs(flags.locale, flags.query ?? ""),
+    results: searchDocs(flags.query ?? ""),
     feedbackStatus: "idle",
-    homeProvider: "Clicksign",
-    homeCopied: "none",
+    homeCopied: false,
+    pageMenu: Menu.init({ id: "page-actions", isAnimated: true }),
+    navDocs: navMenuInit("docs"),
+    navProviders: navMenuInit("providers"),
+    navResources: navMenuInit("resources"),
     homeCopyRequest: 0,
-    providerTabs: Tabs.init({ id: "home-providers" }),
-    installTabs: Tabs.init({ id: "home-install" }),
-    installManager: "bun",
     openFaq: Option.none(),
     copyToast: CopyToast.init({ id: "home-toast", defaultDuration: "1800 millis" }),
     overlay: Dialog.init({
@@ -145,70 +189,67 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
     themeTip: Tooltip.init({ id: "theme-tip", showDelay: "300 millis" }),
   },
 });
-const foldLanguagePopover = Update.foldChild({
-  update: Popover.update,
-  read: (model: Model) => Option.some(model.languagePopover),
-  write: (model, languagePopover) => ({ ...model, languagePopover }),
-  toParentMessage: (message) => Message.GotLanguagePopoverMessage({ message }),
-  foldOutMessage: Popover.OutMessage.match<Update.Step<Model, Message>>({
-    Opened: () => (model) => ({ model }),
-    Closed: () => (model) => ({ model }),
-  }),
-});
 const foldHomeDemo = Update.foldChild({
   update: homeDemoUpdate,
   read: (model: Model) => Option.some(model.homeDemo),
   write: (model, homeDemo) => ({ ...model, homeDemo }),
   toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
 });
-const foldProviderTabs = Update.foldChild({
-  update: HomeProviderTabs.update,
-  read: (model: Model) => Option.some(model.providerTabs),
-  write: (model, providerTabs) => ({ ...model, providerTabs }),
-  toParentMessage: (message) => Message.GotProviderTabsMessage({ message }),
-  foldOutMessage: Tabs.OutMessage.match<Update.Step<Model, Message>>({
+const pagePromptUrl = (target: string, path: string) =>
+  `${target}${encodeURIComponent(
+    `Leia ${siteOrigin}${path}.md e me ajude a usar o SignatureKit. Para outras páginas, use ${siteOrigin}/llms.txt.`,
+  )}`;
+const foldPageMenu = Update.foldChild({
+  update: PageMenu.update,
+  read: (model: Model) => Option.some(model.pageMenu),
+  write: (model, pageMenu) => ({ ...model, pageMenu }),
+  toParentMessage: (message) => Message.GotPageMenuMessage({ message }),
+  foldOutMessage: Menu.OutMessage.match<Update.Step<Model, Message>>({
     Selected:
       ({ value }) =>
       (model) => {
-        const provider = Schema.decodeUnknownOption(HomeProvider)(value);
-        return Option.match(provider, {
-          onNone: () => ({ model }),
-          onSome: (next) =>
-            next === model.homeProvider
-              ? { model }
-              : {
-                  model: {
-                    ...model,
-                    homeProvider: next,
-                    homeCopied: "none",
-                    homeCopyRequest: model.homeCopyRequest + 1,
-                  },
-                  commands: [SelectHomeProvider({ provider: next })],
-                },
-        });
+        const item = Schema.decodeUnknownOption(PageMenuItem)(value);
+        if (Option.isNone(item)) return { model };
+        if (item.value === "markdown")
+          return { model, commands: [CopyPageMarkdown({ path: model.path, mode: "markdown" })] };
+        const targets: Record<
+          Exclude<PageMenuItem, "markdown">,
+          { url: string; external: boolean }
+        > = {
+          view: { url: `${model.path}.md`, external: false },
+          llms: { url: "/llms.txt", external: false },
+          chatgpt: { url: pagePromptUrl("https://chatgpt.com/?q=", model.path), external: true },
+          claude: { url: pagePromptUrl("https://claude.ai/new?q=", model.path), external: true },
+          perplexity: {
+            url: pagePromptUrl("https://www.perplexity.ai/search?q=", model.path),
+            external: true,
+          },
+        };
+        return { model, commands: [OpenPageTarget(targets[item.value])] };
       },
   }),
 });
-const foldInstallTabs = Update.foldChild({
-  update: HomeInstallTabs.update,
-  read: (model: Model) => Option.some(model.installTabs),
-  write: (model, installTabs) => ({ ...model, installTabs }),
-  toParentMessage: (message) => Message.GotInstallTabsMessage({ message }),
-  foldOutMessage: Tabs.OutMessage.match<Update.Step<Model, Message>>({
-    Selected:
-      ({ value }) =>
-      (model) => {
-        const manager = Schema.decodeUnknownOption(InstallManager)(value);
-        return Option.match(manager, {
-          onNone: () => ({ model }),
-          onSome: (installManager) =>
-            installManager === model.installManager
-              ? { model }
-              : { model: { ...model, installManager, homeCopied: "none" } },
-        });
-      },
-  }),
-});
+const navField = {
+  docs: "navDocs",
+  providers: "navProviders",
+  resources: "navResources",
+} satisfies Record<NavMenuKind, "navDocs" | "navProviders" | "navResources">;
+const foldNavMenu = (kind: NavMenuKind) =>
+  Update.foldChild({
+    update: Popover.update,
+    read: (model: Model) => Option.some(model[navField[kind]]),
+    write: (model, next) => ({ ...model, [navField[kind]]: next }),
+    toParentMessage: (message) => Message.GotNavMenuMessage({ menuId: kind, message }),
+    foldOutMessage: Popover.OutMessage.match<Update.Step<Model, Message>>({
+      Opened: () => (model) => ({ model }),
+      Closed: () => (model) => ({ model }),
+    }),
+  });
+const navFolds = {
+  docs: foldNavMenu("docs"),
+  providers: foldNavMenu("providers"),
+  resources: foldNavMenu("resources"),
+};
 const foldCopyToast = Update.foldChild({
   update: CopyToast.update,
   read: (model: Model) => Option.some(model.copyToast),
@@ -267,8 +308,6 @@ export const update = (model: Model, message: Message) =>
       model: { ...model, signingForm: signingFormUpdate(model.signingForm, message).model },
     }),
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
-    GotProviderTabsMessage: ({ message }) => foldProviderTabs(model, message),
-    GotInstallTabsMessage: ({ message }) => foldInstallTabs(model, message),
     GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
     GotOverlayMessage: ({ message }) => foldOverlay(model, message),
     OverlayRequested: ({ kind }) =>
@@ -287,68 +326,61 @@ export const update = (model: Model, message: Message) =>
             : model.openFaq,
       },
     }),
-    HomeProviderSelected: () => ({ model }),
-    HomeCopyRequested: ({ target, location }) => {
-      const provider = homeProviders.find((entry) => entry.name === model.homeProvider);
-      const snippets: Record<typeof HomeCopyTarget.Type, string> = {
-        install: installSnippets.bun,
-        npm: installSnippets.npm,
-        pnpm: installSnippets.pnpm,
-        yarn: installSnippets.yarn,
-        provider: provider?.code ?? "",
-      };
-      const text = snippets[target];
-      return {
-        model: { ...model, homeCopied: "none", homeCopyRequest: model.homeCopyRequest + 1 },
-        commands: [
-          CopyHome({
-            text,
-            target,
-            location,
-            provider: model.homeProvider,
-            filename: provider?.filename ?? "",
-            request: model.homeCopyRequest + 1,
-          }),
-        ],
-      };
-    },
-    HomeCopyFinished: ({ target, ok, request, provider }) => {
-      if (request !== model.homeCopyRequest || provider !== model.homeProvider) return { model };
-      const notice = model.locale === "pt-BR" ? pt : en;
-      const text = ok
-        ? notice.showcase_copied
-        : model.locale === "pt-BR"
-          ? "Não foi possível copiar."
-          : "Could not copy.";
+    GotPageMenuMessage: ({ message }) => foldPageMenu(model, message),
+    GotNavMenuMessage: ({ menuId, message }) => navFolds[menuId](model, message),
+    PageTargetOpened: () => ({ model }),
+    PageMarkdownRequested: ({ mode }) => ({
+      model,
+      commands: [CopyPageMarkdown({ path: model.path, mode })],
+    }),
+    PageMarkdownCopied: ({ ok, mode }) => {
       const shown = CopyToast.show(model.copyToast, {
-        payload: { text },
+        payload: {
+          text: !ok
+            ? "Não foi possível copiar."
+            : mode === "prompt"
+              ? "Prompt copiado. Cole no seu agente."
+              : "Markdown da página copiado.",
+        },
         variant: "Info",
         duration: "1800 millis",
       });
       return {
-        model: { ...model, homeCopied: ok ? target : "failed", copyToast: shown.model },
+        model: { ...model, copyToast: shown.model },
+        commands: Command.mapMessages(shown.commands, (message) =>
+          Message.GotCopyToastMessage({ message }),
+        ),
+      };
+    },
+    HomeCopyRequested: () => ({
+      model: { ...model, homeCopied: false, homeCopyRequest: model.homeCopyRequest + 1 },
+      commands: [CopyHome({ request: model.homeCopyRequest + 1 })],
+    }),
+    HomeCopyFinished: ({ ok, request }) => {
+      if (request !== model.homeCopyRequest) return { model };
+      const shown = CopyToast.show(model.copyToast, {
+        payload: { text: ok ? "Comando copiado." : "Não foi possível copiar." },
+        variant: "Info",
+        duration: "1800 millis",
+      });
+      return {
+        model: { ...model, homeCopied: ok, copyToast: shown.model },
         commands: [
-          ExpireHomeCopy({ request, provider }),
+          ExpireHomeCopy({ request }),
           ...Command.mapMessages(shown.commands, (message) =>
             Message.GotCopyToastMessage({ message }),
           ),
         ],
       };
     },
-    HomeCopyExpired: ({ request, provider }) => ({
-      model:
-        request === model.homeCopyRequest && provider === model.homeProvider
-          ? { ...model, homeCopied: "none" }
-          : model,
+    HomeCopyExpired: ({ request }) => ({
+      model: request === model.homeCopyRequest ? { ...model, homeCopied: false } : model,
     }),
     TextFeedbackSubmitted: () => ({
       model: { ...model, feedbackStatus: "sending" },
       commands: [
         SubmitTextFeedback({
-          route:
-            model.path === ""
-              ? homeRoute({ locale: model.locale })
-              : pageRoute({ locale: model.locale, path: model.path.slice(1) }),
+          route: model.path === "" ? homeRoute({}) : pageRoute({ path: model.path.slice(1) }),
         }),
       ],
     }),
@@ -356,10 +388,7 @@ export const update = (model: Model, message: Message) =>
       model: { ...model, feedbackStatus: "sending" },
       commands: [
         SubmitFeedback({
-          route:
-            model.path === ""
-              ? homeRoute({ locale: model.locale })
-              : pageRoute({ locale: model.locale, path: model.path.slice(1) }),
+          route: model.path === "" ? homeRoute({}) : pageRoute({ path: model.path.slice(1) }),
           opinion,
         }),
       ],
@@ -369,12 +398,11 @@ export const update = (model: Model, message: Message) =>
     }),
     QueryChanged: ({ value }) => {
       const query = value.slice(0, 200);
-      return { model: { ...model, query, results: searchDocs(model.locale, query) } };
+      return { model: { ...model, query, results: searchDocs(query) } };
     },
     SearchSubmitted: () => ({
-      model: { ...model, results: searchDocs(model.locale, model.query) },
+      model: { ...model, results: searchDocs(model.query) },
     }),
-    GotLanguagePopoverMessage: ({ message }) => foldLanguagePopover(model, message),
     ThemeToggled: () => {
       const theme = model.theme === "light" ? "dark" : "light";
       return { model: { ...model, theme }, commands: [SaveTheme({ theme })] };
@@ -388,18 +416,10 @@ export const createView = (source: {
 }) => {
   const { articles, blogTags, resolveArticle } = createArticleCatalog(source);
   return (model: Model, h: HtmlBuilder<Message>): Document => {
-    const copy = model.locale === "pt-BR" ? pt : en;
-
-    const signing =
-      (model.locale === "pt-BR" && model.path === "/assine-documentos-gratis") ||
-      (model.locale === "en-US" && model.path === "/sign-free");
+    const signing = model.path === "/assine-documentos-gratis";
     const docs = model.path === "/docs" || model.path.startsWith("/docs/");
     const home = model.path === "";
-    const signFree = pageRoute({
-      locale: model.locale,
-      path: model.locale === "pt-BR" ? "assine-documentos-gratis" : "sign-free",
-    });
-    const content = docs ? source.resolve(model.locale, "docs", model.path.slice(6)) : undefined;
+    const content = docs ? source.resolve("docs", model.path.slice(6)) : undefined;
     const section =
       model.path === "/blog" || model.path.startsWith("/blog/")
         ? "blog"
@@ -409,150 +429,240 @@ export const createView = (source: {
     const tagRoute = model.path === "/blog/tags" || model.path.startsWith("/blog/tags/");
     const tag =
       tagRoute && model.path !== "/blog/tags"
-        ? blogTags(model.locale).find(
-            (entry) => encodeURIComponent(entry.slug) === model.path.slice(11),
-          )
+        ? blogTags().find((entry) => encodeURIComponent(entry.slug) === model.path.slice(11))
         : undefined;
+    const currentRoute = home ? homeRoute({}) : pageRoute({ path: model.path.slice(1) });
     const articleSlug =
       section !== undefined
-        ? articles(model.locale, section).find(
-            (entry) =>
-              entry.href ===
-              (model.path === ""
-                ? homeRoute({ locale: model.locale })
-                : pageRoute({ locale: model.locale, path: model.path.slice(1) })),
-          )?.slug
+        ? articles(section).find((entry) => entry.href === currentRoute)?.slug
         : undefined;
     const article =
       section !== undefined && articleSlug !== undefined && articleSlug !== "" && !tagRoute
-        ? resolveArticle(model.locale, section, articleSlug)
+        ? resolveArticle(section, articleSlug)
         : undefined;
-    const sourceLocale =
-      article !== undefined &&
-      model.locale === "pt-BR" &&
-      section !== undefined &&
-      source.resolve("pt-BR", section, articleSlug ?? "") === undefined
-        ? "en-US"
-        : model.locale;
-    const canonical = `${siteOrigin}${model.path === "" ? homeRoute({ locale: sourceLocale }) : pageRoute({ locale: sourceLocale, path: model.path.slice(1) })}`;
-    const searchSuffix =
-      model.path === "/search" && model.query !== ""
-        ? `?${new URLSearchParams({ q: model.query })}`
-        : "";
-    const languagePath = (locale: "en-US" | "pt-BR") => {
-      if (signing) return locale === "pt-BR" ? "/assine-documentos-gratis" : "/sign-free";
-      if (
-        tagRoute &&
-        model.path !== "/blog/tags" &&
-        !blogTags(locale).some((entry) => encodeURIComponent(entry.slug) === model.path.slice(11))
-      )
-        return "/blog/tags";
-      return model.path;
-    };
+    const canonical = `${siteOrigin}${currentRoute}`;
     const heading = section === "blog" ? "Blog" : "Changelog";
-    const currentRoute =
-      model.path === ""
-        ? homeRoute({ locale: model.locale })
-        : pageRoute({ locale: model.locale, path: model.path.slice(1) });
-    const docsRoute = (path: string) => pageRoute({ locale: model.locale, path: `docs/${path}` });
+    const overlayHeader = home || (!signing && (docs ? content !== undefined : true));
+    const docsGroup = docs
+      ? docsNavigation().find((group) => group.links.some((link) => link.href === currentRoute))
+          ?.title
+      : undefined;
+    const toc = content !== undefined ? tableOfContents(content.nodes) : [];
+    const formatDate = (value: string) =>
+      new Date(value).toLocaleDateString("pt-BR", {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
+        timeZone: "UTC",
+      });
+    const pageMenuItems: ReadonlyArray<PageMenuItem> = [
+      "markdown",
+      "view",
+      "chatgpt",
+      "claude",
+      "perplexity",
+      "llms",
+    ];
+    const pageMenuLabel: Record<PageMenuItem, { title: string; hint: string; glyph: Html }> = {
+      markdown: {
+        title: "Copiar Markdown",
+        hint: "A página em Markdown puro",
+        glyph: icon(h, "copy"),
+      },
+      view: { title: "Ver como Markdown", hint: "Abre o .md desta página", glyph: icon(h, "file") },
+      chatgpt: {
+        title: "Abrir no ChatGPT",
+        hint: "Pergunte sobre esta página",
+        glyph: brand(h, "openai"),
+      },
+      claude: {
+        title: "Abrir no Claude",
+        hint: "Pergunte sobre esta página",
+        glyph: brand(h, "claude"),
+      },
+      perplexity: {
+        title: "Abrir no Perplexity",
+        hint: "Pesquise com esta página",
+        glyph: brand(h, "perplexity"),
+      },
+      llms: {
+        title: "llms.txt",
+        hint: "Índice da documentação para agentes",
+        glyph: icon(h, "terminal"),
+      },
+    };
+    const pageActions = h.div(
+      [...sx(h, prose.pageActions)],
+      [
+        Button.view(
+          {
+            onClick: Message.PageMarkdownRequested({ mode: "prompt" }),
+            toView: (attributes) =>
+              h.button(
+                [...attributes.button, ...sx(h, prose.pageAction, prose.pageActionMain)],
+                [icon(h, "sparkles"), "Copiar como prompt"],
+              ),
+          },
+          h,
+        ),
+        h.submodel({
+          slotId: "page-actions",
+          model: model.pageMenu,
+          view: PageMenu.view,
+          viewInputs: {
+            items: pageMenuItems,
+            ariaLabel: "Mais formas de usar esta página com IA",
+            anchor: { placement: "bottom-end", gap: 6, padding: 8 },
+            buttonContent: icon(h, "chevron"),
+            buttonClassName: className(prose.pageAction, prose.pageActionToggle),
+            itemsClassName: className(
+              prose.menu,
+              (model.pageMenu.animation.transitionState === "EnterStart" ||
+                model.pageMenu.animation.transitionState === "LeaveAnimating") &&
+                prose.menuClosed,
+            ),
+            itemGroupKey: (item) =>
+              item === "markdown" || item === "view" ? "copy" : item === "llms" ? "agents" : "open",
+            groupToHeading: (key) =>
+              key === "open"
+                ? { content: h.span([], ["Abrir com IA"]), className: className(prose.menuHeading) }
+                : undefined,
+            separatorClassName: className(prose.menuSeparator),
+            itemToConfig: (item, { isActive }) => ({
+              className: className(prose.menuItem, isActive && prose.menuItemOn),
+              content: h.span(
+                [...sx(h, prose.menuRow)],
+                [
+                  h.span([...sx(h, prose.menuGlyph)], [pageMenuLabel[item].glyph]),
+                  h.span(
+                    [...sx(h, prose.menuText)],
+                    [
+                      h.span([...sx(h, prose.menuTitle)], [pageMenuLabel[item].title]),
+                      h.span([...sx(h, prose.menuHint)], [pageMenuLabel[item].hint]),
+                    ],
+                  ),
+                ],
+              ),
+            }),
+          },
+          toParentMessage: (message) => Message.GotPageMenuMessage({ message }),
+        }),
+      ],
+    );
+    const banner = (input: {
+      title: string;
+      lead: string;
+      crumbs: ReadonlyArray<{ label: string; href: string | undefined }>;
+      meta?: string | undefined;
+      narrow?: boolean;
+      releases?: boolean;
+      actions?: boolean;
+    }) =>
+      h.section(
+        [...sx(h, prose.banner)],
+        [
+          h.div(
+            [
+              ...sx(
+                h,
+                prose.bannerInner,
+                input.narrow === true && prose.bannerNarrow,
+                input.releases === true && prose.bannerReleases,
+              ),
+            ],
+            [
+              ...(input.crumbs.length > 0 || input.meta !== undefined
+                ? [
+                    h.p(
+                      [...sx(h, prose.crumbs)],
+                      [
+                        ...input.crumbs.flatMap((crumb, index) => [
+                          ...(index > 0 ? [h.span([...sx(h, prose.crumbSep)], ["/"])] : []),
+                          crumb.href !== undefined
+                            ? h.a([...sx(h, prose.crumbLink), h.Href(crumb.href)], [crumb.label])
+                            : h.span([], [crumb.label]),
+                        ]),
+                        ...(input.meta !== undefined
+                          ? [
+                              ...(input.crumbs.length > 0
+                                ? [h.span([...sx(h, prose.crumbSep)], ["·"])]
+                                : []),
+                              h.span([], [input.meta]),
+                            ]
+                          : []),
+                      ],
+                    ),
+                  ]
+                : []),
+              h.h1([...sx(h, prose.bannerTitle)], [input.title]),
+              ...(input.lead !== "" ? [h.p([...sx(h, prose.bannerLead)], [input.lead])] : []),
+              ...(input.actions === true ? [pageActions] : []),
+            ],
+          ),
+        ],
+      );
+    const navItems = [
+      { label: "Docs", href: pageRoute({ path: "docs" }) },
+      { label: "Provedores", href: `${homeRoute({})}#provedores` },
+      { label: "Assinar PDF grátis", href: signFreePath },
+      { label: "Blog", href: pageRoute({ path: "blog" }) },
+      { label: "Changelog", href: pageRoute({ path: "changelog" }) },
+    ];
     const footerColumns = [
       {
-        title: copy.footer_nav_product,
+        title: "Produto",
         links: [
-          {
-            label: copy.footer_sign_free,
-            href: pageRoute({
-              locale: model.locale,
-              path: model.locale === "pt-BR" ? "assine-documentos-gratis" : "sign-free",
-            }),
-            isNew: true,
-          },
-          { label: copy.nav_docs, href: pageRoute({ locale: model.locale, path: "docs" }) },
-          { label: copy.footer_quickstart, href: docsRoute("get-started/quickstart") },
-          { label: copy.footer_installation, href: docsRoute("get-started/installation") },
+          { label: "Assinar PDF grátis", href: signFreePath },
+          { label: "Provedores", href: `${homeRoute({})}#provedores` },
+          { label: "Documentação", href: pageRoute({ path: "docs" }) },
         ],
       },
       {
-        title: copy.footer_nav_signing,
+        title: "Recursos",
         links: [
-          { label: copy.feature_signers, href: docsRoute("signing/signers") },
-          { label: copy.footer_certificates, href: docsRoute("signing/certificates") },
-          { label: "PDF / PAdES", href: docsRoute("signing/pdf") },
-          { label: "XML-DSig", href: docsRoute("signing/xml") },
-          { label: copy.footer_errors, href: docsRoute("signing/errors") },
-        ],
-      },
-      {
-        title: copy.nav_providers,
-        links: [
-          { label: "Clicksign", href: docsRoute("providers/clicksign") },
-          { label: "Assinafy", href: docsRoute("providers/assinafy") },
-          { label: "ZapSign", href: docsRoute("providers/zapsign") },
-          { label: "DocuSeal", href: docsRoute("providers/docuseal") },
-          { label: "Documenso", href: docsRoute("providers/documenso") },
-        ],
-      },
-      {
-        title: copy.footer_nav_resources,
-        links: [
-          { label: "Blog", href: pageRoute({ locale: model.locale, path: "blog" }) },
-          { label: "Changelog", href: pageRoute({ locale: model.locale, path: "changelog" }) },
-          { label: copy.footer_search, href: pageRoute({ locale: model.locale, path: "search" }) },
-          { label: copy.feature_react, href: docsRoute("recipes/react-signing-hook") },
-        ],
-      },
-      {
-        title: copy.footer_nav_project,
-        links: [
+          { label: "Blog", href: pageRoute({ path: "blog" }) },
+          { label: "Changelog", href: pageRoute({ path: "changelog" }) },
           { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
-          { label: copy.footer_issues, href: "https://github.com/Licitei/signature-kit/issues" },
+        ],
+      },
+      {
+        title: "Projeto",
+        links: [
           { label: "Licitei", href: "https://licitei.com.br" },
+          {
+            label: "Licença MIT",
+            href: "https://github.com/Licitei/signature-kit/blob/main/LICENSE",
+          },
+          { label: "Créditos das fotos", href: "/landing/CREDITS.md" },
         ],
       },
     ];
-    const homeState = {
-      locale: model.locale,
-      provider: model.homeProvider,
-      copied: model.homeCopied,
-      installManager: model.installManager,
-      providerTabs: model.providerTabs,
-      installTabs: model.installTabs,
-      copyToast: model.copyToast,
-    };
-    const homeMessages = {
-      open: (kind: OverlayKind) => Message.OverlayRequested({ kind }),
-      copy: (target: typeof HomeCopyTarget.Type, location: typeof HomeCopyLocation.Type) =>
-        Message.HomeCopyRequested({ target, location }),
-      gotProviderTabs: (message: Tabs.Message) => Message.GotProviderTabsMessage({ message }),
-      gotInstallTabs: (message: Tabs.Message) => Message.GotInstallTabsMessage({ message }),
-      gotCopyToast: (message: typeof CopyToast.Message.Type) =>
-        Message.GotCopyToastMessage({ message }),
-    };
     const signer = (embedded: boolean) =>
       h.submodel({
         slotId: "signing-form",
         model: model.signingForm,
         view: signingFormView,
-        viewInputs: { locale: model.locale, embedded },
+        viewInputs: { embedded },
         toParentMessage: (message) => Message.GotSigningFormMessage({ message }),
       });
+    const signerPanel = (): readonly [OverlayKind, Html] => ["signer", signer(true)];
+    const toast = copyToastView(h, {
+      model: model.copyToast,
+      toParentMessage: (message) => Message.GotCopyToastMessage({ message }),
+    });
     return {
       title: tagRoute
-        ? `${tag?.tag ?? (model.locale === "pt-BR" ? "Tags do blog" : "Blog tags")} | SignatureKit`
+        ? `${tag?.tag ?? "Tags do blog"} | SignatureKit`
         : signing
-          ? model.locale === "pt-BR"
-            ? "Assine documentos grátis com certificado A1 | SignatureKit"
-            : "Sign documents for free — SignatureKit"
+          ? "Assine documentos grátis com certificado A1 | SignatureKit"
           : article !== undefined
             ? `${article.title} — SignatureKit`
             : section !== undefined
               ? `${heading} — SignatureKit`
               : content !== undefined
                 ? `${content.title} — SignatureKit`
-                : model.locale === "pt-BR"
-                  ? "SignatureKit — Assinaturas digitais nativas em Effect para TypeScript"
-                  : "SignatureKit — Effect-native digital signatures for TypeScript",
-      lang: model.locale,
+                : "SignatureKit — Assinatura digital com certificado A1 em TypeScript",
+      lang: "pt-BR",
       canonical,
       ogUrl: canonical,
       body: h.div(
@@ -563,53 +673,76 @@ export const createView = (source: {
         ],
         [
           h.header(
-            [...sx(h, "header", shell.header)],
+            [
+              ...sx(
+                h,
+                "header",
+                shell.header,
+                shell.headerWide,
+                overlayHeader && shell.headerOverlay,
+              ),
+            ],
             [
               h.a(
-                [...sx(h, "brand", shell.brand), h.Href(homeRoute({ locale: model.locale }))],
+                [...sx(h, "brand", shell.brand), h.Href(homeRoute({}))],
                 [brandMark(h), "SignatureKit"],
               ),
-              Nav.view({
-                items: [
-                  pageRoute({ locale: model.locale, path: "docs" }),
-                  `${homeRoute({ locale: model.locale })}#providers`,
-                  pageRoute({ locale: model.locale, path: "blog" }),
-                  pageRoute({ locale: model.locale, path: "changelog" }),
+              h.nav(
+                [
+                  ...sx(h, "navigation", shell.navigation, overlayHeader && shell.navigationLight),
+                  h.AriaLabel("Navegação principal"),
                 ],
-                ariaLabel: model.locale === "pt-BR" ? "Navegação principal" : "Primary navigation",
-                toHref: (item) => item,
-                isItemCurrent: (item) => item === currentRoute,
-                toView: ({ nav, items }) =>
-                  h.nav(
-                    [...nav, ...sx(h, "navigation", shell.navigation)],
-                    items.map((item) =>
-                      h.a(
-                        [...item.link, ...sx(h, shell.navLink)],
-                        [
-                          [copy.nav_docs, copy.nav_providers, "Blog", "Changelog"][item.index] ??
-                            "",
-                        ],
-                      ),
-                    ),
+                [
+                  navMenuView(h, {
+                    kind: "docs",
+                    model: model.navDocs,
+                    current: docs,
+                    toParentMessage: (message) =>
+                      Message.GotNavMenuMessage({ menuId: "docs", message }),
+                  }),
+                  navMenuView(h, {
+                    kind: "providers",
+                    model: model.navProviders,
+                    current: model.path.startsWith("/docs/providers"),
+                    toParentMessage: (message) =>
+                      Message.GotNavMenuMessage({ menuId: "providers", message }),
+                  }),
+                  h.a(
+                    [
+                      ...sx(h, shell.navLink, signing && shell.navLinkOn),
+                      h.Href(signFreePath),
+                      ...(signing ? [h.AriaCurrent("page")] : []),
+                    ],
+                    ["Assinar PDF grátis"],
                   ),
-              }),
+                  navMenuView(h, {
+                    kind: "resources",
+                    model: model.navResources,
+                    current: section !== undefined,
+                    toParentMessage: (message) =>
+                      Message.GotNavMenuMessage({ menuId: "resources", message }),
+                  }),
+                ],
+              ),
               h.div(
                 [...sx(h, shell.headerEnd)],
                 [
                   h.a(
                     [
-                      ...sx(h, shell.searchButton),
-                      h.Href(pageRoute({ locale: model.locale, path: "search" })),
+                      ...sx(
+                        h,
+                        shell.searchButton,
+                        shell.wideOnly,
+                        overlayHeader && shell.searchButtonLight,
+                      ),
+                      h.Href(pageRoute({ path: "search" })),
                       h.Attribute("data-overlay", "search"),
                       h.AriaKeyshortcuts("Meta+K Control+K"),
                       h.OnClick(Message.OverlayRequested({ kind: "search" }), {
                         defaultAction: "Prevent",
                       }),
                     ],
-                    [
-                      h.span([...sx(h, shell.wideOnly)], [copy.footer_search]),
-                      h.kbd([...sx(h, shell.kbd)], ["⌘K"]),
-                    ],
+                    ["Buscar", h.kbd([...sx(h, shell.kbd)], ["⌘K"])],
                   ),
                   h.submodel({
                     slotId: "theme-tip",
@@ -631,11 +764,12 @@ export const createView = (source: {
                                     [
                                       ...button,
                                       ...trigger,
-                                      ...sx(h, shell.iconButton),
-                                      h.Attribute(
-                                        "aria-label",
-                                        model.locale === "pt-BR" ? "Alternar tema" : "Toggle theme",
+                                      ...sx(
+                                        h,
+                                        shell.iconButton,
+                                        overlayHeader && shell.iconLinkLight,
                                       ),
+                                      h.Attribute("aria-label", "Alternar tema"),
                                     ],
                                     [model.theme === "light" ? "☾" : "☀"],
                                   ),
@@ -643,92 +777,32 @@ export const createView = (source: {
                               h,
                             ),
                             ...(isVisible
-                              ? [
-                                  h.div(
-                                    [...panel, ...sx(h, shell.tooltip)],
-                                    [model.locale === "pt-BR" ? "Tema" : "Theme"],
-                                  ),
-                                ]
+                              ? [h.div([...panel, ...sx(h, shell.tooltip)], ["Tema"])]
                               : []),
                           ],
                         ),
                     },
                     toParentMessage: (message) => Message.GotThemeTipMessage({ message }),
                   }),
-                  h.submodel({
-                    slotId: "language",
-                    model: model.languagePopover,
-                    view: Popover.view,
-                    viewInputs: {
-                      ariaLabel: model.locale === "pt-BR" ? "Idioma" : "Language",
-                      anchor: { placement: "bottom-start", gap: 4, padding: 8, portal: false },
-                      toView: ({ button, panel, backdrop, isVisible }) =>
-                        h.div(
-                          [],
-                          [
-                            h.button(
-                              [...button, ...sx(h, "language", shell.language)],
-                              [model.locale],
-                            ),
-                            ...(isVisible
-                              ? [
-                                  h.div(backdrop),
-                                  h.div(
-                                    [...panel, ...sx(h, "languages", shell.languages)],
-                                    [
-                                      h.a(
-                                        [
-                                          ...sx(h, shell.languageLink),
-                                          h.Href(
-                                            (languagePath("en-US") === ""
-                                              ? homeRoute({ locale: "en-US" })
-                                              : pageRoute({
-                                                  locale: "en-US",
-                                                  path: languagePath("en-US").slice(1),
-                                                })) + searchSuffix,
-                                          ),
-                                          h.Lang("en-US"),
-                                        ],
-                                        ["English"],
-                                      ),
-                                      h.a(
-                                        [
-                                          ...sx(h, shell.languageLink),
-                                          h.Href(
-                                            (languagePath("pt-BR") === ""
-                                              ? homeRoute({ locale: "pt-BR" })
-                                              : pageRoute({
-                                                  locale: "pt-BR",
-                                                  path: languagePath("pt-BR").slice(1),
-                                                })) + searchSuffix,
-                                          ),
-                                          h.Lang("pt-BR"),
-                                        ],
-                                        ["Português"],
-                                      ),
-                                    ],
-                                  ),
-                                ]
-                              : []),
-                          ],
-                        ),
-                    },
-                    toParentMessage: (message) => Message.GotLanguagePopoverMessage({ message }),
-                  }),
+                  githubLink(h, overlayHeader ? "light" : "dark"),
                   h.a(
                     [
-                      ...sx(h, shell.pill, shell.wideOnly),
-                      h.Href("https://github.com/Licitei/signature-kit"),
+                      ...sx(h, shell.primary, shell.primarySmall, shell.wideOnly),
+                      h.Href(pageRoute({ path: "docs/get-started/quickstart" })),
                     ],
-                    ["GitHub"],
+                    ["Começar"],
                   ),
-                  h.a([...sx(h, shell.pill, shell.wideOnly), h.Href(signFree)], [copy.nav_sign]),
                   h.a(
                     [
-                      ...sx(h, shell.pill, shell.compactOnly),
+                      ...sx(
+                        h,
+                        shell.iconButton,
+                        shell.compactOnly,
+                        overlayHeader && shell.iconLinkLight,
+                      ),
                       h.Href("#site-footer"),
                       h.Attribute("data-overlay", "menu"),
-                      h.AriaLabel(copy.menu),
+                      h.AriaLabel("Menu"),
                       h.OnClick(Message.OverlayRequested({ kind: "menu" }), {
                         defaultAction: "Prevent",
                       }),
@@ -743,26 +817,22 @@ export const createView = (source: {
             [],
             model.path === "/search"
               ? [
+                  banner({
+                    title: "Buscar na documentação",
+                    narrow: true,
+                    lead: "Encontre guias, conceitos e referências da API.",
+                    crumbs: [{ label: "Docs", href: pageRoute({ path: "docs" }) }],
+                  }),
                   h.section(
-                    [...sx(h, "docs-content", prose.content)],
+                    [...sx(h, "docs-content", prose.plain)],
                     [
-                      h.h1(
-                        [],
-                        [
-                          model.locale === "pt-BR"
-                            ? "Buscar na documentação"
-                            : "Search documentation",
-                        ],
-                      ),
                       h.form(
                         [
                           h.Attribute("method", "get"),
-                          h.Attribute(
-                            "action",
-                            pageRoute({ locale: model.locale, path: "search" }),
-                          ),
+                          h.Attribute("action", pageRoute({ path: "search" })),
                           h.Attribute("role", "search"),
                           h.OnSubmit(Message.SearchSubmitted()),
+                          ...sx(h, prose.feedbackActions),
                         ],
                         [
                           Input.view(
@@ -774,9 +844,10 @@ export const createView = (source: {
                               onInput: (value) => Message.QueryChanged({ value }),
                               toView: (attributes) =>
                                 h.label(attributes.label, [
-                                  model.locale === "pt-BR" ? "Termos de busca" : "Search terms",
+                                  "Termos de busca",
                                   h.input([
                                     ...attributes.input,
+                                    ...sx(h, prose.feedbackInput),
                                     h.Attribute("maxlength", "200"),
                                     h.Class("ph-no-capture"),
                                   ]),
@@ -788,46 +859,33 @@ export const createView = (source: {
                             {
                               type: "submit",
                               toView: (attributes) =>
-                                h.button(attributes.button, [
-                                  model.locale === "pt-BR" ? "Buscar" : "Search",
-                                ]),
+                                h.button(
+                                  [...attributes.button, ...sx(h, shell.primary)],
+                                  ["Buscar"],
+                                ),
                             },
                             h,
                           ),
                         ],
                       ),
                       model.query.trim() === ""
-                        ? h.p(
-                            [],
-                            [
-                              model.locale === "pt-BR"
-                                ? "Digite um termo para buscar."
-                                : "Enter a search term.",
-                            ],
-                          )
+                        ? h.p([...sx(h, prose.p)], ["Digite um termo para buscar."])
                         : model.results.length === 0
-                          ? h.p(
-                              [],
-                              [
-                                model.locale === "pt-BR"
-                                  ? "Nenhum resultado encontrado."
-                                  : "No results found.",
-                              ],
-                            )
+                          ? h.p([...sx(h, prose.p)], ["Nenhum resultado encontrado."])
                           : h.ul(
-                              [],
+                              [...sx(h, prose.articleList)],
                               model.results.map((result) =>
                                 h.li(
-                                  [],
+                                  [...sx(h, prose.articleItem)],
                                   [
                                     h.a(
-                                      [h.Href(result.href)],
+                                      [...sx(h, prose.articleLink), h.Href(result.href)],
                                       [
                                         result.title,
                                         ...(result.heading !== "" ? [` — ${result.heading}`] : []),
                                       ],
                                     ),
-                                    h.p([], [result.excerpt]),
+                                    h.p([...sx(h, prose.articleDescription)], [result.excerpt]),
                                   ],
                                 ),
                               ),
@@ -837,42 +895,43 @@ export const createView = (source: {
                 ]
               : tagRoute
                 ? [
-                    h.article(
-                      [...sx(h, "docs-content", prose.content)],
+                    banner({
+                      title: tag !== undefined ? tag.tag : "Tags do blog",
+                      narrow: true,
+                      lead: "Explore os artigos por assunto.",
+                      crumbs: [
+                        { label: "Blog", href: pageRoute({ path: "blog" }) },
+                        ...(tag !== undefined
+                          ? [{ label: "Tags", href: pageRoute({ path: "blog/tags" }) }]
+                          : []),
+                      ],
+                    }),
+                    h.section(
+                      [...sx(h, "docs-content", prose.plain)],
                       [
-                        h.h1(
-                          [],
-                          [
-                            tag !== undefined
-                              ? tag.tag
-                              : model.locale === "pt-BR"
-                                ? "Tags do blog"
-                                : "Blog tags",
-                          ],
-                        ),
-                        h.p(
-                          [],
-                          [
-                            model.locale === "pt-BR"
-                              ? "Explore os artigos por assunto."
-                              : "Explore articles by topic.",
-                          ],
-                        ),
                         h.ul(
-                          [],
+                          [...sx(h, prose.articleList)],
                           tag !== undefined
                             ? tag.entries.map((entry) =>
-                                h.li([], [h.a([h.Href(entry.href)], [entry.title])]),
-                              )
-                            : blogTags(model.locale).map((entry) =>
                                 h.li(
-                                  [],
+                                  [...sx(h, prose.articleItem)],
+                                  [
+                                    h.a(
+                                      [...sx(h, prose.articleLink), h.Href(entry.href)],
+                                      [entry.title],
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : blogTags().map((entry) =>
+                                h.li(
+                                  [...sx(h, prose.articleItem)],
                                   [
                                     h.a(
                                       [
+                                        ...sx(h, prose.articleLink),
                                         h.Href(
                                           pageRoute({
-                                            locale: model.locale,
                                             path: `blog/tags/${encodeURIComponent(entry.slug)}`,
                                           }),
                                         ),
@@ -891,116 +950,292 @@ export const createView = (source: {
                       h.div(
                         [h.Class("ph-no-capture"), h.Attribute("data-analytics-sensitive", "true")],
                         [
-                          ...(model.locale === "pt-BR"
-                            ? signFreeLanding(h, signer(false), {
-                                open: model.openFaq,
-                                toggle: (index, open) => Message.FaqToggled({ index, open }),
-                              })
-                            : [h.section([...sx(h, landing.section)], [signer(false)])]),
+                          ...signFreeLanding(h, signer(false), {
+                            open: model.openFaq,
+                            toggle: (index, open) => Message.FaqToggled({ index, open }),
+                          }),
                           autoSignSection(
                             h,
-                            model.locale,
                             h.submodel({
                               slotId: "home-demo",
                               model: model.homeDemo,
                               view: homeDemoView,
-                              viewInputs: { locale: model.locale },
                               toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
                             }),
                           ),
                         ],
                       ),
                     ]
-                  : section !== undefined
+                  : section === "changelog"
                     ? [
-                        h.article(
-                          [...sx(h, "docs-content", prose.content)],
-                          article !== undefined
-                            ? [
-                                h.h1([], [article.title]),
-                                ...(article.date !== "" ? [h.p([], [article.date])] : []),
-                                ...(article.description !== undefined && article.description !== ""
-                                  ? [h.p([], [article.description])]
-                                  : []),
-                                ...renderContent(article.nodes, h),
-                              ]
-                            : [
-                                h.h1([], [heading]),
-                                ...(section === "blog"
-                                  ? [
-                                      h.a(
-                                        [
-                                          h.Href(
-                                            pageRoute({ locale: model.locale, path: "blog/tags" }),
-                                          ),
-                                        ],
-                                        [model.locale === "pt-BR" ? "Tags do blog" : "Blog tags"],
-                                      ),
-                                    ]
-                                  : []),
-                                h.p(
-                                  [],
-                                  [
-                                    section === "blog"
-                                      ? model.locale === "pt-BR"
-                                        ? "Artigos sobre assinaturas digitais e SignatureKit."
-                                        : "Articles about digital signatures and SignatureKit."
-                                      : model.locale === "pt-BR"
-                                        ? "Notas de versão dos pacotes SignatureKit."
-                                        : "Release notes for SignatureKit packages.",
-                                  ],
-                                ),
+                        banner({
+                          title: article !== undefined ? article.title : "Changelog",
+                          lead:
+                            article !== undefined
+                              ? ""
+                              : "O que mudou em cada versão dos pacotes SignatureKit.",
+                          crumbs:
+                            article !== undefined
+                              ? [{ label: "Changelog", href: pageRoute({ path: "changelog" }) }]
+                              : [],
+                          releases: true,
+                        }),
+                        h.div(
+                          [...sx(h, "docs-content", prose.releases)],
+                          [h.span([...sx(h, prose.releaseRail), h.AriaHidden(true)])].concat(
+                            groupReleases(
+                              article !== undefined
+                                ? [{ ...article, slug: articleSlug ?? "", href: currentRoute }]
+                                : articles("changelog"),
+                            ).map((release) =>
+                              releaseView(h, {
+                                release,
+                                formatDate,
+                                linkTitles: article === undefined,
+                              }),
+                            ),
+                          ),
+                        ),
+                      ]
+                    : section === "blog"
+                      ? article !== undefined
+                        ? [
+                            banner({
+                              title: article.title,
+                              lead: article.description ?? "",
+                              crumbs: [{ label: "Blog", href: pageRoute({ path: "blog" }) }],
+                              meta: article.date !== "" ? formatDate(article.date) : undefined,
+                              narrow: true,
+                            }),
+                            h.article(
+                              [...sx(h, "docs-content", prose.plain)],
+                              renderContent(article.nodes, h),
+                            ),
+                          ]
+                        : [
+                            banner({
+                              title: "Blog",
+                              lead: "Artigos sobre assinaturas digitais e SignatureKit.",
+                              crumbs: [
+                                { label: "Tags do blog", href: pageRoute({ path: "blog/tags" }) },
+                              ],
+                              narrow: true,
+                            }),
+                            h.section(
+                              [...sx(h, "docs-content", prose.plain)],
+                              [
                                 h.ul(
-                                  [],
-                                  articles(model.locale, section).map((entry) =>
+                                  [...sx(h, prose.articleList)],
+                                  articles("blog").map((entry) =>
                                     h.li(
-                                      [],
+                                      [...sx(h, prose.articleItem)],
                                       [
-                                        h.a([h.Href(entry.href)], [entry.title]),
-                                        ...(entry.date !== "" ? [h.p([], [entry.date])] : []),
+                                        h.a(
+                                          [...sx(h, prose.articleLink), h.Href(entry.href)],
+                                          [entry.title],
+                                        ),
+                                        ...(entry.date !== ""
+                                          ? [
+                                              h.p(
+                                                [...sx(h, prose.articleMeta)],
+                                                [formatDate(entry.date)],
+                                              ),
+                                            ]
+                                          : []),
                                         ...(entry.description !== undefined &&
                                         entry.description !== ""
-                                          ? [h.p([], [entry.description])]
+                                          ? [
+                                              h.p(
+                                                [...sx(h, prose.articleDescription)],
+                                                [entry.description],
+                                              ),
+                                            ]
                                           : []),
                                       ],
                                     ),
                                   ),
                                 ),
                               ],
-                        ),
-                      ]
-                    : docs && content !== undefined
-                      ? [
-                          h.div(
-                            [...sx(h, "docs-layout", prose.layout)],
-                            [
-                              h.div(
-                                [...sx(h, "docs-navigation", prose.navigation)],
-                                docsNavigation(model.locale).map((group) =>
-                                  Nav.view({
-                                    items: group.links.map((link) => link.href),
-                                    ariaLabel: group.title,
-                                    toHref: (href) => href,
-                                    isItemCurrent: (href) =>
-                                      href ===
-                                      pageRoute({
-                                        locale: model.locale,
-                                        path: model.path.slice(1),
-                                      }),
-                                    toView: ({ nav, items }) =>
+                            ),
+                          ]
+                      : docs && content !== undefined
+                        ? [
+                            banner({
+                              title: content.title,
+                              lead: content.description ?? "",
+                              actions: true,
+                              crumbs: [
+                                { label: "Docs", href: pageRoute({ path: "docs" }) },
+                                ...(docsGroup !== undefined && docsGroup !== "Docs"
+                                  ? [{ label: docsGroup, href: undefined }]
+                                  : []),
+                              ],
+                            }),
+                            h.div(
+                              [...sx(h, "docs-layout", prose.layout)],
+                              [
+                                h.div(
+                                  [...sx(h, "docs-navigation", prose.navigation)],
+                                  docsNavigation().map((group, index) =>
+                                    Nav.view({
+                                      items: group.links.map((link) => link.href),
+                                      ariaLabel: group.title,
+                                      toHref: (href) => href,
+                                      isItemCurrent: (href) => href === currentRoute,
+                                      toView: ({ nav, items }) =>
+                                        h.nav(
+                                          [...nav],
+                                          [
+                                            h.h2(
+                                              [
+                                                ...sx(
+                                                  h,
+                                                  prose.navTitle,
+                                                  index === 0 && prose.navTitleFirst,
+                                                ),
+                                              ],
+                                              [icon(h, groupIcon(group.title)), group.title],
+                                            ),
+                                            h.ul(
+                                              [...sx(h, prose.navList)],
+                                              items.map((item) =>
+                                                h.li(
+                                                  [],
+                                                  [
+                                                    h.a(
+                                                      [
+                                                        ...item.link,
+                                                        ...sx(
+                                                          h,
+                                                          prose.navLink,
+                                                          item.isCurrent && prose.navLinkOn,
+                                                        ),
+                                                      ],
+                                                      [group.links[item.index]?.title ?? ""],
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                    }),
+                                  ),
+                                ),
+                                h.article(
+                                  [...sx(h, "docs-content", prose.content)],
+                                  [
+                                    h.div(
+                                      [h.Attribute("data-feedback-content", "")],
+                                      renderContent(content.nodes, h),
+                                    ),
+                                    h.section(
+                                      [
+                                        ...sx(h, "ph-no-capture", prose.feedback),
+                                        h.Attribute("data-analytics-sensitive", "true"),
+                                      ],
+                                      [
+                                        h.h2(
+                                          [...sx(h, prose.feedbackTitle)],
+                                          ["Esta página ajudou?"],
+                                        ),
+                                        Button.view(
+                                          {
+                                            onClick: Message.FeedbackSubmitted({ opinion: "good" }),
+                                            toView: (attributes) =>
+                                              h.button(
+                                                [...attributes.button, ...sx(h, shell.ghost)],
+                                                ["Sim"],
+                                              ),
+                                          },
+                                          h,
+                                        ),
+                                        Button.view(
+                                          {
+                                            onClick: Message.FeedbackSubmitted({ opinion: "bad" }),
+                                            toView: (attributes) =>
+                                              h.button(
+                                                [...attributes.button, ...sx(h, shell.ghost)],
+                                                ["Não"],
+                                              ),
+                                          },
+                                          h,
+                                        ),
+                                        h.div(
+                                          [...sx(h, prose.feedbackStatus)],
+                                          [
+                                            Textarea.view(
+                                              {
+                                                id: "feedback-message",
+                                                toView: (attributes) =>
+                                                  h.textarea([
+                                                    ...attributes.textarea,
+                                                    h.Attribute("data-feedback-message", ""),
+                                                    h.Attribute("maxlength", "2000"),
+                                                    h.Attribute("rows", "2"),
+                                                    h.Attribute(
+                                                      "placeholder",
+                                                      "Algo faltando ou errado? Conte aqui.",
+                                                    ),
+                                                    h.Attribute("aria-label", "Comentário"),
+                                                  ]),
+                                              },
+                                              h,
+                                            ),
+                                          ],
+                                        ),
+                                        Button.view(
+                                          {
+                                            onClick: Message.TextFeedbackSubmitted(),
+                                            toView: (attributes) =>
+                                              h.button(
+                                                [...attributes.button, ...sx(h, shell.ghost)],
+                                                ["Enviar comentário"],
+                                              ),
+                                          },
+                                          h,
+                                        ),
+                                        h.p(
+                                          [
+                                            ...sx(h, prose.feedbackStatus),
+                                            h.Attribute("role", "status"),
+                                          ],
+                                          [
+                                            model.feedbackStatus === "success"
+                                              ? "Obrigado pelo feedback!"
+                                              : model.feedbackStatus === "error"
+                                                ? "Não foi possível enviar. Tente novamente."
+                                                : model.feedbackStatus === "sending"
+                                                  ? "Enviando…"
+                                                  : "",
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                ...(toc.length > 1
+                                  ? [
                                       h.nav(
-                                        [...nav],
+                                        [...sx(h, prose.toc), h.AriaLabel("Nesta página")],
                                         [
-                                          h.h2([...sx(h, prose.navTitle)], [group.title]),
+                                          h.p(
+                                            [...sx(h, prose.tocTitle)],
+                                            [icon(h, "list"), "Nesta página"],
+                                          ),
                                           h.ul(
-                                            [...sx(h, prose.navList)],
-                                            items.map((item) =>
-                                              h.li(
+                                            [...sx(h, prose.tocList)],
+                                            toc.map((entry) =>
+                                              h.keyed("li")(
+                                                entry.id,
                                                 [],
                                                 [
                                                   h.a(
-                                                    [...item.link, ...sx(h, prose.navLink)],
-                                                    [group.links[item.index]?.title ?? ""],
+                                                    [
+                                                      ...sx(h, prose.tocLink),
+                                                      h.Href(`#${entry.id}`),
+                                                    ],
+                                                    [entry.title],
                                                   ),
                                                 ],
                                               ),
@@ -1008,181 +1243,108 @@ export const createView = (source: {
                                           ),
                                         ],
                                       ),
-                                  }),
-                                ),
-                              ),
-                              h.article(
-                                [...sx(h, "docs-content", prose.content)],
-                                [
-                                  h.div(
-                                    [h.Attribute("data-feedback-content", "")],
-                                    [
-                                      h.h1([], [content.title]),
-                                      ...(content.description !== undefined &&
-                                      content.description !== ""
-                                        ? [h.p([], [content.description])]
-                                        : []),
-                                      ...renderContent(content.nodes, h),
-                                    ],
-                                  ),
-                                  h.section(
-                                    [
-                                      ...sx(h, "ph-no-capture", prose.feedback),
-                                      h.Attribute("data-analytics-sensitive", "true"),
-                                    ],
-                                    [
-                                      h.h2(
-                                        [],
-                                        [
-                                          model.locale === "pt-BR"
-                                            ? "Como está este guia?"
-                                            : "How is this guide?",
-                                        ],
-                                      ),
-                                      Textarea.view(
-                                        {
-                                          id: "feedback-message",
-                                          toView: (attributes) =>
-                                            h.textarea([
-                                              ...attributes.textarea,
-                                              h.Attribute("data-feedback-message", ""),
-                                              h.Attribute("maxlength", "2000"),
-                                              h.Attribute(
-                                                "aria-label",
-                                                model.locale === "pt-BR" ? "Comentário" : "Comment",
-                                              ),
-                                            ]),
-                                        },
-                                        h,
-                                      ),
-                                      Button.view(
-                                        {
-                                          onClick: Message.FeedbackSubmitted({ opinion: "good" }),
-                                          toView: (attributes) =>
-                                            h.button(
-                                              [...attributes.button, ...sx(h, shell.ghost)],
-                                              [model.locale === "pt-BR" ? "Bom" : "Good"],
-                                            ),
-                                        },
-                                        h,
-                                      ),
-                                      Button.view(
-                                        {
-                                          onClick: Message.FeedbackSubmitted({ opinion: "bad" }),
-                                          toView: (attributes) =>
-                                            h.button(
-                                              [...attributes.button, ...sx(h, shell.ghost)],
-                                              [model.locale === "pt-BR" ? "Ruim" : "Bad"],
-                                            ),
-                                        },
-                                        h,
-                                      ),
-                                      Button.view(
-                                        {
-                                          onClick: Message.TextFeedbackSubmitted(),
-                                          toView: (attributes) =>
-                                            h.button(
-                                              [...attributes.button, ...sx(h, shell.ghost)],
-                                              [
-                                                model.locale === "pt-BR"
-                                                  ? "Enviar sobre texto selecionado"
-                                                  : "Send about selected text",
-                                              ],
-                                            ),
-                                        },
-                                        h,
-                                      ),
-                                      h.p(
-                                        [h.Attribute("role", "status")],
-                                        [
-                                          model.feedbackStatus === "success"
-                                            ? model.locale === "pt-BR"
-                                              ? "Obrigado pelo feedback!"
-                                              : "Thank you for your feedback!"
-                                            : model.feedbackStatus === "error"
-                                              ? model.locale === "pt-BR"
-                                                ? "Não foi possível enviar. Tente novamente."
-                                                : "Could not send feedback. Please try again."
-                                              : model.feedbackStatus === "sending"
-                                                ? model.locale === "pt-BR"
-                                                  ? "Enviando…"
-                                                  : "Sending…"
-                                                : "",
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ]
-                      : [
-                          ...homeView(h, homeState, homeMessages),
-                          ...(model.overlay.isOpen
-                            ? []
-                            : [copyToastView(h, homeState, homeMessages)]),
-                        ],
+                                    ]
+                                  : []),
+                              ],
+                            ),
+                          ]
+                        : homeView(h, { open: (kind) => Message.OverlayRequested({ kind }) }),
           ),
           h.footer(
             [...sx(h, "footer", shell.footer), h.Id("site-footer")],
             [
+              h.div([...sx(h, shell.footerRule)]),
               h.div(
-                [...sx(h, shell.footerColumns)],
-                footerColumns.map((column) =>
-                  Nav.view({
-                    items: column.links.map((link) => link.href),
-                    ariaLabel: column.title,
-                    toHref: (item) => item,
-                    isItemCurrent: (item) => item === currentRoute,
-                    toView: ({ nav, items }) =>
-                      h.nav(
-                        [...nav, ...sx(h, shell.footerNav)],
+                [...sx(h, shell.footerGrid)],
+                [
+                  h.div(
+                    [...sx(h, shell.footerBrand)],
+                    [
+                      h.a(
+                        [...sx(h, shell.brand), h.Href(homeRoute({}))],
+                        [brandMark(h), "SignatureKit"],
+                      ),
+                      h.p(
+                        [...sx(h, shell.footerTag)],
+                        ["Assinatura digital com certificado A1, em TypeScript."],
+                      ),
+                      installPill(h, {
+                        copied: model.homeCopied,
+                        onCopy: Message.HomeCopyRequested(),
+                      }),
+                      h.p(
+                        [...sx(h, shell.footerMeta)],
                         [
-                          h.h2([...sx(h, shell.footerTitle)], [column.title]),
-                          ...items.map((item) =>
-                            h.a(
-                              [...item.link, ...sx(h, shell.footerLink)],
-                              [
-                                column.links[item.index]?.label ?? "",
-                                ...(column.links[item.index]?.isNew === true
-                                  ? [h.span([...sx(h, shell.badge)], [copy.footer_new])]
-                                  : []),
-                              ],
-                            ),
+                          "© 2026 · Um projeto open source da",
+                          h.a(
+                            [...sx(h, shell.footerLicitei), h.Href("https://licitei.com.br")],
+                            [
+                              h.img([
+                                h.Src("/landing/licitei.png"),
+                                h.Alt("Licitei"),
+                                h.Height("13"),
+                                ...sx(h, shell.footerLiciteiLogo),
+                              ]),
+                            ],
                           ),
                         ],
                       ),
-                  }),
-                ),
-              ),
-              h.div(
-                [...sx(h, shell.footerBottom)],
-                [
-                  h.a(
-                    [...sx(h, shell.brand), h.Href(homeRoute({ locale: model.locale }))],
-                    [brandMark(h), "SignatureKit"],
+                      h.p(
+                        [...sx(h, shell.footerCredits)],
+                        [
+                          "Fotos: Maria Eduarda Trajano Mangueira de Melo e Edison Aquiles, ",
+                          h.a(
+                            [
+                              ...sx(h, shell.footerCreditsLink),
+                              h.Href("https://creativecommons.org/licenses/by-sa/4.0/deed.pt-br"),
+                            ],
+                            ["CC BY-SA 4.0"],
+                          ),
+                          ", modificadas.",
+                        ],
+                      ),
+                    ],
                   ),
-                  h.p([...sx(h, shell.footerMeta)], [copy.footer_copyright]),
+                  ...footerColumns.map((column) =>
+                    Nav.view({
+                      items: column.links.map((link) => link.href),
+                      ariaLabel: column.title,
+                      toHref: (item) => item,
+                      isItemCurrent: (item) => item === currentRoute,
+                      toView: ({ nav, items }) =>
+                        h.nav(
+                          [...nav, ...sx(h, shell.footerNav)],
+                          [
+                            h.h2([...sx(h, shell.footerTitle)], [column.title]),
+                            ...items.map((item) =>
+                              h.a(
+                                [...item.link, ...sx(h, shell.footerLink)],
+                                [column.links[item.index]?.label ?? ""],
+                              ),
+                            ),
+                          ],
+                        ),
+                    }),
+                  ),
                 ],
               ),
             ],
           ),
+          ...(model.overlay.isOpen ? [] : [toast]),
           overlayView(h, {
             model: model.overlay,
             kind: model.overlayKind,
+            wide: model.signingForm.mode === "completa",
             title: {
-              signer: copy.nav_sign,
-              providers: copy.nav_providers,
-              quickstart: copy.final_cta,
-              menu: copy.menu,
-              search: copy.footer_search,
+              signer: "Assinar PDF",
+              menu: "Menu",
+              search: "Buscar",
             }[model.overlayKind],
-            closeLabel: copy.overlay_close,
-            layer: home && model.overlay.isOpen ? [copyToastView(h, homeState, homeMessages)] : [],
+            closeLabel: "Fechar",
+            layer: model.overlay.isOpen ? [toast] : [],
             toParentMessage: (message) => Message.GotOverlayMessage({ message }),
             panels: [
-              ...(home ? homeOverlayPanels(h, homeState, signer(true), homeMessages) : []),
+              ...(home ? [signerPanel()] : []),
               [
                 "menu",
                 h.div(
@@ -1191,30 +1353,26 @@ export const createView = (source: {
                     h.ul(
                       [...sx(h, overlay.links)],
                       [
-                        [copy.nav_docs, pageRoute({ locale: model.locale, path: "docs" })],
-                        [copy.nav_providers, `${homeRoute({ locale: model.locale })}#providers`],
-                        ["Blog", pageRoute({ locale: model.locale, path: "blog" })],
-                        ["Changelog", pageRoute({ locale: model.locale, path: "changelog" })],
-                        [copy.nav_sign, signFree],
-                        ["GitHub", "https://github.com/Licitei/signature-kit"],
-                      ].map(([label, href]) =>
+                        ...navItems,
+                        { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
+                      ].map(({ label, href }) =>
                         h.li(
                           [],
                           [
                             h.a(
                               [
                                 ...sx(h, overlay.link),
-                                h.Href(href ?? ""),
+                                h.Href(href),
                                 h.OnClick(Message.OverlayCloseRequested()),
                               ],
-                              [label ?? ""],
+                              [label],
                             ),
                           ],
                         ),
                       ),
                     ),
                     ...(docs
-                      ? docsNavigation(model.locale).map((group) =>
+                      ? docsNavigation().map((group) =>
                           h.div(
                             [],
                             [
@@ -1252,7 +1410,7 @@ export const createView = (source: {
                   [
                     ...sx(h, overlay.stack),
                     h.Attribute("method", "get"),
-                    h.Attribute("action", pageRoute({ locale: model.locale, path: "search" })),
+                    h.Attribute("action", pageRoute({ path: "search" })),
                     h.Attribute("role", "search"),
                   ],
                   [
@@ -1269,15 +1427,18 @@ export const createView = (source: {
                             ...sx(h, "ph-no-capture", overlay.search),
                             h.DataAttribute("overlay-focus", ""),
                             h.Attribute("maxlength", "200"),
-                            h.AriaLabel(copy.footer_search),
-                            h.Attribute("placeholder", copy.search_placeholder),
+                            h.AriaLabel("Buscar"),
+                            h.Attribute("placeholder", "Buscar na documentação"),
                             h.EnterKeyHint("search"),
                           ]),
                       },
                       h,
                     ),
                     model.query.trim() === ""
-                      ? h.p([...sx(h, overlay.hint)], [copy.search_hint])
+                      ? h.p(
+                          [...sx(h, overlay.hint)],
+                          ["Digite para buscar guias e páginas de API."],
+                        )
                       : h.ul(
                           [...sx(h, overlay.links)],
                           model.results

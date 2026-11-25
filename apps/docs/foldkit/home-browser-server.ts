@@ -23,7 +23,7 @@ const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
         const origin = new URL(page.url()).origin;
         yield* Effect.promise(() => isolated.grantPermissions([], { origin }));
         const tab = yield* Effect.promise(() => isolated.newPage());
-        yield* Effect.promise(() => tab.goto(`${origin}/en-US`));
+        yield* Effect.promise(() => tab.goto(`${origin}/__signaturekit_home__`));
         yield* Effect.promise(async () => {
           for (let attempt = 0; attempt < 100; attempt++) {
             await tab.keyboard.press("Control+k");
@@ -35,23 +35,6 @@ const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
         yield* Effect.promise(() =>
           tab.locator("#site-overlay:not([open])").waitFor({ state: "attached" }),
         );
-        yield* Effect.promise(() => tab.locator('main [data-overlay="providers"]').click());
-        yield* Effect.promise(() =>
-          tab.getByRole("tab", { name: "Assinafy", exact: true }).dispatchEvent("click"),
-        );
-        yield* Effect.promise(() =>
-          tab.waitForFunction(() => {
-            const ready =
-              document
-                .querySelector(".home-code")
-                ?.textContent?.includes("AssinafySignatureRequest") === true;
-            if (!ready)
-              [...document.querySelectorAll<HTMLButtonElement>(".home-providers button")]
-                .find((button) => button.textContent === "Assinafy")
-                ?.click();
-            return ready;
-          }),
-        );
         const permission = yield* Effect.promise(() =>
           tab.evaluate(() =>
             navigator.clipboard.writeText("signaturekit clipboard probe").then(
@@ -60,15 +43,15 @@ const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
             ),
           ),
         );
-        yield* Effect.promise(() => tab.locator(".home-code .home-copy").dispatchEvent("click"));
+        yield* Effect.promise(() => tab.locator(".home-install").dispatchEvent("click"));
         yield* Effect.promise(() =>
-          tab.getByRole("status").filter({ hasText: "Could not copy." }).waitFor(),
+          tab.getByRole("status").filter({ hasText: "Não foi possível copiar." }).waitFor(),
         );
         yield* Effect.promise(() =>
           tab.waitForFunction(
             async () =>
               (await (await fetch("/__home_analytics__/events")).text()).includes(
-                "provider_snippet_copy_failed",
+                "install_command_copy_failed",
               ),
             undefined,
             { timeout: 20000 },
@@ -136,7 +119,11 @@ export const homeBrowserServer = (): Plugin => ({
     });
     server.middlewares.use((request, response, next) => {
       const url = new URL(request.url ?? "/", "http://localhost");
-      if (!/^\/(en-US|pt-BR)(?:\/|$)/.test(url.pathname)) return next();
+      if (url.pathname === "/__signaturekit_home__") url.pathname = "/";
+      else if (
+        !/^\/(?:docs|blog|changelog|search|assine-documentos-gratis)(?:\/|$)/.test(url.pathname)
+      )
+        return next();
       const abort = new AbortController();
       const close = () => abort.abort();
       response.once("close", close);

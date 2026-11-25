@@ -21,101 +21,76 @@ const parse = (xml: string) =>
   }).parseFromString(xml, "application/xml");
 
 describe("feeds", () => {
-  it("renders both localized RSS feeds from actual articles", async () => {
-    for (const locale of ["en-US", "pt-BR"] satisfies ("en-US" | "pt-BR")[]) {
-      const result = await response(`/${locale}/blog/rss.xml?secret=ignored`);
-      expect(result?.status).toBe(200);
-      expect(result?.headers.get("content-type")).toBe("application/rss+xml; charset=utf-8");
-      if (result === undefined) return expect.fail("Expected response");
-      const document = parse(await result.text());
-      expect(
-        document.getElementsByTagName("channel")[0]?.getElementsByTagName("title")[0]?.textContent,
-      ).toBe(locale === "en-US" ? "SignatureKit Blog" : "Blog do SignatureKit");
-      expect(document.getElementsByTagName("language")[0]?.textContent).toBe(locale);
-      expect(document.getElementsByTagName("item").length).toBeGreaterThan(0);
-      expect(
-        document.getElementsByTagName("item")[0]?.getElementsByTagName("title")[0]?.textContent,
-      ).toBe(articles(locale, "blog")[0]?.title);
-      expect(
-        document.getElementsByTagName("item")[0]?.getElementsByTagName("link")[0]?.textContent,
-      ).toMatch(/^https:\/\/signaturekit\.dev\//);
-      const expected = articles(locale, "blog").filter((entry) =>
-        resolveContent(locale, "blog", entry.slug),
-      );
-      expect(
-        Array.from(document.getElementsByTagName("item")).map((item) => [
-          item.getElementsByTagName("link")[0]?.textContent,
-          item.getElementsByTagName("pubDate")[0]?.textContent,
-        ]),
-      ).toEqual(
-        expected.map((entry) => [
-          `https://signaturekit.dev${entry.href}`,
-          new Date(entry.timestamp).toUTCString(),
-        ]),
-      );
-    }
+  it("renders the RSS feed from actual articles", async () => {
+    const result = await response("/blog/rss.xml?secret=ignored");
+    expect(result?.status).toBe(200);
+    expect(result?.headers.get("content-type")).toBe("application/rss+xml; charset=utf-8");
+    if (result === undefined) return expect.fail("Expected response");
+    const document = parse(await result.text());
+    expect(
+      document.getElementsByTagName("channel")[0]?.getElementsByTagName("title")[0]?.textContent,
+    ).toBe("Blog do SignatureKit");
+    expect(document.getElementsByTagName("language")[0]?.textContent).toBe("pt-BR");
+    expect(document.getElementsByTagName("item").length).toBeGreaterThan(0);
+    expect(
+      document.getElementsByTagName("item")[0]?.getElementsByTagName("title")[0]?.textContent,
+    ).toBe(articles("blog")[0]?.title);
+    expect(
+      Array.from(document.getElementsByTagName("item")).map((item) => [
+        item.getElementsByTagName("link")[0]?.textContent,
+        item.getElementsByTagName("pubDate")[0]?.textContent,
+      ]),
+    ).toEqual(
+      articles("blog").map((entry) => [
+        `https://signaturekit.dev${entry.href}`,
+        new Date(entry.timestamp).toUTCString(),
+      ]),
+    );
   });
   it("escapes reserved characters in XML text and URLs", () => {
-    const entry = articles("en-US", "blog")[0];
+    const entry = articles("blog")[0];
     if (entry === undefined) return expect.fail("Missing article");
     const document = parse(
-      renderRss("en-US", [
-        { ...entry, title: `A & <B> "C" 'D'`, description: "one & two", href: "/en-US/blog/a&b" },
+      renderRss([
+        { ...entry, title: `A & <B> "C" 'D'`, description: "one & two", href: "/blog/a&b" },
       ]),
     );
     const item = document.getElementsByTagName("item")[0];
     expect(item?.getElementsByTagName("title")[0]?.textContent).toBe(`A & <B> "C" 'D'`);
     expect(item?.getElementsByTagName("description")[0]?.textContent).toBe("one & two");
     expect(item?.getElementsByTagName("link")[0]?.textContent).toBe(
-      "https://signaturekit.dev/en-US/blog/a%26b",
+      "https://signaturekit.dev/blog/a%26b",
     );
   });
-  it("lists canonical pages, translations and validated article dates", async () => {
+  it("lists canonical pages and validated article dates", async () => {
     const result = await response("/sitemap.xml");
     expect(result?.status).toBe(200);
     if (result === undefined) return expect.fail("Expected response");
     const document = parse(await result.text());
     const entries = Array.from(document.getElementsByTagName("url"));
-    const expected = (["en-US", "pt-BR"] satisfies ("en-US" | "pt-BR")[]).flatMap((locale) => {
-      const docs = contentPaths()
-        .filter(
-          (path) =>
-            path.startsWith("docs/") &&
-            (locale === "pt-BR" ? path.endsWith(".pt-BR") : !path.endsWith(".pt-BR")),
-        )
-        .map((path) => path.slice(5).replace(/\.pt-BR$/, ""))
-        .map((slug) => `/${locale}/docs${slug === "index" ? "" : `/${slug}`}`);
-      const posts = (["blog", "changelog"] satisfies ("blog" | "changelog")[]).flatMap((section) =>
-        articles(locale, section)
-          .filter((entry) => resolveContent(locale, section, entry.slug))
-          .map((entry) => entry.href),
-      );
-      const tagNames = new Set(
-        contentPaths()
-          .filter(
-            (path) =>
-              path.startsWith("blog/") &&
-              (locale === "pt-BR" ? path.endsWith(".pt-BR") : !path.endsWith(".pt-BR")),
-          )
-          .flatMap(
-            (path) =>
-              resolveContent(locale, "blog", path.slice(5).replace(/\.pt-BR$/, ""))?.tags ?? [],
-          ),
-      );
-      const tags = [...tagNames].map(
-        (tag) => `/${locale}/blog/tags/${tag.toLowerCase().replace(/\s+/g, "-")}`,
-      );
-      return [
-        `/${locale}`,
-        `/${locale}/blog`,
-        `/${locale}/blog/tags`,
-        `/${locale}/changelog`,
-        locale === "pt-BR" ? "/pt-BR/assine-documentos-gratis" : "/en-US/sign-free",
-        ...docs,
-        ...posts,
-        ...tags,
-      ];
-    });
+    const docs = contentPaths()
+      .filter((path) => path.startsWith("docs/"))
+      .map((path) => path.slice(5))
+      .map((slug) => `/docs${slug === "index" ? "" : `/${slug}`}`);
+    const posts = (["blog", "changelog"] satisfies ("blog" | "changelog")[]).flatMap((section) =>
+      articles(section).map((entry) => entry.href),
+    );
+    const tagNames = new Set(
+      contentPaths()
+        .filter((path) => path.startsWith("blog/"))
+        .flatMap((path) => resolveContent("blog", path.slice(5))?.tags ?? []),
+    );
+    const tags = [...tagNames].map((tag) => `/blog/tags/${tag.toLowerCase().replace(/\s+/g, "-")}`);
+    const expected = [
+      "/",
+      "/blog",
+      "/blog/tags",
+      "/changelog",
+      "/assine-documentos-gratis",
+      ...docs,
+      ...posts,
+      ...tags,
+    ];
     expect(
       entries
         .map((entry) => entry.getElementsByTagName("loc")[0]?.textContent ?? "")
@@ -127,46 +102,20 @@ describe("feeds", () => {
         )
         .sort((a, b) => a.localeCompare(b)),
     );
-    for (const entry of entries) {
-      const loc = entry.getElementsByTagName("loc")[0]?.textContent ?? "";
-      const path = new URL(loc).pathname.replace(/^\/(en-US|pt-BR)/, "");
-      const links = Array.from(entry.getElementsByTagName("xhtml:link"));
-      const signing = path === "/sign-free" || path === "/assine-documentos-gratis";
-      expect(
-        links.map((link) => [link.getAttribute("hreflang"), link.getAttribute("href")]),
-      ).toEqual(
-        ["en-US", "pt-BR"]
-          .filter(
-            (locale) =>
-              signing ||
-              expected.some(
-                (candidate) =>
-                  candidate.split("/").map(encodeURIComponent).join("/") === `/${locale}${path}`,
-              ),
-          )
-          .map((locale) => [
-            locale,
-            `https://signaturekit.dev/${locale}${signing ? (locale === "pt-BR" ? "/assine-documentos-gratis" : "/sign-free") : path}`,
-          ]),
-      );
-    }
+    for (const entry of entries) expect(entry.getElementsByTagName("xhtml:link").length).toBe(0);
     const find = (path: string) =>
       entries.find(
         (entry) =>
           entry.getElementsByTagName("loc")[0]?.textContent === `https://signaturekit.dev${path}`,
       );
-    const translated = find("/pt-BR/blog/signature-kit-x-licitei");
-    expect(translated?.getElementsByTagName("lastmod")[0]?.textContent).toBe(
-      articles("pt-BR", "blog").find((entry) => entry.slug === "signature-kit-x-licitei")?.date,
-    );
     expect(
-      Array.from(translated?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
-        link.getAttribute("hreflang"),
-      ),
-    ).toEqual(["en-US", "pt-BR"]);
-    expect(find("/pt-BR/changelog/a1-node-esm-release")).toBeUndefined();
-    expect(find("/en-US/changelog/a1-node-esm-release")).toBeDefined();
-    expect(find("/en-US/docs")).toBeDefined();
+      find("/blog/signature-kit-x-licitei")?.getElementsByTagName("lastmod")[0]?.textContent,
+    ).toBe(articles("blog").find((entry) => entry.slug === "signature-kit-x-licitei")?.date);
+    expect(
+      find("/changelog/a1-node-esm-release")?.getElementsByTagName("lastmod")[0]?.textContent,
+    ).toBe(articles("changelog").find((entry) => entry.slug === "a1-node-esm-release")?.date);
+    expect(find("/docs")).toBeDefined();
+    expect(find("/en-US/docs")).toBeUndefined();
   });
   it("serves feeds over HTTP", async () => {
     await Effect.runPromise(
@@ -230,13 +179,13 @@ describe("feeds", () => {
             const get = await fetch(`${origin}/sitemap.xml`, { signal });
             expect(get.status).toBe(200);
             expect(parse(await get.text()).documentElement?.localName).toBe("urlset");
-            const head = await fetch(`${origin}/en-US/blog/rss.xml`, { method: "HEAD", signal });
+            const head = await fetch(`${origin}/blog/rss.xml`, { method: "HEAD", signal });
             expect(head.status).toBe(200);
             expect(await head.text()).toBe("");
-            const missing = await fetch(`${origin}/en-US/blog/missing`, { signal });
+            const missing = await fetch(`${origin}/blog/missing`, { signal });
             expect(missing.status).toBe(404);
             await missing.text();
-            const hostile = await fetch(`${origin}/en-US/blog/rss.xml`, {
+            const hostile = await fetch(`${origin}/blog/rss.xml`, {
               headers: { host: "evil.example", "x-forwarded-host": "evil.example" },
               signal,
             });
@@ -301,8 +250,8 @@ describe("feeds", () => {
           yield* Effect.promise(async (signal) => {
             const base = `http://127.0.0.1:${address.port}`;
             for (const [page, image] of [
-              ["/en-US", "/en-US/index.webp"],
-              ["/pt-BR/blog/signature-kit-x-licitei", "/pt-BR/blog/signature-kit-x-licitei.webp"],
+              ["/", "/index.webp"],
+              ["/blog/signature-kit-x-licitei", "/blog/signature-kit-x-licitei.webp"],
             ]) {
               const pageResponse = await fetch(`${base}${page}`, { signal });
               if (pageResponse.status !== 200)
@@ -332,15 +281,15 @@ describe("feeds", () => {
               expect(post.status).toBe(405);
               expect(post.headers.get("allow")).toBe("GET, HEAD");
             }
-            expect((await fetch(`${base}/en-US/blog/not-real.webp`, { signal })).status).toBe(404);
-            expect((await fetch(`${base}/en-US/.webp`, { signal })).status).toBe(404);
+            expect((await fetch(`${base}/blog/not-real.webp`, { signal })).status).toBe(404);
+            expect((await fetch(`${base}/.webp`, { signal })).status).toBe(404);
           });
         }),
       ).pipe(Effect.timeout("30 seconds")),
     );
   }, 35000);
   it("honors HEAD and rejects invalid routes and methods", async () => {
-    for (const path of ["/sitemap.xml", "/en-US/blog/rss.xml"]) {
+    for (const path of ["/sitemap.xml", "/blog/rss.xml"]) {
       const head = await response(path, "HEAD");
       expect(head?.status).toBe(200);
       expect(head?.headers.get("content-type")).toBe(
@@ -352,7 +301,7 @@ describe("feeds", () => {
       expect(post?.status).toBe(405);
       expect(post?.headers.get("allow")).toBe("GET, HEAD");
     }
-    for (const path of ["/pt-br/blog/rss.xml", "/en-US/blog/missing", "/sitemap.xml/missing"])
+    for (const path of ["/blog/missing", "/sitemap.xml/missing", "/fr-FR/blog/rss.xml"])
       expect((await response(path))?.status).toBe(404);
   });
 });

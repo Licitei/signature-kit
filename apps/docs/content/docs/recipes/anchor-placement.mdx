@@ -1,9 +1,9 @@
 ---
-title: Anchor-based placement
-description: "Find text anchors like assinatura, CPF, or CNPJ and turn them into clamped PDF signature rectangles."
+title: Posicionamento por âncora
+description: "Encontre âncoras de texto como assinatura, CPF ou CNPJ e transforme-as em retângulos de assinatura PDF."
 ---
 
-Use `findPdfTextAnchors` when the business document already names the signing area. It replaces app-side `pdfjs-dist` scans and transform math with a package-owned matcher over SignatureKit text boxes.
+Use `findPdfTextAnchors` quando o documento de negócio já nomeia a área de assinatura. Ele substitui scans com `pdfjs-dist` e matemática manual de transform por um matcher do pacote sobre text boxes do SignatureKit.
 
 ```ts title="anchor-placement.ts"
 import { findPdfTextAnchors } from "@signature-kit/pdf/anchors"
@@ -20,7 +20,7 @@ const stampRects = await Effect.runPromise(
     pages,
     matchers: [
       { text: "assinatura:" },
-      { digits: "12345678901" },      // CPF/CNPJ-style numeric-only match
+      { digits: "12345678901" },      // CPF/CNPJ: compara só números
     ],
     stampSize: { width: 180, height: 54 },
     placement: "below",
@@ -44,11 +44,11 @@ const signedPdf = await Effect.runPromise(
 )
 ```
 
-`digits` normalizes both the matcher and the PDF text to numeric-only strings, so `123.456.789-01` and `12345678901` match. Returned rectangles are clamped to the page bounds.
+`digits` normaliza o matcher e o texto do PDF para strings só com números, então `123.456.789-01` e `12345678901` casam. Os retângulos retornados ficam limitados aos limites da página.
 
-## Generate with takumi-pdf, then sign
+## Gerar com takumi-pdf e depois assinar
 
-When you build PDFs with [`takumi-pdf`](https://www.npmjs.com/package/takumi-pdf) instead of `@react-pdf/renderer`, install `pdf-signature-anchor` from the registry and place invisible markers in your JSX. Load takumi only on the client so FumaPress/SSG never executes wasm during prerender.
+Quando você gera PDFs com [`takumi-pdf`](https://www.npmjs.com/package/takumi-pdf) em vez de `@react-pdf/renderer`, instale `pdf-signature-anchor` pelo registry e coloque marcadores invisíveis no seu JSX. Carregue o takumi só no cliente, para que a pré-renderização estática nunca execute WASM.
 
 ```tsx title="takumi-declaration.tsx"
 import { render } from "takumi-pdf"
@@ -99,8 +99,9 @@ export async function generateAndSign(fontBytes: Uint8Array, signerLayer: Layer.
 }
 ```
 
-takumi-pdf only emits `http(s)` link annotations and silently drops custom URI schemes, so link anchors must use an `https://` URI. The default `https://signature.invalid/anchor` uses the reserved `.invalid` TLD, so it never resolves if a reader clicks it.
+
+O takumi-pdf só emite anotações de link `http(s)` e descarta em silêncio esquemas de URI personalizados, então as âncoras de link precisam usar uma URI `https://`. O padrão `https://signature.invalid/anchor` usa o TLD reservado `.invalid`, então nunca resolve se alguém clicar.
 
 <Callout type="info">
-  Text extraction runs in the in-house WASM core (`@signature-kit/pdf-core`): provide `pdfCoreBrowserLayer` in browsers or `pdfCoreFileLayer` on Node and Bun. To use your own extraction seam instead, pass `pages` and `textBoxes` and keep placement in `findPdfTextAnchors`; that call needs no service.
+  A extração de texto roda no núcleo WASM próprio (`@signature-kit/pdf-core`): forneça `pdfCoreBrowserLayer` no navegador ou `pdfCoreFileLayer` no Node e no Bun. Para usar sua própria extração, passe `pages` e `textBoxes` e mantenha o posicionamento em `findPdfTextAnchors`; essa chamada não precisa de serviço.
 </Callout>
