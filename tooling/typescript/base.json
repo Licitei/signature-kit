@@ -70,6 +70,7 @@
       "@signature-kit/react/browser-pdf": ["../../formats/react/src/browser-pdf.ts"],
       "@signature-kit/local/protocol": ["../../runtime/local/src/protocol.ts"],
       "@signature-kit/local/engine": ["../../runtime/local/src/engine.ts"],
+      "@signature-kit/local/pdf-signatures": ["../../runtime/local/src/pdf-signatures.ts"],
       "@signature-kit/local/worker": ["../../runtime/local/src/worker.ts"],
       "@signature-kit/local/client": ["../../runtime/local/src/client.ts"],
       "@signature-kit/iti/conformance": ["../../validators/iti/src/conformance.ts"],

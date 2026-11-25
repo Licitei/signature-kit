@@ -91,6 +91,7 @@ const BuildSignedAttributesParamsSchema = Schema.Struct({
   messageDigest: Schema.Uint8Array,
   certificateSha256: Schema.Uint8Array,
   icpBrasil: Schema.optional(IcpBrasilPolicySchema),
+  signingTime: Schema.optional(Schema.Date),
 });
 type BuildSignedAttributesParams = (typeof BuildSignedAttributesParamsSchema)["Type"];
 
@@ -104,6 +105,19 @@ export const buildSignedAttributes = (
   ];
   if (params.icpBrasil !== undefined) {
     attributes.push(signaturePolicyAttribute(params.icpBrasil));
+  }
+  if (params.signingTime !== undefined) {
+    const year = params.signingTime.getUTCFullYear();
+    attributes.push(
+      new pkijs.Attribute({
+        type: CmsOid.signingTime,
+        values: [
+          year >= 1950 && year < 2050
+            ? new asn1js.UTCTime({ valueDate: params.signingTime })
+            : new asn1js.GeneralizedTime({ valueDate: params.signingTime }),
+        ],
+      }),
+    );
   }
   return sortAttributesDer(attributes);
 };

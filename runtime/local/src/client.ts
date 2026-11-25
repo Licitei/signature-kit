@@ -1,10 +1,23 @@
+import type { PdfCoreSignatureFields } from "@signature-kit/pdf-core/config";
 import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
 import { Context, Deferred, Effect, Layer, Redacted, Ref, Schema } from "effect";
 import type { Duration } from "effect";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import { LocalError, LocalRpcs, PROTOCOL_VERSION } from "./protocol.js";
-import type { A1OpenInput, A1SessionInfo, Handle, InstanceId, RevisionRef } from "./protocol.js";
+import type {
+  A1OpenInput,
+  A1SessionInfo,
+  Handle,
+  InstanceId,
+  PdfPreparation,
+  PdfPrepareOptions,
+  PdfReceipt,
+  PdfVerificationReport,
+  PdfVerifyOptions,
+  PreparationId,
+  RevisionRef,
+} from "./protocol.js";
 
 export class LocalClient extends Context.Service<
   LocalClient,
@@ -15,6 +28,19 @@ export class LocalClient extends Context.Service<
     readonly releaseDocument: (handle: Handle) => Effect.Effect<void, LocalError>;
     readonly openA1: (input: A1OpenInput) => Effect.Effect<A1SessionInfo, LocalError>;
     readonly closeA1: () => Effect.Effect<void, LocalError>;
+    readonly pdfSignatureFields: (
+      revision: RevisionRef,
+    ) => Effect.Effect<PdfCoreSignatureFields, LocalError>;
+    readonly preparePdf: (
+      revision: RevisionRef,
+      options: PdfPrepareOptions,
+    ) => Effect.Effect<PdfPreparation, LocalError>;
+    readonly confirmPdf: (preparationId: PreparationId) => Effect.Effect<PdfReceipt, LocalError>;
+    readonly releasePdf: (preparationId: PreparationId) => Effect.Effect<void, LocalError>;
+    readonly verifyPdf: (
+      revision: RevisionRef,
+      options?: PdfVerifyOptions,
+    ) => Effect.Effect<PdfVerificationReport, LocalError>;
   }
 >()("@signature-kit/local/LocalClient") {}
 
@@ -103,6 +129,11 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
                 }),
               ),
             closeA1: () => call(() => rpc.A1Close(undefined)),
+            pdfSignatureFields: (revision) => call(() => rpc.PdfSignatureFields({ revision })),
+            preparePdf: (revision, options) => call(() => rpc.PdfPrepare({ revision, options })),
+            confirmPdf: (preparationId) => call(() => rpc.PdfConfirm({ preparationId })),
+            releasePdf: (preparationId) => call(() => rpc.PdfRelease({ preparationId })),
+            verifyPdf: (revision, options = {}) => call(() => rpc.PdfVerify({ revision, options })),
           });
         }),
       ).pipe(

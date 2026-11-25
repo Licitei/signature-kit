@@ -25,3 +25,26 @@ The client checks the protocol version when the layer starts. Keep the layer ope
 The client preserves caller buffers. The worker transport transfers the client-owned snapshots and independent export buffers. Direct calls through `LocalRpcs` transfer ownership of their byte-array backing buffers.
 
 Pass PFX bytes and passwords to `openA1` as `Redacted` values. A successful open returns public certificate metadata. Each open or close invalidates the preceding generation. Private signing keys stay inside the engine as non-extractable WebCrypto keys. The holder classification reads ICP-Brasil OIDs from X.509 Subject Alternative Name otherNames.
+
+## PDF signatures
+
+Call `preparePdf(source, options)` with an A1 session id and generation. Choose an existing
+unsigned signature field by name, or supply a new name, zero-based page index, and
+`[left, bottom, right, top]` rectangle in PDF points. A visible appearance uses the certificate
+holder name, holder kind, and preparation date unless you supply `appearance.lines`. Choose
+`cades` or `icpBrasilAdRbV11` for the signing policy.
+
+Render the returned `previewRevision` to show the exact prepared bytes and widget placement.
+Call `confirmPdf(preparationId)` after approval. It checks the session and certificate at
+confirmation time, embeds the detached CMS, and verifies the incremental revision before
+returning a receipt. Repeated confirmation returns the retained receipt. Export the signed
+revision with `exportDocument(receipt.signedRevision.handle)`.
+
+Use `releasePdf(preparationId)` to discard the preparation or its retained receipt. Release the
+source, preview, and signed document handles independently with `releaseDocument`. An open PDF
+can be inspected with `pdfSignatureFields` and verified with `verifyPdf`. Trust evaluation
+requires explicit DER roots and accepts an optional evaluation date. Embedded CMS revocation
+evidence is reported as present.
+
+For a Node runtime, assemble `pdfSignaturesLayer` from `@signature-kit/local/pdf-signatures`
+with `localRuntimeLayer()` and a `PdfCore` layer. The worker supplies its own browser WASM layer.

@@ -3,13 +3,25 @@
   "include": ["src/**/*.ts"],
   "references": [
     {
-      "path": "../../core/certificates"
+      "path": "../../shared/pdf-core"
     },
     {
       "path": "../../shared/crypto"
     },
     {
+      "path": "../../shared/cms"
+    },
+    {
+      "path": "../../core/certificates"
+    },
+    {
       "path": "../../shared/asn1"
+    },
+    {
+      "path": "../../formats/pdf"
+    },
+    {
+      "path": "../../signers/a1"
     }
   ]
 }

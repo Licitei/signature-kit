@@ -114,3 +114,54 @@ it("rejects a skewed Hello and transfers a 16 MiB document over the native RPC p
     ).pipe(Effect.timeout("10 seconds")),
   );
 }, 15_000);
+
+it("prepares, confirms, exports, and verifies in the real worker with network blocked", async () => {
+  const sourceUrl = new URL(
+    "../../../shared/pdf-core/__tests__/fixtures/helvetica-winansi.pdf",
+    import.meta.url,
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const client = yield* LocalClient;
+      const load = (url: URL | string) =>
+        Effect.promise(async () => new Uint8Array(await (await fetch(url)).arrayBuffer()));
+      const [pdf, pfx] = yield* Effect.all([load(sourceUrl), load(ecpfUrl)]);
+      yield* Effect.acquireRelease(
+        Effect.promise(() => commands.blockLocalRuntimeNetwork(true)),
+        () => Effect.promise(() => commands.blockLocalRuntimeNetwork(false)),
+      );
+      const source = yield* client.openDocument(pdf);
+      const session = yield* client.openA1({
+        pfx: Redacted.make(pfx),
+        password: Redacted.make("changeit"),
+      });
+      const prepared = yield* client.preparePdf(source, {
+        session,
+        field: { kind: "create", name: "Approval", page: 0, rect: [40, 40, 260, 88] },
+        appearance: { kind: "visible" },
+        policy: "cades",
+      });
+      expect(prepared.widget).toEqual({ kind: "visible", page: 0, rect: [40, 40, 260, 88] });
+      const preview = yield* client.exportDocument(prepared.previewRevision.handle);
+      const receipt = yield* client.confirmPdf(prepared.preparationId);
+      expect(yield* client.confirmPdf(prepared.preparationId)).toEqual(receipt);
+      const signed = yield* client.exportDocument(receipt.signedRevision.handle);
+      expect(signed.byteLength).toBe(preview.byteLength);
+      expect(signed.subarray(0, pdf.byteLength)).toEqual(pdf);
+      expect((yield* client.verifyPdf(receipt.signedRevision)).signatures).toMatchObject([
+        {
+          fieldName: "Approval",
+          integrity: "valid",
+          coverage: { kind: "wholeFile", bytesAfter: 0 },
+          signer: { holderKind: "e-cpf" },
+          trust: "notEvaluated",
+        },
+      ]);
+      yield* client.releasePdf(prepared.preparationId);
+      yield* client.releasePdf(prepared.preparationId);
+      expect(yield* Effect.flip(client.confirmPdf(prepared.preparationId))).toMatchObject({
+        code: "preparationUnknown",
+      });
+    }).pipe(Effect.scoped, Effect.provide(localClientLayer(createWorker))),
+  );
+}, 30_000);

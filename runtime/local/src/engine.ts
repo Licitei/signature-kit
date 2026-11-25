@@ -3,12 +3,20 @@ import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
 import { Context, Effect, HashMap, Layer, Redacted, Ref, Schema } from "effect";
 import { A1Hash, a1Profile, importA1SigningKey, sha256Hex } from "./a1-certificate.js";
 import { Handle, LocalError } from "./protocol.js";
-import type { A1OpenInput, A1SessionInfo, InstanceId, RevisionRef } from "./protocol.js";
+import type {
+  A1OpenInput,
+  A1Profile,
+  A1SessionBinding,
+  A1SessionInfo,
+  InstanceId,
+  RevisionRef,
+} from "./protocol.js";
 
 export class Documents extends Context.Service<
   Documents,
   {
     readonly open: (bytes: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
+    readonly read: (revision: RevisionRef) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly export: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly release: (handle: Handle) => Effect.Effect<void, LocalError>;
   }
@@ -19,6 +27,10 @@ export class A1Sessions extends Context.Service<
   {
     readonly open: (input: A1OpenInput) => Effect.Effect<A1SessionInfo, LocalError>;
     readonly close: () => Effect.Effect<void, LocalError>;
+    readonly validate: (session: A1SessionBinding) => Effect.Effect<void, LocalError>;
+    readonly certificate: (
+      session: A1SessionBinding,
+    ) => Effect.Effect<SessionCertificate, LocalError>;
     readonly sign: (
       sessionId: string,
       generation: number,
@@ -43,9 +55,22 @@ const documentsLayer = (instanceId: InstanceId) =>
     Effect.gen(function* () {
       const prefix = `${instanceId}/`;
       const documents = yield* Ref.make<
-        HashMap.HashMap<Handle, Uint8Array<ArrayBuffer>> | undefined
+        | HashMap.HashMap<
+            Handle,
+            { readonly digest: string; readonly bytes: Uint8Array<ArrayBuffer> }
+          >
+        | undefined
       >(HashMap.empty());
       yield* Effect.addFinalizer(() => Ref.set(documents, undefined));
+
+      const load = Effect.fnUntraced(function* (handle: Handle) {
+        if (!handle.startsWith(prefix)) return yield* new LocalError({ code: "staleHandle" });
+        const current = yield* Ref.get(documents);
+        if (current === undefined) return yield* new LocalError({ code: "runtimeClosed" });
+        const stored = HashMap.get(current, handle);
+        if (stored._tag === "None") return yield* new LocalError({ code: "unknownHandle" });
+        return stored.value;
+      });
 
       return Documents.of({
         open: Effect.fn(
@@ -56,7 +81,7 @@ const documentsLayer = (instanceId: InstanceId) =>
             const stored = yield* Ref.modify(documents, (current) =>
               current === undefined
                 ? [false, current]
-                : [true, HashMap.set(current, handle, owned)],
+                : [true, HashMap.set(current, handle, { digest, bytes: owned })],
             );
             if (!stored) return yield* new LocalError({ code: "runtimeClosed" });
             return { handle, digest, byteLength: owned.byteLength };
@@ -68,14 +93,17 @@ const documentsLayer = (instanceId: InstanceId) =>
               }),
             ),
         ),
+        read: Effect.fn(function* (revision) {
+          const { digest, bytes } = yield* load(revision.handle);
+          if (revision.digest !== digest || revision.byteLength !== bytes.byteLength) {
+            return yield* new LocalError({ code: "preparationStale" });
+          }
+          return new Uint8Array(bytes);
+        }),
         export: Effect.fn("local.documents.export")(function* (handle) {
-          if (!handle.startsWith(prefix)) return yield* new LocalError({ code: "staleHandle" });
-          const current = yield* Ref.get(documents);
-          if (current === undefined) return yield* new LocalError({ code: "runtimeClosed" });
-          const stored = HashMap.get(current, handle);
-          if (stored._tag === "None") return yield* new LocalError({ code: "unknownHandle" });
-          yield* Effect.annotateCurrentSpan("byteLength", stored.value.byteLength);
-          return new Uint8Array(stored.value);
+          const { bytes } = yield* load(handle);
+          yield* Effect.annotateCurrentSpan("byteLength", bytes.byteLength);
+          return new Uint8Array(bytes);
         }),
         release: Effect.fn("local.documents.release")(function* (handle) {
           if (!handle.startsWith(prefix)) return yield* new LocalError({ code: "staleHandle" });
@@ -87,7 +115,15 @@ const documentsLayer = (instanceId: InstanceId) =>
     }),
   );
 
-type ActiveSession = {
+type SessionCertificate = {
+  readonly certificateDer: Uint8Array;
+  readonly chainDer: readonly Uint8Array[];
+  readonly profile: A1Profile;
+  readonly signatureBytes: number;
+  readonly hash: A1Hash;
+};
+
+type ActiveSession = SessionCertificate & {
   readonly id: string;
   readonly key: CryptoKey;
 };
@@ -145,17 +181,32 @@ const a1SessionsLayer = (hash: A1Hash) =>
           const owned = new Uint8Array(Redacted.value(pfx));
           yield* Effect.annotateCurrentSpan("byteLength", owned.byteLength);
 
-          const { certificate, privateKey } = yield* parseA1Pkcs12(owned, password);
+          const { certificate, chain, privateKey } = yield* parseA1Pkcs12(owned, password);
           const key = yield* importA1SigningKey(privateKey, hash).pipe(
             Effect.ensuring(Effect.sync(() => privateKey.fill(0))),
           );
           const profile = yield* a1Profile(certificate);
           const sessionId = crypto.randomUUID();
+          const { algorithm } = key;
+          if (!("modulusLength" in algorithm) || typeof algorithm.modulusLength !== "number") {
+            return yield* new LocalError({ code: "keyImportFailed" });
+          }
+          const active = {
+            id: sessionId,
+            key,
+            hash,
+            profile: {
+              ...profile,
+              notBefore: new Date(profile.notBefore),
+              notAfter: new Date(profile.notAfter),
+            },
+            certificateDer: certificate,
+            chainDer: chain,
+            signatureBytes: Math.ceil(algorithm.modulusLength / 8),
+          };
 
           const installed = yield* Ref.modify(state, (current) =>
-            current?.generation === generation
-              ? [true, { generation, active: { id: sessionId, key } }]
-              : [false, current],
+            current?.generation === generation ? [true, { generation, active }] : [false, current],
           );
           if (!installed) return yield* new LocalError({ code: "staleGeneration" });
 
@@ -163,6 +214,25 @@ const a1SessionsLayer = (hash: A1Hash) =>
           return { sessionId, generation, profile };
         }),
         close: () => advance.pipe(Effect.asVoid, Effect.withSpan("local.a1.close")),
+        validate: ({ sessionId, generation }) =>
+          activeSession(sessionId, generation).pipe(Effect.asVoid),
+        certificate: Effect.fn(function* ({ sessionId, generation }) {
+          const { certificateDer, chainDer, profile, signatureBytes, hash } = yield* activeSession(
+            sessionId,
+            generation,
+          );
+          return {
+            certificateDer: new Uint8Array(certificateDer),
+            chainDer: chainDer.map((der) => new Uint8Array(der)),
+            profile: {
+              ...profile,
+              notBefore: new Date(profile.notBefore),
+              notAfter: new Date(profile.notAfter),
+            },
+            signatureBytes,
+            hash,
+          };
+        }),
         sign: Effect.fn(
           function* (sessionId, generation, data) {
             const { key } = yield* activeSession(sessionId, generation);
