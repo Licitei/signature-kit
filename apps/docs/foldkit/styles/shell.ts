@@ -244,9 +244,10 @@ export const shell = stylex.create({
     paddingBottom: { default: "min(110vw, 520px)", [desktop]: 0 },
     color: "#ffffff",
     backgroundColor: tokens.ink,
-    backgroundImage: "url(/landing/footer-mandacaru.webp)",
+    backgroundImage:
+      "linear-gradient(180deg, #0a3d58 0, #0a3d58 calc(100% - 560px), rgba(10, 61, 88, 0) calc(100% - 340px)), url(/landing/footer-mandacaru.webp)",
     backgroundPosition: "center bottom",
-    backgroundSize: "100% auto",
+    backgroundSize: { default: "100% auto", [desktop]: "max(100%, 1200px) auto" },
     backgroundRepeat: "no-repeat",
     imageRendering: "pixelated",
   },

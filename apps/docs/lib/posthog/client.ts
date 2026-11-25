@@ -94,6 +94,9 @@ export const docsPostHogOptions = {
   ui_host: "https://us.posthog.com",
   defaults: "2026-05-30",
   person_profiles: "identified_only",
+  disable_surveys: true,
+  disable_conversations: true,
+  disable_product_tours: true,
   disable_capture_url_hashes: true,
   mask_personal_data_properties: true,
   custom_personal_data_properties: [

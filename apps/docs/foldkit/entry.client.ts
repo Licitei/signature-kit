@@ -20,16 +20,12 @@ Runtime.hydrate(
   }),
 );
 
-const prefetchSigning = (event: Event) => {
-  const path = event.composedPath();
-  if (![...document.querySelectorAll("[data-overlay=signer]")].some((node) => path.includes(node)))
-    return;
-  document.removeEventListener("pointerover", prefetchSigning);
-  document.removeEventListener("focusin", prefetchSigning);
-  void import("./signing-mount");
-};
-document.addEventListener("pointerover", prefetchSigning, { passive: true });
-document.addEventListener("focusin", prefetchSigning);
+if (document.querySelector("[data-overlay=signer], form:has([name=pfx])") !== null) {
+  const prefetchSigning = () => void import("./signing-mount");
+  if (typeof window.requestIdleCallback === "function")
+    window.requestIdleCallback(prefetchSigning, { timeout: 1500 });
+  else window.setTimeout(prefetchSigning, 500);
+}
 
 window.addEventListener("pageswap", (event) => {
   const transition = event.viewTransition;

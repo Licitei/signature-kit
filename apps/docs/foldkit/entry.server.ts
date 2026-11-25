@@ -88,7 +88,7 @@ export const createServerComposition = (
               ? signFreeDescription
               : path === "/search"
                 ? "Busque na documentação do SignatureKit."
-                : "Assinatura digital com certificado A1 em TypeScript: PDF/PAdES, XML-DSig e integração com Clicksign, Assinafy, ZapSign, DocuSeal e Documenso.");
+                : "PAdES e XML-DSig com certificado ICP-Brasil, no servidor ou no navegador. Tipado, testado e open source.");
     const meta = (key: string, value: string, property = false): Metadata => ({
       kind: "meta",
       key,
@@ -220,9 +220,20 @@ export const createServerComposition = (
         Effect.gen(function* () {
           const social = yield* SocialImage;
           return yield* social.render({
-            title: page.application.title,
+            title: page.application.title
+              .replace(/^SignatureKit — /, "")
+              .replace(/ (\||—) SignatureKit$/, ""),
             description: data.description,
-            site: "SignatureKit",
+            eyebrow: imagePath.startsWith("docs")
+              ? "Documentação"
+              : imagePath.startsWith("blog")
+                ? "Blog"
+                : imagePath.startsWith("changelog")
+                  ? "Notas de versão"
+                  : imagePath === "assine-documentos-gratis"
+                    ? "Assinar PDF grátis"
+                    : "Open source · TypeScript · ICP-Brasil",
+            site: new URL(siteOrigin).host,
           });
         }).pipe(Effect.provide(socialImageLayer)),
         { signal: request.signal },

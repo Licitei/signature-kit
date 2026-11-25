@@ -3,8 +3,11 @@ import { Context, Effect, Layer, Schema } from "effect";
 
 import { docsAnalyticsProperties, docsEventName } from "./events";
 
-const POSTHOG_PROJECT_TOKEN = import.meta.env.WAKU_PUBLIC_POSTHOG_PROJECT_TOKEN;
-const POSTHOG_HOST = import.meta.env.WAKU_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com";
+const POSTHOG_PROJECT_TOKEN =
+  import.meta.env.WAKU_PUBLIC_POSTHOG_PROJECT_TOKEN ??
+  (import.meta.env.PROD ? "phc_QH0tubrCNfjjLLKw4KS66FGYHRTBCOPKYq2vhIQz15s" : undefined);
+const POSTHOG_HOST =
+  import.meta.env.WAKU_PUBLIC_POSTHOG_HOST ?? "https://futeboldesabao.licitei.com.br";
 
 export type AnalyticsProperty = string | number | boolean | null | undefined;
 export type AnalyticsProperties = Record<string, AnalyticsProperty>;

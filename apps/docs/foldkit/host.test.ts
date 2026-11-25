@@ -180,7 +180,7 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(html).toContain(`lang="pt-BR"`);
             expect(html).toContain(`href="https://signaturekit.dev/"`);
             expect(html).toContain("data-foldkit-app");
-            const asset = html.match(/import\("(\/assets\/[^"]+\.js)"\)/)?.[1];
+            const asset = html.match(/const entry = "(\/assets\/[^"]+\.js)";/)?.[1];
             expect(asset).toBeDefined();
             if (asset === undefined) return expect.fail("Missing asset");
             {

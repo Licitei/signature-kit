@@ -52,6 +52,14 @@ const paths = {
   upload: ["M12 15V4", "M7 9l5-5 5 5", "M5 20h14"],
   lock: ["M6 11h12v9H6z", "M8.5 11V8a3.5 3.5 0 0 1 7 0v3"],
   terminal: ["M4 17l6-5-6-5", "M12 19h8"],
+  thumbsUp: [
+    "M7 10v11H3V10z",
+    "M7 10l4-8a3 3 0 0 1 3 3v4h5.5a2 2 0 0 1 2 2.3l-1.4 8A2 2 0 0 1 18.1 21H7",
+  ],
+  thumbsDown: [
+    "M17 14V3h4v11z",
+    "M17 14l-4 8a3 3 0 0 1-3-3v-4H4.5a2 2 0 0 1-2-2.3l1.4-8A2 2 0 0 1 5.9 3H17",
+  ],
 } satisfies Record<string, ReadonlyArray<string>>;
 
 export type IconName = keyof typeof paths;

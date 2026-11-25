@@ -46,6 +46,7 @@ import {
 import { OverlayKind, overlayView } from "./overlay";
 import { siteOrigin } from "./site-origin";
 import { brand, groupIcon, icon } from "./icons";
+import type { IconName } from "./icons";
 import { NavMenuKind, navMenuInit, navMenuView } from "./navbar";
 import { overlay } from "./styles/overlay";
 import { prose } from "./styles/prose";
@@ -1057,79 +1058,100 @@ export const createView = (source: {
                                         h.Attribute("data-analytics-sensitive", "true"),
                                       ],
                                       [
-                                        h.h2(
-                                          [...sx(h, prose.feedbackTitle)],
-                                          ["Esta página ajudou?"],
-                                        ),
-                                        Button.view(
-                                          {
-                                            onClick: Message.FeedbackSubmitted({ opinion: "good" }),
-                                            toView: (attributes) =>
-                                              h.button(
-                                                [...attributes.button, ...sx(h, shell.ghost)],
-                                                ["Sim"],
+                                        h.div(
+                                          [...sx(h, prose.feedbackHead)],
+                                          [
+                                            h.h2(
+                                              [...sx(h, prose.feedbackTitle)],
+                                              ["Esta página ajudou?"],
+                                            ),
+                                            h.div(
+                                              [...sx(h, prose.feedbackActions)],
+                                              (
+                                                [
+                                                  ["good", "Sim", "thumbsUp"],
+                                                  ["bad", "Não", "thumbsDown"],
+                                                ] satisfies ReadonlyArray<
+                                                  readonly ["good" | "bad", string, IconName]
+                                                >
+                                              ).map(([opinion, label, glyph]) =>
+                                                h.keyed("span")(
+                                                  opinion,
+                                                  [],
+                                                  [
+                                                    Button.view(
+                                                      {
+                                                        onClick: Message.FeedbackSubmitted({
+                                                          opinion,
+                                                        }),
+                                                        toView: (attributes) =>
+                                                          h.button(
+                                                            [
+                                                              ...attributes.button,
+                                                              ...sx(h, prose.feedbackButton),
+                                                            ],
+                                                            [icon(h, glyph), label],
+                                                          ),
+                                                      },
+                                                      h,
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
-                                          },
-                                          h,
+                                            ),
+                                          ],
                                         ),
-                                        Button.view(
+                                        Textarea.view(
                                           {
-                                            onClick: Message.FeedbackSubmitted({ opinion: "bad" }),
+                                            id: "feedback-message",
                                             toView: (attributes) =>
-                                              h.button(
-                                                [...attributes.button, ...sx(h, shell.ghost)],
-                                                ["Não"],
-                                              ),
+                                              h.textarea([
+                                                ...attributes.textarea,
+                                                h.Class(className(prose.feedbackInput)),
+                                                h.Attribute("data-feedback-message", ""),
+                                                h.Attribute("maxlength", "2000"),
+                                                h.Attribute("rows", "3"),
+                                                h.Attribute(
+                                                  "placeholder",
+                                                  "Algo faltando ou errado? Conte aqui.",
+                                                ),
+                                                h.Attribute("aria-label", "Comentário"),
+                                              ]),
                                           },
                                           h,
                                         ),
                                         h.div(
-                                          [...sx(h, prose.feedbackStatus)],
+                                          [...sx(h, prose.feedbackFoot)],
                                           [
-                                            Textarea.view(
+                                            h.p(
+                                              [
+                                                ...sx(h, prose.feedbackStatus),
+                                                h.Attribute("role", "status"),
+                                              ],
+                                              [
+                                                model.feedbackStatus === "success"
+                                                  ? "Obrigado pelo feedback!"
+                                                  : model.feedbackStatus === "error"
+                                                    ? "Não foi possível enviar. Tente novamente."
+                                                    : model.feedbackStatus === "sending"
+                                                      ? "Enviando…"
+                                                      : "",
+                                              ],
+                                            ),
+                                            Button.view(
                                               {
-                                                id: "feedback-message",
+                                                onClick: Message.TextFeedbackSubmitted(),
                                                 toView: (attributes) =>
-                                                  h.textarea([
-                                                    ...attributes.textarea,
-                                                    h.Attribute("data-feedback-message", ""),
-                                                    h.Attribute("maxlength", "2000"),
-                                                    h.Attribute("rows", "2"),
-                                                    h.Attribute(
-                                                      "placeholder",
-                                                      "Algo faltando ou errado? Conte aqui.",
-                                                    ),
-                                                    h.Attribute("aria-label", "Comentário"),
-                                                  ]),
+                                                  h.button(
+                                                    [
+                                                      ...attributes.button,
+                                                      ...sx(h, prose.feedbackSend),
+                                                    ],
+                                                    ["Enviar comentário"],
+                                                  ),
                                               },
                                               h,
                                             ),
-                                          ],
-                                        ),
-                                        Button.view(
-                                          {
-                                            onClick: Message.TextFeedbackSubmitted(),
-                                            toView: (attributes) =>
-                                              h.button(
-                                                [...attributes.button, ...sx(h, shell.ghost)],
-                                                ["Enviar comentário"],
-                                              ),
-                                          },
-                                          h,
-                                        ),
-                                        h.p(
-                                          [
-                                            ...sx(h, prose.feedbackStatus),
-                                            h.Attribute("role", "status"),
-                                          ],
-                                          [
-                                            model.feedbackStatus === "success"
-                                              ? "Obrigado pelo feedback!"
-                                              : model.feedbackStatus === "error"
-                                                ? "Não foi possível enviar. Tente novamente."
-                                                : model.feedbackStatus === "sending"
-                                                  ? "Enviando…"
-                                                  : "",
                                           ],
                                         ),
                                       ],
