@@ -72,7 +72,15 @@
       "types": "./dist/templates.d.ts",
       "import": "./dist/templates.js"
     },
-    "./compose.wasm": "./dist/wasm/compose.wasm"
+    "./compose.wasm": "./dist/wasm/compose.wasm",
+    "./batches": {
+      "types": "./dist/batches.d.ts",
+      "import": "./dist/batches.js"
+    },
+    "./batch-storage": {
+      "types": "./dist/batch-storage.d.ts",
+      "import": "./dist/batch-storage.js"
+    }
   },
   "publishConfig": {
     "access": "public"
@@ -81,6 +89,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@typeonce/effect-machine": "0.47.1",
     "asn1js": "3.1.0",
     "effect": "4.1.0",
     "pkijs": "3.4.3"

@@ -1,3 +1,4 @@
+import type { A1Hash } from "./a1-certificate.js";
 import { IcpBrasilPadesPolicy } from "./cms/icp-brasil.js";
 import type { CmsError } from "./cms/config.js";
 import { MAX_PDF_CORE_SIGNATURE_CONTENTS } from "./wasm/config.js";
@@ -26,6 +27,23 @@ import type {
 } from "./rpc.js";
 import { comparePdfRevisions, verifyPdfRevision } from "./pdf-verification.js";
 
+const digestLengths = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 } satisfies Record<
+  A1Hash,
+  number
+>;
+
+type PreparationAllocation = {
+  readonly identity: symbol;
+  readonly nonce: string;
+  readonly reserve: (sizes: {
+    readonly appendixBytes: number;
+    readonly digestBytes: number;
+    readonly preparedPayloadBytes: number;
+    readonly previewBytes: number;
+    readonly contentsCapacity: number;
+  }) => Effect.Effect<void, LocalError>;
+};
+
 export class PdfSignatures extends Context.Service<
   PdfSignatures,
   {
@@ -42,9 +60,13 @@ export class PdfSignatures extends Context.Service<
     readonly prepare: (
       revision: RevisionRef,
       options: PdfPrepareOptions,
+      allocation?: PreparationAllocation,
     ) => Effect.Effect<PdfPreparation, LocalError>;
-    readonly confirm: (preparationId: PreparationId) => Effect.Effect<PdfReceipt, LocalError>;
-    readonly release: (preparationId: PreparationId) => Effect.Effect<void>;
+    readonly confirm: (
+      preparationId: PreparationId,
+      owner?: symbol,
+    ) => Effect.Effect<PdfReceipt, LocalError>;
+    readonly release: (preparationId: PreparationId, owner?: symbol) => Effect.Effect<void>;
     readonly verify: (
       revision: RevisionRef,
       options?: PdfVerifyOptions,
@@ -64,6 +86,7 @@ type Preparation = {
 };
 
 type Entry = {
+  readonly owner?: symbol | undefined;
   readonly lock: Semaphore.Semaphore;
   readonly state: Ref.Ref<Preparation | PdfReceipt | undefined>;
 };
@@ -249,7 +272,7 @@ export const pdfSignaturesLayer = Layer.effect(
           }),
         );
       }),
-      prepare: Effect.fn("local.pdf.prepare")(function* (revision, input) {
+      prepare: Effect.fn("local.pdf.prepare")(function* (revision, input, allocation) {
         const options = yield* Schema.decodeUnknownEffect(PdfPrepareOptionsSchema)(input).pipe(
           Effect.mapError(() => new LocalError({ code: "pdfPrepareFailed" })),
         );
@@ -292,27 +315,40 @@ export const pdfSignaturesLayer = Layer.effect(
               return yield* new LocalError({ code: "signatureTooLarge" });
             }
 
+            const sourceLength = source.byteLength;
             const signing = yield* source.signing;
             const prepared = yield* signing
-              .prepare({
-                field,
-                appearance,
-                date: "D:" + now.toISOString().slice(0, 19).replace(/[-:T]/g, "") + "Z",
-                contentsCapacity,
-                reason,
-                location,
-                docMdp,
-              })
+              .prepare(
+                {
+                  field,
+                  appearance,
+                  date: "D:" + now.toISOString().slice(0, 19).replace(/[-:T]/g, "") + "Z",
+                  contentsCapacity,
+                  reason,
+                  location,
+                  docMdp,
+                },
+                allocation === undefined
+                  ? undefined
+                  : (appendixBytes, preparedPayloadBytes) =>
+                      allocation.reserve({
+                        appendixBytes,
+                        digestBytes: digestLengths[certificate.hash],
+                        previewBytes: sourceLength + appendixBytes,
+                        preparedPayloadBytes,
+                        contentsCapacity,
+                      }),
+              )
               .pipe(
-                Effect.mapError(
-                  (error) =>
-                    new LocalError({
-                      code: prepareErrorCode(error.reason),
-                      pdfCode: error.code,
-                    }),
+                Effect.mapError((error) =>
+                  error._tag === "LocalError"
+                    ? error
+                    : new LocalError({
+                        code: prepareErrorCode(error.reason),
+                        pdfCode: error.code,
+                      }),
                 ),
               );
-            const sourceLength = source.byteLength;
             const { appendix, byteRange, contentsStart, contentsEnd } = prepared;
             const [start, firstLength, secondStart, secondLength] = byteRange;
             if (
@@ -350,6 +386,7 @@ export const pdfSignaturesLayer = Layer.effect(
                     appearance,
                     policy,
                     previewRevision.digest,
+                    ...(allocation === undefined ? [] : [allocation.nonce]),
                   ]),
                 ),
               );
@@ -361,6 +398,7 @@ export const pdfSignaturesLayer = Layer.effect(
                   ),
                 );
               const entry = {
+                owner: allocation?.identity,
                 lock: yield* Semaphore.make(1),
                 state: yield* Ref.make<Preparation | PdfReceipt | undefined>({
                   binding,
@@ -394,11 +432,13 @@ export const pdfSignaturesLayer = Layer.effect(
           }),
         );
       }),
-      confirm: Effect.fn("local.pdf.confirm")(function* (preparationId) {
+      confirm: Effect.fn("local.pdf.confirm")(function* (preparationId, owner) {
         const current = yield* Ref.get(entries);
         if (current === undefined) return yield* new LocalError({ code: "runtimeClosed" });
         const entry = HashMap.get(current, preparationId);
-        if (entry._tag === "None") return yield* new LocalError({ code: "preparationUnknown" });
+        if (entry._tag === "None" || entry.value.owner !== owner) {
+          return yield* new LocalError({ code: "preparationUnknown" });
+        }
 
         return yield* entry.value.lock.withPermit(
           Effect.gen(function* () {
@@ -476,11 +516,11 @@ export const pdfSignaturesLayer = Layer.effect(
           }).pipe(Effect.uninterruptible),
         );
       }),
-      release: Effect.fn(function* (preparationId) {
+      release: Effect.fn(function* (preparationId, owner) {
         const current = yield* Ref.get(entries);
         if (current === undefined) return;
         const entry = HashMap.get(current, preparationId);
-        if (entry._tag === "None") return;
+        if (entry._tag === "None" || entry.value.owner !== owner) return;
         yield* entry.value.lock.withPermit(
           Effect.gen(function* () {
             yield* Ref.update(entries, (active) => {

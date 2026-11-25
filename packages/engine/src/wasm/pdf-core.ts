@@ -133,9 +133,10 @@ export type PdfCoreSigningSession = {
   readonly addFields: (
     fields: PdfCoreNewSignatureFields,
   ) => Effect.Effect<Uint8Array, PdfCoreError>;
-  readonly prepare: (
+  readonly prepare: <E = never>(
     request: PdfCorePrepareSignatureRequest,
-  ) => Effect.Effect<PdfCorePreparedUpdate, PdfCoreError>;
+    reserve?: (appendixBytes: number, payloadBytes: number) => Effect.Effect<void, E>,
+  ) => Effect.Effect<PdfCorePreparedUpdate, PdfCoreError | E>;
   readonly signatures: (
     analysis: PdfCoreSignatureAnalysis,
   ) => Effect.Effect<PdfCoreSignatureReport, PdfCoreError>;
@@ -528,10 +529,10 @@ export const makePdfCore = (
         }),
       );
 
-    const decodeResult = <A>(
+    const decodeResult = <A, E>(
       block: ResultBlock,
-      decode: (block: ResultBlock) => Effect.Effect<A, PdfCoreError>,
-    ): Effect.Effect<A, PdfCoreError> =>
+      decode: (block: ResultBlock) => Effect.Effect<A, E>,
+    ): Effect.Effect<A, E> =>
       decode(block).pipe(
         Effect.withSpan(
           "pdfCore.wasm.decode",
@@ -613,30 +614,36 @@ export const makePdfCore = (
         })),
       );
 
-    const payloadBytes = (
+    const payloadBytes = <E = never>(
       operation: PdfCoreOperation,
       block: ResultBlock,
-    ): Effect.Effect<Uint8Array, PdfCoreError> =>
-      new DataView(block.memory, block.pointer, block.length).getUint32(4, true) === STATUS_OK
-        ? Effect.sync(() =>
-            new Uint8Array(
-              block.memory,
-              block.pointer + RESULT_HEADER_BYTES,
-              block.length - RESULT_HEADER_BYTES,
-            ).slice(),
-          ).pipe(
-            Effect.withSpan(
-              "pdfCore.wasm.copyOut",
-              {
-                attributes: {
-                  "signature_kit.wasm.output_bytes": block.length - RESULT_HEADER_BYTES,
-                  "signature_kit.pdf_core.operation": operation,
-                },
-              },
-              { captureStackTrace: false },
-            ),
-          )
-        : failStatus(operation, block);
+      reserve?: (view: Uint8Array) => Effect.Effect<void, E>,
+    ): Effect.Effect<Uint8Array, PdfCoreError | E> => {
+      if (
+        new DataView(block.memory, block.pointer, block.length).getUint32(4, true) !== STATUS_OK
+      ) {
+        return failStatus(operation, block);
+      }
+      const start = block.pointer + RESULT_HEADER_BYTES;
+      const length = block.length - RESULT_HEADER_BYTES;
+      const copy = Effect.sync(() =>
+        new Uint8Array(core.memory.buffer, start, length).slice(),
+      ).pipe(
+        Effect.withSpan(
+          "pdfCore.wasm.copyOut",
+          {
+            attributes: {
+              "signature_kit.wasm.output_bytes": length,
+              "signature_kit.pdf_core.operation": operation,
+            },
+          },
+          { captureStackTrace: false },
+        ),
+      );
+      return reserve === undefined
+        ? copy
+        : reserve(new Uint8Array(block.memory, start, length)).pipe(Effect.andThen(copy));
+    };
 
     const failStatus = (
       operation: PdfCoreOperation,
@@ -1202,13 +1209,14 @@ export const makePdfCore = (
       return report;
     });
 
-    const signingCall = (
+    const signingCall = <E = never>(
       pdf: SigningInput,
       operation: PdfCoreOperation,
       call:
         | ((input: Allocation) => Effect.Effect<() => number, PdfCoreError, Scope.Scope>)
         | undefined,
-    ): Effect.Effect<Uint8Array, PdfCoreError> =>
+      reserve?: (payload: Uint8Array) => Effect.Effect<void, E>,
+    ): Effect.Effect<Uint8Array, PdfCoreError | E> =>
       call === undefined
         ? Effect.fail(
             new PdfCoreError({
@@ -1222,7 +1230,9 @@ export const makePdfCore = (
               const input = yield* pdf(operation);
               const invoke = yield* call(input);
               const result = yield* resultBlock(operation, invoke);
-              return yield* decodeResult(result, (block) => payloadBytes(operation, block));
+              return yield* decodeResult(result, (block) =>
+                payloadBytes(operation, block, reserve),
+              );
             }),
           );
 
@@ -1251,10 +1261,11 @@ export const makePdfCore = (
       );
     });
 
-    const runPreparation = Effect.fn(PdfCoreOperationValue.prepareSignature)(function* (
+    const runPreparation = Effect.fn(PdfCoreOperationValue.prepareSignature)(function* <E = never>(
       pdf: SigningInput,
       inputRequest: PdfCorePrepareSignatureRequest,
       entry: typeof core.pdf_core_prepare_signature,
+      reserve?: (payload: Uint8Array) => Effect.Effect<void, E>,
     ) {
       const operation = PdfCoreOperationValue.prepareSignature;
       const request = yield* Schema.decodeUnknownEffect(PdfCorePrepareSignatureRequestSchema)(
@@ -1274,6 +1285,7 @@ export const makePdfCore = (
                     entry(input.pointer, input.length, payload.pointer, payload.length),
                 ),
               ),
+        reserve,
       );
     });
 
@@ -1294,8 +1306,24 @@ export const makePdfCore = (
         ),
       );
 
-    const prepareSignatureUpdate = (pdf: SigningInput, request: PdfCorePrepareSignatureRequest) =>
-      runPreparation(pdf, request, core.pdf_core_prepare_signature_update).pipe(
+    const prepareSignatureUpdate = <E = never>(
+      pdf: SigningInput,
+      request: PdfCorePrepareSignatureRequest,
+      reserve?: (appendixBytes: number, payloadBytes: number) => Effect.Effect<void, E>,
+    ) =>
+      runPreparation(
+        pdf,
+        request,
+        core.pdf_core_prepare_signature_update,
+        reserve === undefined
+          ? undefined
+          : (payload) => {
+              const decoded = decodePreparedUpdate(payload);
+              return decoded === undefined
+                ? Effect.void
+                : reserve(decoded.appendix.byteLength, payload.byteLength);
+            },
+      ).pipe(
         Effect.flatMap((bytes) =>
           Schema.decodeUnknownEffect(PdfCorePreparedUpdateSchema)(decodePreparedUpdate(bytes)).pipe(
             Effect.mapError(
@@ -1370,9 +1398,9 @@ export const makePdfCore = (
       const lock = yield* Semaphore.make(1);
       const closed = yield* Ref.make(false);
       yield* Effect.addFinalizer(() => lock.withPermit(Ref.set(closed, true)));
-      const live = <A>(effect: Effect.Effect<A, PdfCoreError>) =>
+      const live = <A, E>(effect: Effect.Effect<A, E>) =>
         lock.withPermit(
-          Effect.suspend(() =>
+          Effect.suspend<A, PdfCoreError | E, never>(() =>
             Ref.getUnsafe(closed)
               ? Effect.fail(
                   new PdfCoreError({ code: PdfCoreErrorCodeValue.documentClosed, operation }),
@@ -1385,7 +1413,7 @@ export const makePdfCore = (
       return {
         fields: live(signatureFields(resident)),
         addFields: (fields) => live(addSignatureFields(resident, fields)),
-        prepare: (request) => live(prepareSignatureUpdate(resident, request)),
+        prepare: (request, reserve) => live(prepareSignatureUpdate(resident, request, reserve)),
         signatures: (analysis) => live(signatures(resident, analysis)),
         changes: (from) => live(revisionChanges(resident, from)),
       } satisfies PdfCoreSigningSession;

@@ -160,3 +160,36 @@ with `pdfEngineLayer`, `localRuntimeLayer()` and a `PdfCore` layer. The worker s
 
 See [warm A1 signing benchmarks](../engine/docs/signing-performance.md) for the Node and
 Chromium worker measurements and WASM copy breakdown.
+
+## Local batches
+
+Use `prepareBatch` with a session binding, document revisions and a shared signing
+template. The template can select an existing field by name, create a field at a
+fixed placement, or resolve a named anchor from each document's `anchors` map.
+The review snapshot includes the prepared preview revision for each ready item
+and a typed reason for each item that needs attention.
+
+Pass the reviewed `itemId` and `preparationId` pairs to `confirmBatch`. Read the
+initial snapshot and ordered deltas with `batchEvents`. If a sequence number is
+missing, fetch `batchSnapshot` and discard deltas at or below its sequence number.
+The events stream ends at the current terminal state. Use a new stream for retries.
+Export previews and signed revisions through `exportDocument`. `releaseBatch`
+invalidates the batch-owned handles and returns its final byte counters.
+
+The worker reserves bytes per batch for source documents, retained signing
+buffers, previews and signed outputs. The reservation also covers the signed
+copy used in self-verification and an export copy when persistence is enabled.
+The peak counter measures these reservations. Chromium's heap, internal PDF and
+cryptographic scratch allocations, and browser storage overhead have their own
+lifetimes.
+
+To opt in to recovery, import `localWorker` from
+`@signature-kit/browser/worker-runtime`. In your worker entry, pass
+`localWorker(false, { resumeBatches: true })` to `BrowserRuntime.runMain`.
+Pass a stable UUID as
+`resumeId` to `prepareBatch`. On reload, open a new A1 session and pass the same
+template and source documents with that UUID. Committed signed results are
+restored with new document handles. Prepare and confirm the remaining items
+using the new review snapshot. The worker holds a same-origin Web Lock for the
+batch until release or worker exit. After release, call `deleteBatch` to remove
+the recovery record and signed outputs.

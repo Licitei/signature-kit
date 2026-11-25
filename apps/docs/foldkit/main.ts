@@ -19,6 +19,7 @@ import { darkTheme } from "./styles/tokens.stylex";
 import { prose } from "./styles/prose";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
+import { BatchDemoMount, BatchDemoState, batchDemoView } from "./batch-demo";
 import { ComposePreviewMount, ComposeTemplate, previewChoices } from "./compose-preview";
 
 export const Flags = Schema.Struct({
@@ -37,6 +38,7 @@ export const Model = Schema.Struct({
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
   themeTip: Tooltip.Model,
+  batchDemo: BatchDemoState,
   composeTemplate: ComposeTemplate,
   composeStatus: Schema.Literals(["loading", "ready", "error"]),
 });
@@ -46,6 +48,8 @@ export const Message = defineMessageUnion({
   ThemeToggled: {},
   ThemeLoaded: { theme: Theme },
   ThemeSaved: {},
+  BatchDemoSubmitted: {},
+  BatchDemoChanged: { batch: BatchDemoState },
   ComposeTemplateSelected: { template: ComposeTemplate },
   ComposePreviewFinished: { ok: Schema.Boolean },
   QueryChanged: { value: Schema.String },
@@ -74,6 +78,7 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
       focusSelector: "[data-overlay-focus]",
     }),
     overlayKind: "menu",
+    batchDemo: { _tag: "loading" },
     composeTemplate: "contract",
     composeStatus: "loading",
     themeTip: Tooltip.init({ id: "theme-tip", showDelay: "300 millis" }),
@@ -183,6 +188,8 @@ export const update = (model: Model, message: Message) =>
     },
     ThemeLoaded: ({ theme }) => ({ model: { ...model, theme } }),
     ThemeSaved: () => ({ model }),
+    BatchDemoSubmitted: () => ({ model }),
+    BatchDemoChanged: ({ batch }) => ({ model: { ...model, batchDemo: batch } }),
     ComposeTemplateSelected: ({ template }) => ({ model: { ...model, composeTemplate: template } }),
     ComposePreviewFinished: ({ ok }) => ({
       model: { ...model, composeStatus: ok ? "ready" : "error" },
@@ -726,6 +733,17 @@ export const createView = (source: {
                                       ? [h.p([], [content.description])]
                                       : []),
                                     ...renderContent(content.nodes, h),
+                                    ...(model.path === "/docs/batch"
+                                      ? [
+                                          batchDemoView(
+                                            h,
+                                            model.batchDemo,
+                                            model.locale === "pt-BR",
+                                            BatchDemoMount(),
+                                            Message.BatchDemoSubmitted(),
+                                          ),
+                                        ]
+                                      : []),
                                     ...(model.path === "/docs/compose"
                                       ? [
                                           h.div(

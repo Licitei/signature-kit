@@ -9,6 +9,7 @@ import {
   Redacted,
   Ref,
   Schema,
+  Stream,
   Tracer,
 } from "effect";
 import type { Duration } from "effect";
@@ -17,6 +18,11 @@ import type { RpcClientError } from "effect/rpc/RpcClientError";
 import { LocalTelemetry, LocalError, LocalRpcs, PROTOCOL_VERSION } from "@signature-kit/engine/rpc";
 import type {
   A1OpenInput,
+  BatchEvent,
+  BatchItemIds,
+  BatchPrepareInput,
+  BatchSelection,
+  BatchSnapshot,
   ComparisonReport,
   A1SessionInfo,
   Handle,
@@ -67,6 +73,20 @@ export class LocalClient extends Context.Service<
     ) => Effect.Effect<PdfPreparation, LocalError>;
     readonly confirmPdf: (preparationId: PreparationId) => Effect.Effect<PdfReceipt, LocalError>;
     readonly releasePdf: (preparationId: PreparationId) => Effect.Effect<void, LocalError>;
+    readonly prepareBatch: (input: BatchPrepareInput) => Effect.Effect<BatchSnapshot, LocalError>;
+    readonly confirmBatch: (
+      batchId: string,
+      selection: BatchSelection,
+    ) => Effect.Effect<BatchSnapshot, LocalError>;
+    readonly cancelBatch: (batchId: string) => Effect.Effect<BatchSnapshot, LocalError>;
+    readonly retryBatch: (
+      batchId: string,
+      itemIds: BatchItemIds,
+    ) => Effect.Effect<BatchSnapshot, LocalError>;
+    readonly batchSnapshot: (batchId: string) => Effect.Effect<BatchSnapshot, LocalError>;
+    readonly batchEvents: (batchId: string) => Stream.Stream<BatchEvent, LocalError>;
+    readonly releaseBatch: (batchId: string) => Effect.Effect<BatchSnapshot, LocalError>;
+    readonly deleteBatch: (batchId: string) => Effect.Effect<void, LocalError>;
     readonly verifyPdf: (
       revision: RevisionRef,
       options?: PdfVerifyOptions,
@@ -123,12 +143,14 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
 
           const pending = yield* Ref.make({ closing: false, count: 0 });
           const drained = yield* Deferred.make<void>();
+          const closingSignal = yield* Deferred.make<void>();
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               const { count } = yield* Ref.updateAndGet(pending, (state) => ({
                 ...state,
                 closing: true,
               }));
+              yield* Deferred.succeed(closingSignal, undefined);
               if (count > 0) yield* Deferred.await(drained);
             }),
           );
@@ -187,6 +209,32 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
             preparePdf: (revision, options) => call(() => rpc.PdfPrepare({ revision, options })),
             confirmPdf: (preparationId) => call(() => rpc.PdfConfirm({ preparationId })),
             releasePdf: (preparationId) => call(() => rpc.PdfRelease({ preparationId })),
+            prepareBatch: (input) => call(() => rpc.BatchPrepare(input)),
+            confirmBatch: (batchId, selection) =>
+              call(() => rpc.BatchConfirm({ batchId, selection })),
+            cancelBatch: (batchId) => call(() => rpc.BatchCancel({ batchId })),
+            retryBatch: (batchId, itemIds) => call(() => rpc.BatchRetry({ batchId, itemIds })),
+            batchSnapshot: (batchId) => call(() => rpc.BatchSnapshot({ batchId })),
+            batchEvents: (batchId) =>
+              Stream.unwrap(
+                admit.pipe(
+                  Effect.as(
+                    rpc.BatchEvents({ batchId }).pipe(
+                      Stream.catchTag("RpcClientError", () =>
+                        Stream.fail(new LocalError({ code: "workerUnavailable" })),
+                      ),
+                      Stream.timeoutOrElse({
+                        duration: options.requestTimeout ?? "30 seconds",
+                        orElse: () => Stream.fail(new LocalError({ code: "workerUnavailable" })),
+                      }),
+                      Stream.interruptWhen(Deferred.await(closingSignal)),
+                      Stream.ensuring(settle),
+                    ),
+                  ),
+                ),
+              ),
+            releaseBatch: (batchId) => call(() => rpc.BatchRelease({ batchId })),
+            deleteBatch: (batchId) => call(() => rpc.BatchDelete({ batchId })),
             verifyPdf: (revision, options = {}) => call(() => rpc.PdfVerify({ revision, options })),
           });
         }),
