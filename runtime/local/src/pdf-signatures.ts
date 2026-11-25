@@ -143,25 +143,30 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
   const { contentsStart, contentsEnd, byteRange } = prepared;
   const [start, firstLength, secondStart, secondLength] = byteRange;
   yield* Effect.annotateCurrentSpan("byteLength", signed.byteLength);
-  if (
-    start !== 0 ||
-    firstLength !== contentsStart - 1 ||
-    secondStart !== contentsEnd + 1 ||
-    secondStart + secondLength !== signed.byteLength ||
-    contentsStart <= source.byteLength ||
-    signed.byteLength <= source.byteLength
-  )
-    return yield* new LocalError({ code: "selfVerificationFailed" });
-
-  for (let index = 0; index < source.byteLength; index += 1) {
-    if (signed[index] !== source[index]) {
+  yield* Effect.gen(function* () {
+    if (
+      start !== 0 ||
+      firstLength !== contentsStart - 1 ||
+      secondStart !== contentsEnd + 1 ||
+      secondStart + secondLength !== signed.byteLength ||
+      contentsStart <= source.byteLength ||
+      signed.byteLength <= source.byteLength
+    )
       return yield* new LocalError({ code: "selfVerificationFailed" });
-    }
-  }
+  }).pipe(Effect.withSpan("local.pdf.checkCoverage"));
 
-  const report = yield* core
-    .signatures(signed, "verification")
-    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
+  yield* Effect.gen(function* () {
+    for (let index = 0; index < source.byteLength; index += 1) {
+      if (signed[index] !== source[index]) {
+        return yield* new LocalError({ code: "selfVerificationFailed" });
+      }
+    }
+  }).pipe(Effect.withSpan("local.pdf.checkPrefix"));
+
+  const report = yield* core.signatures(signed, "verification").pipe(
+    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
+    Effect.withSpan("local.pdf.findSignature"),
+  );
   const signature = report.dictionaries.find(
     (dictionary) =>
       dictionary.kind === "signature" &&
@@ -175,16 +180,22 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
   const result = yield* signatureContents(signed, signature).pipe(
     Effect.flatMap(decodeSignatureContents),
     Effect.flatMap(unpadSignedData),
+    Effect.withSpan("local.pdf.decodeContents"),
     Effect.flatMap((cms) =>
-      verifyDetachedSignedData({ cms, content: signedBytes(signed, byteRange) }),
+      Effect.sync(() => signedBytes(signed, byteRange)).pipe(
+        Effect.withSpan("local.pdf.collectByteRange"),
+        Effect.flatMap((content) => verifyDetachedSignedData({ cms, content })),
+        Effect.withSpan("local.pdf.checkCms"),
+      ),
     ),
     Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
   );
   if (!result.valid) return yield* new LocalError({ code: "selfVerificationFailed" });
 
-  const changes = yield* core
-    .revisionChanges(signed, source.byteLength)
-    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
+  const changes = yield* core.revisionChanges(signed, source.byteLength).pipe(
+    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
+    Effect.withSpan("local.pdf.checkChanges"),
+  );
   if (
     changes.pageContentChanged ||
     changes.changes.some(
@@ -409,7 +420,9 @@ export const pdfSignaturesLayer = Layer.effect(
               ),
               Effect.withSpan("local.pdf.cms", { attributes: { policy } }),
             );
-            const signed = yield* embedPreparedSignature(prepared, cms);
+            const signed = yield* embedPreparedSignature(prepared, cms).pipe(
+              Effect.withSpan("local.pdf.embed"),
+            );
             yield* selfVerify(core, preparation, signed);
             const signedRevision = yield* documents.open(signed);
             const receiptId = yield* sha256Hex(

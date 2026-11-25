@@ -526,7 +526,12 @@ export const makePdfCore = (
         ),
         Effect.withSpan(
           "pdfCore.wasm.copyIn",
-          { attributes: { "signature_kit.wasm.input_bytes": bytes.byteLength } },
+          {
+            attributes: {
+              "signature_kit.wasm.input_bytes": bytes.byteLength,
+              "signature_kit.pdf_core.operation": operation,
+            },
+          },
           { captureStackTrace: false },
         ),
       );
@@ -587,12 +592,23 @@ export const makePdfCore = (
       block: ResultBlock,
     ): Effect.Effect<Uint8Array, PdfCoreError> =>
       new DataView(block.memory, block.pointer, block.length).getUint32(4, true) === STATUS_OK
-        ? Effect.succeed(
+        ? Effect.sync(() =>
             new Uint8Array(
               block.memory,
               block.pointer + RESULT_HEADER_BYTES,
               block.length - RESULT_HEADER_BYTES,
             ).slice(),
+          ).pipe(
+            Effect.withSpan(
+              "pdfCore.wasm.copyOut",
+              {
+                attributes: {
+                  "signature_kit.wasm.output_bytes": block.length - RESULT_HEADER_BYTES,
+                  "signature_kit.pdf_core.operation": operation,
+                },
+              },
+              { captureStackTrace: false },
+            ),
           )
         : failStatus(operation, block);
 
@@ -947,7 +963,7 @@ export const makePdfCore = (
               bbox: box(cellAt + 16),
               text: utf8.decode(
                 new Uint8Array(
-                  block.memory,
+                  core.memory.buffer,
                   block.pointer + blobAt + view.getUint32(cellAt + 48, true),
                   view.getUint32(cellAt + 52, true),
                 ),

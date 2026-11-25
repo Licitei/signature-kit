@@ -144,3 +144,6 @@ evidence is reported as present.
 
 For a Node runtime, assemble `pdfSignaturesLayer` from `@signature-kit/local/pdf-signatures`
 with `pdfEngineLayer`, `localRuntimeLayer()` and a `PdfCore` layer. The worker supplies its own browser WASM layer.
+
+See [warm A1 signing benchmarks](docs/signing-performance.md) for the Node and
+Chromium worker measurements and WASM copy breakdown.
