@@ -243,6 +243,23 @@ const collectSpans = Effect.gen(function* () {
 const buildClient = <E>(layer: Layer.Layer<LocalClient, E>) =>
   Layer.build(layer).pipe(Effect.map((context) => Context.get(context, LocalClient)));
 
+const helperMemory = Effect.promise(() => commands.sampleRuntimeMemory()).pipe(
+  Effect.map(({ perWorker }) => {
+    const bundled = perWorker.filter(({ url }) => url.includes("worker-bundle"));
+    const helpers = bundled.filter(({ url }) => url.includes("signing-helper"));
+    const runtime = bundled.filter(({ url }) => !url.includes("signing-helper"));
+    const mean = (rows: typeof perWorker, key: "heapBytes" | "backingBytes") =>
+      rows.length === 0 ? 0 : rows.reduce((sum, row) => sum + row[key], 0) / rows.length;
+    return {
+      signingHelpers: helpers.length,
+      helperHeapBytes: mean(helpers, "heapBytes"),
+      helperBackingBytes: mean(helpers, "backingBytes"),
+      runtimeHeapBytes: mean(runtime, "heapBytes"),
+      runtimeBackingBytes: mean(runtime, "backingBytes"),
+    };
+  }),
+);
+
 const coldPlain = (fixture: Fixture, createWorker: () => Worker, prewarm = false) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -251,12 +268,14 @@ const coldPlain = (fixture: Fixture, createWorker: () => Worker, prewarm = false
       );
       return yield* Effect.gen(function* () {
         const { ms: prewarmMs } = yield* timed(prewarm ? client.prewarm() : Effect.void);
+        const memory = prewarm ? yield* helperMemory : {};
         yield* blockNetwork;
         const { value: session, ms: a1OpenMs } = yield* timed(openSession);
         const signing = yield* signOnce(fixture, session);
         return {
           bootMs,
           ...(prewarm ? { prewarmMs } : {}),
+          ...memory,
           a1OpenMs,
           ...signing,
           firstSignatureMs: bootMs + prewarmMs + a1OpenMs + signing.totalMs,

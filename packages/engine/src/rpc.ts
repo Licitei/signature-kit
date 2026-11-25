@@ -595,6 +595,7 @@ export const BatchSnapshot = Schema.Struct({
   batchId: BatchId,
   seq: Count,
   state: BatchState,
+  signingWorkers: Count,
   items: Schema.Array(BatchItem),
   progress: BatchProgress,
   reason: Schema.optional(LocalErrorCode),

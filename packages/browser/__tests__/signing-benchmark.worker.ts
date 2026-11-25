@@ -7,6 +7,7 @@ BrowserRuntime.runMain(
   localWorker(
     false,
     {
+      signingWorkers: size,
       batchConfig: {
         concurrency: Math.min(64, Math.max(2, size * 2)),
         queueCapacity: Math.max(4, size * 4),
@@ -14,12 +15,6 @@ BrowserRuntime.runMain(
         eventCapacity: 4096,
       },
     },
-    size > 0
-      ? {
-          size,
-          createWorker: () =>
-            new Worker(new URL("../src/signing-helper.ts", import.meta.url), { type: "module" }),
-        }
-      : undefined,
+    () => new Worker(new URL("../src/signing-helper.ts", import.meta.url), { type: "module" }),
   ),
 );

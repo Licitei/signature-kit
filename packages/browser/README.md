@@ -29,8 +29,9 @@ Pass PFX bytes and passwords to `openA1` as `Redacted` values. A successful open
 ## Offline PDF viewer
 
 Host the Vite-built worker and its emitted WASM asset with your application. The
-worker loads the bundled `signature-kit.wasm` before the handshake completes. After
-bootstrap, opening, inspecting, rendering and releasing local documents need no
+worker loads the bundled `signature-kit.wasm` before the handshake completes and
+then starts its signing helpers in the background. Once `prewarm()` resolves,
+opening, inspecting, rendering, signing and releasing local documents need no
 network access.
 
 ```ts
@@ -186,17 +187,25 @@ The peak counter measures these reservations. Chromium's heap, internal PDF and
 cryptographic scratch allocations, and browser storage overhead have their own
 lifetimes.
 
-The shipped worker signs batch items on `navigator.hardwareConcurrency - 1`
-helper workers. Helpers receive the session's non-extractable `CryptoKey` and
-certificate chain from the runtime worker, so the PFX is parsed once. The runtime
-worker keeps handles, digests, receipts, admission, the byte budget and events.
-A custom entry passes the pool as the third argument of `localWorker`, for example
-`localWorker(false, {}, { size: 4, createWorker: () => new Worker(new URL("./signing-helper.js", import.meta.url), { type: "module" }) })`;
-omit it to sign batch items in the runtime worker.
+The shipped worker signs batch items on `min(4, navigator.hardwareConcurrency - 1)`
+helper workers; the Chromium benchmark stopped improving past four. Helpers receive
+the session's non-extractable `CryptoKey` and certificate chain from the runtime
+worker, so the PFX is parsed once, and the runtime worker's compiled
+`WebAssembly.Module`, so `signature-kit.wasm` is fetched and compiled once. The
+runtime worker keeps handles, digests, receipts, admission, the byte budget and
+events. A custom entry sets the count with the Schema-checked `signingWorkers`
+option (0–64) and passes the helper factory as the third argument of `localWorker`,
+for example
+`localWorker(false, { signingWorkers: 2 }, () => new Worker(new URL("./signing-helper.js", import.meta.url), { type: "module" }))`;
+omit either to sign batch items in the runtime worker.
 
-Helpers start on the first batch. Call `LocalClient.prewarm()` while the page is
-idle and online to start them early and warm the signing path; helper scripts are
-fetched like the worker itself.
+Helpers start in the background when the worker boots, so a batch started after
+the network drops still runs on them. Helpers that do not start (for example when
+the network drops before their script loads) or that stop responding are left
+out, and their items run in the runtime worker. Every batch snapshot reports the
+effective helper count in `signingWorkers`; `0` means the batch signs in the runtime
+worker. `LocalClient.prewarm()` waits for the configured helpers and warms the
+signing path in each of them.
 
 To opt in to recovery, import `localWorker` from
 `@signature-kit/browser/worker-runtime`. In your worker entry, pass

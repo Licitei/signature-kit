@@ -4,7 +4,8 @@ import { Batches, batchesLayer } from "@signature-kit/engine/batches";
 import * as BrowserWorkerRunner from "@effect/platform-browser/BrowserWorkerRunner";
 import { compose } from "@signature-kit/engine/compose";
 import { composeBrowserLayer } from "@signature-kit/engine/wasm/compose";
-import { pdfCoreBrowserLayer } from "@signature-kit/engine/wasm/browser";
+import { pdfCoreModuleBrowserLayer } from "@signature-kit/engine/wasm/browser";
+import { PdfCoreModule, pdfCoreModuleLayer } from "@signature-kit/engine/wasm/pdf-core";
 import { paintDisplayList, prepareDisplayListImages } from "@signature-kit/engine/wasm/canvas";
 import { Effect, Layer, Option, References, Schema, Semaphore } from "effect";
 import * as RpcServer from "effect/rpc/RpcServer";
@@ -34,7 +35,7 @@ import {
   SigningHelperRpcs,
   signingHelperHandlersLayer,
 } from "@signature-kit/engine/signing-helper";
-import { signingPoolLayer } from "./signing-pool.js";
+import { SigningPoolSizeSchema, signingPoolLayer } from "./signing-pool.js";
 
 const localHandlersLayer = LocalRpcs.toLayer(
   Effect.gen(function* () {
@@ -57,7 +58,7 @@ const localHandlersLayer = LocalRpcs.toLayer(
           return yield* new LocalError({ code: "protocolMismatch" });
         return { instanceId, version: PROTOCOL_VERSION, telemetry: telemetry !== undefined };
       }),
-      Prewarm: () => signatures.prewarm.pipe(Effect.andThen(pool?.start ?? Effect.void)),
+      Prewarm: () => signatures.prewarm.pipe(Effect.andThen(pool?.prewarm ?? Effect.void)),
       DocumentsOpen: ({ bytes }) => documents.open(bytes),
       DocumentsExport: ({ handle }) => documents.export(handle),
       DocumentsDigest: ({ revision }) => documents.digest(revision),
@@ -147,11 +148,13 @@ const resumeLayer = indexedDbBatchStorageLayer.pipe(
   Layer.provide(indexedDbWorkerLayer),
 );
 
-const LocalWorkerOptionsSchema = Schema.Struct({
+export const LocalWorkerOptionsSchema = Schema.Struct({
   batchConfig: Schema.optional(BatchConfigSchema),
   resumeBatches: Schema.optional(Schema.Boolean),
+  signingWorkers: Schema.optional(SigningPoolSizeSchema),
   telemetry: Schema.optional(TelemetryOptionsSchema),
 });
+export type LocalWorkerOptions = (typeof LocalWorkerOptionsSchema)["Type"];
 
 const defaultBatchConfig = (concurrency: number) => ({
   concurrency,
@@ -162,13 +165,14 @@ const defaultBatchConfig = (concurrency: number) => ({
 
 export const localWorker = (
   telemetry: boolean,
-  options: typeof LocalWorkerOptionsSchema.Type = {},
-  signingPool?: { readonly size: number; readonly createWorker: () => Worker },
+  options: LocalWorkerOptions = {},
+  createSigningHelper?: () => Worker,
 ) => {
+  const helpers = createSigningHelper === undefined ? 0 : (options.signingWorkers ?? 0);
   const pool =
-    signingPool === undefined
+    createSigningHelper === undefined || helpers === 0
       ? undefined
-      : signingPoolLayer(signingPool.size, signingPool.createWorker);
+      : signingPoolLayer(helpers, createSigningHelper);
   return Layer.launch(
     RpcServer.layer(LocalRpcs, {
       spanPrefix: "local.worker",
@@ -179,9 +183,7 @@ export const localWorker = (
           Layer.provide(
             batchesLayer(
               options.batchConfig ??
-                defaultBatchConfig(
-                  signingPool === undefined ? 2 : Math.min(64, signingPool.size * 2),
-                ),
+                defaultBatchConfig(pool === undefined ? 2 : Math.min(64, helpers * 2)),
             ),
           ),
           Layer.provide(options.resumeBatches === true ? resumeLayer : Layer.empty),
@@ -189,8 +191,9 @@ export const localWorker = (
           Layer.provide(pdfSignaturesLayer),
           Layer.provide(pdfEngineLayer),
           Layer.provide(localRuntimeLayer()),
-          Layer.provide(pdfCoreBrowserLayer),
+          Layer.provide(pdfCoreModuleLayer),
           Layer.provide(composeBrowserLayer),
+          Layer.provide(pdfCoreModuleBrowserLayer),
         ),
       ),
       Layer.provide(
@@ -205,19 +208,28 @@ export const localWorker = (
   );
 };
 
-export const signingHelperWorker = Layer.launch(
-  RpcServer.layer(SigningHelperRpcs, { disableTracing: true }).pipe(
-    Layer.provide(
-      signingHelperHandlersLayer.pipe(
-        Layer.provide(pdfSignaturesLayer),
-        Layer.provide(pdfEngineLayer),
-        Layer.provide(localRuntimeLayer()),
-        Layer.provide(pdfCoreBrowserLayer),
+const WasmModuleSchema = Schema.instanceOf(WebAssembly.Module);
+
+export const signingHelperWorker = (bootstrap: unknown) =>
+  Schema.decodeUnknownEffect(WasmModuleSchema)(bootstrap).pipe(
+    Effect.orDie,
+    Effect.flatMap((module) =>
+      Layer.launch(
+        RpcServer.layer(SigningHelperRpcs, { disableTracing: true }).pipe(
+          Layer.provide(
+            signingHelperHandlersLayer.pipe(
+              Layer.provide(pdfSignaturesLayer),
+              Layer.provide(pdfEngineLayer),
+              Layer.provide(localRuntimeLayer()),
+              Layer.provide(pdfCoreModuleLayer),
+              Layer.provide(Layer.succeed(PdfCoreModule, module)),
+            ),
+          ),
+          Layer.provide(
+            RpcServer.layerProtocolWorkerRunner.pipe(Layer.provide(BrowserWorkerRunner.layer)),
+          ),
+          Layer.provide(Layer.succeed(References.TracerEnabled, false)),
+        ),
       ),
     ),
-    Layer.provide(
-      RpcServer.layerProtocolWorkerRunner.pipe(Layer.provide(BrowserWorkerRunner.layer)),
-    ),
-    Layer.provide(Layer.succeed(References.TracerEnabled, false)),
-  ),
-);
+  );

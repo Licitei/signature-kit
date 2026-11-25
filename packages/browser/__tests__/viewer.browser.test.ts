@@ -138,6 +138,7 @@ it("matches the pdf.js oracle at two zooms while the local viewer is offline", a
         );
         yield* Effect.gen(function* () {
           const client = yield* LocalClient;
+          yield* client.prewarm();
           const start = yield* Effect.promise(() => commands.trackLocalRuntimeRequests("read"));
           expect(start.some((url) => new URL(url).pathname.endsWith("/signature-kit.wasm"))).toBe(
             true,

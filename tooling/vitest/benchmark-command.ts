@@ -11,6 +11,11 @@ declare module "vitest/browser" {
       readonly workerHeapBytes: number;
       readonly workerBackingBytes: number;
       readonly workers: number;
+      readonly perWorker: ReadonlyArray<{
+        readonly url: string;
+        readonly heapBytes: number;
+        readonly backingBytes: number;
+      }>;
     }>;
     writeBenchmark: (name: string, json: string) => Promise<string>;
   }
@@ -60,7 +65,13 @@ export const sampleRuntimeMemory = defineBrowserCommand(async ({ page }) => {
     const { metrics } = await pageSession.send("Performance.getMetrics");
     const pageHeapBytes = metrics.find(({ name }) => name === "JSHeapUsedSize")?.value ?? 0;
     if (session === undefined) {
-      return { pageHeapBytes, workerHeapBytes: 0, workerBackingBytes: 0, workers: 0 };
+      return {
+        pageHeapBytes,
+        workerHeapBytes: 0,
+        workerBackingBytes: 0,
+        workers: 0,
+        perWorker: [],
+      };
     }
     const { targetInfos } = await session.send("Target.getTargets");
     const workers = targetInfos.filter(({ type }) => type === "worker");
@@ -80,6 +91,11 @@ export const sampleRuntimeMemory = defineBrowserCommand(async ({ page }) => {
       workerHeapBytes: usages.reduce((sum, { used }) => sum + used, 0),
       workerBackingBytes: usages.reduce((sum, { backing }) => sum + backing, 0),
       workers: workers.length,
+      perWorker: workers.map(({ url }, index) => ({
+        url,
+        heapBytes: usages[index]?.used ?? 0,
+        backingBytes: usages[index]?.backing ?? 0,
+      })),
     };
   } finally {
     await pageSession.detach();

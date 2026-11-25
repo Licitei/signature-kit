@@ -189,3 +189,54 @@ it("signs batches across a signing worker pool and drains every worker on cancel
     ),
   );
 }, 120_000);
+
+const signOffline = (helpers: "started" | "missing") =>
+  Effect.gen(function* () {
+    const client = yield* LocalClient;
+    const warm = yield* client.composePdf({ document: contractTemplate() });
+    yield* client.releaseDocument(warm.handle);
+    const session = yield* beginSession;
+    if (helpers === "started") yield* client.prewarm();
+    yield* Effect.acquireRelease(
+      Effect.promise(() => commands.blockLocalRuntimeNetwork(true)),
+      () => Effect.promise(() => commands.blockLocalRuntimeNetwork(false)),
+    );
+    const reviewed = yield* prepareContracts(50, session);
+    expect(reviewed.signingWorkers).toBe(helpers === "started" ? 3 : 0);
+    expect(reviewed.items.every(({ state }) => state === "ready")).toBe(true);
+    yield* client.confirmBatch(reviewed.batchId, yield* reviewedSelection(reviewed.items));
+    yield* client.batchEvents(reviewed.batchId).pipe(Stream.runDrain);
+    const completed = yield* client.batchSnapshot(reviewed.batchId);
+    expect(completed.state).toBe("completed");
+    expect(completed.progress.signed).toBe(50);
+    expect(completed.signingWorkers).toBe(reviewed.signingWorkers);
+    const first = completed.items[0]?.receipt;
+    if (first === undefined) return yield* Effect.die("Expected a signed receipt.");
+    const signed = yield* client.exportDocument(first.signedRevision.handle);
+    yield* Effect.promise(() =>
+      commands.verifyPdfIndependently(
+        btoa(Array.from(signed, (byte) => String.fromCharCode(byte)).join("")),
+        1,
+      ),
+    );
+    yield* client.releaseBatch(reviewed.batchId);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      localClientLayer(
+        () =>
+          new Worker(new URL("./offline-pool.worker.ts", import.meta.url), {
+            type: "module",
+            name: helpers,
+          }),
+      ),
+    ),
+  );
+
+it("signs a batch of 50 offline on signing helpers started at worker boot", async () => {
+  await Effect.runPromise(signOffline("started"));
+}, 120_000);
+
+it("signs a batch of 50 offline on the runtime worker when no signing helper starts", async () => {
+  await Effect.runPromise(signOffline("missing"));
+}, 120_000);

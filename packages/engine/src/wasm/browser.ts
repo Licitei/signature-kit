@@ -1,7 +1,7 @@
 import { Effect, Layer } from "effect";
 
 import { PdfCoreError, PdfCoreErrorCodeValue, PdfCoreOperationValue } from "./config.js";
-import { PdfCore, makePdfCore } from "./pdf-core.js";
+import { PdfCore, PdfCoreModule, makePdfCore } from "./pdf-core.js";
 
 const WASM_CONTENT_TYPE = "application/wasm";
 
@@ -38,6 +38,11 @@ export const pdfCoreBrowserModule: Effect.Effect<WebAssembly.Module, PdfCoreErro
     });
   },
 ).pipe(Effect.withSpan("pdfCore.wasm.compile", undefined, { captureStackTrace: false }));
+
+export const pdfCoreModuleBrowserLayer: Layer.Layer<PdfCoreModule, PdfCoreError> = Layer.effect(
+  PdfCoreModule,
+  pdfCoreBrowserModule,
+);
 
 export const pdfCoreBrowserLayer: Layer.Layer<PdfCore, PdfCoreError> = Layer.effect(
   PdfCore,

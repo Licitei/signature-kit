@@ -16,6 +16,7 @@ import {
 const DocumentKey = Schema.String.check(Schema.isMinLength(1));
 
 export const SigningHelperRpcs = RpcGroup.make(
+  Rpc.make("HelperReady"),
   Rpc.make("HelperAdopt", { payload: SharedA1SessionSchema, error: LocalError }),
   Rpc.make("HelperPrepare", {
     payload: {
@@ -66,6 +67,7 @@ export const signingHelperHandlersLayer = SigningHelperRpcs.toLayer(
       yield* documents.release(revision.handle).pipe(Effect.ignore);
     });
     return SigningHelperRpcs.of({
+      HelperReady: () => Effect.void,
       HelperAdopt: a1.adopt,
       HelperPrepare: ({ key, bytes, input }) =>
         load(key, bytes).pipe(

@@ -64,7 +64,8 @@ export class SignaturePool extends Context.Service<
   SignaturePool,
   SignatureComputeService & {
     readonly size: number;
-    readonly start: Effect.Effect<void, LocalError>;
+    readonly available: Effect.Effect<number>;
+    readonly prewarm: Effect.Effect<void>;
   }
 >()("@signature-kit/engine/SignaturePool") {}
 

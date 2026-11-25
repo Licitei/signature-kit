@@ -223,6 +223,10 @@ export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
   "@signature-kit/engine/PdfCore",
 ) {}
 
+export class PdfCoreModule extends Context.Service<PdfCoreModule, WebAssembly.Module>()(
+  "@signature-kit/engine/PdfCoreModule",
+) {}
+
 const FLAG_TEXT = 1;
 const FLAG_LINKS = 2;
 const FLAG_PAGE_INDEXES = 4;
@@ -2425,3 +2429,10 @@ export const makePdfCore = (
 
 export const pdfCoreLayer = (module: WebAssembly.Module): Layer.Layer<PdfCore, PdfCoreError> =>
   Layer.effect(PdfCore, makePdfCore(module));
+
+export const pdfCoreModuleLayer: Layer.Layer<PdfCore, PdfCoreError, PdfCoreModule> = Layer.effect(
+  PdfCore,
+  Effect.gen(function* () {
+    return yield* makePdfCore(yield* PdfCoreModule);
+  }),
+);

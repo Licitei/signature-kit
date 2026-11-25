@@ -91,6 +91,8 @@ export const batchesLayer = (
         scope: Scope.Closeable,
       ) {
         const persistence = input.resumeId === undefined ? undefined : storage;
+        const signingWorkers = pool === undefined ? 0 : yield* pool.available;
+        const compute = signingWorkers > 0 ? pool : undefined;
         const lock = yield* Semaphore.make(1);
         const bytes = yield* Semaphore.make(config.byteBudget);
         const admission = yield* Semaphore.make(1);
@@ -133,6 +135,7 @@ export const batchesLayer = (
           batchId: id,
           seq,
           state,
+          signingWorkers,
           items: Array.from(items.values()),
           progress: progress(),
           reason,
@@ -277,7 +280,7 @@ export const batchesLayer = (
               {
                 identity: owner,
                 nonce: crypto.randomUUID(),
-                compute: pool,
+                compute,
                 reserve: ({
                   appendixBytes,
                   digestBytes,
