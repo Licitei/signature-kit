@@ -1,5 +1,16 @@
 import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
-import { Context, Deferred, Effect, Layer, Redacted, Ref, Schema } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Function,
+  Layer,
+  Option,
+  Redacted,
+  Ref,
+  Schema,
+  Tracer,
+} from "effect";
 import type { Duration } from "effect";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
@@ -14,6 +25,7 @@ import type {
   PdfRenderInput,
   RevisionRef,
 } from "./protocol.js";
+import { LocalTelemetry } from "./telemetry.js";
 
 export class LocalClient extends Context.Service<
   LocalClient,
@@ -25,6 +37,7 @@ export class LocalClient extends Context.Service<
     readonly inspectPdf: (handle: Handle) => Effect.Effect<PdfInspection, LocalError>;
     readonly renderPage: (input: PdfRenderInput) => Effect.Effect<PdfPagePixels, LocalError>;
     readonly openA1: (input: A1OpenInput) => Effect.Effect<A1SessionInfo, LocalError>;
+    readonly collectTelemetry: () => Effect.Effect<void, LocalError>;
     readonly closeA1: () => Effect.Effect<void, LocalError>;
   }
 >()("@signature-kit/local/LocalClient") {}
@@ -61,9 +74,19 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
       return Layer.effect(
         LocalClient,
         Effect.gen(function* () {
-          const rpc = yield* RpcClient.make(LocalRpcs, { spanPrefix: "local.client" });
-          const { instanceId, version } = yield* send(rpc.Hello({ version: PROTOCOL_VERSION }));
-          if (version !== PROTOCOL_VERSION)
+          const telemetry = Option.getOrUndefined(yield* Effect.serviceOption(LocalTelemetry));
+          const tracer = yield* Tracer.Tracer;
+          const trace = telemetry === undefined ? Function.identity : Effect.withTracer(tracer);
+          const rpc = yield* RpcClient.make(LocalRpcs, {
+            spanPrefix: "local.client",
+            disableTracing: telemetry === undefined,
+          });
+          const {
+            instanceId,
+            version,
+            telemetry: workerTelemetry,
+          } = yield* trace(send(rpc.Hello({ version: PROTOCOL_VERSION })));
+          if (version !== PROTOCOL_VERSION || workerTelemetry !== (telemetry !== undefined))
             return yield* new LocalError({ code: "protocolMismatch" });
 
           const pending = yield* Ref.make({ closing: false, count: 0 });
@@ -96,7 +119,7 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
           const call = <A>(request: () => Effect.Effect<A, LocalError | RpcClientError>) =>
             Effect.acquireUseRelease(
               admit,
-              () => send(request()),
+              () => trace(send(request())),
               () => settle,
             );
 
@@ -116,6 +139,13 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
                 }),
               ),
             closeA1: () => call(() => rpc.A1Close(undefined)),
+            collectTelemetry:
+              telemetry === undefined
+                ? () => Effect.void
+                : () =>
+                    call(() =>
+                      rpc.TelemetryDrain(undefined).pipe(Effect.withTracerEnabled(false)),
+                    ).pipe(Effect.flatMap(telemetry.receive)),
           });
         }),
       ).pipe(

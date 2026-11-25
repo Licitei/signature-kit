@@ -2,8 +2,9 @@ import { Schema } from "effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Transferable from "effect/workers/Transferable";
+import { TelemetryBatch } from "./telemetry.js";
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
@@ -140,7 +141,7 @@ const Version = Schema.Int.check(Schema.isGreaterThan(0));
 export const LocalRpcs = RpcGroup.make(
   Rpc.make("Hello", {
     payload: { version: Version },
-    success: Schema.Struct({ instanceId: InstanceId, version: Version }),
+    success: Schema.Struct({ instanceId: InstanceId, version: Version, telemetry: Schema.Boolean }),
     error: LocalError,
   }),
   Rpc.make("DocumentsOpen", {
@@ -173,4 +174,5 @@ export const LocalRpcs = RpcGroup.make(
     error: LocalError,
   }),
   Rpc.make("A1Close", { error: LocalError }),
+  Rpc.make("TelemetryDrain", { success: TelemetryBatch }),
 );

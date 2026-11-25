@@ -89,7 +89,14 @@ it("rejects a skewed Hello and transfers a 16 MiB document over the native RPC p
             _tag: "LocalError",
             code: "protocolMismatch",
           });
-          yield* rpc.Hello({ version: PROTOCOL_VERSION });
+          const hello = yield* rpc.Hello({ version: PROTOCOL_VERSION });
+          expect(hello.telemetry).toBe(false);
+          expect(yield* rpc.TelemetryDrain(undefined)).toEqual({
+            spans: [],
+            bytes: 0,
+            droppedSpans: 0,
+            droppedAttributes: 0,
+          });
 
           const byteLength = 16 * 1024 * 1024;
           const bytes = new Uint8Array(byteLength).fill(53);

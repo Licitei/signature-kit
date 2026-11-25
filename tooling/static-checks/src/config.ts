@@ -44,8 +44,11 @@ export const nodeBoundaryModules: readonly string[] = ["shared/pdf-core/src/node
 
 export const allowedEffectProvideSites: Record<string, readonly string[]> = {
   "runtime/local/src/client.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
-  "runtime/local/src/worker.ts": [
+  "runtime/local/src/telemetry-otlp.ts": ["Resource.layer"],
+  "runtime/local/src/worker-server.ts": [
     "localHandlersLayer",
+    "localTelemetryLayer",
+    "Layer.succeed",
     "RpcServer.layerProtocolWorkerRunner",
     "BrowserWorkerRunner.layer",
   ],
