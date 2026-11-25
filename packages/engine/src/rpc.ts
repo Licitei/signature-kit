@@ -6,6 +6,7 @@ import {
   PdfCorePrepareSignatureRequestSchema,
   PdfCoreRevisionChangesSchema,
   PdfCoreSignatureFieldsSchema,
+  PdfCoreValidationData,
 } from "./wasm/config.js";
 import { BrazilianFieldsSchema } from "./certificates/config.js";
 import { Context, Schema } from "effect";
@@ -40,6 +41,9 @@ export const RpcMethod = Schema.Literals([
   "BatchEvents",
   "BatchRelease",
   "BatchDelete",
+  "PdfAddValidationData",
+  "PdfPrepareDocumentTimestamp",
+  "PdfAddDocumentTimestamp",
 ]);
 const SpanName = Schema.Union([
   Schema.TemplateLiteral([Schema.Literals(["local.client.", "local.worker."]), RpcMethod]),
@@ -140,7 +144,7 @@ export class LocalTelemetry extends Context.Service<
   }
 >()("@signature-kit/engine/LocalTelemetry") {}
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
@@ -241,6 +245,9 @@ const PdfAppearance = Schema.Union([
 ]);
 
 export type PdfSignatureFields = (typeof PdfCoreSignatureFieldsSchema)["Type"];
+export const PdfValidationData = PdfCoreValidationData;
+export type PdfValidationData = typeof PdfValidationData.Type;
+
 export type PdfNewSignatureFields = (typeof PdfCoreNewSignatureFieldsSchema)["Type"];
 
 export const PdfPrepareOptionsSchema = Schema.Struct({
@@ -409,6 +416,8 @@ export const LocalErrorCode = Schema.Literals([
   "signFailed",
   "pdfReadFailed",
   "pdfPrepareFailed",
+  "validationDataFailed",
+  "documentTimestampFailed",
   "fieldNotFound",
   "fieldAmbiguous",
   "fieldSigned",
@@ -455,6 +464,9 @@ export const localErrorMessages = {
   signFailed: "The A1 signing operation failed.",
   pdfReadFailed: "The PDF signature data could not be read.",
   pdfPrepareFailed: "The PDF could not be prepared for signing.",
+  validationDataFailed: "The PDF validation data could not be appended.",
+  documentTimestampFailed:
+    "The document timestamp could not be prepared or its token does not match.",
   fieldNotFound: "The PDF signature field was not found.",
   fieldAmbiguous: "The PDF signature field or widget is ambiguous.",
   fieldSigned: "The PDF signature field is already signed.",
@@ -701,6 +713,21 @@ export const LocalRpcs = RpcGroup.make(
   }),
   Rpc.make("PdfAddSignatureFields", {
     payload: { revision: RevisionRef, fields: PdfCoreNewSignatureFieldsSchema },
+    success: RevisionRef,
+    error: LocalError,
+  }),
+  Rpc.make("PdfAddValidationData", {
+    payload: { revision: RevisionRef, evidence: PdfValidationData },
+    success: RevisionRef,
+    error: LocalError,
+  }),
+  Rpc.make("PdfPrepareDocumentTimestamp", {
+    payload: { revision: RevisionRef },
+    success: Schema.Uint8Array,
+    error: LocalError,
+  }),
+  Rpc.make("PdfAddDocumentTimestamp", {
+    payload: { revision: RevisionRef, token: Schema.Uint8Array },
     success: RevisionRef,
     error: LocalError,
   }),

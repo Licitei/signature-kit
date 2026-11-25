@@ -127,6 +127,8 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
   const fields = yield* signing.fields.pipe(
     Effect.mapError(() => new LocalError({ code: "pdfReadFailed" })),
   );
+  const dss = yield* signing.validationData.pipe(Effect.option);
+  const validationData = Option.getOrUndefined(dss);
   const documentTimestamps = yield* Effect.forEach(
     report.dictionaries.filter(({ kind }) => kind === "documentTimestamp"),
     (dictionary) =>
@@ -232,7 +234,11 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
           Effect.option,
         );
         if (Option.isNone(der)) return covered;
-        const cms = { cms: der.value, content: signedBytes(pdf, range) };
+        const cms = {
+          cms: der.value,
+          content: signedBytes(pdf, range),
+          certificates: validationData?.certificates,
+        };
         const verification = yield* verifyDetachedSignedDataEvidence(cms).pipe(Effect.option);
         if (Option.isNone(verification)) return covered;
 
@@ -292,7 +298,14 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
           timestampEvidence,
           evaluationTime: effectiveTime,
           trust,
-          revocation: yield* evaluateRevocation(revocation, trustedPath, effectiveTime.at),
+          revocation: yield* evaluateRevocation(
+            {
+              ocsp: [...revocation.ocsp, ...(validationData?.ocsp ?? [])],
+              crls: [...revocation.crls, ...(validationData?.crls ?? [])],
+            },
+            trustedPath,
+            effectiveTime.at,
+          ),
         };
       }),
   );
@@ -343,6 +356,11 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
       )
     : allSignatures;
   const signedEnds = new Set(signatures.map(({ coverage }) => coverage.revisionEnd));
+  const timestampEnds = new Set(
+    signatures
+      .filter(({ kind, integrity }) => kind === "documentTimestamp" && integrity === "valid")
+      .map(({ coverage }) => coverage.revisionEnd),
+  );
   const invalid = allSignatures.some(
     ({ kind, integrity }) =>
       integrity === "invalid" || (kind === "signature" && integrity !== "valid"),
@@ -353,7 +371,9 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
     changes?.recognised.some(
       ({ kind, change, revisionEnd }) =>
         change === "removed" ||
-        (kind !== "dss" && (!signingChanges.has(kind) || !signedEnds.has(revisionEnd))),
+        (kind !== "dss" &&
+          !(kind === "docTimeStamp" && timestampEnds.has(revisionEnd)) &&
+          !(signingChanges.has(kind) && signedEnds.has(revisionEnd))),
     ) ?? false;
   const mdpViolation = allSignatures.some(
     ({ mdp }) => mdp !== undefined && (mdp.pageContentViolation || mdp.violations.length > 0),

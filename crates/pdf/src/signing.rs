@@ -1584,6 +1584,93 @@ fn prepare_update(pdf: &[u8], request: &Request<'_>, limits: &Limits) -> Outcome
     patch(bytes, pdf.len(), start, request.capacity)
 }
 
+#[expect(
+    clippy::missing_errors_doc,
+    clippy::missing_inline_in_public_items,
+    reason = "the WASM bindings document the timestamp preparation contract"
+)]
+pub fn prepare_document_timestamp(pdf: &[u8], limits: &Limits) -> Outcome<PreparedUpdate> {
+    let document = appendable(pdf, limits)?;
+    let tree = FieldTree::read(&document, false)?;
+    let mut objects = Objects(next_object_number(&document));
+    let signature = objects.reserve()?;
+    let field = objects.reserve()?;
+    let mut title = format!("DocTimeStamp-{}", field.number);
+    while tree.fields.iter().any(|entry| entry.name == title) {
+        title.push('_');
+    }
+    let capacity = 0x4000;
+    let mut store = Store {
+        changed: Changes::default(),
+        document: &document,
+        pages: None,
+    };
+    store.set_body(
+        field,
+        Object::Dict(dictionary([
+            (b"FT", name(b"Sig")),
+            (b"T", pdf_text(&title)),
+            (b"V", Object::Ref(signature)),
+        ])),
+        None,
+    );
+    let target = Target {
+        base: Base::Catalog,
+        path: vec![Step::Key(b"AcroForm".to_vec())],
+    };
+    store.edit_array(&target, b"Fields", Object::Ref(field), true)?;
+    let (form_root, form_path) = store.locate(&target, false)?;
+    store
+        .dict_at(form_root, &form_path)?
+        .insert(b"SigFlags", Object::Integer(3));
+    let signature_dict = dictionary([
+        (
+            b"ByteRange",
+            Object::Array(vec![Object::Integer(RANGE_PLACEHOLDER); 4]),
+        ),
+        (b"Contents", Object::String(vec![0; widen(capacity)])),
+        (b"Filter", name(b"Adobe.PPKLite")),
+        (b"SubFilter", name(b"ETSI.RFC3161")),
+        (b"Type", name(b"DocTimeStamp")),
+    ]);
+    store.set_body(signature, Object::Dict(signature_dict), None);
+    let (bytes, offset) = incremental_update(&document, &store.changed, pdf, Some(signature))?;
+    let start = offset.ok_or_else(|| Failure::invalid("missing document timestamp object"))?;
+    patch(bytes, pdf.len(), start, capacity)
+}
+
+#[expect(
+    clippy::missing_errors_doc,
+    clippy::missing_inline_in_public_items,
+    reason = "the WASM bindings document the timestamp write contract"
+)]
+pub fn add_document_timestamp(pdf: &[u8], token: &[u8], limits: &Limits) -> Outcome<Vec<u8>> {
+    let prepared = prepare_document_timestamp(pdf, limits)?;
+    let mut appendix = prepared.appendix;
+    let start = prepared.contents_start.saturating_sub(pdf.len());
+    let end = prepared.contents_end.saturating_sub(pdf.len());
+    let hex = appendix
+        .get_mut(start..end)
+        .ok_or_else(|| Failure::invalid("invalid timestamp hole"))?;
+    if token.is_empty() || token.len().saturating_mul(2) > hex.len() {
+        return Err(Failure::request(
+            "timestamp token does not fit its reserved contents",
+        ));
+    }
+    let digit = |nibble: u8| {
+        if nibble < 10 {
+            b'0'.saturating_add(nibble)
+        } else {
+            b'a'.saturating_add(nibble.saturating_sub(10))
+        }
+    };
+    for (byte, [high, low]) in token.iter().zip(hex.as_chunks_mut::<2>().0) {
+        *high = digit(*byte >> 4_u32);
+        *low = digit(*byte & 15);
+    }
+    Ok(appendix)
+}
+
 fn patch(
     mut appendix: Vec<u8>,
     source_length: usize,

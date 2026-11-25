@@ -27,7 +27,9 @@ const permitsUsage = (certificate: pki.Certificate, bit: number) => {
 };
 
 export const embeddedRevocation = (signed: pki.SignedData) => {
-  const ocsp = (signed.ocsps ?? []).map((entry) => new Uint8Array(entry.toSchema().toBER(false)));
+  const ocsp: Uint8Array[] = (signed.ocsps ?? []).map(
+    (entry) => new Uint8Array(entry.toSchema().toBER(false)),
+  );
   const crls: Uint8Array[] = [];
   for (const entry of signed.crls ?? []) {
     if (entry instanceof pki.CertificateRevocationList) {

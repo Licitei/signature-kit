@@ -201,6 +201,7 @@ export const VerifyDetachedSignedDataEvidenceInputSchema =
   VerifyDetachedSignedDataInputSchema.mapFields((fields) => ({
     ...fields,
     at: Schema.optional(Schema.Date),
+    certificates: Schema.optional(Schema.Array(Schema.Uint8Array)),
   }));
 export type VerifyDetachedSignedDataEvidenceInput =
   (typeof VerifyDetachedSignedDataEvidenceInputSchema)["Type"];

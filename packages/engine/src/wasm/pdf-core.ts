@@ -24,6 +24,7 @@ import {
   PdfCorePageDiagnosticsSchema,
   PdfCoreRangeSizeSchema,
   PdfCoreSignatureFieldsSchema,
+  PdfCoreValidationData,
   PdfCoreNewSignatureFieldsSchema,
   PdfCoreRevisionEndSchema,
   PdfCoreRevisionChangesSchema,
@@ -86,6 +87,8 @@ import {
   decodePreparedSignature,
   decodePreparedUpdate,
   decodeRevisionChanges,
+  decodeValidationData,
+  encodeValidationData,
   decodeSignatureFields,
   encodePrepareSignature,
   encodeNewSignatureFields,
@@ -129,6 +132,12 @@ export const pdfCoreBlobSource = (blob: Blob): PdfCoreRangeSource => ({
 });
 
 export type PdfCoreSigningSession = {
+  readonly validationData: Effect.Effect<PdfCoreValidationData, PdfCoreError>;
+  readonly addValidationData: (
+    input: PdfCoreValidationData,
+  ) => Effect.Effect<Uint8Array, PdfCoreError>;
+  readonly prepareDocumentTimestamp: Effect.Effect<PdfCorePreparedUpdate, PdfCoreError>;
+  readonly addDocumentTimestamp: (token: Uint8Array) => Effect.Effect<Uint8Array, PdfCoreError>;
   readonly fields: Effect.Effect<PdfCoreSignatureFields, PdfCoreError>;
   readonly addFields: (
     fields: PdfCoreNewSignatureFields,
@@ -1390,6 +1399,103 @@ export const makePdfCore = (
       );
     });
 
+    const readValidationData = Effect.fn(PdfCoreOperationValue.readValidationData)(function* (
+      pdf: SigningInput,
+    ) {
+      const operation = PdfCoreOperationValue.readValidationData;
+      const entry = core.pdf_core_read_validation_data;
+      const bytes = yield* signingCall(
+        pdf,
+        operation,
+        entry === undefined
+          ? undefined
+          : (input) => Effect.succeed(() => entry(input.pointer, input.length)),
+      );
+      return yield* Schema.decodeUnknownEffect(PdfCoreValidationData)(
+        decodeValidationData(bytes),
+      ).pipe(
+        Effect.mapError(
+          malformedResult(
+            operation,
+            PdfCoreSchemaNameValue.validationData,
+            "Invalid DSS evidence from the PDF core.",
+          ),
+        ),
+      );
+    });
+
+    const prepareDocumentTimestamp = Effect.fn(PdfCoreOperationValue.prepareDocumentTimestamp)(
+      function* (pdf: SigningInput) {
+        const operation = PdfCoreOperationValue.prepareDocumentTimestamp;
+        const entry = core.pdf_core_prepare_document_timestamp;
+        const bytes = yield* signingCall(
+          pdf,
+          operation,
+          entry === undefined
+            ? undefined
+            : (input) => Effect.succeed(() => entry(input.pointer, input.length)),
+        );
+        return yield* Schema.decodeUnknownEffect(PdfCorePreparedUpdateSchema)(
+          decodePreparedUpdate(bytes),
+        ).pipe(
+          Effect.mapError(
+            malformedResult(
+              operation,
+              PdfCoreSchemaNameValue.preparedSignature,
+              "Invalid document timestamp preparation.",
+            ),
+          ),
+        );
+      },
+    );
+
+    const writeValidationUpdate = (
+      pdf: SigningInput,
+      operation: PdfCoreOperation,
+      entry: typeof core.pdf_core_add_validation_data,
+      bytes: Uint8Array,
+    ) =>
+      signingCall(
+        pdf,
+        operation,
+        entry === undefined
+          ? undefined
+          : (input) =>
+              copyIn(operation, bytes).pipe(
+                Effect.map(
+                  (payload) => () =>
+                    entry(input.pointer, input.length, payload.pointer, payload.length),
+                ),
+              ),
+      );
+
+    const addValidationData = Effect.fn(PdfCoreOperationValue.addValidationData)(function* (
+      pdf: SigningInput,
+      input: PdfCoreValidationData,
+    ) {
+      const operation = PdfCoreOperationValue.addValidationData;
+      const evidence = yield* Schema.decodeUnknownEffect(PdfCoreValidationData)(input).pipe(
+        Effect.mapError(invalidOptions(operation)),
+      );
+      const size = [evidence.certificates, evidence.ocsp, evidence.crls].reduce(
+        (total, entries) => total + entries.reduce((sum, entry) => sum + entry.byteLength + 4, 4),
+        0,
+      );
+      if (size > 16 * 1024 * 1024)
+        return yield* new PdfCoreError({
+          code: PdfCoreErrorCodeValue.invalidOptions,
+          operation,
+          schemaName: PdfCoreSchemaNameValue.validationData,
+          reason: "Validation data exceeds its payload size limit.",
+        });
+      return yield* writeValidationUpdate(
+        pdf,
+        operation,
+        core.pdf_core_add_validation_data,
+        encodeValidationData(evidence),
+      );
+    });
+
     const openSigningDocument = Effect.fn(PdfCoreOperationValue.openSigningDocument)(function* (
       pdf: Uint8Array,
     ) {
@@ -1416,6 +1522,18 @@ export const makePdfCore = (
         prepare: (request, reserve) => live(prepareSignatureUpdate(resident, request, reserve)),
         signatures: (analysis) => live(signatures(resident, analysis)),
         changes: (from) => live(revisionChanges(resident, from)),
+        validationData: live(readValidationData(resident)),
+        addValidationData: (input) => live(addValidationData(resident, input)),
+        prepareDocumentTimestamp: live(prepareDocumentTimestamp(resident)),
+        addDocumentTimestamp: (token) =>
+          live(
+            writeValidationUpdate(
+              resident,
+              PdfCoreOperationValue.addDocumentTimestamp,
+              core.pdf_core_add_document_timestamp,
+              token,
+            ),
+          ),
       } satisfies PdfCoreSigningSession;
     });
 

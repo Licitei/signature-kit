@@ -1,4 +1,5 @@
 import type { A1Hash } from "./a1-certificate.js";
+import { checkTimestampSha256Imprint } from "./cms/timestamp.js";
 import { IcpBrasilPadesPolicy } from "./cms/icp-brasil.js";
 import type { CmsError } from "./cms/config.js";
 import { MAX_PDF_CORE_SIGNATURE_CONTENTS } from "./wasm/config.js";
@@ -13,12 +14,14 @@ import type { PdfCoreSigningSession } from "./wasm/pdf-core.js";
 import { Clock, Context, Effect, HashMap, Layer, Ref, Schema, Semaphore } from "effect";
 import { sha256 } from "./crypto/primitives/sha256.js";
 import { A1Sessions, Documents, PdfEngine } from "./engine.js";
+import type { PdfRevision } from "./engine.js";
 import { decodeSignatureContents, embedPreparedSignature } from "./pdf-contents.js";
 import { LocalError, PdfPrepareOptionsSchema, PreparationId } from "./rpc.js";
 import type {
   PdfPreparation,
   ComparisonReport,
   PdfPrepareOptions,
+  PdfValidationData,
   PdfReceipt,
   PdfVerificationReport,
   PdfVerifyOptions,
@@ -51,6 +54,17 @@ export class PdfSignatures extends Context.Service<
     readonly addFields: (
       revision: RevisionRef,
       fields: PdfCoreNewSignatureFields,
+    ) => Effect.Effect<RevisionRef, LocalError>;
+    readonly addValidationData: (
+      revision: RevisionRef,
+      evidence: PdfValidationData,
+    ) => Effect.Effect<RevisionRef, LocalError>;
+    readonly prepareDocumentTimestamp: (
+      revision: RevisionRef,
+    ) => Effect.Effect<Uint8Array, LocalError>;
+    readonly addDocumentTimestamp: (
+      revision: RevisionRef,
+      token: Uint8Array,
     ) => Effect.Effect<RevisionRef, LocalError>;
     readonly compare: (
       sent: RevisionRef,
@@ -243,6 +257,34 @@ export const pdfSignaturesLayer = Layer.effect(
       HashMap.empty(),
     );
     yield* Effect.addFinalizer(() => Ref.set(entries, undefined));
+    const prepareTimestamp = Effect.fn(function* (source: PdfRevision) {
+      const signing = yield* source.signing;
+      const {
+        appendix,
+        byteRange: [start, firstLength, secondStart, secondLength],
+        contentsStart,
+        contentsEnd,
+      } = yield* signing.prepareDocumentTimestamp.pipe(
+        Effect.mapError(
+          ({ code }) => new LocalError({ code: "documentTimestampFailed", pdfCode: code }),
+        ),
+      );
+      if (
+        start !== 0 ||
+        contentsStart <= source.byteLength ||
+        contentsEnd <= contentsStart ||
+        firstLength !== contentsStart - 1 ||
+        secondStart !== contentsEnd + 1 ||
+        secondStart + secondLength !== source.byteLength + appendix.byteLength
+      ) {
+        return yield* new LocalError({ code: "documentTimestampFailed" });
+      }
+      return yield* source.digest(
+        "SHA-256",
+        appendix.subarray(0, firstLength - source.byteLength),
+        appendix.subarray(secondStart - source.byteLength),
+      );
+    });
     return PdfSignatures.of({
       fields: (revision) => engine.withRevision(revision, ({ fields }) => fields),
       addFields: (revision, fields) =>
@@ -260,6 +302,40 @@ export const pdfSignaturesLayer = Layer.effect(
             ),
             Effect.flatMap((appendix) => source.append(appendix)),
           ),
+        ),
+      addValidationData: (revision, evidence) =>
+        engine.withRevision(revision, (source) =>
+          Effect.gen(function* () {
+            const signing = yield* source.signing;
+            const appendix = yield* signing
+              .addValidationData(evidence)
+              .pipe(
+                Effect.mapError(
+                  ({ code }) => new LocalError({ code: "validationDataFailed", pdfCode: code }),
+                ),
+              );
+            return appendix.length === 0 ? revision : yield* source.append(appendix);
+          }),
+        ),
+      prepareDocumentTimestamp: (revision) => engine.withRevision(revision, prepareTimestamp),
+      addDocumentTimestamp: (revision, token) =>
+        engine.withRevision(revision, (source) =>
+          Effect.gen(function* () {
+            const der = new Uint8Array(token);
+            const imprint = yield* prepareTimestamp(source);
+            yield* checkTimestampSha256Imprint(der, imprint).pipe(
+              Effect.mapError(() => new LocalError({ code: "documentTimestampFailed" })),
+            );
+            const signing = yield* source.signing;
+            const appendix = yield* signing
+              .addDocumentTimestamp(der)
+              .pipe(
+                Effect.mapError(
+                  ({ code }) => new LocalError({ code: "documentTimestampFailed", pdfCode: code }),
+                ),
+              );
+            return yield* source.append(appendix);
+          }),
         ),
       compare: Effect.fn(function* (sent, returned, options) {
         yield* documents.validate(sent);

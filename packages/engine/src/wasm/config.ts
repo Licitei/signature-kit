@@ -80,6 +80,10 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.prepareSignature",
   "pdfCore.addSignatureFields",
   "pdfCore.revisionChanges",
+  "pdfCore.readValidationData",
+  "pdfCore.addValidationData",
+  "pdfCore.prepareDocumentTimestamp",
+  "pdfCore.addDocumentTimestamp",
   "pdfCore.revision",
   "pdfCore.document",
   "pdfCore.edit",
@@ -106,6 +110,10 @@ export const PdfCoreOperationValue = {
   prepareSignature: "pdfCore.prepareSignature",
   addSignatureFields: "pdfCore.addSignatureFields",
   revisionChanges: "pdfCore.revisionChanges",
+  readValidationData: "pdfCore.readValidationData",
+  addValidationData: "pdfCore.addValidationData",
+  prepareDocumentTimestamp: "pdfCore.prepareDocumentTimestamp",
+  addDocumentTimestamp: "pdfCore.addDocumentTimestamp",
   revision: "pdfCore.revision",
   document: "pdfCore.document",
   edit: "pdfCore.edit",
@@ -135,6 +143,7 @@ export const PdfCoreSchemaNameSchema = Schema.Literals([
   "PdfCorePrepareSignatureRequest",
   "PdfCorePreparedSignature",
   "PdfCoreRevisionChanges",
+  "PdfCoreValidationData",
   "PdfCoreRevisionEnd",
   "PdfCoreDocumentOptions",
   "PdfCoreDocument",
@@ -165,6 +174,7 @@ export const PdfCoreSchemaNameValue = {
   prepareSignatureRequest: "PdfCorePrepareSignatureRequest",
   preparedSignature: "PdfCorePreparedSignature",
   revisionChanges: "PdfCoreRevisionChanges",
+  validationData: "PdfCoreValidationData",
   revisionEnd: "PdfCoreRevisionEnd",
   documentOptions: "PdfCoreDocumentOptions",
   document: "PdfCoreDocument",
@@ -446,6 +456,18 @@ export const PdfCoreExportsSchema = Schema.Struct({
   ),
   pdf_core_revision_changes: Schema.optional(
     Schema.declare(isSignaturesFunction, { identifier: "pdf_core_revision_changes" }),
+  ),
+  pdf_core_add_document_timestamp: Schema.optional(
+    Schema.declare(isEditFunction, { identifier: "pdf_core_add_document_timestamp" }),
+  ),
+  pdf_core_prepare_document_timestamp: Schema.optional(
+    Schema.declare(isBufferFunction, { identifier: "pdf_core_prepare_document_timestamp" }),
+  ),
+  pdf_core_add_validation_data: Schema.optional(
+    Schema.declare(isEditFunction, { identifier: "pdf_core_add_validation_data" }),
+  ),
+  pdf_core_read_validation_data: Schema.optional(
+    Schema.declare(isBufferFunction, { identifier: "pdf_core_read_validation_data" }),
   ),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {
     identifier: "pdf_core_revision_complete",
@@ -854,6 +876,16 @@ export const PdfCoreRevisionChangeKindSchema = Schema.Literals([
   "unknown",
   "formValue",
 ]);
+const ValidationEntries = Schema.Array(
+  Schema.Uint8Array.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024 * 1024)),
+).check(Schema.isMaxLength(1024));
+export const PdfCoreValidationData = Schema.Struct({
+  certificates: ValidationEntries,
+  ocsp: ValidationEntries,
+  crls: ValidationEntries,
+});
+export type PdfCoreValidationData = typeof PdfCoreValidationData.Type;
+
 export const PdfCoreRevisionEndSchema = byteOffsetSchema;
 export const PdfCoreRevisionChangesSchema = Schema.Struct({
   fromRevisionIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),

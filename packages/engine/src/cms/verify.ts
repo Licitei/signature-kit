@@ -1,5 +1,5 @@
 import * as asn1js from "asn1js";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import * as pkijs from "pkijs";
 import { Hex } from "effect/encoding";
 import { embeddedRevocation } from "../validation/revocation.js";
@@ -125,6 +125,20 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
       }),
   });
 
+  if (valid.certificates !== undefined && valid.certificates.length > 0) {
+    const certificates = yield* Effect.forEach(valid.certificates, (der) =>
+      Effect.try({
+        try: () => pkijs.Certificate.fromBER(new Uint8Array(der)),
+        catch: () =>
+          new CmsError({
+            code: CmsErrorCodeValue.decodeError,
+            reason: "Failed to parse a DSS certificate DER.",
+            operation: CmsOperationValue.verify,
+          }),
+      }).pipe(Effect.option),
+    );
+    signed.certificates = [...(signed.certificates ?? []), ...certificates.flatMap(Option.toArray)];
+  }
   const serial = signerSerialHex(signed);
   const checkChain = trustedCerts.length > 0;
   yield* Effect.annotateCurrentSpan({

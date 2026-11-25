@@ -37,6 +37,7 @@ import type {
   PdfReceipt,
   PdfSignatureFields,
   PdfVerificationReport,
+  PdfValidationData,
   PdfVerifyOptions,
   PreparationId,
   RevisionRef,
@@ -61,6 +62,17 @@ export class LocalClient extends Context.Service<
     readonly addPdfSignatureFields: (
       revision: RevisionRef,
       fields: PdfNewSignatureFields,
+    ) => Effect.Effect<RevisionRef, LocalError>;
+    readonly addPdfValidationData: (
+      revision: RevisionRef,
+      evidence: PdfValidationData,
+    ) => Effect.Effect<RevisionRef, LocalError>;
+    readonly preparePdfDocumentTimestamp: (
+      revision: RevisionRef,
+    ) => Effect.Effect<Uint8Array, LocalError>;
+    readonly addPdfDocumentTimestamp: (
+      revision: RevisionRef,
+      token: Uint8Array,
     ) => Effect.Effect<RevisionRef, LocalError>;
     readonly comparePdf: (
       sent: RevisionRef,
@@ -204,6 +216,12 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
             pdfSignatureFields: (revision) => call(() => rpc.PdfSignatureFields({ revision })),
             addPdfSignatureFields: (revision, fields) =>
               call(() => rpc.PdfAddSignatureFields({ revision, fields })),
+            addPdfValidationData: (revision, evidence) =>
+              call(() => rpc.PdfAddValidationData({ revision, evidence })),
+            preparePdfDocumentTimestamp: (revision) =>
+              call(() => rpc.PdfPrepareDocumentTimestamp({ revision })),
+            addPdfDocumentTimestamp: (revision, token) =>
+              call(() => rpc.PdfAddDocumentTimestamp({ revision, token })),
             comparePdf: (sent, returned, options = {}) =>
               call(() => rpc.PdfCompare({ sent, returned, options })),
             preparePdf: (revision, options) => call(() => rpc.PdfPrepare({ revision, options })),

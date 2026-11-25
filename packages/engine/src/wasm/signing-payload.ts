@@ -1,5 +1,9 @@
 import { PdfCoreRevisionChangeKindSchema } from "./config.js";
-import type { PdfCoreNewSignatureFields, PdfCorePrepareSignatureRequest } from "./config.js";
+import type {
+  PdfCoreNewSignatureFields,
+  PdfCorePrepareSignatureRequest,
+  PdfCoreValidationData,
+} from "./config.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8 = new TextDecoder();
@@ -288,4 +292,21 @@ export const decodeRevisionChanges = (bytes: Uint8Array) => {
     })),
   }));
   return reader.done() ? { changes, pageContentChanged, fromRevisionIndex, policies } : undefined;
+};
+
+export const encodeValidationData = ({ certificates, ocsp, crls }: PdfCoreValidationData) => {
+  const writer = payloadWriter();
+  for (const list of [certificates, ocsp, crls]) {
+    writer.u32(list.length);
+    list.forEach(writer.bytes);
+  }
+  return writer.finish();
+};
+
+export const decodeValidationData = (bytes: Uint8Array) => {
+  const reader = new PayloadReader(bytes);
+  const certificates = reader.list(4, () => reader.raw(reader.u32()));
+  const ocsp = reader.list(4, () => reader.raw(reader.u32()));
+  const crls = reader.list(4, () => reader.raw(reader.u32()));
+  return reader.done() ? { certificates, ocsp, crls } : undefined;
 };

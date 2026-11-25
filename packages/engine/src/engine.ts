@@ -344,7 +344,7 @@ export const localRuntimeLayer = (options: RuntimeOptions = {}) =>
     }),
   );
 
-type PdfRevision = {
+export type PdfRevision = {
   readonly byteLength: number;
   readonly digest: (
     hash: A1Hash,

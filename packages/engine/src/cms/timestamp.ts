@@ -467,9 +467,21 @@ const decodeTimestampToken = Effect.fn(function* (der: Uint8Array) {
   return parsed;
 });
 
-export const checkTimestampImprint = Effect.fn(function* (der: Uint8Array, data: Uint8Array) {
+export const checkTimestampSha256Imprint = Effect.fn(function* (
+  der: Uint8Array,
+  imprint: Uint8Array,
+) {
   const { tstInfo } = yield* decodeTimestampToken(der);
-  yield* verifyTimestampImprint(tstInfo, data);
+  if (
+    tstInfo.messageImprint.hashAlgorithm.algorithmId !== hashAlgorithmOid("sha256") ||
+    !bytesEqual(imprint, tstInfo.messageImprint.hashedMessage.valueBlock.valueHexView)
+  ) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "The timestamp token does not match the reserved PDF byte range.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
 });
 
 export const verifyTimestampToken = Effect.fn(function* (
