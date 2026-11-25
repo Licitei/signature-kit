@@ -704,11 +704,11 @@ export const tools = stylex.create({
     boxShadow: "inset 2px 0 0 #7fd1b9",
   },
   codeGhost: {
-    color: "#6f8a99",
+    color: "#9fb6c3",
   },
   gutter: {
     paddingRight: "14px",
-    color: "#58717f",
+    color: "#8fa7b4",
     textAlign: "right",
     userSelect: "none",
   },

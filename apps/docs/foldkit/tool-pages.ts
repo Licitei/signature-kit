@@ -1121,7 +1121,7 @@ const faqItems = <Message>(h: HtmlBuilder<Message>, page: ToolPage, faq: Faq<Mes
             id: `tool-faq-${index}`,
             isOpen: Option.contains(index)(faq.open),
             onToggle: (open) => faq.toggle(index, open),
-            toView: ({ button, animatePanel }) =>
+            toView: ({ button, panel, animatePanel }) =>
               h.div(
                 [...sx(h, landing.faq)],
                 [
@@ -1146,7 +1146,7 @@ const faqItems = <Message>(h: HtmlBuilder<Message>, page: ToolPage, faq: Faq<Mes
                       ),
                     ],
                   ),
-                  animatePanel(h.p([...sx(h, landing.faqPanel)], [item.answer])),
+                  animatePanel(h.p([...panel, ...sx(h, landing.faqPanel)], [item.answer])),
                 ],
               ),
           },

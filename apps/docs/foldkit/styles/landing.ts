@@ -74,7 +74,7 @@ export const landing = stylex.create({
     textDecoration: "none",
     backgroundColor: "#051720",
     backgroundImage:
-      "linear-gradient(90deg, rgba(5, 23, 32, 0.97) 0%, rgba(5, 23, 32, 0.9) 55%, rgba(5, 23, 32, 0.45) 100%), url(/landing/drop-chapada.webp)",
+      "linear-gradient(90deg, rgba(5, 23, 32, 0.97) 0%, rgba(5, 23, 32, 0.92) 55%, rgba(5, 23, 32, 0.74) 100%), url(/landing/drop-chapada.webp)",
     backgroundSize: "cover",
     backgroundPosition: "center 40%",
     imageRendering: "pixelated",

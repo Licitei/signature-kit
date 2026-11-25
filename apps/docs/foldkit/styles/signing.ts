@@ -6,7 +6,9 @@ const roomy = "@container (min-width: 760px)";
 
 export const signing = stylex.create({
   modes: {
-    display: "inline-flex",
+    position: "relative",
+    display: "inline-grid",
+    gridTemplateColumns: "1fr 1fr",
     justifySelf: "start",
     width: "fit-content",
     gap: "2px",
@@ -15,9 +17,28 @@ export const signing = stylex.create({
     borderRadius: "10px",
     backgroundColor: tokens.bgSubtle,
   },
+  modeThumb: {
+    position: "absolute",
+    top: "3px",
+    bottom: "3px",
+    left: "3px",
+    width: "calc(50% - 4px)",
+    borderRadius: "8px",
+    backgroundColor: tokens.bgElevated,
+    boxShadow: "0 1px 2px rgba(13, 26, 32, 0.1)",
+    transitionProperty: "transform",
+    transitionDuration: "220ms",
+    transitionTimingFunction: tokens.ease,
+    "@media (prefers-reduced-motion: reduce)": { transitionDuration: "0.01ms" },
+  },
+  modeThumbEnd: {
+    transform: "translateX(calc(100% + 2px))",
+  },
   mode: {
+    position: "relative",
     display: "inline-flex",
     alignItems: "center",
+    justifyContent: "center",
     gap: "6px",
     padding: "6px 12px",
     borderWidth: 0,
@@ -32,9 +53,7 @@ export const signing = stylex.create({
     ":focus-visible": { outline: "none", boxShadow: `inset 0 0 0 1.5px ${tokens.teal}` },
   },
   modeOn: {
-    backgroundColor: tokens.bgElevated,
     color: tokens.fg,
-    boxShadow: "0 1px 2px rgba(13, 26, 32, 0.1)",
   },
   flat: {
     margin: 0,

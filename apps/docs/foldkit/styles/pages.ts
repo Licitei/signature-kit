@@ -318,8 +318,9 @@ export const pages = stylex.create({
     borderTopColor: "rgba(255, 255, 255, 0.16)",
   },
   metric: {
-    display: "grid",
-    alignContent: "start",
+    display: "flex",
+    flexDirection: "column-reverse",
+    justifyContent: "flex-end",
     gap: "8px",
     paddingBlock: "20px",
     paddingRight: "16px",

@@ -904,7 +904,7 @@ export const toolView = defineView<ToolsModel, Message, { tool: ToolId }>((model
           ),
         ),
         h.dl(
-          [...sx(h, tools.benchStats), h.Role("status"), h.AriaLive("polite")],
+          [...sx(h, tools.benchStats)],
           state._tag === "Extracted"
             ? [
                 stat("Páginas", state.pageCount.toLocaleString("pt-BR")),
@@ -939,7 +939,7 @@ export const toolView = defineView<ToolsModel, Message, { tool: ToolId }>((model
             ]
           : []),
         h.div(
-          [...sx(h, tools.benchBody)],
+          [...sx(h, tools.benchBody), h.Role("status"), h.AriaLive("polite")],
           state._tag === "Extracted"
             ? [
                 state.image === null

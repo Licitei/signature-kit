@@ -1124,7 +1124,7 @@ export const createView = (source: {
                               [`Nenhum resultado para “${model.query.trim()}”. Tente outro termo.`],
                             )
                           : h.ul(
-                              [...sx(h, overlay.links)],
+                              [...sx(h, overlay.links), h.Attribute("data-stagger", "")],
                               model.results.map((result) =>
                                 h.keyed("li")(
                                   `${result.href} ${result.heading}`,
@@ -1631,7 +1631,7 @@ export const createView = (source: {
                             [`Nenhum resultado para “${model.query.trim()}”.`],
                           )
                         : h.ul(
-                            [...sx(h, overlay.links)],
+                            [...sx(h, overlay.links), h.Attribute("data-stagger", "")],
                             model.results
                               .slice(0, 8)
                               .map((result) =>

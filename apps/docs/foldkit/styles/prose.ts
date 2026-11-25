@@ -333,6 +333,9 @@ export const prose = stylex.create({
     textDecoration: "none",
     fontSize: "0.8125rem",
     lineHeight: 1.45,
+    transitionProperty: "color, border-color",
+    transitionDuration: "160ms",
+    transitionTimingFunction: tokens.ease,
     ":focus-visible": { outline: "none", boxShadow: tokens.focus },
   },
   tocLinkOn: {
@@ -802,6 +805,15 @@ export const prose = stylex.create({
     borderBottomColor: tokens.line,
     color: tokens.fg,
     textDecoration: "none",
+    transitionProperty: "transform",
+    transitionDuration: "220ms",
+    transitionTimingFunction: tokens.ease,
+    transform: {
+      default: "none",
+      ":hover": "translateY(-2px)",
+      ":active": "scale(0.995)",
+      "@media (prefers-reduced-motion: reduce)": "none",
+    },
     ":focus-visible": { outline: "none", boxShadow: tokens.focus, borderRadius: "8px" },
   },
   postThumb: {

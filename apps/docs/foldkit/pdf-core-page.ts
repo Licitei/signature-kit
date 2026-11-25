@@ -198,6 +198,7 @@ export const pdfCoreView = <Message>(h: HtmlBuilder<Message>, demo: Html): Reado
                 metric.label,
                 [...sx(h, pages.metric)],
                 [
+                  h.dt([...sx(h, pages.metricLabel)], [metric.label]),
                   h.dd(
                     [...sx(h, pages.metricValue)],
                     [
@@ -216,7 +217,6 @@ export const pdfCoreView = <Message>(h: HtmlBuilder<Message>, demo: Html): Reado
                       h.span([...sx(h, pages.metricUnit)], [metric.unit]),
                     ],
                   ),
-                  h.dt([...sx(h, pages.metricLabel)], [metric.label]),
                 ],
               ),
             ),
