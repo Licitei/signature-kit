@@ -11,6 +11,7 @@ export const SocialImageInput = Schema.Struct({
   description: Schema.optional(Schema.String),
   eyebrow: Schema.optional(Schema.String),
   site: Schema.String,
+  crop: Schema.optional(Schema.String),
 });
 export type SocialImageInput = typeof SocialImageInput.Type;
 
@@ -41,7 +42,7 @@ export const socialImageTree = (input: SocialImageInput): Node => ({
         width: "100%",
         height: "100%",
         objectFit: "cover",
-        objectPosition: "center bottom",
+        objectPosition: input.crop ?? "center bottom",
         imageRendering: "pixelated",
       },
     },

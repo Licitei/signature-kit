@@ -1,0 +1,70 @@
+---
+title: "Como validar uma assinatura digital no Validar do ITI"
+description: "Passo a passo para conferir uma assinatura digital no Validar, o verificador oficial do ITI, e entender o que o relatório de conformidade informa."
+date: "2026-11-24"
+author: "SignatureKit"
+tags: ["Validar ITI", "ICP-Brasil", "Validade jurídica"]
+---
+
+O [Validar](https://validar.iti.gov.br) é o serviço do Instituto Nacional de Tecnologia da Informação (ITI) para conferir assinaturas eletrônicas. O ITI é a autoridade certificadora raiz da ICP-Brasil, e por isso o Validar é a referência oficial para saber se uma assinatura com certificado ICP-Brasil está em conformidade.
+
+## Antes de começar
+
+Você precisa do arquivo assinado. Em um PDF, a assinatura costuma ficar embutida no próprio documento. Quando a assinatura é destacada, ela vem em um arquivo separado, geralmente `.p7s`, e o Validar pede também o documento original.
+
+<Callout type="warn" title="O documento é enviado ao ITI">
+O Validar funciona no servidor do ITI: o arquivo que você escolhe é enviado para análise. Leia os termos do serviço e avalie se o conteúdo pode ser enviado.
+</Callout>
+
+## Passo a passo
+
+<Steps>
+  <Step title="Abra validar.iti.gov.br">
+    Use o endereço oficial, que termina em `gov.br`.
+  </Step>
+  <Step title="Escolha o arquivo assinado">
+    Selecione o PDF ou o arquivo de assinatura. Se a assinatura for destacada, envie também o documento original.
+  </Step>
+  <Step title="Aceite os termos e valide">
+    Marque a concordância com os termos de uso e clique em validar.
+  </Step>
+  <Step title="Leia o resultado">
+    O Validar lista cada assinatura encontrada, com os dados do signatário e a situação da assinatura.
+  </Step>
+  <Step title="Guarde o relatório">
+    O relatório de conformidade pode ser baixado e anexado ao processo em que o documento será usado.
+  </Step>
+</Steps>
+
+## O que o relatório mostra
+
+| Item | O que significa |
+| --- | --- |
+| Signatário | Nome e CPF ou CNPJ que constam no certificado |
+| Situação da assinatura | Se a assinatura foi aprovada, reprovada ou ficou indeterminada |
+| Cadeia de certificação | Se o certificado leva até a AC Raiz da ICP-Brasil |
+| Situação do certificado | Se ele estava válido e não revogado |
+| Integridade | Se o documento continua igual ao que foi assinado |
+
+Uma assinatura reprovada indica que algo não confere: o documento foi alterado, o certificado não pertence a uma cadeia reconhecida ou estava revogado ou expirado. Uma assinatura indeterminada significa que o serviço não conseguiu concluir alguma verificação, por exemplo por não obter os dados de revogação.
+
+## Verificar localmente antes de enviar
+
+Nem sempre você quer enviar um documento sigiloso só para descobrir quem assinou. O [verificador de assinatura do SignatureKit](/verificar-assinatura-pdf) lê o PDF no seu navegador e mostra o signatário, o CPF ou CNPJ, o emissor do certificado e se o conteúdo mudou depois da assinatura.
+
+Essa checagem local não substitui o Validar. Veja a diferença:
+
+| | Verificação local | Validar do ITI |
+| --- | --- | --- |
+| Onde o arquivo é lido | No seu navegador | No servidor do ITI |
+| Integridade do conteúdo | Sim | Sim |
+| Dados do signatário | Sim | Sim |
+| Cadeia até a AC Raiz da ICP-Brasil | Não | Sim |
+| Revogação do certificado | Não | Sim |
+| Relatório oficial | Não | Sim |
+
+## Se você é quem assina
+
+Depois de assinar um PDF com certificado A1, vale passar o arquivo pelo Validar antes de enviar a terceiros. A página [Assinar PDF grátis](/assine-documentos-gratis) gera assinaturas no padrão PAdES da ICP-Brasil, com a cadeia do certificado incluída no arquivo. Para automatizar a conferência no seu sistema, consulte a [referência de PDF](/docs/signing/pdf).
+
+Para entender por que a assinatura com certificado ICP-Brasil tem presunção de validade, leia [Assinatura simples, avançada e qualificada](/blog/assinatura-simples-avancada-qualificada).

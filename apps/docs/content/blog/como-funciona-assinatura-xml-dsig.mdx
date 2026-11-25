@@ -1,0 +1,104 @@
+---
+title: "Como funciona a assinatura de XML (XML-DSig)"
+description: "Entenda as peças de uma assinatura XML-DSig: referência, canonicalização, resumo, valor da assinatura e certificado, com um exemplo comentado."
+date: "2026-11-25"
+author: "SignatureKit"
+tags: ["XML-DSig", "Certificado A1", "TypeScript"]
+---
+
+XML-DSig é o padrão do W3C para assinar documentos XML, descrito na recomendação [XML Signature Syntax and Processing](https://www.w3.org/TR/xmldsig-core1/). Em vez de gerar um arquivo binário, a assinatura vira um elemento `Signature` em XML, que pode ficar dentro do próprio documento.
+
+## As três formas de assinar
+
+| Forma | Onde fica a assinatura | Uso comum |
+| --- | --- | --- |
+| Enveloped | Dentro do documento assinado | Documentos que precisam continuar sendo um único XML |
+| Enveloping | O documento fica dentro do elemento `Signature` | Mensagens pequenas empacotadas com a assinatura |
+| Detached | Em um XML separado, que referencia o conteúdo | Assinar arquivos externos ou partes de um documento |
+
+O SignatureKit gera assinaturas **enveloped**.
+
+## A anatomia de uma assinatura
+
+```xml
+<pedido Id="p1">
+  <cliente>João</cliente>
+  <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+      <ds:Reference URI="#p1">
+        <ds:Transforms>
+          <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+          <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+        </ds:Transforms>
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+        <ds:DigestValue>…</ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+    <ds:SignatureValue>…</ds:SignatureValue>
+    <ds:KeyInfo>
+      <ds:X509Data><ds:X509Certificate>…</ds:X509Certificate></ds:X509Data>
+    </ds:KeyInfo>
+  </ds:Signature>
+</pedido>
+```
+
+| Elemento | Papel |
+| --- | --- |
+| `Reference` | Diz o que está sendo assinado. `URI="#p1"` aponta para o elemento com `Id="p1"`; uma URI vazia aponta para o documento inteiro |
+| `Transforms` | Passos aplicados ao conteúdo antes do resumo. O transform enveloped retira a própria assinatura do cálculo |
+| `DigestValue` | Resumo criptográfico (hash) do conteúdo referenciado |
+| `SignedInfo` | Reúne as referências e os algoritmos. É este bloco que recebe a assinatura |
+| `SignatureValue` | Assinatura do `SignedInfo` feita com a chave privada |
+| `KeyInfo` | Certificado X.509 do signatário, para quem for validar |
+
+## Por que existe a canonicalização
+
+O mesmo XML pode ser escrito de várias formas sem mudar de significado: atributos em outra ordem, espaços diferentes, prefixos de namespace declarados em outro lugar. Um resumo criptográfico muda com qualquer byte diferente. A canonicalização (C14N) reescreve o XML em uma forma padrão antes do cálculo, para que quem assina e quem valida cheguem aos mesmos bytes.
+
+<Callout type="info" title="Duas assinaturas em sequência">
+A assinatura é calculada em duas etapas. Primeiro, o resumo do conteúdo vai para `DigestValue`. Depois, o `SignedInfo` canonicalizado é assinado e o resultado vai para `SignatureValue`. Alterar o conteúdo quebra o resumo; alterar o resumo quebra a assinatura.
+</Callout>
+
+## Como a validação acontece
+
+<Steps>
+  <Step title="Localizar o conteúdo referenciado">
+    O validador resolve a URI de cada `Reference`.
+  </Step>
+  <Step title="Refazer os transforms e o resumo">
+    O conteúdo passa pelos mesmos transforms e o resumo calculado é comparado com `DigestValue`.
+  </Step>
+  <Step title="Conferir a assinatura do SignedInfo">
+    O `SignedInfo` é canonicalizado e a `SignatureValue` é verificada com a chave pública do certificado.
+  </Step>
+  <Step title="Avaliar o certificado">
+    Fora do XML-DSig em si, o validador decide se confia no certificado: cadeia, validade e revogação.
+  </Step>
+</Steps>
+
+## Formatos que usam XML-DSig
+
+Vários layouts brasileiros de documento eletrônico usam XML-DSig, e a NF-e é o mais conhecido: a assinatura referencia o elemento `infNFe` pelo atributo `Id`. Cada layout define as próprias regras, como o elemento assinado, a posição da assinatura e os algoritmos aceitos, em manuais e schemas próprios.
+
+O SignatureKit implementa o XML-DSig genérico. Ele não valida schemas fiscais nem conhece as regras de um layout específico. Se você precisa emitir um documento fiscal, confira as exigências do manual correspondente antes de assinar.
+
+## Assinando com o SignatureKit
+
+```ts
+import { a1SignaturesLayer } from "@signature-kit/a1/signer"
+import { signXml } from "@signature-kit/xml/sign"
+import { xmlRuntimeLayer } from "@signature-kit/xml/runtime"
+import { Effect, Redacted } from "effect"
+
+// xml: o documento como string; pfx: os bytes do certificado A1
+export const signed = signXml({ xml, referenceId: "p1" }).pipe(
+  Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make(password) })),
+  Effect.provide(xmlRuntimeLayer),
+)
+```
+
+Sem `referenceId`, a assinatura cobre o documento inteiro. A [referência de XML-DSig](/docs/signing/xml) descreve as opções de algoritmo e canonicalização e a função `verifyXml`.
+
+Para testar sem escrever código, use a página [Assinar XML com certificado A1](/assinar-xml-com-certificado-a1): ela assina o arquivo no navegador e mostra as linhas que foram inseridas.
