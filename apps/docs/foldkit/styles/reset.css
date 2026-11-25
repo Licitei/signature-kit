@@ -14,3 +14,46 @@ html {
   background: #fafafa;
   color: #111111;
 }
+
+.error-catalog {
+  border: 1px solid rgba(13, 26, 32, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  gap: 0 !important;
+  margin-block: 20px;
+  background: #ffffff;
+}
+.error-catalog > div {
+  display: grid;
+  grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(13, 26, 32, 0.08);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.error-catalog > div:last-child {
+  border-bottom: 0;
+}
+.error-catalog > div:first-child {
+  background: #f1efe9;
+  color: #55606a;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.error-catalog > div > code {
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.error-catalog > div > span {
+  color: #55606a;
+}
+@media (max-width: 640px) {
+  .error-catalog > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .error-catalog > div:first-child {
+    display: none;
+  }
+}

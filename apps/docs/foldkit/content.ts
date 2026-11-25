@@ -11,6 +11,7 @@ import { prose } from "./styles/prose";
 import { sx } from "./styles/sx";
 import { mermaidView } from "./mermaid";
 import { icon } from "./icons";
+import { codeBlock } from "./highlight";
 
 const Navigation = Schema.Struct({ title: Schema.String, pages: Schema.Array(Schema.String) });
 export const contentSource = (section: string, slug: string) =>
@@ -108,6 +109,18 @@ const headingAnchor = (slugger: GithubSlugger, node: Extract<ContentNode, { type
   } else id = slugger.slug(toString({ type: "root", children }));
   return { id, children };
 };
+
+export const readingMinutes = (nodes: ReadonlyArray<ContentNode>) =>
+  Math.max(
+    1,
+    Math.round(
+      nodes
+        .map((node) => toString(node))
+        .join(" ")
+        .split(/\s+/)
+        .filter((word) => word.length > 0).length / 200,
+    ),
+  );
 
 export const tableOfContents = (nodes: ContentNode[]) => {
   const slugger = new GithubSlugger();
@@ -254,38 +267,18 @@ export const renderContent = <Message>(
         return h.code([...sx(h, prose.inlineCode)], [node.value ?? ""]);
       case "code":
         if (node.lang === "package-install")
-          return h.div(
-            [...sx(h, prose.codeBlock)],
-            [
-              h.p([...sx(h, prose.codeHead)], ["terminal"]),
-              h.pre(
-                [...sx(h, prose.pre), h.Attribute("tabindex", "0")],
-                [
-                  h.code(
-                    [...sx(h, "language-bash", prose.blockCode)],
-                    [`bun add ${node.value ?? ""}`],
-                  ),
-                ],
-              ),
-            ],
-          );
+          return codeBlock(h, {
+            label: "terminal",
+            source: `bun add ${node.value ?? ""}`,
+            language: "bash",
+          });
         return node.lang === "mermaid"
           ? mermaidView(h, node.value ?? "", node.meta)
-          : h.div(
-              [...sx(h, prose.codeBlock)],
-              [
-                h.p([...sx(h, prose.codeHead)], [codeLabel(node.meta, node.lang)]),
-                h.pre(
-                  [...sx(h, prose.pre), h.Attribute("tabindex", "0")],
-                  [
-                    h.code(
-                      [...sx(h, `language-${node.lang ?? "text"}`, prose.blockCode)],
-                      [node.value ?? ""],
-                    ),
-                  ],
-                ),
-              ],
-            );
+          : codeBlock(h, {
+              label: codeLabel(node.meta, node.lang),
+              source: node.value ?? "",
+              language: node.lang ?? "text",
+            });
       case "link":
         return h.a(
           [
@@ -386,7 +379,7 @@ export const renderContent = <Message>(
                   ...(description !== undefined && description.length > 0
                     ? [h.span([], [description])]
                     : []),
-                  ...children,
+                  ...(children.length > 0 ? [h.span([], children)] : []),
                 ]
               : [
                   title,

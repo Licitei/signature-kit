@@ -802,6 +802,7 @@ export const mountSigning = (element: Element) =>
         };
         const setLocked = (locked: boolean) => {
           controlsLocked = locked;
+          if (cancel !== null) cancel.hidden = !locked;
           form
             ?.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>(
               "input, button, select",

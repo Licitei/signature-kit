@@ -180,7 +180,7 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(html).toContain(`lang="pt-BR"`);
             expect(html).toContain(`href="https://signaturekit.dev/"`);
             expect(html).toContain("data-foldkit-app");
-            const asset = html.match(/import\("(\/assets\/[^"]+\.js)"\)/)?.[1];
+            const asset = html.match(/const entry = "(\/assets\/[^"]+\.js)";/)?.[1];
             expect(asset).toBeDefined();
             if (asset === undefined) return expect.fail("Missing asset");
             {
@@ -220,11 +220,12 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(response.headers.get("content-type")).toBe("image/webp");
             const bytes = new Uint8Array(await response.arrayBuffer());
             expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("RIFF");
-            expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8L");
-            const dimensions = new DataView(bytes.buffer).getUint32(21, true);
-            expect([(dimensions & 0x3fff) + 1, ((dimensions >>> 14) & 0x3fff) + 1]).toEqual([
-              1200, 630,
-            ]);
+            expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8 ");
+            const dimensions = new DataView(bytes.buffer);
+            expect([
+              dimensions.getUint16(26, true) & 0x3fff,
+              dimensions.getUint16(28, true) & 0x3fff,
+            ]).toEqual([1200, 630]);
             const imageHead = await request(new URL(image, origin), { method: "HEAD" });
             expect(imageHead.status).toBe(200);
             expect(imageHead.headers.get("content-type")).toBe("image/webp");

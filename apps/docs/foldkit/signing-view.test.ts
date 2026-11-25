@@ -12,7 +12,7 @@ it("renders the canonical signing route in pt-BR and links it from the home page
   const page = await renderPage(new Request(`https://signaturekit.dev${route}`), "test");
   expect(page._tag).toBe("Rendered");
   const html = JSON.stringify(page);
-  expect(html).toContain("Assine documentos grátis");
+  expect(html).toContain("Assine PDF com certificado digital A1.");
   expect(html).toContain("Senha do certificado");
   expect(html).not.toContain("Sign documents for free");
   expect(html).not.toContain("Certificate password");

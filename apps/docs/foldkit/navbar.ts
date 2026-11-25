@@ -21,8 +21,7 @@ const groupBlurb: Record<string, string> = {
   "Assinatura A1": "PDF no navegador com certificado A1.",
   Receitas: "React, Promise, âncoras e tracing.",
   Conceitos: "O modelo mental e a fronteira do signer.",
-  "APIs de provedores": "Clicksign, Assinafy, ZapSign e outros.",
-  Signers: "Certificados, PDF/PAdES, XML-DSig e erros.",
+  Referência: "Certificados, PDF/PAdES, XML-DSig e erros.",
 };
 
 const resources: ReadonlyArray<{ title: string; hint: string; href: string; glyph: IconName }> = [
@@ -163,6 +162,92 @@ const styles = stylex.create({
     backgroundColor: { default: "transparent", ":hover": tokens.bgSubtle },
     ":focus-visible": { outline: "none", backgroundColor: tokens.bgSubtle },
   },
+  sheet: {
+    display: "grid",
+    gap: "20px",
+  },
+  sheetSearch: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    height: "44px",
+    paddingInline: "14px",
+    borderRadius: "10px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: tokens.line,
+    backgroundColor: tokens.bgElevated,
+    color: tokens.muted,
+    fontSize: "0.9375rem",
+    textDecoration: "none",
+    ":focus-visible": { outline: "none", boxShadow: tokens.focus },
+  },
+  sheetFeature: {
+    position: "relative",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "flex-end",
+    minHeight: "112px",
+    padding: "16px",
+    overflow: "hidden",
+    borderRadius: "12px",
+    backgroundColor: tokens.ink,
+    backgroundImage: "url(/landing/drop-chapada.webp)",
+    backgroundSize: "cover",
+    backgroundPosition: "center 30%",
+    imageRendering: "pixelated",
+    color: "#ffffff",
+    textDecoration: "none",
+    ":focus-visible": { outline: "none", boxShadow: tokens.focus },
+  },
+  sheetLabel: {
+    margin: "0 0 6px",
+    color: tokens.faint,
+    fontFamily: tokens.mono,
+    fontSize: "0.75rem",
+  },
+  sheetRows: {
+    display: "grid",
+    gap: "2px",
+    marginInline: "-10px",
+  },
+  sheetGroup: {
+    marginTop: "14px",
+  },
+  sheetGroupTitle: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    margin: "0 0 4px",
+    fontSize: "0.875rem",
+    fontWeight: 600,
+  },
+  sheetList: {
+    display: "grid",
+    margin: "0 0 0 7px",
+    padding: 0,
+    listStyle: "none",
+    borderLeftWidth: "1px",
+    borderLeftStyle: "solid",
+    borderLeftColor: tokens.line,
+  },
+  sheetLink: {
+    display: "block",
+    marginLeft: "-1px",
+    padding: "8px 0 8px 16px",
+    borderLeftWidth: "1.5px",
+    borderLeftStyle: "solid",
+    borderLeftColor: "transparent",
+    color: tokens.muted,
+    fontSize: "0.9375rem",
+    textDecoration: "none",
+    ":focus-visible": { outline: "none", boxShadow: tokens.focus, borderRadius: "4px" },
+  },
+  sheetLinkOn: {
+    borderLeftColor: tokens.teal,
+    color: tokens.fg,
+    fontWeight: 500,
+  },
   glyph: {
     display: "grid",
     placeItems: "center",
@@ -267,6 +352,123 @@ const content = <Message>(h: HtmlBuilder<Message>, kind: NavMenuKind): Html => {
     ),
   );
 };
+
+export const mobileMenuView = <Message>(
+  h: HtmlBuilder<Message>,
+  input: { docs: boolean; currentRoute: string; search: Message; close: Message },
+) =>
+  h.div(
+    [...sx(h, styles.sheet)],
+    [
+      h.a(
+        [
+          ...sx(h, styles.sheetSearch),
+          h.Href(pageRoute({ path: "search" })),
+          h.OnClick(input.search, { defaultAction: "Prevent" }),
+        ],
+        [icon(h, "search"), "Buscar na documentação"],
+      ),
+      h.a(
+        [...sx(h, styles.sheetFeature), h.Href(signFreePath), h.OnClick(input.close)],
+        [
+          h.span([...sx(h, styles.featureShade)]),
+          h.span([...sx(h, styles.featureTitle)], ["Assinar PDF grátis"]),
+          h.span(
+            [...sx(h, styles.featureHint)],
+            ["Certificado A1 no navegador. Nada é enviado para servidor."],
+          ),
+        ],
+      ),
+      h.div(
+        [],
+        [
+          h.p([...sx(h, styles.sheetLabel)], ["Documentação"]),
+          ...(input.docs
+            ? docsNavigation().map((group) =>
+                h.keyed("div")(
+                  group.title,
+                  [...sx(h, styles.sheetGroup)],
+                  [
+                    h.p(
+                      [...sx(h, styles.sheetGroupTitle)],
+                      [icon(h, groupIcon(group.title)), group.title],
+                    ),
+                    h.ul(
+                      [...sx(h, styles.sheetList)],
+                      group.links.map((link) =>
+                        h.keyed("li")(
+                          link.href,
+                          [],
+                          [
+                            h.a(
+                              [
+                                ...sx(
+                                  h,
+                                  styles.sheetLink,
+                                  link.href === input.currentRoute && styles.sheetLinkOn,
+                                ),
+                                h.Href(link.href),
+                                ...(link.href === input.currentRoute
+                                  ? [h.AriaCurrent("page")]
+                                  : []),
+                              ],
+                              [link.title],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : [
+                h.div(
+                  [...sx(h, styles.sheetRows)],
+                  docsNavigation()
+                    .filter((group) => groupBlurb[group.title] !== undefined)
+                    .map((group) =>
+                      h.keyed("div")(
+                        group.title,
+                        [],
+                        [
+                          row(h, {
+                            href: group.links[0]?.href ?? pageRoute({ path: "docs" }),
+                            title: group.title,
+                            hint: groupBlurb[group.title] ?? "",
+                            glyph: icon(h, groupIcon(group.title)),
+                          }),
+                        ],
+                      ),
+                    ),
+                ),
+              ]),
+        ],
+      ),
+      h.div(
+        [],
+        [
+          h.p([...sx(h, styles.sheetLabel)], ["Recursos"]),
+          h.div(
+            [...sx(h, styles.sheetRows)],
+            resources.map((resource) =>
+              h.keyed("div")(
+                resource.title,
+                [],
+                [
+                  row(h, {
+                    href: resource.href,
+                    title: resource.title,
+                    hint: resource.hint,
+                    glyph: icon(h, resource.glyph),
+                  }),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
 
 const labels: Record<NavMenuKind, string> = {
   docs: "Docs",

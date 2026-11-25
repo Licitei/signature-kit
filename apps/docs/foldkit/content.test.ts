@@ -106,7 +106,7 @@ describe("Foldkit content", () => {
       /<p[^>]*><em>Em before <\/em><\/p><div role="note" class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*><strong[^>]*>Notice<\/strong>Inside <strong>bold<\/strong><\/div><\/div><p[^>]*><em> em after<\/em><\/p>/,
     );
     expect(html).toContain('List before </p><div class="cards');
-    expect(html).toContain("Card body</span></div><p");
+    expect(html).toContain("<span>Card body</span></span></div><p");
     expect(html).toContain(" list after");
     expect(html).toMatch(/<p[^>]*>Catalog before <\/p><div class="error-catalog/);
     expect(html).toMatch(/<p[^>]*> catalog after<\/p>/);
@@ -219,7 +219,9 @@ describe("Foldkit content", () => {
     expect(introduction).toContain("Escolha o caminho");
     expect(introduction).toContain('href=\\"https://licitei.com.br\\"');
     expect(introduction).toContain("language-ts");
-    expect(introduction).toMatch(/<p[^>]*>signature-kit.ts<\/p><pre/);
+    expect(introduction).toMatch(
+      /<span>signature-kit.ts<\/span><button[^>]*data-copy-code[^>]*>[^]*?<\/button><\/div><pre/,
+    );
     const recipe = await page("/docs/recipes/react-components");
     expect(recipe).toContain("Itens do registry");
     expect(recipe).toContain("<table");

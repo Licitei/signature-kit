@@ -83,17 +83,6 @@ const styles = stylex.create({
     fontWeight: 600,
     letterSpacing: "-0.02em",
   },
-  chip: {
-    padding: "0.5cqw 1.2cqw",
-    borderRadius: "999px",
-    backgroundColor: "rgba(7, 24, 32, 0.7)",
-    borderWidth: "1px",
-    borderStyle: "solid",
-    borderColor: "rgba(255, 255, 255, 0.16)",
-    fontFamily: tokens.mono,
-    fontSize: "1.45cqw",
-    color: "rgba(255, 255, 255, 0.82)",
-  },
   caption: {
     position: "absolute",
     left: "5.5cqw",
@@ -610,26 +599,12 @@ const stage = <Message>(
 const cover = <Message>(h: HtmlBuilder<Message>, release: Release): Html => {
   const featured = release.entries.find((entry) => entry.cover !== undefined) ?? release.entries[0];
   const declared = featured?.cover;
-  const packages = Object.entries(featured?.packages ?? {});
-  const [featuredPackage] =
-    declared?.package !== undefined
-      ? packages.filter(([name]) => name === `@signature-kit/${declared.package}`)
-      : packages;
-  const chip =
-    featuredPackage !== undefined
-      ? `${featuredPackage[0].replace("@signature-kit/", "")} ${featuredPackage[1].version}`
-      : release.packages[0] !== undefined
-        ? `${release.packages[0][0]} ${release.packages[0][1]}`
-        : undefined;
   return h.div(
     [...sx(h, "release-cover", styles.cover, backgroundFor(release.id)), h.AriaHidden(true)],
     [
       h.div(
         [...sx(h, styles.top)],
-        [
-          h.span([...sx(h, styles.brand)], [brandMark(h), "SignatureKit"]),
-          ...(chip !== undefined ? [h.span([...sx(h, styles.chip)], [chip])] : []),
-        ],
+        [h.span([...sx(h, styles.brand)], [brandMark(h), "SignatureKit"])],
       ),
       h.div([...sx(h, styles.stage)], stage(h, declared, release)),
       ...(declared !== undefined ? [h.p([...sx(h, styles.caption)], [declared.caption])] : []),
@@ -647,7 +622,7 @@ export const releaseView = <Message>(
 ): Html =>
   h.keyed("article")(
     input.release.id,
-    [...sx(h, prose.release), h.Id(input.release.id)],
+    [...sx(h, prose.release), h.Id(input.release.id), h.Attribute("data-reveal", "")],
     [
       h.div(
         [...sx(h, prose.releaseMeta)],

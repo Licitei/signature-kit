@@ -29,6 +29,29 @@ const prerendered = new Map(
 const encoded = new Map();
 const compressible = /^(?:text\/|application\/(?:javascript|json|xml)|image\/svg\+xml)/;
 
+const intentLoader = (src) =>
+  [
+    `const entry = ${JSON.stringify(src)};`,
+    `const intents = ["pointermove", "pointerdown", "touchstart", "keydown", "wheel", "scroll", "focusin", "dragenter"];`,
+    `let loading;`,
+    `let ready = false;`,
+    `const hydrate = () => {`,
+    `  if (loading !== undefined) return loading;`,
+    `  for (const name of intents) removeEventListener(name, hydrate, true);`,
+    `  loading = import(entry).then(() => new Promise((done) => requestAnimationFrame(() => setTimeout(done)))).then(() => { ready = true; });`,
+    `  return loading;`,
+    `};`,
+    `for (const name of intents) addEventListener(name, hydrate, { capture: true, passive: true });`,
+    `addEventListener("click", (event) => {`,
+    `  if (ready) return;`,
+    `  const target = typeof event.target?.closest === "function" ? event.target.closest("button, [data-overlay], [aria-haspopup]") : null;`,
+    `  if (target === null) return;`,
+    `  event.preventDefault();`,
+    `  event.stopPropagation();`,
+    `  hydrate().then(() => target.click());`,
+    `}, true);`,
+  ].join("\n");
+
 const optimizedPages = new Map();
 const optimizePage = async (realFile) => {
   const cached = optimizedPages.get(realFile);
@@ -53,8 +76,7 @@ const optimizePage = async (realFile) => {
     .replace(/<link rel="modulepreload" crossorigin href="\/assets\/[^"]+\.js">/g, "")
     .replace(
       /<script type="module" crossorigin src="(\/assets\/[^"]+\.js)"><\/script>/,
-      (_, src) =>
-        `<script type="module">const intents = ["pointermove", "pointerdown", "touchstart", "keydown", "wheel", "scroll", "focusin"];const hydrate = () => { for (const name of intents) removeEventListener(name, hydrate, true); import(${JSON.stringify(src)}); };for (const name of intents) addEventListener(name, hydrate, { capture: true, passive: true });</script>`,
+      (_, src) => `<script type="module">${intentLoader(src)}</script>`,
     )
     .replace(
       '<script type="module" src="/webmcp.js"></script>',

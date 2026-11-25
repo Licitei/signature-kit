@@ -1,8 +1,9 @@
 import { homeRoute, pageRoute } from "./routes";
 import { Button, Dialog, Input, Menu, Nav, Popover, Textarea } from "@foldkit/ui";
-import { Effect, Option, Schema } from "effect";
-import { Command, Dom, Subscription, Update } from "foldkit";
+import { Effect, Option, Schedule, Schema, Stream } from "effect";
+import { Command, Dom, File, Html as FoldkitHtml, Subscription, Update } from "foldkit";
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
+import type { ContentNode } from "./content-parse";
 import { defineMessageUnion } from "foldkit/message";
 import { createArticleCatalog } from "./articles";
 import { groupReleases, releaseView } from "./changelog";
@@ -23,11 +24,12 @@ import {
 import {
   contentPaths,
   docsNavigation,
+  readingMinutes,
   renderContent,
   resolveContent,
   tableOfContents,
 } from "./content";
-import { SearchQuery, SearchResults, searchDocs } from "./search";
+import { SearchQuery, SearchResults, searchDocs, searchResultView } from "./search";
 import { SubmitFeedback, SubmitTextFeedback } from "./feedback";
 import {
   CopyHome,
@@ -40,13 +42,16 @@ import {
   githubLink,
   homeView,
   installPill,
+  signFreeCta,
   signFreeLanding,
+  SignFreeFaqIndex,
   signFreePath,
 } from "./home";
 import { OverlayKind, overlayView } from "./overlay";
 import { siteOrigin } from "./site-origin";
 import { brand, groupIcon, icon } from "./icons";
-import { NavMenuKind, navMenuInit, navMenuView } from "./navbar";
+import type { IconName } from "./icons";
+import { NavMenuKind, mobileMenuView, navMenuInit, navMenuView } from "./navbar";
 import { overlay } from "./styles/overlay";
 import { prose } from "./styles/prose";
 import { shell } from "./styles/shell";
@@ -106,6 +111,32 @@ export const OpenPageTarget = Command.define("OpenPageTarget", {
     }),
 });
 
+export const DroppedPdfsDelivered = Schema.TaggedStruct("DroppedPdfsDelivered", {
+  ok: Schema.Boolean,
+});
+export const DeliverDroppedPdfs = Command.define("DeliverDroppedPdfs", {
+  args: { files: Schema.Array(File.File) },
+  messages: [DroppedPdfsDelivered],
+  execute: ({ files }) =>
+    Effect.suspend(() => {
+      const input = document.querySelector<HTMLInputElement>("dialog input[name=pdf]");
+      return input === null ? Effect.fail("missing") : Effect.succeed(input);
+    }).pipe(
+      Effect.retry({ times: 40, schedule: Schedule.spaced("50 millis") }),
+      Effect.map((input) => {
+        const transfer = new DataTransfer();
+        for (const file of files)
+          if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))
+            transfer.items.add(file);
+        if (transfer.files.length === 0) return DroppedPdfsDelivered.make({ ok: false });
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        return DroppedPdfsDelivered.make({ ok: true });
+      }),
+      Effect.orElseSucceed(() => DroppedPdfsDelivered.make({ ok: false })),
+    ),
+});
+
 export const Flags = Schema.Struct({
   path: Schema.String,
   query: Schema.optional(SearchQuery),
@@ -122,11 +153,15 @@ export const Model = Schema.Struct({
   navDocs: Popover.Model,
   navResources: Popover.Model,
   homeCopyRequest: HomeCopyRequest,
-  openFaq: Schema.Option(Schema.Literals([0, 1, 2])),
+  openFaq: Schema.Option(SignFreeFaqIndex),
   copyToast: CopyToast.Model,
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
   signerRequested: Schema.Boolean,
+  signerMounted: Schema.Boolean,
+  homeDragOver: Schema.Boolean,
+  pendingPdfs: Schema.Array(File.File),
+  tocActive: Schema.String,
 });
 export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
@@ -145,11 +180,16 @@ export const Message = defineMessageUnion({
   TextFeedbackSubmitted: {},
   FeedbackSubmitted: { opinion: Schema.Literals(["good", "bad"]) },
   FeedbackFinished: { ok: Schema.Boolean },
-  FaqToggled: { index: Schema.Literals([0, 1, 2]), open: Schema.Boolean },
+  FaqToggled: { index: SignFreeFaqIndex, open: Schema.Boolean },
   GotCopyToastMessage: { message: CopyToast.Message },
   OverlayRequested: { kind: OverlayKind },
   OverlayCloseRequested: {},
   GotOverlayMessage: { message: Dialog.Message },
+  HomeDragChanged: { over: Schema.Boolean },
+  HomeFilesDropped: { files: Schema.Array(File.File) },
+  DroppedPdfsDelivered: { ok: Schema.Boolean },
+  TocMoved: { id: Schema.String },
+  SignerWarmed: {},
 });
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
@@ -174,6 +214,10 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
     }),
     overlayKind: "menu",
     signerRequested: false,
+    signerMounted: false,
+    homeDragOver: false,
+    pendingPdfs: [],
+    tocActive: "",
   },
 });
 const foldHomeDemo = Update.foldChild({
@@ -263,6 +307,7 @@ const closeOverlay = Update.foldChildStep({
   toParentMessage: (message) => Message.GotOverlayMessage({ message }),
   foldOutMessage: () => (model) => ({ model }),
 });
+export const signerReadyEvent = "signaturekit:signer-ready";
 export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   searchShortcut: entry(
     {},
@@ -279,12 +324,80 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
         }),
     },
   ),
+  signerWarmup: entry(
+    { pending: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({ pending: model.path === "" && !model.signerRequested }),
+      dependenciesToStream: ({ pending }) =>
+        pending
+          ? Stream.fromEventListener(document, signerReadyEvent).pipe(
+              Stream.take(1),
+              Stream.map(() => Message.SignerWarmed()),
+            )
+          : Stream.empty,
+    },
+  ),
+  tocSpy: entry(
+    { docs: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({
+        docs: model.path === "/docs" || model.path.startsWith("/docs/"),
+      }),
+      dependenciesToStream: ({ docs }) =>
+        docs
+          ? Dom.streamFromEventFilterMap({
+              target: () => document,
+              type: "scroll",
+              filterMapEvent: () => {
+                let current = "";
+                for (const link of document.querySelectorAll<HTMLAnchorElement>("[data-toc] a")) {
+                  const id = decodeURIComponent(link.hash.slice(1));
+                  const heading = document.getElementById(id);
+                  if (heading !== null && heading.getBoundingClientRect().top <= 128) current = id;
+                }
+                return Option.some(current);
+              },
+            }).pipe(
+              Stream.changes,
+              Stream.map((id) => Message.TocMoved({ id })),
+            )
+          : Stream.empty,
+    },
+  ),
 }));
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
-    GotSigningFormMessage: ({ message }) => ({
-      model: { ...model, signingForm: signingFormUpdate(model.signingForm, message).model },
-    }),
+    GotSigningFormMessage: ({ message }) => {
+      const next = { ...model, signingForm: signingFormUpdate(model.signingForm, message).model };
+      if (message._tag !== "SigningMounted") return { model: next };
+      return model.pendingPdfs.length === 0
+        ? { model: { ...next, signerMounted: true } }
+        : {
+            model: { ...next, signerMounted: true, pendingPdfs: [] },
+            commands: [DeliverDroppedPdfs({ files: model.pendingPdfs })],
+          };
+    },
+    HomeDragChanged: ({ over }) => ({ model: { ...model, homeDragOver: over } }),
+    HomeFilesDropped: ({ files }) => {
+      const next: Model = {
+        ...model,
+        homeDragOver: false,
+        overlayKind: "signer",
+        signerRequested: true,
+      };
+      const opened: Update.Return<Model, Message> = model.overlay.isOpen
+        ? { model: next }
+        : openOverlay(next);
+      return model.signerMounted
+        ? {
+            model: opened.model,
+            commands: [...(opened.commands ?? []), DeliverDroppedPdfs({ files })],
+          }
+        : { model: { ...opened.model, pendingPdfs: files }, commands: opened.commands ?? [] };
+    },
+    DroppedPdfsDelivered: () => ({ model }),
+    TocMoved: ({ id }) => ({ model: { ...model, tocActive: id } }),
+    SignerWarmed: () => ({ model: { ...model, signerRequested: true } }),
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
     GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
     GotOverlayMessage: ({ message }) => foldOverlay(model, message),
@@ -385,6 +498,164 @@ export const update = (model: Model, message: Message) =>
       model: { ...model, results: searchDocs(model.query) },
     }),
   });
+const signerSlot = FoldkitHtml.createLazy();
+const articleSlot = FoldkitHtml.createLazy();
+const navSlot = FoldkitHtml.createLazy();
+const footerSlot = FoldkitHtml.createLazy();
+const renderSigner = (h: HtmlBuilder<Message>, signingForm: Model["signingForm"]) =>
+  h.submodel({
+    slotId: "signing-form",
+    model: signingForm,
+    view: signingFormView,
+    toParentMessage: (message) => Message.GotSigningFormMessage({ message }),
+  });
+const renderBody = (h: HtmlBuilder<Message>, nodes: Array<ContentNode>, post: boolean) =>
+  h.div(
+    post ? [...sx(h, "docs-content", prose.postBody)] : [h.Attribute("data-feedback-content", "")],
+    renderContent(nodes, h),
+  );
+const renderDocsNav = (h: HtmlBuilder<Message>, currentRoute: string) =>
+  h.div(
+    [...sx(h, "docs-navigation", prose.navigation)],
+    docsNavigation().map((group, index) =>
+      Nav.view({
+        items: group.links.map((link) => link.href),
+        ariaLabel: group.title,
+        toHref: (href) => href,
+        isItemCurrent: (href) => href === currentRoute,
+        toView: ({ nav, items }) =>
+          h.nav(
+            [...nav],
+            [
+              h.h2(
+                [...sx(h, prose.navTitle, index === 0 && prose.navTitleFirst)],
+                [icon(h, groupIcon(group.title)), group.title],
+              ),
+              h.ul(
+                [...sx(h, prose.navList)],
+                items.map((item) =>
+                  h.li(
+                    [],
+                    [
+                      h.a(
+                        [...item.link, ...sx(h, prose.navLink, item.isCurrent && prose.navLinkOn)],
+                        [group.links[item.index]?.title ?? ""],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+      }),
+    ),
+  );
+const footerColumns = [
+  {
+    title: "Produto",
+    links: [
+      { label: "Assinar PDF grátis", href: signFreePath },
+      { label: "Documentação", href: pageRoute({ path: "docs" }) },
+    ],
+  },
+  {
+    title: "Recursos",
+    links: [
+      { label: "Blog", href: pageRoute({ path: "blog" }) },
+      { label: "Changelog", href: pageRoute({ path: "changelog" }) },
+      { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
+    ],
+  },
+  {
+    title: "Projeto",
+    links: [
+      { label: "Licitei", href: "https://licitei.com.br" },
+      {
+        label: "Licença MIT",
+        href: "https://github.com/Licitei/signature-kit/blob/main/LICENSE",
+      },
+      { label: "Créditos das fotos", href: "/landing/CREDITS.md" },
+    ],
+  },
+];
+const renderFooter = (h: HtmlBuilder<Message>, currentRoute: string, homeCopied: boolean) =>
+  h.footer(
+    [...sx(h, "footer", shell.footer), h.Id("site-footer")],
+    [
+      h.div(
+        [...sx(h, shell.footerGrid)],
+        [
+          h.div(
+            [...sx(h, shell.footerBrand)],
+            [
+              h.a([...sx(h, shell.brand), h.Href(homeRoute({}))], [brandMark(h), "SignatureKit"]),
+              h.p(
+                [...sx(h, shell.footerTag)],
+                ["Assinatura digital com certificado A1, em TypeScript."],
+              ),
+              installPill(h, {
+                copied: homeCopied,
+                onCopy: Message.HomeCopyRequested(),
+              }),
+              h.p(
+                [...sx(h, shell.footerMeta)],
+                [
+                  "© 2026 · Um projeto open source da",
+                  h.a(
+                    [...sx(h, shell.footerLicitei), h.Href("https://licitei.com.br")],
+                    [
+                      h.img([
+                        h.Src("/landing/licitei.webp"),
+                        h.Alt("Licitei"),
+                        h.Height("13"),
+                        h.Width("59"),
+                        ...sx(h, shell.footerLiciteiLogo),
+                      ]),
+                    ],
+                  ),
+                ],
+              ),
+              h.p(
+                [...sx(h, shell.footerCredits)],
+                [
+                  "Fotos: Maria Eduarda Trajano Mangueira de Melo e Edison Aquiles, ",
+                  h.a(
+                    [
+                      ...sx(h, shell.footerCreditsLink),
+                      h.Href("https://creativecommons.org/licenses/by-sa/4.0/deed.pt-br"),
+                    ],
+                    ["CC BY-SA 4.0"],
+                  ),
+                  ", modificadas.",
+                ],
+              ),
+            ],
+          ),
+          ...footerColumns.map((column) =>
+            Nav.view({
+              items: column.links.map((link) => link.href),
+              ariaLabel: column.title,
+              toHref: (item) => item,
+              isItemCurrent: (item) => item === currentRoute,
+              toView: ({ nav, items }) =>
+                h.nav(
+                  [...nav, ...sx(h, shell.footerNav)],
+                  [
+                    h.h2([...sx(h, shell.footerTitle)], [column.title]),
+                    ...items.map((item) =>
+                      h.a(
+                        [...item.link, ...sx(h, shell.footerLink)],
+                        [column.links[item.index]?.label ?? ""],
+                      ),
+                    ),
+                  ],
+                ),
+            }),
+          ),
+        ],
+      ),
+    ],
+  );
 export const createView = (source: {
   paths: typeof contentPaths;
   resolve: typeof resolveContent;
@@ -417,7 +688,7 @@ export const createView = (source: {
         : undefined;
     const canonical = `${siteOrigin}${currentRoute}`;
     const heading = section === "blog" ? "Blog" : "Changelog";
-    const overlayHeader = home || (!signing && (docs ? content !== undefined : true));
+    const overlayHeader = home || signing || (docs ? content !== undefined : true);
     const docsGroup = docs
       ? docsNavigation().find((group) => group.links.some((link) => link.href === currentRoute))
           ?.title
@@ -576,49 +847,8 @@ export const createView = (source: {
           ),
         ],
       );
-    const navItems = [
-      { label: "Docs", href: pageRoute({ path: "docs" }) },
-      { label: "Assinar PDF grátis", href: signFreePath },
-      { label: "Blog", href: pageRoute({ path: "blog" }) },
-      { label: "Changelog", href: pageRoute({ path: "changelog" }) },
-    ];
-    const footerColumns = [
-      {
-        title: "Produto",
-        links: [
-          { label: "Assinar PDF grátis", href: signFreePath },
-          { label: "Documentação", href: pageRoute({ path: "docs" }) },
-        ],
-      },
-      {
-        title: "Recursos",
-        links: [
-          { label: "Blog", href: pageRoute({ path: "blog" }) },
-          { label: "Changelog", href: pageRoute({ path: "changelog" }) },
-          { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
-        ],
-      },
-      {
-        title: "Projeto",
-        links: [
-          { label: "Licitei", href: "https://licitei.com.br" },
-          {
-            label: "Licença MIT",
-            href: "https://github.com/Licitei/signature-kit/blob/main/LICENSE",
-          },
-          { label: "Créditos das fotos", href: "/landing/CREDITS.md" },
-        ],
-      },
-    ];
-    const signer = (embedded: boolean) =>
-      h.submodel({
-        slotId: "signing-form",
-        model: model.signingForm,
-        view: signingFormView,
-        viewInputs: { embedded },
-        toParentMessage: (message) => Message.GotSigningFormMessage({ message }),
-      });
-    const signerPanel = (): readonly [OverlayKind, Html] => ["signer", signer(true)];
+    const signer = () => signerSlot(renderSigner, [h, model.signingForm]);
+    const signerPanel = (): readonly [OverlayKind, Html] => ["signer", signer()];
     const toast = copyToastView(h, {
       model: model.copyToast,
       toParentMessage: (message) => Message.GotCopyToastMessage({ message }),
@@ -627,20 +857,23 @@ export const createView = (source: {
       title: tagRoute
         ? `${tag?.tag ?? "Tags do blog"} | SignatureKit`
         : signing
-          ? "Assine documentos grátis com certificado A1 | SignatureKit"
-          : article !== undefined
-            ? `${article.title} — SignatureKit`
-            : section !== undefined
-              ? `${heading} — SignatureKit`
-              : content !== undefined
-                ? `${content.title} — SignatureKit`
-                : "SignatureKit — Assinatura digital com certificado A1 em TypeScript",
+          ? "Assinar PDF com certificado digital A1 grátis | SignatureKit"
+          : model.path === "/search"
+            ? "Buscar na documentação — SignatureKit"
+            : article !== undefined
+              ? `${article.title} — SignatureKit`
+              : section !== undefined
+                ? `${heading} — SignatureKit`
+                : content !== undefined
+                  ? `${content.title} — SignatureKit`
+                  : "SignatureKit — Assinatura digital com certificado A1 em TypeScript",
       lang: "pt-BR",
       canonical,
       ogUrl: canonical,
       body: h.div(
         [...sx(h, "site", shell.site)],
         [
+          h.a([...sx(h, shell.skipLink), h.Href("#conteudo")], ["Pular para o conteúdo"]),
           h.header(
             [
               ...sx(
@@ -722,6 +955,23 @@ export const createView = (source: {
                         shell.compactOnly,
                         overlayHeader && shell.iconLinkLight,
                       ),
+                      h.Href(pageRoute({ path: "search" })),
+                      h.Attribute("data-overlay", "search"),
+                      h.AriaLabel("Buscar"),
+                      h.OnClick(Message.OverlayRequested({ kind: "search" }), {
+                        defaultAction: "Prevent",
+                      }),
+                    ],
+                    [icon(h, "search")],
+                  ),
+                  h.a(
+                    [
+                      ...sx(
+                        h,
+                        shell.iconButton,
+                        shell.compactOnly,
+                        overlayHeader && shell.iconLinkLight,
+                      ),
                       h.Href("#site-footer"),
                       h.Attribute("data-overlay", "menu"),
                       h.AriaLabel("Menu"),
@@ -729,14 +979,14 @@ export const createView = (source: {
                         defaultAction: "Prevent",
                       }),
                     ],
-                    ["☰"],
+                    [icon(h, "menu")],
                   ),
                 ],
               ),
             ],
           ),
           h.main(
-            [],
+            [h.Id("conteudo"), h.Attribute("tabindex", "-1")],
             model.path === "/search"
               ? [
                   banner({
@@ -754,7 +1004,7 @@ export const createView = (source: {
                           h.Attribute("action", pageRoute({ path: "search" })),
                           h.Attribute("role", "search"),
                           h.OnSubmit(Message.SearchSubmitted()),
-                          ...sx(h, prose.feedbackActions),
+                          ...sx(h, prose.searchForm),
                         ],
                         [
                           Input.view(
@@ -765,15 +1015,19 @@ export const createView = (source: {
                               value: model.query,
                               onInput: (value) => Message.QueryChanged({ value }),
                               toView: (attributes) =>
-                                h.label(attributes.label, [
-                                  "Termos de busca",
-                                  h.input([
-                                    ...attributes.input,
-                                    ...sx(h, prose.feedbackInput),
-                                    h.Attribute("maxlength", "200"),
-                                    h.Class("ph-no-capture"),
-                                  ]),
-                                ]),
+                                h.label(
+                                  [...attributes.label, h.Class(className(prose.searchField))],
+                                  [
+                                    h.span([...sx(h, prose.srOnly)], ["Termos de busca"]),
+                                    h.span([...sx(h, prose.searchIcon)], [icon(h, "search")]),
+                                    h.input([
+                                      ...attributes.input,
+                                      h.Class(`ph-no-capture ${className(prose.searchInput)}`),
+                                      h.Attribute("placeholder", "Ex.: PAdES, certificado, XML"),
+                                      h.Attribute("maxlength", "200"),
+                                    ]),
+                                  ],
+                                ),
                             },
                             h,
                           ),
@@ -791,24 +1045,19 @@ export const createView = (source: {
                         ],
                       ),
                       model.query.trim() === ""
-                        ? h.p([...sx(h, prose.p)], ["Digite um termo para buscar."])
+                        ? h.p([...sx(h, prose.searchEmpty)], ["Digite um termo para buscar."])
                         : model.results.length === 0
-                          ? h.p([...sx(h, prose.p)], ["Nenhum resultado encontrado."])
+                          ? h.p(
+                              [...sx(h, prose.searchEmpty)],
+                              [`Nenhum resultado para “${model.query.trim()}”. Tente outro termo.`],
+                            )
                           : h.ul(
-                              [...sx(h, prose.articleList)],
+                              [...sx(h, overlay.links)],
                               model.results.map((result) =>
-                                h.li(
-                                  [...sx(h, prose.articleItem)],
-                                  [
-                                    h.a(
-                                      [...sx(h, prose.articleLink), h.Href(result.href)],
-                                      [
-                                        result.title,
-                                        ...(result.heading !== "" ? [` — ${result.heading}`] : []),
-                                      ],
-                                    ),
-                                    h.p([...sx(h, prose.articleDescription)], [result.excerpt]),
-                                  ],
+                                h.keyed("li")(
+                                  `${result.href} ${result.heading}`,
+                                  [],
+                                  [searchResultView(h, result, model.query)],
                                 ),
                               ),
                             ),
@@ -872,7 +1121,7 @@ export const createView = (source: {
                       h.div(
                         [h.Class("ph-no-capture"), h.Attribute("data-analytics-sensitive", "true")],
                         [
-                          ...signFreeLanding(h, signer(false), {
+                          ...signFreeLanding(h, signer(), {
                             open: model.openFaq,
                             toggle: (index, open) => Message.FaqToggled({ index, open }),
                           }),
@@ -885,6 +1134,7 @@ export const createView = (source: {
                               toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
                             }),
                           ),
+                          signFreeCta(h),
                         ],
                       ),
                     ]
@@ -926,53 +1176,83 @@ export const createView = (source: {
                               title: article.title,
                               lead: article.description ?? "",
                               crumbs: [{ label: "Blog", href: pageRoute({ path: "blog" }) }],
-                              meta: article.date !== "" ? formatDate(article.date) : undefined,
+                              meta: [
+                                article.author ?? "",
+                                article.date !== "" ? formatDate(article.date) : "",
+                                `${readingMinutes(article.nodes)} min de leitura`,
+                              ]
+                                .filter((part) => part !== "")
+                                .join(" · "),
                               narrow: true,
                             }),
                             h.article(
-                              [...sx(h, "docs-content", prose.plain)],
-                              renderContent(article.nodes, h),
+                              [...sx(h, prose.post)],
+                              [articleSlot(renderBody, [h, article.nodes, true])],
                             ),
                           ]
                         : [
                             banner({
                               title: "Blog",
-                              lead: "Artigos sobre assinaturas digitais e SignatureKit.",
-                              crumbs: [
-                                { label: "Tags do blog", href: pageRoute({ path: "blog/tags" }) },
-                              ],
+                              lead: "Histórias e decisões de engenharia sobre assinatura digital no Brasil.",
+                              crumbs: [],
                               narrow: true,
                             }),
                             h.section(
-                              [...sx(h, "docs-content", prose.plain)],
+                              [...sx(h, prose.post)],
                               [
                                 h.ul(
-                                  [...sx(h, prose.articleList)],
+                                  [
+                                    ...sx(h, prose.postList),
+                                    h.Attribute("data-reveal", ""),
+                                    h.Attribute("data-reveal-stagger", ""),
+                                  ],
                                   articles("blog").map((entry) =>
-                                    h.li(
-                                      [...sx(h, prose.articleItem)],
+                                    h.keyed("li")(
+                                      entry.href,
+                                      [],
                                       [
                                         h.a(
-                                          [...sx(h, prose.articleLink), h.Href(entry.href)],
-                                          [entry.title],
+                                          [...sx(h, prose.postRow), h.Href(entry.href)],
+                                          [
+                                            h.img([
+                                              h.Src(`${entry.href}.webp`),
+                                              h.Alt(""),
+                                              h.Width("1200"),
+                                              h.Height("630"),
+                                              h.Loading("lazy"),
+                                              h.Decoding("async"),
+                                              ...sx(h, prose.postThumb),
+                                            ]),
+                                            h.div(
+                                              [...sx(h, prose.postRowText)],
+                                              [
+                                                h.p(
+                                                  [...sx(h, prose.postMeta)],
+                                                  [
+                                                    [
+                                                      entry.date !== ""
+                                                        ? formatDate(entry.date)
+                                                        : "",
+                                                      `${readingMinutes(entry.nodes)} min de leitura`,
+                                                    ]
+                                                      .filter((part) => part !== "")
+                                                      .join(" · "),
+                                                  ],
+                                                ),
+                                                h.h2([...sx(h, prose.postRowTitle)], [entry.title]),
+                                                ...(entry.description !== undefined &&
+                                                entry.description !== ""
+                                                  ? [
+                                                      h.p(
+                                                        [...sx(h, prose.postRowDescription)],
+                                                        [entry.description],
+                                                      ),
+                                                    ]
+                                                  : []),
+                                              ],
+                                            ),
+                                          ],
                                         ),
-                                        ...(entry.date !== ""
-                                          ? [
-                                              h.p(
-                                                [...sx(h, prose.articleMeta)],
-                                                [formatDate(entry.date)],
-                                              ),
-                                            ]
-                                          : []),
-                                        ...(entry.description !== undefined &&
-                                        entry.description !== ""
-                                          ? [
-                                              h.p(
-                                                [...sx(h, prose.articleDescription)],
-                                                [entry.description],
-                                              ),
-                                            ]
-                                          : []),
                                       ],
                                     ),
                                   ),
@@ -996,44 +1276,53 @@ export const createView = (source: {
                             h.div(
                               [...sx(h, "docs-layout", prose.layout)],
                               [
-                                h.div(
-                                  [...sx(h, "docs-navigation", prose.navigation)],
-                                  docsNavigation().map((group, index) =>
-                                    Nav.view({
-                                      items: group.links.map((link) => link.href),
-                                      ariaLabel: group.title,
-                                      toHref: (href) => href,
-                                      isItemCurrent: (href) => href === currentRoute,
-                                      toView: ({ nav, items }) =>
-                                        h.nav(
-                                          [...nav],
+                                navSlot(renderDocsNav, [h, currentRoute]),
+                                h.article(
+                                  [...sx(h, "docs-content", prose.content)],
+                                  [
+                                    articleSlot(renderBody, [h, content.nodes, false]),
+                                    h.section(
+                                      [
+                                        ...sx(h, "ph-no-capture", prose.feedback),
+                                        h.Attribute("data-analytics-sensitive", "true"),
+                                      ],
+                                      [
+                                        h.div(
+                                          [...sx(h, prose.feedbackHead)],
                                           [
                                             h.h2(
-                                              [
-                                                ...sx(
-                                                  h,
-                                                  prose.navTitle,
-                                                  index === 0 && prose.navTitleFirst,
-                                                ),
-                                              ],
-                                              [icon(h, groupIcon(group.title)), group.title],
+                                              [...sx(h, prose.feedbackTitle)],
+                                              ["Esta página ajudou?"],
                                             ),
-                                            h.ul(
-                                              [...sx(h, prose.navList)],
-                                              items.map((item) =>
-                                                h.li(
+                                            h.div(
+                                              [...sx(h, prose.feedbackActions)],
+                                              (
+                                                [
+                                                  ["good", "Sim", "thumbsUp"],
+                                                  ["bad", "Não", "thumbsDown"],
+                                                ] satisfies ReadonlyArray<
+                                                  readonly ["good" | "bad", string, IconName]
+                                                >
+                                              ).map(([opinion, label, glyph]) =>
+                                                h.keyed("span")(
+                                                  opinion,
                                                   [],
                                                   [
-                                                    h.a(
-                                                      [
-                                                        ...item.link,
-                                                        ...sx(
-                                                          h,
-                                                          prose.navLink,
-                                                          item.isCurrent && prose.navLinkOn,
-                                                        ),
-                                                      ],
-                                                      [group.links[item.index]?.title ?? ""],
+                                                    Button.view(
+                                                      {
+                                                        onClick: Message.FeedbackSubmitted({
+                                                          opinion,
+                                                        }),
+                                                        toView: (attributes) =>
+                                                          h.button(
+                                                            [
+                                                              ...attributes.button,
+                                                              ...sx(h, prose.feedbackButton),
+                                                            ],
+                                                            [icon(h, glyph), label],
+                                                          ),
+                                                      },
+                                                      h,
                                                     ),
                                                   ],
                                                 ),
@@ -1041,95 +1330,57 @@ export const createView = (source: {
                                             ),
                                           ],
                                         ),
-                                    }),
-                                  ),
-                                ),
-                                h.article(
-                                  [...sx(h, "docs-content", prose.content)],
-                                  [
-                                    h.div(
-                                      [h.Attribute("data-feedback-content", "")],
-                                      renderContent(content.nodes, h),
-                                    ),
-                                    h.section(
-                                      [
-                                        ...sx(h, "ph-no-capture", prose.feedback),
-                                        h.Attribute("data-analytics-sensitive", "true"),
-                                      ],
-                                      [
-                                        h.h2(
-                                          [...sx(h, prose.feedbackTitle)],
-                                          ["Esta página ajudou?"],
-                                        ),
-                                        Button.view(
+                                        Textarea.view(
                                           {
-                                            onClick: Message.FeedbackSubmitted({ opinion: "good" }),
+                                            id: "feedback-message",
                                             toView: (attributes) =>
-                                              h.button(
-                                                [...attributes.button, ...sx(h, shell.ghost)],
-                                                ["Sim"],
-                                              ),
-                                          },
-                                          h,
-                                        ),
-                                        Button.view(
-                                          {
-                                            onClick: Message.FeedbackSubmitted({ opinion: "bad" }),
-                                            toView: (attributes) =>
-                                              h.button(
-                                                [...attributes.button, ...sx(h, shell.ghost)],
-                                                ["Não"],
-                                              ),
+                                              h.textarea([
+                                                ...attributes.textarea,
+                                                h.Class(className(prose.feedbackInput)),
+                                                h.Attribute("data-feedback-message", ""),
+                                                h.Attribute("maxlength", "2000"),
+                                                h.Attribute("rows", "3"),
+                                                h.Attribute(
+                                                  "placeholder",
+                                                  "Algo faltando ou errado? Conte aqui.",
+                                                ),
+                                                h.Attribute("aria-label", "Comentário"),
+                                              ]),
                                           },
                                           h,
                                         ),
                                         h.div(
-                                          [...sx(h, prose.feedbackStatus)],
+                                          [...sx(h, prose.feedbackFoot)],
                                           [
-                                            Textarea.view(
+                                            h.p(
+                                              [
+                                                ...sx(h, prose.feedbackStatus),
+                                                h.Attribute("role", "status"),
+                                              ],
+                                              [
+                                                model.feedbackStatus === "success"
+                                                  ? "Obrigado pelo feedback!"
+                                                  : model.feedbackStatus === "error"
+                                                    ? "Não foi possível enviar. Tente novamente."
+                                                    : model.feedbackStatus === "sending"
+                                                      ? "Enviando…"
+                                                      : "",
+                                              ],
+                                            ),
+                                            Button.view(
                                               {
-                                                id: "feedback-message",
+                                                onClick: Message.TextFeedbackSubmitted(),
                                                 toView: (attributes) =>
-                                                  h.textarea([
-                                                    ...attributes.textarea,
-                                                    h.Attribute("data-feedback-message", ""),
-                                                    h.Attribute("maxlength", "2000"),
-                                                    h.Attribute("rows", "2"),
-                                                    h.Attribute(
-                                                      "placeholder",
-                                                      "Algo faltando ou errado? Conte aqui.",
-                                                    ),
-                                                    h.Attribute("aria-label", "Comentário"),
-                                                  ]),
+                                                  h.button(
+                                                    [
+                                                      ...attributes.button,
+                                                      ...sx(h, prose.feedbackSend),
+                                                    ],
+                                                    ["Enviar comentário"],
+                                                  ),
                                               },
                                               h,
                                             ),
-                                          ],
-                                        ),
-                                        Button.view(
-                                          {
-                                            onClick: Message.TextFeedbackSubmitted(),
-                                            toView: (attributes) =>
-                                              h.button(
-                                                [...attributes.button, ...sx(h, shell.ghost)],
-                                                ["Enviar comentário"],
-                                              ),
-                                          },
-                                          h,
-                                        ),
-                                        h.p(
-                                          [
-                                            ...sx(h, prose.feedbackStatus),
-                                            h.Attribute("role", "status"),
-                                          ],
-                                          [
-                                            model.feedbackStatus === "success"
-                                              ? "Obrigado pelo feedback!"
-                                              : model.feedbackStatus === "error"
-                                                ? "Não foi possível enviar. Tente novamente."
-                                                : model.feedbackStatus === "sending"
-                                                  ? "Enviando…"
-                                                  : "",
                                           ],
                                         ),
                                       ],
@@ -1139,7 +1390,11 @@ export const createView = (source: {
                                 ...(toc.length > 1
                                   ? [
                                       h.nav(
-                                        [...sx(h, prose.toc), h.AriaLabel("Nesta página")],
+                                        [
+                                          ...sx(h, prose.toc),
+                                          h.AriaLabel("Nesta página"),
+                                          h.Attribute("data-toc", ""),
+                                        ],
                                         [
                                           h.p(
                                             [...sx(h, prose.tocTitle)],
@@ -1154,7 +1409,12 @@ export const createView = (source: {
                                                 [
                                                   h.a(
                                                     [
-                                                      ...sx(h, prose.tocLink),
+                                                      ...sx(
+                                                        h,
+                                                        prose.tocLink,
+                                                        model.tocActive === entry.id &&
+                                                          prose.tocLinkOn,
+                                                      ),
                                                       h.Href(`#${entry.id}`),
                                                     ],
                                                     [entry.title],
@@ -1170,89 +1430,14 @@ export const createView = (source: {
                               ],
                             ),
                           ]
-                        : homeView(h, { open: (kind) => Message.OverlayRequested({ kind }) }),
+                        : homeView(h, {
+                            open: (kind) => Message.OverlayRequested({ kind }),
+                            dragOver: model.homeDragOver,
+                            drag: (over) => Message.HomeDragChanged({ over }),
+                            drop: (files) => Message.HomeFilesDropped({ files }),
+                          }),
           ),
-          h.footer(
-            [...sx(h, "footer", shell.footer), h.Id("site-footer")],
-            [
-              h.div([...sx(h, shell.footerRule)]),
-              h.div(
-                [...sx(h, shell.footerGrid)],
-                [
-                  h.div(
-                    [...sx(h, shell.footerBrand)],
-                    [
-                      h.a(
-                        [...sx(h, shell.brand), h.Href(homeRoute({}))],
-                        [brandMark(h), "SignatureKit"],
-                      ),
-                      h.p(
-                        [...sx(h, shell.footerTag)],
-                        ["Assinatura digital com certificado A1, em TypeScript."],
-                      ),
-                      installPill(h, {
-                        copied: model.homeCopied,
-                        onCopy: Message.HomeCopyRequested(),
-                      }),
-                      h.p(
-                        [...sx(h, shell.footerMeta)],
-                        [
-                          "© 2026 · Um projeto open source da",
-                          h.a(
-                            [...sx(h, shell.footerLicitei), h.Href("https://licitei.com.br")],
-                            [
-                              h.img([
-                                h.Src("/landing/licitei.webp"),
-                                h.Alt("Licitei"),
-                                h.Height("13"),
-                                h.Width("59"),
-                                ...sx(h, shell.footerLiciteiLogo),
-                              ]),
-                            ],
-                          ),
-                        ],
-                      ),
-                      h.p(
-                        [...sx(h, shell.footerCredits)],
-                        [
-                          "Fotos: Maria Eduarda Trajano Mangueira de Melo e Edison Aquiles, ",
-                          h.a(
-                            [
-                              ...sx(h, shell.footerCreditsLink),
-                              h.Href("https://creativecommons.org/licenses/by-sa/4.0/deed.pt-br"),
-                            ],
-                            ["CC BY-SA 4.0"],
-                          ),
-                          ", modificadas.",
-                        ],
-                      ),
-                    ],
-                  ),
-                  ...footerColumns.map((column) =>
-                    Nav.view({
-                      items: column.links.map((link) => link.href),
-                      ariaLabel: column.title,
-                      toHref: (item) => item,
-                      isItemCurrent: (item) => item === currentRoute,
-                      toView: ({ nav, items }) =>
-                        h.nav(
-                          [...nav, ...sx(h, shell.footerNav)],
-                          [
-                            h.h2([...sx(h, shell.footerTitle)], [column.title]),
-                            ...items.map((item) =>
-                              h.a(
-                                [...item.link, ...sx(h, shell.footerLink)],
-                                [column.links[item.index]?.label ?? ""],
-                              ),
-                            ),
-                          ],
-                        ),
-                    }),
-                  ),
-                ],
-              ),
-            ],
-          ),
+          footerSlot(renderFooter, [h, currentRoute, model.homeCopied]),
           ...(model.overlay.isOpen ? [] : [toast]),
           overlayView(h, {
             model: model.overlay,
@@ -1270,62 +1455,12 @@ export const createView = (source: {
               ...(home && model.signerRequested ? [signerPanel()] : []),
               [
                 "menu",
-                h.div(
-                  [...sx(h, overlay.stack)],
-                  [
-                    h.ul(
-                      [...sx(h, overlay.links)],
-                      [
-                        ...navItems,
-                        { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
-                      ].map(({ label, href }) =>
-                        h.li(
-                          [],
-                          [
-                            h.a(
-                              [
-                                ...sx(h, overlay.link),
-                                h.Href(href),
-                                h.OnClick(Message.OverlayCloseRequested()),
-                              ],
-                              [label],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    ...(docs
-                      ? docsNavigation().map((group) =>
-                          h.div(
-                            [],
-                            [
-                              h.p([...sx(h, overlay.group)], [group.title]),
-                              h.ul(
-                                [...sx(h, overlay.links)],
-                                group.links.map((link) =>
-                                  h.li(
-                                    [],
-                                    [
-                                      h.a(
-                                        [
-                                          ...sx(h, overlay.link),
-                                          h.Href(link.href),
-                                          ...(link.href === currentRoute
-                                            ? [h.AriaCurrent("page")]
-                                            : []),
-                                        ],
-                                        [link.title],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                      : []),
-                  ],
-                ),
+                mobileMenuView(h, {
+                  docs,
+                  currentRoute,
+                  search: Message.OverlayRequested({ kind: "search" }),
+                  close: Message.OverlayCloseRequested(),
+                }),
               ],
               [
                 "search",
@@ -1347,7 +1482,7 @@ export const createView = (source: {
                         toView: ({ input }) =>
                           h.input([
                             ...input,
-                            ...sx(h, "ph-no-capture", overlay.search),
+                            h.Class(`ph-no-capture ${className(overlay.search)}`),
                             h.DataAttribute("overlay-focus", ""),
                             h.Attribute("maxlength", "200"),
                             h.AriaLabel("Buscar"),
@@ -1362,33 +1497,23 @@ export const createView = (source: {
                           [...sx(h, overlay.hint)],
                           ["Digite para buscar guias e páginas de API."],
                         )
-                      : h.ul(
-                          [...sx(h, overlay.links)],
-                          model.results
-                            .slice(0, 8)
-                            .map((result) =>
-                              h.li(
-                                [],
-                                [
-                                  h.a(
-                                    [...sx(h, overlay.result), h.Href(result.href)],
-                                    [
-                                      h.span(
-                                        [],
-                                        [
-                                          result.title,
-                                          ...(result.heading !== ""
-                                            ? [` — ${result.heading}`]
-                                            : []),
-                                        ],
-                                      ),
-                                      h.span([...sx(h, overlay.excerpt)], [result.excerpt]),
-                                    ],
-                                  ),
-                                ],
+                      : model.results.length === 0
+                        ? h.p(
+                            [...sx(h, overlay.hint)],
+                            [`Nenhum resultado para “${model.query.trim()}”.`],
+                          )
+                        : h.ul(
+                            [...sx(h, overlay.links)],
+                            model.results
+                              .slice(0, 8)
+                              .map((result) =>
+                                h.keyed("li")(
+                                  `${result.href} ${result.heading}`,
+                                  [],
+                                  [searchResultView(h, result, model.query)],
+                                ),
                               ),
-                            ),
-                        ),
+                          ),
                   ],
                 ),
               ],

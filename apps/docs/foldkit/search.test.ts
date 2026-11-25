@@ -150,3 +150,14 @@ describe("documentation search", () => {
     expect(empty).toContain("Digite um termo para buscar.");
   });
 });
+
+it("centres the excerpt on the first match and drops duplicate headings", () => {
+  const filler = "palavra ".repeat(40);
+  const page = parseContent(
+    `---\ntitle: Guia\n---\n\n## Assinar\n\n${filler}certificado final.\n\n## Assinar\n\ncertificado de novo.\n`,
+  );
+  const results = searchDocs("certificado", [{ slug: "guia", page }]);
+  expect(results.filter((result) => result.heading === "Assinar")).toHaveLength(1);
+  expect(results[0]?.excerpt.startsWith("…")).toBe(true);
+  expect(results[0]?.excerpt).toContain("certificado final");
+});

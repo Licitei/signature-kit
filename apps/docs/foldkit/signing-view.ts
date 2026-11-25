@@ -137,11 +137,7 @@ export const signingFormUpdate = (model: SigningFormModel, message: Message) =>
     }),
   });
 
-export const signingFormView = defineView<
-  SigningFormModel,
-  Message,
-  { readonly embedded: boolean }
->((model, { embedded }, h) => {
+export const signingFormView = defineView<SigningFormModel, Message>((model, h) => {
   const input = (
     id: string,
     label: string,
@@ -182,7 +178,7 @@ export const signingFormView = defineView<
             [
               ...attributes.button,
               h.Attribute(attribute, ""),
-              ...sx(h, tone === "primary" ? shell.primary : shell.ghost),
+              ...sx(h, tone === "primary" ? shell.primary : signing.smallButton),
             ],
             [label],
           ),
@@ -311,10 +307,6 @@ export const signingFormView = defineView<
       h.Attribute("data-signing-mode", model.mode),
     ],
     [
-      embedded ? null : h.h1([...sx(h, signing.title)], ["Assine documentos grátis"]),
-      embedded
-        ? null
-        : h.p([...sx(h, signing.intro)], ["Assine PDFs no seu navegador com certificado A1."]),
       h.submodel({
         slotId: "signing-mode",
         model: model.modeTabs,
@@ -419,126 +411,141 @@ export const signingFormView = defineView<
                   true,
                 ),
               ]),
-              h.div(model.mode === "rapida" ? [h.Hidden(true)] : [], [
-                field("signing-place", "Posição e carimbo", "place", [
-                  h.div(
-                    [h.Attribute("data-preview", ""), ...sx(h, signing.stage)],
-                    [
-                      h.p(
-                        [...sx(h, signing.hint)],
-                        ["Envie um PDF e clique na página para posicionar a assinatura."],
-                      ),
-                    ],
-                  ),
-                  h.div(
-                    [...sx(h, signing.actions)],
-                    [
-                      button("Página anterior", "data-previous"),
-                      button("Próxima página", "data-next"),
-                      button("Posicionar automaticamente", "data-auto"),
-                    ],
-                  ),
-                  Disclosure.view(
-                    {
-                      id: "signing-appearance",
-                      isOpen: model.appearance,
-                      onToggle: (open) => Message.AppearanceToggled({ open }),
-                      toView: ({ button: trigger, animatePanel }) =>
-                        h.div(
-                          [...sx(h, signing.appearance)],
-                          [
-                            h.button(
-                              [...trigger, ...sx(h, signing.appearanceButton)],
-                              [
-                                "Aparência do carimbo",
-                                h.span([h.AriaHidden(true)], [model.appearance ? "−" : "+"]),
-                              ],
-                            ),
-                            animatePanel(
-                              h.div(
-                                [...sx(h, signing.fields, signing.appearancePanel)],
+              h.div(
+                [
+                  ...sx(h, signing.areaPlace, model.mode !== "rapida" && signing.placeWrap),
+                  ...(model.mode === "rapida" ? [h.Hidden(true)] : []),
+                ],
+                [
+                  field("signing-place", "Posição e carimbo", "place", [
+                    h.div(
+                      [h.Attribute("data-preview", ""), ...sx(h, signing.stage)],
+                      [
+                        h.p(
+                          [...sx(h, signing.hint)],
+                          ["Envie um PDF e clique na página para posicionar a assinatura."],
+                        ),
+                      ],
+                    ),
+                    h.div(
+                      [...sx(h, signing.actions)],
+                      [
+                        button("Página anterior", "data-previous"),
+                        button("Próxima página", "data-next"),
+                        button("Posicionar automaticamente", "data-auto"),
+                      ],
+                    ),
+                    Disclosure.view(
+                      {
+                        id: "signing-appearance",
+                        isOpen: model.appearance,
+                        onToggle: (open) => Message.AppearanceToggled({ open }),
+                        toView: ({ button: trigger, animatePanel }) =>
+                          h.div(
+                            [...sx(h, signing.appearance)],
+                            [
+                              h.button(
+                                [...trigger, ...sx(h, signing.appearanceButton)],
                                 [
-                                  input("stampTitle", "Título da assinatura", "text"),
-                                  input("stampColor", "Cor", "color", [
-                                    h.Attribute("value", "#3B5BDB"),
-                                  ]),
-                                  fileDrop(model.logo, "logo", "Logo PNG", "Opcional", [
-                                    "image/png",
-                                    ".png",
-                                  ]),
-                                  button("Remover logo", "data-remove-logo"),
-                                  toggle(
-                                    "signing-stamp-identity",
-                                    "data-stamp-identity",
-                                    "Exibir identidade",
-                                    model.identity,
-                                    (checked) => Message.IdentityToggled({ checked }),
+                                  "Aparência do carimbo",
+                                  h.span(
+                                    [
+                                      ...sx(
+                                        h,
+                                        signing.chevron,
+                                        model.appearance && signing.chevronOpen,
+                                      ),
+                                    ],
+                                    [icon(h, "chevron")],
                                   ),
-                                  toggle(
-                                    "signing-stamp-date",
-                                    "data-stamp-date",
-                                    "Exibir data",
-                                    model.date,
-                                    (checked) => Message.DateToggled({ checked }),
-                                  ),
-                                  toggle(
-                                    "signing-rubric",
-                                    "data-rubric",
-                                    "Rubricar demais páginas",
-                                    model.rubric,
-                                    (checked) => Message.RubricToggled({ checked }),
-                                  ),
-                                  h.submodel({
-                                    slotId: "signing-rubric-source",
-                                    model: model.rubricGroup,
-                                    view: RubricRadios.view,
-                                    viewInputs: {
-                                      options: rubricSources,
-                                      selectedValue: Option.some(model.rubricSource),
-                                      ariaLabel: "Origem da rubrica",
-                                      name: "rubricSource",
-                                      toView: ({ group, options, hiddenInput }) =>
-                                        h.div(
-                                          [...group, ...sx(h, signing.radios)],
-                                          [
-                                            h.input(hiddenInput),
-                                            ...options.map((option) =>
-                                              h.button(
-                                                [
-                                                  ...option.option,
-                                                  h.Attribute("data-rubric-source", option.value),
-                                                  ...sx(
-                                                    h,
-                                                    signing.radio,
-                                                    option.isSelected && signing.radioOn,
-                                                  ),
-                                                ],
-                                                [
-                                                  option.value === "text"
-                                                    ? "Texto digitado"
-                                                    : "Nome do certificado",
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                    },
-                                    toParentMessage: (message) =>
-                                      Message.GotRubricSourceMessage({ message }),
-                                  }),
-                                  input("rubricText", "Texto manuscrito", "text", [
-                                    h.Attribute("maxlength", "120"),
-                                  ]),
                                 ],
                               ),
-                            ),
-                          ],
-                        ),
-                    },
-                    h,
-                  ),
-                ]),
-              ]),
+                              animatePanel(
+                                h.div(
+                                  [...sx(h, signing.fields, signing.appearancePanel)],
+                                  [
+                                    input("stampTitle", "Título da assinatura", "text"),
+                                    input("stampColor", "Cor", "color", [
+                                      h.Attribute("value", "#3B5BDB"),
+                                    ]),
+                                    fileDrop(model.logo, "logo", "Logo PNG", "Opcional", [
+                                      "image/png",
+                                      ".png",
+                                    ]),
+                                    button("Remover logo", "data-remove-logo"),
+                                    toggle(
+                                      "signing-stamp-identity",
+                                      "data-stamp-identity",
+                                      "Exibir identidade",
+                                      model.identity,
+                                      (checked) => Message.IdentityToggled({ checked }),
+                                    ),
+                                    toggle(
+                                      "signing-stamp-date",
+                                      "data-stamp-date",
+                                      "Exibir data",
+                                      model.date,
+                                      (checked) => Message.DateToggled({ checked }),
+                                    ),
+                                    toggle(
+                                      "signing-rubric",
+                                      "data-rubric",
+                                      "Rubricar demais páginas",
+                                      model.rubric,
+                                      (checked) => Message.RubricToggled({ checked }),
+                                    ),
+                                    h.submodel({
+                                      slotId: "signing-rubric-source",
+                                      model: model.rubricGroup,
+                                      view: RubricRadios.view,
+                                      viewInputs: {
+                                        options: rubricSources,
+                                        selectedValue: Option.some(model.rubricSource),
+                                        ariaLabel: "Origem da rubrica",
+                                        name: "rubricSource",
+                                        toView: ({ group, options, hiddenInput }) =>
+                                          h.div(
+                                            [...group, ...sx(h, signing.radios)],
+                                            [
+                                              h.input(hiddenInput),
+                                              ...options.map((option) =>
+                                                h.button(
+                                                  [
+                                                    ...option.option,
+                                                    h.Attribute("data-rubric-source", option.value),
+                                                    ...sx(
+                                                      h,
+                                                      signing.radio,
+                                                      option.isSelected && signing.radioOn,
+                                                    ),
+                                                  ],
+                                                  [
+                                                    option.value === "text"
+                                                      ? "Texto digitado"
+                                                      : "Nome do certificado",
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                      },
+                                      toParentMessage: (message) =>
+                                        Message.GotRubricSourceMessage({ message }),
+                                    }),
+                                    input("rubricText", "Texto manuscrito", "text", [
+                                      h.Attribute("maxlength", "120"),
+                                    ]),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                      },
+                      h,
+                    ),
+                  ]),
+                ],
+              ),
               field("signing-sign", "Assinar", "sign", [
                 h.div(
                   [...sx(h, signing.actions)],
@@ -565,6 +572,7 @@ export const signingFormView = defineView<
                             [
                               ...attributes.button,
                               h.Attribute("data-cancel", ""),
+                              h.Hidden(true),
                               ...sx(h, signing.cancel),
                             ],
                             ["Cancelar"],

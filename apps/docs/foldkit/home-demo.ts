@@ -1,5 +1,5 @@
 import { Button, Tabs } from "@foldkit/ui";
-import { Effect, Exit, Option, Schema } from "effect";
+import { Effect, Exit, Layer, Option, Schema } from "effect";
 import { Command, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { defineView } from "foldkit/submodel";
@@ -33,7 +33,7 @@ const DemoMount = Mount.define("DemoMount", {
             | "witnessed"
             | "initials"
           )[];
-          const preview = element.querySelector<HTMLIFrameElement>("[data-demo-preview]");
+          const preview = element.querySelector<HTMLImageElement>("[data-demo-preview]");
           const status = element.querySelector<HTMLElement>("[data-demo-status]");
           const download = element.querySelector<HTMLAnchorElement>("[data-demo-download]");
           const run = element.querySelector<HTMLButtonElement>("[data-demo-run]");
@@ -42,12 +42,16 @@ const DemoMount = Mount.define("DemoMount", {
           let generation = 0;
           let closed = false;
           let urls: string[] = [];
+          let images: string[] = [];
           let controller: AbortController | undefined;
           const revoke = (items: string[]) => items.forEach((url) => URL.revokeObjectURL(url));
           const show = () => {
             const url = urls[active];
-            if (preview !== null && url !== undefined)
-              preview.src = `${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+            const image = images[active];
+            if (preview !== null && image !== undefined) {
+              preview.src = image;
+              preview.alt = `Prévia: ${names[active] ?? "exemplo"}`;
+            }
             if (download !== null) {
               if (url === undefined) download.removeAttribute("href");
               else {
@@ -68,18 +72,43 @@ const DemoMount = Mount.define("DemoMount", {
               Promise.all([
                 import("@signature-kit/pdf/stamp"),
                 import("@signature-kit/pdf-core/browser"),
+                import("@signature-kit/pdf/render-browser"),
               ]),
             ).pipe(
-              Effect.flatMap(([{ createIllustrativePdf }, { pdfCoreBrowserLayer }]) =>
-                Effect.forEach(variants, (variant, index) =>
-                  createIllustrativePdf({
-                    title: names[index] ?? "Example",
-                    body: "Documento demonstrativo. Este conteúdo é apenas um exemplo visual.",
-                    variant,
-                    marked,
-                    markLabel: "MARCA ILUSTRATIVA",
-                  }),
-                ).pipe(Effect.provide(pdfCoreBrowserLayer)),
+              Effect.flatMap(
+                ([
+                  { createIllustrativePdf },
+                  { pdfCoreBrowserLayer },
+                  { pdfPageRendererWorkerLayer, renderPdfPagesBrowser },
+                ]) =>
+                  Effect.forEach(variants, (variant, index) =>
+                    createIllustrativePdf({
+                      title: names[index] ?? "Example",
+                      body: "Documento demonstrativo. Este conteúdo é apenas um exemplo visual.",
+                      variant,
+                      marked,
+                      markLabel: "MARCA ILUSTRATIVA",
+                    }).pipe(
+                      Effect.flatMap((bytes) =>
+                        renderPdfPagesBrowser(bytes, { pageIndexes: [0] }).pipe(
+                          Effect.map((pages) => ({ bytes, page: pages[0] })),
+                        ),
+                      ),
+                    ),
+                  ).pipe(
+                    Effect.provide(
+                      Layer.merge(
+                        pdfCoreBrowserLayer,
+                        pdfPageRendererWorkerLayer(
+                          {},
+                          () =>
+                            new Worker(new URL("./render.worker.ts", import.meta.url), {
+                              type: "module",
+                            }),
+                        ),
+                      ),
+                    ),
+                  ),
               ),
             );
             Effect.runPromiseExitWith(context)(program, { signal }).then(
@@ -88,11 +117,14 @@ const DemoMount = Mount.define("DemoMount", {
                 if (Exit.isFailure(result)) {
                   if (status !== null) status.textContent = "Não foi possível gerar os exemplos.";
                 } else {
-                  const old = urls;
-                  urls = result.value.map((bytes) =>
+                  const old = [...urls, ...images];
+                  urls = result.value.map(({ bytes }) =>
                     URL.createObjectURL(
                       new Blob([new Uint8Array(bytes)], { type: "application/pdf" }),
                     ),
+                  );
+                  images = result.value.map(({ page }) =>
+                    page === undefined ? "" : URL.createObjectURL(page.image),
                   );
                   show();
                   revoke(old);
@@ -132,7 +164,7 @@ const DemoMount = Mount.define("DemoMount", {
             generation++;
             controller?.abort();
             observer.disconnect();
-            revoke(urls);
+            revoke([...urls, ...images]);
           };
         }),
         (dispose) => Effect.sync(dispose),
@@ -269,13 +301,7 @@ export const homeDemoView = defineView<HomeDemoModel, Message>((model, h) => {
           h.Role("tabpanel"),
           h.AriaLabelledBy(`home-demo-documents-tab-${String(model.active)}`),
         ],
-        [
-          h.iframe([
-            h.Attribute("data-demo-preview", ""),
-            ...sx(h, landing.preview),
-            h.Attribute("title", "Prévia do exemplo"),
-          ]),
-        ],
+        [h.img([h.Attribute("data-demo-preview", ""), ...sx(h, landing.preview), h.Alt("")])],
       ),
       h.div(
         [...sx(h, "home-demo-controls", landing.toolbar)],

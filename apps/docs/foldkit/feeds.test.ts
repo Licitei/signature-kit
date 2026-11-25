@@ -268,11 +268,12 @@ describe("feeds", () => {
               expect(response.headers.get("content-type")).toBe("image/webp");
               const bytes = new Uint8Array(await response.arrayBuffer());
               expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("RIFF");
-              expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8L");
-              const dimensions = new DataView(bytes.buffer).getUint32(21, true);
-              expect([(dimensions & 0x3fff) + 1, ((dimensions >>> 14) & 0x3fff) + 1]).toEqual([
-                1200, 630,
-              ]);
+              expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8 ");
+              const dimensions = new DataView(bytes.buffer);
+              expect([
+                dimensions.getUint16(26, true) & 0x3fff,
+                dimensions.getUint16(28, true) & 0x3fff,
+              ]).toEqual([1200, 630]);
               const head = await fetch(`${base}${image}`, { method: "HEAD", signal });
               expect(head.status).toBe(200);
               expect(head.headers.get("content-type")).toBe("image/webp");

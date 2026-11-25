@@ -53,10 +53,10 @@ describe("Foldkit home", () => {
       modulePreloads: [],
     });
     for (const text of [
-      "Quatro passos, tudo no navegador.",
-      "Sem upload do PDF",
+      "Como assinar um PDF com certificado A1",
+      "Validade jurídica",
       "Precisa de cadastro?",
-      "Funciona com A3?",
+      "Funciona com certificado A3 (token ou cartão)?",
       "/docs/a1-signing/browser-pdf-flow",
       'id="assinar"',
       'name="pfx"',
@@ -82,7 +82,7 @@ describe("Foldkit home", () => {
         {
           "@type": "FAQPage",
           mainEntity: expect.arrayContaining([
-            expect.objectContaining({ name: "Funciona com A3?" }),
+            expect.objectContaining({ name: "Funciona com certificado A3 (token ou cartão)?" }),
           ]),
         },
       ],
@@ -166,6 +166,22 @@ describe("Foldkit home", () => {
       ).pipe(Effect.timeout("15 seconds")),
     );
   }, 20000);
+  it("holds PDFs dropped on the home zone until the signer mounts", () => {
+    const file = new File(["%PDF-1.7"], "contrato.pdf", { type: "application/pdf" });
+    const dropped = update(init({ path: "" }).model, Message.HomeFilesDropped({ files: [file] }));
+    expect(dropped.model.overlayKind).toBe("signer");
+    expect(dropped.model.signerRequested).toBe(true);
+    expect(dropped.model.pendingPdfs).toEqual([file]);
+    const mounted = update(
+      dropped.model,
+      Message.GotSigningFormMessage({ message: { _tag: "SigningMounted" } }),
+    );
+    expect(mounted.model.pendingPdfs).toEqual([]);
+    expect(mounted.commands?.map((command) => command.name)).toEqual(["DeliverDroppedPdfs"]);
+    const later = update(mounted.model, Message.HomeFilesDropped({ files: [file] }));
+    expect(later.model.pendingPdfs).toEqual([]);
+    expect(later.commands?.map((command) => command.name)).toContain("DeliverDroppedPdfs");
+  });
   it("records copy success or failure", () => {
     const initial = init({ path: "" }).model;
     const requested = update(initial, Message.HomeCopyRequested()).model;
