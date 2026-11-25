@@ -69,6 +69,8 @@ describe("local PDF signatures", () => {
         const { certificateDer } = yield* a1.certificate(session);
         const sourceBytes = yield* readPdfFixture();
         const source = yield* documents.open(sourceBytes);
+        const sourceDigest = yield* documents.digest(source);
+        expect(sourceDigest).toBe(yield* fingerprint(sourceBytes));
         expect((yield* pdf.fields(source)).fields).toHaveLength(0);
 
         const { exit, spans } = yield* recordSpans(
@@ -80,7 +82,9 @@ describe("local PDF signatures", () => {
               rect: [32, 28, 192, 76],
             });
             const preview = yield* documents.export(preparation.previewRevision.handle);
-            expect(preparation.previewRevision.digest).toBe(yield* fingerprint(preview));
+            expect(yield* documents.digest(preparation.previewRevision)).toBe(
+              yield* fingerprint(preview),
+            );
             const sameOptions = yield* pdf.prepare(source, {
               policy: "icpBrasilAdRbV11",
               appearance: { kind: "visible" },
@@ -98,7 +102,6 @@ describe("local PDF signatures", () => {
             expect(receipt).toEqual(concurrent);
             expect(receipt).toMatchObject({
               preparationId: preparation.preparationId,
-              sourceDigest: source.digest,
               certificateFingerprint: session.profile.fingerprintSha256,
               signedAt: now,
               fieldName: "Approval",
@@ -106,7 +109,9 @@ describe("local PDF signatures", () => {
             yield* a1.close();
             expect(yield* pdf.confirm(preparation.preparationId)).toEqual(receipt);
             const signed = yield* documents.export(receipt.signedRevision.handle);
-            expect(receipt.signedRevision.digest).toBe(yield* fingerprint(signed));
+            expect(yield* documents.digest(receipt.signedRevision)).toBe(
+              yield* fingerprint(signed),
+            );
             expect(signed.subarray(0, sourceBytes.byteLength)).toEqual(sourceBytes);
             expect(yield* documents.export(preparation.previewRevision.handle)).toEqual(preview);
 
@@ -184,7 +189,7 @@ describe("local PDF signatures", () => {
           "Approval",
           session.profile.subjectName,
           session.profile.fingerprintSha256,
-          source.digest,
+          sourceDigest,
         ]) {
           expect(telemetry).not.toContain(value);
         }

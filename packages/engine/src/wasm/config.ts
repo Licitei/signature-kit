@@ -92,7 +92,6 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.create",
   "pdfCore.fontMetrics",
   "pdfCore.pngSize",
-  "pdfCore.sha256",
 ]);
 export type PdfCoreOperation = (typeof PdfCoreOperationSchema)["Type"];
 export const PdfCoreOperationValue = {
@@ -123,7 +122,6 @@ export const PdfCoreOperationValue = {
   create: "pdfCore.create",
   fontMetrics: "pdfCore.fontMetrics",
   pngSize: "pdfCore.pngSize",
-  sha256: "pdfCore.sha256",
 } satisfies Record<string, PdfCoreOperation>;
 
 export const PdfCoreSchemaNameSchema = Schema.Literals([
@@ -473,9 +471,6 @@ export const PdfCoreExportsSchema = Schema.Struct({
   ),
   pdf_core_revision_complete: Schema.declare(isSignaturesFunction, {
     identifier: "pdf_core_revision_complete",
-  }),
-  pdf_core_sha256_blocks: Schema.declare(isSignaturesFunction, {
-    identifier: "pdf_core_sha256_blocks",
   }),
   pdf_core_document: Schema.declare(isDocumentFunction, { identifier: "pdf_core_document" }),
   pdf_core_edit: Schema.declare(isEditFunction, { identifier: "pdf_core_edit" }),

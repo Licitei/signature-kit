@@ -159,13 +159,6 @@ export type PdfCoreService = {
     options?: PdfCoreLazyOptions,
   ) => Effect.Effect<PdfCoreLazyDocument, PdfCoreError, Scope.Scope>;
   readonly wasmMemoryBytes: () => Effect.Effect<number>;
-  readonly sha256Blocks: (
-    data: Uint8Array,
-    state: Int32Array,
-  ) => Effect.Effect<
-    { readonly state: Int32Array<ArrayBuffer>; readonly length: number },
-    PdfCoreError
-  >;
   readonly inspect: (
     pdf: Uint8Array,
     options: PdfCoreInspectOptions,
@@ -266,7 +259,6 @@ const LINK_RECORD_BYTES = 48;
 const TEXT_PAGE_HEADER_BYTES = 16;
 const TEXT_ITEM_FLOATS = 5;
 const MAX_UINT32 = 0xffff_ffff;
-const SHA256_CHUNK_BYTES = 1024 * 1024;
 const SIGNATURES_MAGIC = 0x4753_4450;
 const SIGNATURES_VERSION = 2;
 const SIGNATURES_HEADER_BYTES = 24;
@@ -1567,42 +1559,6 @@ export const makePdfCore = (
       } satisfies PdfCoreSigningSession;
     });
 
-    const sha256Blocks = Effect.fn(PdfCoreOperationValue.sha256)(function* (
-      data: Uint8Array,
-      initial: Int32Array,
-    ) {
-      const operation = PdfCoreOperationValue.sha256;
-      const length = data.byteLength - (data.byteLength % 64);
-      yield* Effect.annotateCurrentSpan("signature_kit.wasm.input_bytes", length);
-      return yield* Effect.scoped(
-        Effect.gen(function* () {
-          const words = yield* allocate(operation, 32);
-          const chunk = yield* allocate(
-            operation,
-            Math.max(64, Math.min(length, SHA256_CHUNK_BYTES)),
-          );
-          new Int32Array(core.memory.buffer, words.pointer, 8).set(initial);
-          for (let offset = 0; offset < length; offset += chunk.length) {
-            const end = Math.min(offset + chunk.length, length);
-            new Uint8Array(core.memory.buffer, chunk.pointer, end - offset).set(
-              data.subarray(offset, end),
-            );
-            if (core.pdf_core_sha256_blocks(words.pointer, chunk.pointer, end - offset) !== 1) {
-              return yield* new PdfCoreError({
-                code: PdfCoreErrorCodeValue.wasmLoadFailed,
-                operation,
-                reason: "The PDF core rejected the SHA-256 buffers.",
-              });
-            }
-          }
-          return {
-            state: new Int32Array(core.memory.buffer.slice(words.pointer, words.pointer + 32)),
-            length,
-          };
-        }),
-      );
-    });
-
     const revisionComplete = Effect.fn(PdfCoreOperationValue.revision)(function* (
       pdf: Uint8Array,
       end: number,
@@ -2445,7 +2401,6 @@ export const makePdfCore = (
     const service: PdfCoreService = {
       openLazy,
       wasmMemoryBytes: () => Effect.sync(() => core.memory.buffer.byteLength),
-      sha256Blocks,
       inspect,
       text: (pdf, options) => runText(full(pdf), options),
       tables: (pdf, options) => runTables(full(pdf), options),

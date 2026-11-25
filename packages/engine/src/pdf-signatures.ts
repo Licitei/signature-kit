@@ -105,10 +105,9 @@ type Entry = {
   readonly state: Ref.Ref<Preparation | PdfReceipt | undefined>;
 };
 
-const idDigest = (value: string): string =>
-  Array.from(sha256(new TextEncoder().encode(value)), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+const hex = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+const idDigest = (value: string): string => hex(sha256(new TextEncoder().encode(value)));
 
 export const pdfSignaturesLayer = Layer.effect(
   PdfSignatures,
@@ -295,7 +294,6 @@ export const pdfSignaturesLayer = Layer.effect(
             return yield* Effect.gen(function* () {
               const previewRevision = yield* source.append(appendix);
               const binding = {
-                sourceDigest: revision.digest,
                 certificateFingerprint: profile.fingerprintSha256,
                 session,
                 fieldName: field.name,
@@ -304,7 +302,6 @@ export const pdfSignaturesLayer = Layer.effect(
               const preparationId = PreparationId.make(
                 idDigest(
                   JSON.stringify([
-                    binding.sourceDigest,
                     binding.certificateFingerprint,
                     session.generation,
                     field.kind === "create"
@@ -312,7 +309,8 @@ export const pdfSignaturesLayer = Layer.effect(
                       : [field.kind, field.name],
                     appearance,
                     policy,
-                    previewRevision.digest,
+                    certificate.hash,
+                    hex(digest),
                     ...(allocation === undefined ? [] : [allocation.nonce]),
                   ]),
                 ),
@@ -400,7 +398,7 @@ export const pdfSignaturesLayer = Layer.effect(
               { session, policy, signedAt, digest, prepared },
             );
             const signedRevision = yield* preparation.source.append(signed);
-            const receiptId = idDigest(preparationId + signedRevision.digest);
+            const receiptId = idDigest(preparationId + hex(sha256(signed)));
             yield* a1
               .validate(session)
               .pipe(
@@ -409,7 +407,6 @@ export const pdfSignaturesLayer = Layer.effect(
             const receipt = {
               receiptId,
               preparationId,
-              sourceDigest: binding.sourceDigest,
               signedRevision,
               signedAt,
               certificateFingerprint: binding.certificateFingerprint,

@@ -148,9 +148,15 @@ export const batchesLayer = (
           reason = code;
           yield* PubSub.publish(updates, { _tag: "batchStateChanged", seq: ++seq, state, reason });
         });
-        const save = (item: BatchItem) => {
+        const save = (item: BatchItem, outputDigest?: string) => {
           const { preparation: _preparation, ...stored } = item;
-          return persistence?.writeItem(id, { ...stored, version: 1 }) ?? Effect.void;
+          return (
+            persistence?.writeItem(id, {
+              ...stored,
+              version: 1,
+              ...(outputDigest === undefined ? {} : { outputDigest }),
+            }) ?? Effect.void
+          );
         };
         const change = Effect.fn(function* (item: BatchItem) {
           items.set(item.itemId, item);
@@ -211,7 +217,7 @@ export const batchesLayer = (
           const saved = yield* persistence?.readItem(id, itemId) ?? Effect.succeed(undefined);
           const receipt = saved?.receipt;
           if (saved?.state === "signed" && persistence !== undefined) {
-            if (receipt === undefined || receipt.sourceDigest !== revision.digest) {
+            if (receipt === undefined || saved.outputDigest === undefined) {
               return yield* new LocalError({ code: "batchStorageCorrupt" });
             }
             const length = receipt.signedRevision.byteLength;
@@ -223,7 +229,7 @@ export const batchesLayer = (
             peak = Math.max(peak, retained + length);
             const restored = yield* documents.open(output);
             outputs.set(itemId, restored);
-            if (restored.digest !== receipt.signedRevision.digest) {
+            if ((yield* documents.digest(restored)) !== saved.outputDigest) {
               return yield* new LocalError({ code: "batchStorageCorrupt" });
             }
             return yield* change({
@@ -320,18 +326,22 @@ export const batchesLayer = (
             const plan = BatchPlan.make({
               version: 1,
               template: input.template,
-              documents: input.documents.map(({ itemId, revision, anchors }) => ({
-                itemId,
-                digest: revision.digest,
-                anchors:
-                  anchors === undefined
-                    ? undefined
-                    : Object.fromEntries(
-                        Object.entries(anchors).sort(([left], [right]) =>
-                          left.localeCompare(right),
-                        ),
-                      ),
-              })),
+              documents: yield* Effect.forEach(input.documents, ({ itemId, revision, anchors }) =>
+                documents.digest(revision).pipe(
+                  Effect.map((digest) => ({
+                    itemId,
+                    digest,
+                    anchors:
+                      anchors === undefined
+                        ? undefined
+                        : Object.fromEntries(
+                            Object.entries(anchors).sort(([left], [right]) =>
+                              left.localeCompare(right),
+                            ),
+                          ),
+                  })),
+                ),
+              ),
             });
             yield* Scope.provide(persistence.lock(id), scope);
             const existing = yield* persistence.readPlan(id);
@@ -398,7 +408,7 @@ export const batchesLayer = (
                   if (persistence !== undefined) {
                     const output = yield* documents.export(receipt.signedRevision.handle);
                     yield* persistence.writeOutput(id, itemId, output);
-                    yield* save(signed);
+                    yield* save(signed, yield* documents.digest(receipt.signedRevision));
                   }
                   inFlight -= working;
                   working = 0;
@@ -496,7 +506,7 @@ export const batchesLayer = (
               attemptId: crypto.randomUUID(),
             } satisfies BatchItem);
           });
-          yield* Effect.forEach([...skipped, ...queued], save, { discard: true });
+          yield* Effect.forEach([...skipped, ...queued], (item) => save(item), { discard: true });
           yield* move(event);
           for (const item of skipped) {
             yield* dropSource(item.itemId);

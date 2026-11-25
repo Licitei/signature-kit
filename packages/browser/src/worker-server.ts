@@ -60,6 +60,7 @@ const localHandlersLayer = LocalRpcs.toLayer(
       Prewarm: () => signatures.prewarm.pipe(Effect.andThen(pool?.start ?? Effect.void)),
       DocumentsOpen: ({ bytes }) => documents.open(bytes),
       DocumentsExport: ({ handle }) => documents.export(handle),
+      DocumentsDigest: ({ revision }) => documents.digest(revision),
       DocumentsRelease: ({ handle }) => documents.release(handle),
       PdfCompose: ({ document, options }) =>
         compose(document, options).pipe(

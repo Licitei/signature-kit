@@ -141,7 +141,10 @@ with the returned widget rectangle to place a highlight on the preview.
 Call `confirmPdf(preparationId)` after approval. It checks the session and certificate at
 confirmation time, embeds the detached CMS, and verifies the incremental revision before
 returning a receipt. Repeated confirmation returns the retained receipt. Export the signed
-revision with `exportDocument(receipt.signedRevision.handle)`.
+revision with `exportDocument(receipt.signedRevision.handle)`. Revisions carry a handle and a
+byte length; call `documentDigest(revision)` when you need the content SHA-256 (for example in an
+audit record). The worker computes it on demand once per revision, so signing a large document
+hashes its bytes only once, for the ByteRange digest.
 
 Use `releasePdf(preparationId)` to discard the preparation or its retained receipt. Release the
 source, preview, and signed document handles independently with `releaseDocument`. An open PDF

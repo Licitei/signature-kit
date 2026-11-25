@@ -35,7 +35,7 @@ mod markdown;
 pub mod num;
 pub mod object;
 mod pdf_cipher;
-pub mod pdf_hash;
+mod pdf_hash;
 pub mod png;
 pub mod render;
 pub mod revision;

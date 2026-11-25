@@ -1,65 +1,62 @@
 macro_rules! sha2 {
-    ($name:ident, $compress:ident, $word:ty, $length:ty, $block:literal, $size:literal,
-     $rounds:literal, $constants:ident, [$s0a:expr, $s0b:expr, $s0c:expr],
-     [$s1a:expr, $s1b:expr, $s1c:expr], [$s2a:expr, $s2b:expr, $s2c:expr],
-     [$s3a:expr, $s3b:expr, $s3c:expr]) => {
-        fn $compress(hash: &mut [$word; 8], block: &[u8; $block]) {
-            let mut words = [0; $rounds];
-            for (word, chunk) in words.iter_mut().zip(block.as_chunks::<$size>().0) {
-                *word = <$word>::from_be_bytes(*chunk);
-            }
-            for index in 16_usize..$rounds {
-                let get = |back| words.get(index.saturating_sub(back)).copied().unwrap_or(0);
-                let x = get(15);
-                let y = get(2);
-                let first = x.rotate_right($s0a) ^ x.rotate_right($s0b) ^ (x >> $s0c);
-                let second = y.rotate_right($s1a) ^ y.rotate_right($s1b) ^ (y >> $s1c);
-                let word = get(16)
-                    .wrapping_add(first)
-                    .wrapping_add(get(7))
-                    .wrapping_add(second);
-                if let Some(slot) = words.get_mut(index) {
-                    *slot = word;
-                }
-            }
-            let [
-                mut a,
-                mut b,
-                mut c,
-                mut d,
-                mut e,
-                mut f,
-                mut word_g,
-                mut word_h,
-            ] = *hash;
-            for (word, constant) in words.into_iter().zip($constants) {
-                let choice = (e & f) ^ (!e & word_g);
-                let majority = (a & b) ^ (a & c) ^ (b & c);
-                let first = a.rotate_right($s2a) ^ a.rotate_right($s2b) ^ a.rotate_right($s2c);
-                let second = e.rotate_right($s3a) ^ e.rotate_right($s3b) ^ e.rotate_right($s3c);
-                let temp = word_h
-                    .wrapping_add(second)
-                    .wrapping_add(choice)
-                    .wrapping_add(constant)
-                    .wrapping_add(word);
-                [a, b, c, d, e, f, word_g, word_h] = [
-                    temp.wrapping_add(first).wrapping_add(majority),
-                    a,
-                    b,
-                    c,
-                    d.wrapping_add(temp),
-                    e,
-                    f,
-                    word_g,
-                ];
-            }
-            for (slot, word) in hash.iter_mut().zip([a, b, c, d, e, f, word_g, word_h]) {
-                *slot = slot.wrapping_add(word);
-            }
-        }
-
+    ($name:ident, $word:ty, $length:ty, $block:literal, $size:literal, $rounds:literal,
+     $constants:ident, [$s0a:expr, $s0b:expr, $s0c:expr], [$s1a:expr, $s1b:expr, $s1c:expr],
+     [$s2a:expr, $s2b:expr, $s2c:expr], [$s3a:expr, $s3b:expr, $s3c:expr]) => {
         fn $name(parts: &[&[u8]], mut hash: [$word; 8]) -> [$word; 8] {
-            let mut compress = |block: &[u8; $block]| $compress(&mut hash, block);
+            let mut compress = |block: &[u8; $block]| {
+                let mut words = [0; $rounds];
+                for (word, chunk) in words.iter_mut().zip(block.as_chunks::<$size>().0) {
+                    *word = <$word>::from_be_bytes(*chunk);
+                }
+                for index in 16_usize..$rounds {
+                    let get = |back| words.get(index.saturating_sub(back)).copied().unwrap_or(0);
+                    let x = get(15);
+                    let y = get(2);
+                    let first = x.rotate_right($s0a) ^ x.rotate_right($s0b) ^ (x >> $s0c);
+                    let second = y.rotate_right($s1a) ^ y.rotate_right($s1b) ^ (y >> $s1c);
+                    let word = get(16)
+                        .wrapping_add(first)
+                        .wrapping_add(get(7))
+                        .wrapping_add(second);
+                    if let Some(slot) = words.get_mut(index) {
+                        *slot = word;
+                    }
+                }
+                let [
+                    mut a,
+                    mut b,
+                    mut c,
+                    mut d,
+                    mut e,
+                    mut f,
+                    mut word_g,
+                    mut word_h,
+                ] = hash;
+                for (word, constant) in words.into_iter().zip($constants) {
+                    let choice = (e & f) ^ (!e & word_g);
+                    let majority = (a & b) ^ (a & c) ^ (b & c);
+                    let first = a.rotate_right($s2a) ^ a.rotate_right($s2b) ^ a.rotate_right($s2c);
+                    let second = e.rotate_right($s3a) ^ e.rotate_right($s3b) ^ e.rotate_right($s3c);
+                    let temp = word_h
+                        .wrapping_add(second)
+                        .wrapping_add(choice)
+                        .wrapping_add(constant)
+                        .wrapping_add(word);
+                    [a, b, c, d, e, f, word_g, word_h] = [
+                        temp.wrapping_add(first).wrapping_add(majority),
+                        a,
+                        b,
+                        c,
+                        d.wrapping_add(temp),
+                        e,
+                        f,
+                        word_g,
+                    ];
+                }
+                for (slot, word) in hash.iter_mut().zip([a, b, c, d, e, f, word_g, word_h]) {
+                    *slot = slot.wrapping_add(word);
+                }
+            };
             let size = parts
                 .iter()
                 .map(|part| part.len())
@@ -376,7 +373,6 @@ pub(crate) fn md5(data: &[u8]) -> [u8; 16] {
 
 sha2!(
     sha256_words,
-    sha256_compress,
     u32,
     u64,
     64,
@@ -390,7 +386,6 @@ sha2!(
 );
 sha2!(
     sha512_words,
-    sha512_compress,
     u64,
     u128,
     128,
@@ -402,22 +397,6 @@ sha2!(
     [28, 34, 39_u32],
     [14, 18, 41_u32]
 );
-
-/// Compresses every whole 64-byte block of `data` into a SHA-256 midstate.
-///
-/// Trailing bytes that do not fill a block are ignored; callers keep them
-/// and finish the digest with the padding of the complete message.
-#[expect(
-    clippy::missing_inline_in_public_items,
-    reason = "release LTO chooses inlining across the internal Rust boundary"
-)]
-#[must_use]
-pub fn sha256_blocks(mut state: [u32; 8], data: &[u8]) -> [u32; 8] {
-    for block in data.as_chunks::<64>().0 {
-        sha256_compress(&mut state, block);
-    }
-    state
-}
 
 pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     sha256_parts(&[data])

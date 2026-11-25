@@ -21,6 +21,7 @@ export const RpcMethod = Schema.Literals([
   "Prewarm",
   "DocumentsOpen",
   "DocumentsExport",
+  "DocumentsDigest",
   "DocumentsRelease",
   "PdfInspect",
   "PdfCompose",
@@ -77,7 +78,7 @@ const SpanName = Schema.Union([
     "local.a1.sign",
     "local.a1.parsePkcs12",
     "local.crypto.digest",
-    "local.crypto.digestPrefix",
+    "local.crypto.documentDigest",
     "local.crypto.importKey",
     "local.crypto.sign",
     "pdfCore.wasm.compile",
@@ -158,11 +159,10 @@ export const Handle = Schema.String.check(
 ).pipe(Schema.brand("LocalDocumentHandle"));
 export type Handle = (typeof Handle)["Type"];
 
-const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+export const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
 export const RevisionRef = Schema.Struct({
   handle: Handle,
-  digest: Sha256,
   byteLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 export type RevisionRef = (typeof RevisionRef)["Type"];
@@ -279,7 +279,6 @@ export const PdfPreparation = Schema.Struct({
   previewRevision: RevisionRef,
   widget: PdfWidget,
   binding: Schema.Struct({
-    sourceDigest: Sha256,
     certificateFingerprint: Sha256,
     session: A1SessionBinding,
     fieldName: Schema.String,
@@ -291,7 +290,6 @@ export type PdfPreparation = (typeof PdfPreparation)["Type"];
 export const PdfReceipt = Schema.Struct({
   receiptId: Sha256,
   preparationId: PreparationId,
-  sourceDigest: Sha256,
   signedRevision: RevisionRef,
   signedAt: Schema.Date,
   certificateFingerprint: Sha256,
@@ -467,7 +465,7 @@ export const localErrorMessages = {
   protocolMismatch: "The local runtime protocol versions do not match.",
   workerUnavailable: "The local worker failed to respond.",
   runtimeClosed: "The local runtime is closed.",
-  digestFailed: "The SHA-256 digest could not be computed.",
+  digestFailed: "The document digest could not be computed.",
   keyImportFailed: "The A1 signing key could not be imported.",
   signFailed: "The A1 signing operation failed.",
   pdfReadFailed: "The PDF signature data could not be read.",
@@ -630,6 +628,11 @@ export const LocalRpcs = RpcGroup.make(
   Rpc.make("DocumentsExport", {
     payload: { handle: Handle },
     success: Transferable.Uint8Array,
+    error: LocalError,
+  }),
+  Rpc.make("DocumentsDigest", {
+    payload: { revision: RevisionRef },
+    success: Sha256,
     error: LocalError,
   }),
   Rpc.make("DocumentsRelease", {

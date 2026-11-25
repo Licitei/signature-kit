@@ -26,7 +26,7 @@ export type PdfCorePromiseDocument = PromiseMethods<Omit<PdfCoreLazyDocument, "s
 };
 
 export type PdfCoreClient = PromiseMethods<
-  Omit<PdfCoreService, "openLazy" | "openSigningDocument" | "sha256Blocks">
+  Omit<PdfCoreService, "openLazy" | "openSigningDocument">
 > & {
   readonly openLazy: (
     source: PdfCorePromiseRangeSource,

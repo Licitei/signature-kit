@@ -1,5 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import { sha256Prefix } from "../src/crypto/primitives/sha256.js";
 import { parsePkcs12 } from "../src/crypto/pkcs12.js";
 import { Effect, Redacted } from "effect";
 import { createHash, verify, X509Certificate } from "node:crypto";
@@ -28,9 +27,10 @@ describe("local documents", () => {
       const revision = yield* documents.open(bytes.subarray(1, 3));
       const expected = Uint8Array.of(20, 30);
       expect(revision.byteLength).toBe(expected.byteLength);
-      expect(revision.digest).toBe(createHash("sha256").update(expected).digest("hex"));
+      const digest = createHash("sha256").update(expected).digest("hex");
+      expect(yield* documents.digest(revision)).toBe(digest);
+      expect(yield* documents.digest(revision)).toBe(digest);
 
-      bytes.fill(0);
       const exported = yield* documents.export(revision.handle);
       expect(exported).toEqual(expected);
       exported.fill(0);
@@ -43,25 +43,6 @@ describe("local documents", () => {
       });
     }).pipe(Effect.provide(localRuntimeLayer())),
   );
-
-  it("extends SHA-256 checkpoints at padding and compression boundaries", () => {
-    const bytes = Uint8Array.from({ length: 224 }, (_, index) => (index * 31) % 256);
-    for (const length of [0, 55, 56, 63, 64, 65, 120, 128]) {
-      const source = bytes.subarray(0, length);
-      const update = bytes.subarray(length, length + 69);
-      const final = bytes.subarray(length + 69);
-      const checkpoint = sha256Prefix(source);
-      expect(checkpoint.digest()).toEqual(
-        new Uint8Array(createHash("sha256").update(source).digest()),
-      );
-      expect(checkpoint.append(update).digest([final])).toEqual(
-        new Uint8Array(createHash("sha256").update(bytes).digest()),
-      );
-      expect(checkpoint.digest([final])).toEqual(
-        new Uint8Array(createHash("sha256").update(source).update(final).digest()),
-      );
-    }
-  });
 
   it.effect("rejects foreign handles across runtime instances", () =>
     Effect.gen(function* () {

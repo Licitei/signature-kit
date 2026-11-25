@@ -1,7 +1,6 @@
 import { makeDetachedSigner } from "./cms/detached.js";
 import { CryptoErrorCodeValue } from "./crypto/config.js";
 import { parsePkcs12 } from "./crypto/pkcs12.js";
-import { SHA256_INITIAL_STATE, sha256Prefix } from "./crypto/primitives/sha256.js";
 import { displayListViewport } from "./wasm/canvas.js";
 import type { PdfCoreDisplayList, PdfCoreSignatureFields } from "./wasm/config.js";
 import { PdfCore, pdfCoreBytesSource } from "./wasm/pdf-core.js";
@@ -42,14 +41,12 @@ const cmsHash = {
 } satisfies Record<A1Hash, "sha256" | "sha384" | "sha512">;
 
 type DetachedSigner = Effect.Success<ReturnType<typeof makeDetachedSigner>>;
-const WASM_DIGEST_THRESHOLD = 64 * 1024;
 const storeRevision = Symbol();
 const loadRevision = Symbol();
 type RevisionBytes = {
   readonly parts: ReadonlyArray<Uint8Array>;
   readonly byteLength: number;
-  readonly digest: string;
-  readonly prefix: ReturnType<typeof sha256Prefix>;
+  readonly digest: Effect.Effect<string, LocalError>;
 };
 
 const joinParts = (parts: ReadonlyArray<Uint8Array>) => {
@@ -68,12 +65,12 @@ export class Documents extends Context.Service<
     readonly open: (bytes: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
     readonly [storeRevision]: (
       parts: ReadonlyArray<Uint8Array>,
-      prefix: RevisionBytes["prefix"],
     ) => Effect.Effect<RevisionRef, LocalError>;
     readonly [loadRevision]: (handle: Handle) => Effect.Effect<RevisionBytes, LocalError>;
     readonly retain: (revision: RevisionRef) => Effect.Effect<RevisionRef, LocalError>;
     readonly read: (revision: RevisionRef) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly validate: (revision: RevisionRef) => Effect.Effect<void, LocalError>;
+    readonly digest: (revision: RevisionRef) => Effect.Effect<string, LocalError>;
     readonly export: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly release: (handle: Handle) => Effect.Effect<void, LocalError>;
   }
@@ -119,14 +116,21 @@ export class LocalRuntime extends Context.Service<
   { readonly instanceId: InstanceId }
 >()("@signature-kit/engine/LocalRuntime") {}
 
+const contentDigest = (parts: ReadonlyArray<Uint8Array>) =>
+  Effect.tryPromise({
+    try: () => crypto.subtle.digest("SHA-256", joinParts(parts)),
+    catch: () => new LocalError({ code: "digestFailed" }),
+  }).pipe(
+    Effect.map((buffer) =>
+      Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ),
+    Effect.withSpan("local.crypto.documentDigest", undefined, { captureStackTrace: false }),
+  );
+
 const documentsLayer = (instanceId: InstanceId) =>
   Layer.effect(
     Documents,
     Effect.gen(function* () {
-      const telemetry = Option.isSome(yield* Effect.serviceOption(LocalTelemetry));
-      const digest: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E> = telemetry
-        ? Effect.withSpan("local.crypto.digestPrefix", undefined, { captureStackTrace: false })
-        : Function.identity;
       const prefix = `${instanceId}/`;
       const documents = yield* Ref.make<HashMap.HashMap<Handle, RevisionBytes> | undefined>(
         HashMap.empty(),
@@ -142,33 +146,25 @@ const documentsLayer = (instanceId: InstanceId) =>
         return stored.value;
       });
 
-      const store = Effect.fnUntraced(function* (
-        parts: ReadonlyArray<Uint8Array>,
-        checkpoint: RevisionBytes["prefix"],
-      ) {
+      const store = Effect.fnUntraced(function* (parts: ReadonlyArray<Uint8Array>) {
         const byteLength = parts.reduce((length, part) => length + part.byteLength, 0);
-        const digest = Array.from(checkpoint.digest(), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
+        const digest = yield* Effect.cached(contentDigest(parts));
         const handle = Handle.make(`${prefix}${crypto.randomUUID()}`);
         const stored = yield* Ref.modify(documents, (current) =>
           current === undefined
             ? [false, current]
-            : [
-                true,
-                HashMap.set(current, handle, { digest, parts, byteLength, prefix: checkpoint }),
-              ],
+            : [true, HashMap.set(current, handle, { parts, byteLength, digest })],
         );
         if (!stored) return yield* new LocalError({ code: "runtimeClosed" });
-        return { handle, digest, byteLength };
+        return { handle, byteLength };
       });
 
       const readRevision = Effect.fnUntraced(function* (revision: RevisionRef) {
-        const { digest, parts, byteLength } = yield* load(revision.handle);
-        if (revision.digest !== digest || revision.byteLength !== byteLength) {
+        const stored = yield* load(revision.handle);
+        if (revision.byteLength !== stored.byteLength) {
           return yield* new LocalError({ code: "preparationStale" });
         }
-        return parts;
+        return stored;
       });
 
       return Documents.of({
@@ -176,9 +172,7 @@ const documentsLayer = (instanceId: InstanceId) =>
         [loadRevision]: load,
         open: Effect.fn(
           function* (bytes) {
-            const owned = new Uint8Array(bytes);
-            const checkpoint = yield* Effect.sync(() => sha256Prefix(owned)).pipe(digest);
-            return yield* store([owned], checkpoint);
+            return yield* store([bytes]);
           },
           (effect, bytes) =>
             effect.pipe(
@@ -188,14 +182,13 @@ const documentsLayer = (instanceId: InstanceId) =>
             ),
         ),
         retain: Effect.fn(function* (revision) {
-          const { parts, byteLength, prefix, digest } = yield* load(revision.handle);
-          if (digest !== revision.digest || byteLength !== revision.byteLength) {
-            return yield* new LocalError({ code: "preparationStale" });
-          }
-          return yield* store(parts, prefix);
+          const { parts } = yield* readRevision(revision);
+          return yield* store(parts);
         }),
-        read: (revision) => readRevision(revision).pipe(Effect.map(joinParts)),
+        read: (revision) =>
+          readRevision(revision).pipe(Effect.map(({ parts }) => joinParts(parts))),
         validate: (revision) => readRevision(revision).pipe(Effect.asVoid),
+        digest: (revision) => readRevision(revision).pipe(Effect.flatMap(({ digest }) => digest)),
         export: Effect.fn("local.documents.export")(function* (handle) {
           const { parts, byteLength } = yield* load(handle);
           yield* Effect.annotateCurrentSpan("byteLength", byteLength);
@@ -449,7 +442,7 @@ export const pdfEngineLayer = Layer.effectContext(
     const cache = yield* ScopedCache.makeWith({
       capacity: Infinity,
       lookup: Effect.fn("local.pdf.open")(function* (handle: Handle) {
-        const { parts, byteLength, prefix } = yield* documents[loadRevision](handle);
+        const { parts, byteLength } = yield* documents[loadRevision](handle);
         const scope = yield* Effect.scope;
         const view = yield* Effect.cached(
           Effect.gen(function* () {
@@ -485,20 +478,16 @@ export const pdfEngineLayer = Layer.effectContext(
             ),
           ),
         );
-        const digest: PdfRevision["digest"] = Effect.fn("local.crypto.digest")(
-          function* (hash, before, after) {
-            if (hash === "SHA-256") return prefix.digest([before, after]);
-            return yield* Effect.tryPromise({
-              try: () => {
-                const content = joinParts([...parts, before, after]);
-                return crypto.subtle.digest(hash, content);
-              },
-              catch: () => new LocalError({ code: "digestFailed" }),
-            }).pipe(Effect.map((buffer) => new Uint8Array(buffer)));
-          },
-        );
+        const digest: PdfRevision["digest"] = (hash, before, after) =>
+          Effect.tryPromise({
+            try: () => crypto.subtle.digest(hash, joinParts([...parts, before, after])),
+            catch: () => new LocalError({ code: "digestFailed" }),
+          }).pipe(
+            Effect.map((buffer) => new Uint8Array(buffer)),
+            Effect.withSpan("local.crypto.digest", undefined, { captureStackTrace: false }),
+          );
         const append: PdfRevision["append"] = (appendix) =>
-          documents[storeRevision]([...parts, appendix], prefix.append(appendix));
+          documents[storeRevision]([...parts, appendix]);
         const check: PdfRevision["check"] = (appendix, validate) =>
           core.openSigningDocument([...parts, appendix]).pipe(
             Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
@@ -559,34 +548,6 @@ export const pdfEngineLayer = Layer.effectContext(
         Documents,
         Documents.of({
           ...documents,
-          open: Effect.fn(
-            function* (bytes) {
-              const owned = new Uint8Array(bytes);
-              const checkpoint =
-                owned.byteLength < WASM_DIGEST_THRESHOLD
-                  ? Effect.sync(() => sha256Prefix(owned))
-                  : core.sha256Blocks(owned, SHA256_INITIAL_STATE).pipe(
-                      Effect.map(({ state, length }) =>
-                        sha256Prefix(owned.subarray(length), state, length),
-                      ),
-                      Effect.mapError(() => new LocalError({ code: "digestFailed" })),
-                    );
-              return yield* documents[storeRevision](
-                [owned],
-                yield* checkpoint.pipe(
-                  Effect.withSpan("local.crypto.digestPrefix", undefined, {
-                    captureStackTrace: false,
-                  }),
-                ),
-              );
-            },
-            (effect, bytes) =>
-              effect.pipe(
-                Effect.withSpan("local.documents.open", {
-                  attributes: { byteLength: bytes.byteLength },
-                }),
-              ),
-          ),
           release: (handle) =>
             lock(
               documents
