@@ -2,6 +2,7 @@ import * as stylex from "@stylexjs/stylex";
 import { tokens } from "./tokens.stylex";
 
 const desktop = "@media (min-width: 960px)";
+const roomy = "@container (min-width: 760px)";
 
 export const signing = stylex.create({
   modes: {
@@ -149,6 +150,7 @@ export const signing = stylex.create({
     display: "grid",
     gap: "16px",
     minWidth: 0,
+    containerType: "inline-size",
   },
   title: {
     margin: 0,
@@ -168,13 +170,13 @@ export const signing = stylex.create({
     alignItems: "start",
     gridTemplateColumns: {
       default: "minmax(0, 1fr)",
-      [desktop]: "minmax(0, 5fr) minmax(0, 7fr)",
+      [roomy]: "minmax(0, 5fr) minmax(0, 7fr)",
     },
     gridTemplateAreas: {
       default: '"certificate" "document" "place" "sign"',
-      [desktop]: '"certificate place" "document place" "sign place" ". place"',
+      [roomy]: '"certificate place" "document place" "sign place" ". place"',
     },
-    gridTemplateRows: { default: "auto", [desktop]: "auto auto auto 1fr" },
+    gridTemplateRows: { default: "auto", [roomy]: "auto auto auto 1fr" },
   },
   formRapid: {
     gridTemplateColumns: "minmax(0, 1fr)",

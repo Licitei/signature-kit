@@ -64,13 +64,13 @@ export const Message = defineMessageUnion({
   GotRubricSourceMessage: { message: RadioGroup.Message },
 });
 export type Message = typeof Message.Type;
-export const signingFormInit = (): SigningFormModel => ({
-  mode: "rapida",
+export const signingFormInit = (preset?: "lote" | "rubrica"): SigningFormModel => ({
+  mode: preset === "rubrica" ? "completa" : "rapida",
   modeTabs: Tabs.init({ id: "signing-mode" }),
-  appearance: false,
+  appearance: preset === "rubrica",
   identity: true,
   date: true,
-  rubric: false,
+  rubric: preset === "rubrica",
   rubricSource: "certificate",
   rubricGroup: RadioGroup.init({ id: "signing-rubric-source" }),
   pfx: FileDrop.init({ id: "signing-pfx" }),
