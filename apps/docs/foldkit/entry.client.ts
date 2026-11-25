@@ -1,7 +1,8 @@
 import { Runtime } from "foldkit";
-import { animate, inView, stagger } from "motion";
+import { inView } from "motion";
+import { animate } from "motion/mini";
 import { initDocsAnalytics } from "./analytics";
-import { Flags, Model, init, subscriptions, update, view } from "./main";
+import { Flags, Model, init, signerReadyEvent, subscriptions, update, view } from "./main";
 import "./styles/fonts";
 import "./styles/transitions.css";
 
@@ -22,7 +23,8 @@ Runtime.hydrate(
 );
 
 if (document.querySelector("[data-overlay=signer], form:has([name=pfx])") !== null) {
-  const prefetchSigning = () => void import("./signing-mount");
+  const prefetchSigning = () =>
+    void import("./signing-mount").then(() => document.dispatchEvent(new Event(signerReadyEvent)));
   if (typeof window.requestIdleCallback === "function")
     window.requestIdleCallback(prefetchSigning, { timeout: 1500 });
   else window.setTimeout(prefetchSigning, 500);
@@ -59,11 +61,15 @@ if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
     inView(
       element,
       () => {
-        animate(
-          targets,
-          { opacity: [0, 1], transform: ["translateY(14px)", "translateY(0px)"] },
-          { duration: 0.55, ease, delay: stagger(0.06) },
-        );
+        targets.forEach((target, index) => {
+          void animate(
+            target,
+            { opacity: [0, 1], transform: ["translateY(14px)", "translateY(0px)"] },
+            { duration: 0.55, ease, delay: index * 0.06 },
+          ).finished.then(() => {
+            target.style.opacity = "";
+          });
+        });
       },
       { margin: "0px 0px -12% 0px" },
     );

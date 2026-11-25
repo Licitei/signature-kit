@@ -59,7 +59,13 @@ const MermaidMount = Mount.define("MermaidMount", {
               securityLevel: "strict",
               theme: "base",
               fontFamily: "Geist Variable, Geist, ui-sans-serif, system-ui, sans-serif",
-              flowchart: { curve: "linear", nodeSpacing: 36, rankSpacing: 44, padding: 14 },
+              flowchart: {
+                curve: "linear",
+                nodeSpacing: 36,
+                rankSpacing: 44,
+                padding: 14,
+                wrappingWidth: 280,
+              },
               themeVariables: {
                 fontSize: "14px",
                 background: "#f1efe9",

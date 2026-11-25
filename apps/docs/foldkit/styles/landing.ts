@@ -570,9 +570,6 @@ export const landing = stylex.create({
     borderColor: "rgba(255, 255, 255, 0.55)",
     borderRadius: "16px",
     pointerEvents: "none",
-    transitionProperty: "border-color, background-color",
-    transitionDuration: "200ms",
-    transitionTimingFunction: tokens.ease,
   },
   dropOver: {
     backgroundImage:

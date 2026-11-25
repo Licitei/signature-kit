@@ -1,8 +1,9 @@
 import { homeRoute, pageRoute } from "./routes";
 import { Button, Dialog, Input, Menu, Nav, Popover, Textarea } from "@foldkit/ui";
 import { Effect, Option, Schedule, Schema, Stream } from "effect";
-import { Command, Dom, File, Subscription, Update } from "foldkit";
+import { Command, Dom, File, Html as FoldkitHtml, Subscription, Update } from "foldkit";
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
+import type { ContentNode } from "./content-parse";
 import { defineMessageUnion } from "foldkit/message";
 import { createArticleCatalog } from "./articles";
 import { groupReleases, releaseView } from "./changelog";
@@ -188,6 +189,7 @@ export const Message = defineMessageUnion({
   HomeFilesDropped: { files: Schema.Array(File.File) },
   DroppedPdfsDelivered: { ok: Schema.Boolean },
   TocMoved: { id: Schema.String },
+  SignerWarmed: {},
 });
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
@@ -305,6 +307,7 @@ const closeOverlay = Update.foldChildStep({
   toParentMessage: (message) => Message.GotOverlayMessage({ message }),
   foldOutMessage: () => (model) => ({ model }),
 });
+export const signerReadyEvent = "signaturekit:signer-ready";
 export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   searchShortcut: entry(
     {},
@@ -319,6 +322,19 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
               ? Option.some(Message.OverlayRequested({ kind: "search" }))
               : Option.none(),
         }),
+    },
+  ),
+  signerWarmup: entry(
+    { pending: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({ pending: model.path === "" && !model.signerRequested }),
+      dependenciesToStream: ({ pending }) =>
+        pending
+          ? Stream.fromEventListener(document, signerReadyEvent).pipe(
+              Stream.take(1),
+              Stream.map(() => Message.SignerWarmed()),
+            )
+          : Stream.empty,
     },
   ),
   tocSpy: entry(
@@ -381,6 +397,7 @@ export const update = (model: Model, message: Message) =>
     },
     DroppedPdfsDelivered: () => ({ model }),
     TocMoved: ({ id }) => ({ model: { ...model, tocActive: id } }),
+    SignerWarmed: () => ({ model: { ...model, signerRequested: true } }),
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
     GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
     GotOverlayMessage: ({ message }) => foldOverlay(model, message),
@@ -481,6 +498,164 @@ export const update = (model: Model, message: Message) =>
       model: { ...model, results: searchDocs(model.query) },
     }),
   });
+const signerSlot = FoldkitHtml.createLazy();
+const articleSlot = FoldkitHtml.createLazy();
+const navSlot = FoldkitHtml.createLazy();
+const footerSlot = FoldkitHtml.createLazy();
+const renderSigner = (h: HtmlBuilder<Message>, signingForm: Model["signingForm"]) =>
+  h.submodel({
+    slotId: "signing-form",
+    model: signingForm,
+    view: signingFormView,
+    toParentMessage: (message) => Message.GotSigningFormMessage({ message }),
+  });
+const renderBody = (h: HtmlBuilder<Message>, nodes: Array<ContentNode>, post: boolean) =>
+  h.div(
+    post ? [...sx(h, "docs-content", prose.postBody)] : [h.Attribute("data-feedback-content", "")],
+    renderContent(nodes, h),
+  );
+const renderDocsNav = (h: HtmlBuilder<Message>, currentRoute: string) =>
+  h.div(
+    [...sx(h, "docs-navigation", prose.navigation)],
+    docsNavigation().map((group, index) =>
+      Nav.view({
+        items: group.links.map((link) => link.href),
+        ariaLabel: group.title,
+        toHref: (href) => href,
+        isItemCurrent: (href) => href === currentRoute,
+        toView: ({ nav, items }) =>
+          h.nav(
+            [...nav],
+            [
+              h.h2(
+                [...sx(h, prose.navTitle, index === 0 && prose.navTitleFirst)],
+                [icon(h, groupIcon(group.title)), group.title],
+              ),
+              h.ul(
+                [...sx(h, prose.navList)],
+                items.map((item) =>
+                  h.li(
+                    [],
+                    [
+                      h.a(
+                        [...item.link, ...sx(h, prose.navLink, item.isCurrent && prose.navLinkOn)],
+                        [group.links[item.index]?.title ?? ""],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+      }),
+    ),
+  );
+const footerColumns = [
+  {
+    title: "Produto",
+    links: [
+      { label: "Assinar PDF grátis", href: signFreePath },
+      { label: "Documentação", href: pageRoute({ path: "docs" }) },
+    ],
+  },
+  {
+    title: "Recursos",
+    links: [
+      { label: "Blog", href: pageRoute({ path: "blog" }) },
+      { label: "Changelog", href: pageRoute({ path: "changelog" }) },
+      { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
+    ],
+  },
+  {
+    title: "Projeto",
+    links: [
+      { label: "Licitei", href: "https://licitei.com.br" },
+      {
+        label: "Licença MIT",
+        href: "https://github.com/Licitei/signature-kit/blob/main/LICENSE",
+      },
+      { label: "Créditos das fotos", href: "/landing/CREDITS.md" },
+    ],
+  },
+];
+const renderFooter = (h: HtmlBuilder<Message>, currentRoute: string, homeCopied: boolean) =>
+  h.footer(
+    [...sx(h, "footer", shell.footer), h.Id("site-footer")],
+    [
+      h.div(
+        [...sx(h, shell.footerGrid)],
+        [
+          h.div(
+            [...sx(h, shell.footerBrand)],
+            [
+              h.a([...sx(h, shell.brand), h.Href(homeRoute({}))], [brandMark(h), "SignatureKit"]),
+              h.p(
+                [...sx(h, shell.footerTag)],
+                ["Assinatura digital com certificado A1, em TypeScript."],
+              ),
+              installPill(h, {
+                copied: homeCopied,
+                onCopy: Message.HomeCopyRequested(),
+              }),
+              h.p(
+                [...sx(h, shell.footerMeta)],
+                [
+                  "© 2026 · Um projeto open source da",
+                  h.a(
+                    [...sx(h, shell.footerLicitei), h.Href("https://licitei.com.br")],
+                    [
+                      h.img([
+                        h.Src("/landing/licitei.webp"),
+                        h.Alt("Licitei"),
+                        h.Height("13"),
+                        h.Width("59"),
+                        ...sx(h, shell.footerLiciteiLogo),
+                      ]),
+                    ],
+                  ),
+                ],
+              ),
+              h.p(
+                [...sx(h, shell.footerCredits)],
+                [
+                  "Fotos: Maria Eduarda Trajano Mangueira de Melo e Edison Aquiles, ",
+                  h.a(
+                    [
+                      ...sx(h, shell.footerCreditsLink),
+                      h.Href("https://creativecommons.org/licenses/by-sa/4.0/deed.pt-br"),
+                    ],
+                    ["CC BY-SA 4.0"],
+                  ),
+                  ", modificadas.",
+                ],
+              ),
+            ],
+          ),
+          ...footerColumns.map((column) =>
+            Nav.view({
+              items: column.links.map((link) => link.href),
+              ariaLabel: column.title,
+              toHref: (item) => item,
+              isItemCurrent: (item) => item === currentRoute,
+              toView: ({ nav, items }) =>
+                h.nav(
+                  [...nav, ...sx(h, shell.footerNav)],
+                  [
+                    h.h2([...sx(h, shell.footerTitle)], [column.title]),
+                    ...items.map((item) =>
+                      h.a(
+                        [...item.link, ...sx(h, shell.footerLink)],
+                        [column.links[item.index]?.label ?? ""],
+                      ),
+                    ),
+                  ],
+                ),
+            }),
+          ),
+        ],
+      ),
+    ],
+  );
 export const createView = (source: {
   paths: typeof contentPaths;
   resolve: typeof resolveContent;
@@ -672,41 +847,7 @@ export const createView = (source: {
           ),
         ],
       );
-    const footerColumns = [
-      {
-        title: "Produto",
-        links: [
-          { label: "Assinar PDF grátis", href: signFreePath },
-          { label: "Documentação", href: pageRoute({ path: "docs" }) },
-        ],
-      },
-      {
-        title: "Recursos",
-        links: [
-          { label: "Blog", href: pageRoute({ path: "blog" }) },
-          { label: "Changelog", href: pageRoute({ path: "changelog" }) },
-          { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
-        ],
-      },
-      {
-        title: "Projeto",
-        links: [
-          { label: "Licitei", href: "https://licitei.com.br" },
-          {
-            label: "Licença MIT",
-            href: "https://github.com/Licitei/signature-kit/blob/main/LICENSE",
-          },
-          { label: "Créditos das fotos", href: "/landing/CREDITS.md" },
-        ],
-      },
-    ];
-    const signer = () =>
-      h.submodel({
-        slotId: "signing-form",
-        model: model.signingForm,
-        view: signingFormView,
-        toParentMessage: (message) => Message.GotSigningFormMessage({ message }),
-      });
+    const signer = () => signerSlot(renderSigner, [h, model.signingForm]);
     const signerPanel = (): readonly [OverlayKind, Html] => ["signer", signer()];
     const toast = copyToastView(h, {
       model: model.copyToast,
@@ -1046,12 +1187,7 @@ export const createView = (source: {
                             }),
                             h.article(
                               [...sx(h, prose.post)],
-                              [
-                                h.div(
-                                  [...sx(h, "docs-content", prose.postBody)],
-                                  renderContent(article.nodes, h),
-                                ),
-                              ],
+                              [articleSlot(renderBody, [h, article.nodes, true])],
                             ),
                           ]
                         : [
@@ -1140,61 +1276,11 @@ export const createView = (source: {
                             h.div(
                               [...sx(h, "docs-layout", prose.layout)],
                               [
-                                h.div(
-                                  [...sx(h, "docs-navigation", prose.navigation)],
-                                  docsNavigation().map((group, index) =>
-                                    Nav.view({
-                                      items: group.links.map((link) => link.href),
-                                      ariaLabel: group.title,
-                                      toHref: (href) => href,
-                                      isItemCurrent: (href) => href === currentRoute,
-                                      toView: ({ nav, items }) =>
-                                        h.nav(
-                                          [...nav],
-                                          [
-                                            h.h2(
-                                              [
-                                                ...sx(
-                                                  h,
-                                                  prose.navTitle,
-                                                  index === 0 && prose.navTitleFirst,
-                                                ),
-                                              ],
-                                              [icon(h, groupIcon(group.title)), group.title],
-                                            ),
-                                            h.ul(
-                                              [...sx(h, prose.navList)],
-                                              items.map((item) =>
-                                                h.li(
-                                                  [],
-                                                  [
-                                                    h.a(
-                                                      [
-                                                        ...item.link,
-                                                        ...sx(
-                                                          h,
-                                                          prose.navLink,
-                                                          item.isCurrent && prose.navLinkOn,
-                                                        ),
-                                                      ],
-                                                      [group.links[item.index]?.title ?? ""],
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                    }),
-                                  ),
-                                ),
+                                navSlot(renderDocsNav, [h, currentRoute]),
                                 h.article(
                                   [...sx(h, "docs-content", prose.content)],
                                   [
-                                    h.div(
-                                      [h.Attribute("data-feedback-content", "")],
-                                      renderContent(content.nodes, h),
-                                    ),
+                                    articleSlot(renderBody, [h, content.nodes, false]),
                                     h.section(
                                       [
                                         ...sx(h, "ph-no-capture", prose.feedback),
@@ -1351,86 +1437,7 @@ export const createView = (source: {
                             drop: (files) => Message.HomeFilesDropped({ files }),
                           }),
           ),
-          h.footer(
-            [...sx(h, "footer", shell.footer), h.Id("site-footer")],
-            [
-              h.div(
-                [...sx(h, shell.footerGrid)],
-                [
-                  h.div(
-                    [...sx(h, shell.footerBrand)],
-                    [
-                      h.a(
-                        [...sx(h, shell.brand), h.Href(homeRoute({}))],
-                        [brandMark(h), "SignatureKit"],
-                      ),
-                      h.p(
-                        [...sx(h, shell.footerTag)],
-                        ["Assinatura digital com certificado A1, em TypeScript."],
-                      ),
-                      installPill(h, {
-                        copied: model.homeCopied,
-                        onCopy: Message.HomeCopyRequested(),
-                      }),
-                      h.p(
-                        [...sx(h, shell.footerMeta)],
-                        [
-                          "© 2026 · Um projeto open source da",
-                          h.a(
-                            [...sx(h, shell.footerLicitei), h.Href("https://licitei.com.br")],
-                            [
-                              h.img([
-                                h.Src("/landing/licitei.webp"),
-                                h.Alt("Licitei"),
-                                h.Height("13"),
-                                h.Width("59"),
-                                ...sx(h, shell.footerLiciteiLogo),
-                              ]),
-                            ],
-                          ),
-                        ],
-                      ),
-                      h.p(
-                        [...sx(h, shell.footerCredits)],
-                        [
-                          "Fotos: Maria Eduarda Trajano Mangueira de Melo e Edison Aquiles, ",
-                          h.a(
-                            [
-                              ...sx(h, shell.footerCreditsLink),
-                              h.Href("https://creativecommons.org/licenses/by-sa/4.0/deed.pt-br"),
-                            ],
-                            ["CC BY-SA 4.0"],
-                          ),
-                          ", modificadas.",
-                        ],
-                      ),
-                    ],
-                  ),
-                  ...footerColumns.map((column) =>
-                    Nav.view({
-                      items: column.links.map((link) => link.href),
-                      ariaLabel: column.title,
-                      toHref: (item) => item,
-                      isItemCurrent: (item) => item === currentRoute,
-                      toView: ({ nav, items }) =>
-                        h.nav(
-                          [...nav, ...sx(h, shell.footerNav)],
-                          [
-                            h.h2([...sx(h, shell.footerTitle)], [column.title]),
-                            ...items.map((item) =>
-                              h.a(
-                                [...item.link, ...sx(h, shell.footerLink)],
-                                [column.links[item.index]?.label ?? ""],
-                              ),
-                            ),
-                          ],
-                        ),
-                    }),
-                  ),
-                ],
-              ),
-            ],
-          ),
+          footerSlot(renderFooter, [h, currentRoute, model.homeCopied]),
           ...(model.overlay.isOpen ? [] : [toast]),
           overlayView(h, {
             model: model.overlay,

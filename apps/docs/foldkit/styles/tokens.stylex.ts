@@ -20,7 +20,7 @@ export const tokens = stylex.defineVars({
   mono: "Geist Mono Variable, ui-monospace, monospace",
   ease: "cubic-bezier(0.23, 1, 0.32, 1)",
   scheme: "light",
-  header: "rgba(250, 250, 247, 0.86)",
+  header: "rgba(250, 250, 247, 0.96)",
   halo: "#ffffff",
   sealShadow: "rgba(0, 0, 0, 0.18)",
   focus: "0 0 0 2px #fafaf7, 0 0 0 4px #0B5275",

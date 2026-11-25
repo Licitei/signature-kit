@@ -27,8 +27,6 @@ export const signing = stylex.create({
     fontSize: "0.8125rem",
     fontWeight: 500,
     cursor: "pointer",
-    transitionProperty: "background-color, color, box-shadow",
-    transitionDuration: "150ms",
     ":hover": { color: tokens.fg },
     ":focus-visible": { outline: "none", boxShadow: `inset 0 0 0 1.5px ${tokens.teal}` },
   },

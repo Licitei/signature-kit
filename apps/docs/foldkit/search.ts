@@ -75,8 +75,6 @@ const styles = stylex.create({
     color: tokens.fg,
     textDecoration: "none",
     backgroundColor: { default: "transparent", ":hover": tokens.bgSubtle },
-    transitionProperty: "background-color",
-    transitionDuration: "120ms",
     ":focus-visible": {
       outline: "none",
       backgroundColor: tokens.bgSubtle,
@@ -137,29 +135,19 @@ export const searchResultView = <Message>(
     ],
   );
 
-export const searchDocs = (
-  query: string,
-  pages = contentPaths().flatMap((path) => {
-    if (!path.startsWith("docs/")) return [];
-    const slug = path.slice(5);
-    const page = resolveContent("docs", slug);
-    return page === undefined ? [] : [{ slug, page }];
-  }),
-): typeof SearchResults.Type => {
-  const decoded = Schema.decodeUnknownOption(SearchQuery)(query);
-  if (decoded._tag === "None") return [];
-  const terms = normalize(decoded.value)
-    .trim()
-    .split(/\s+/)
-    .filter((term) => term.length > 0);
-  if (terms.length === 0) return [];
-  const results: {
-    title: string;
-    heading: string;
-    excerpt: string;
-    href: string;
-    score: number;
-  }[] = [];
+type SearchPage = { slug: string; page: NonNullable<ReturnType<typeof resolveContent>> };
+type SearchSection = {
+  title: string;
+  heading: string;
+  href: string;
+  text: string;
+  foldedTitle: string;
+  foldedHeading: string;
+  foldedText: string;
+};
+
+const indexPages = (pages: ReadonlyArray<SearchPage>) => {
+  const index: Array<SearchSection> = [];
   for (const { slug, page } of pages) {
     const base = pageRoute({
       path: `docs${slug === "index" ? "" : `/${slug.split("/").map(encodeURIComponent).join("/")}`}`,
@@ -230,31 +218,80 @@ export const searchDocs = (
     };
     visit(page.nodes);
     for (const section of sections) {
-      const title = normalize(page.title);
-      const heading = normalize(section.heading);
-      const body = normalize(section.text);
-      if (
-        !terms.every(
-          (term) => title.includes(term) || heading.includes(term) || body.includes(term),
-        )
-      )
-        continue;
-      const score = terms.reduce(
-        (sum, term) =>
-          sum +
-          (title.includes(term) ? 10 : 0) +
-          (heading.includes(term) ? 5 : 0) +
-          (body.includes(term) ? 1 : 0),
-        0,
-      );
-      results.push({
+      const text = section.text.trim().replace(/\s+/g, " ");
+      index.push({
         title: page.title,
         heading: section.heading,
-        excerpt: excerptAround(section.text.trim().replace(/\s+/g, " "), terms),
         href: section.href,
-        score,
+        text,
+        foldedTitle: normalize(page.title),
+        foldedHeading: normalize(section.heading),
+        foldedText: normalize(section.text),
       });
     }
+  }
+  return index;
+};
+
+const indexCache = new Map<"docs", ReadonlyArray<SearchSection>>();
+const defaultIndex = () => {
+  const cached = indexCache.get("docs");
+  if (cached !== undefined) return cached;
+  const built = indexPages(
+    contentPaths().flatMap((path) => {
+      if (!path.startsWith("docs/")) return [];
+      const slug = path.slice(5);
+      const page = resolveContent("docs", slug);
+      return page === undefined ? [] : [{ slug, page }];
+    }),
+  );
+  indexCache.set("docs", built);
+  return built;
+};
+
+export const searchDocs = (
+  query: string,
+  pages?: ReadonlyArray<SearchPage>,
+): typeof SearchResults.Type => {
+  const decoded = Schema.decodeUnknownOption(SearchQuery)(query);
+  if (decoded._tag === "None") return [];
+  const terms = normalize(decoded.value)
+    .trim()
+    .split(/\s+/)
+    .filter((term) => term.length > 0);
+  if (terms.length === 0) return [];
+  const results: {
+    title: string;
+    heading: string;
+    excerpt: string;
+    href: string;
+    score: number;
+  }[] = [];
+  for (const section of pages === undefined ? defaultIndex() : indexPages(pages)) {
+    if (
+      !terms.every(
+        (term) =>
+          section.foldedTitle.includes(term) ||
+          section.foldedHeading.includes(term) ||
+          section.foldedText.includes(term),
+      )
+    )
+      continue;
+    const score = terms.reduce(
+      (sum, term) =>
+        sum +
+        (section.foldedTitle.includes(term) ? 10 : 0) +
+        (section.foldedHeading.includes(term) ? 5 : 0) +
+        (section.foldedText.includes(term) ? 1 : 0),
+      0,
+    );
+    results.push({
+      title: section.title,
+      heading: section.heading,
+      excerpt: excerptAround(section.text, terms),
+      href: section.href,
+      score,
+    });
   }
   const seen = new Set<string>();
   return results
