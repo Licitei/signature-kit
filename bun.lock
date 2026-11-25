@@ -216,7 +216,11 @@
         "@signature-kit/asn1": "^0.2.1",
         "@signature-kit/certificates": "^0.4.0",
         "@signature-kit/crypto": "^0.3.0",
+        "@signature-kit/pdf-core": "^0.4.0",
         "effect": "4.1.0",
+      },
+      "devDependencies": {
+        "pdfjs-dist": "6.3.289",
       },
     },
     "shared/asn1": {

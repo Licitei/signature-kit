@@ -1,9 +1,30 @@
 import { CryptoErrorCodeValue } from "@signature-kit/crypto/config";
 import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
-import { Context, Effect, HashMap, Layer, Redacted, Ref, Schema } from "effect";
+import { displayListViewport } from "@signature-kit/pdf-core/canvas";
+import type { PdfCoreDisplayList } from "@signature-kit/pdf-core/config";
+import { PdfCore, pdfCoreBytesSource } from "@signature-kit/pdf-core/pdf-core";
+import {
+  Context,
+  Effect,
+  HashMap,
+  Layer,
+  Redacted,
+  Ref,
+  Schema,
+  ScopedCache,
+  Semaphore,
+} from "effect";
 import { A1Hash, a1Profile, importA1SigningKey, sha256Hex } from "./a1-certificate.js";
 import { Handle, LocalError } from "./protocol.js";
-import type { A1OpenInput, A1SessionInfo, InstanceId, RevisionRef } from "./protocol.js";
+import type {
+  A1OpenInput,
+  A1SessionInfo,
+  InstanceId,
+  PdfInspection,
+  PdfRenderInput,
+  PdfViewport,
+  RevisionRef,
+} from "./protocol.js";
 
 export class Documents extends Context.Service<
   Documents,
@@ -193,3 +214,101 @@ export const localRuntimeLayer = (options: RuntimeOptions = {}) =>
       );
     }),
   );
+
+export class PdfEngine extends Context.Service<
+  PdfEngine,
+  {
+    readonly inspect: (handle: Handle) => Effect.Effect<PdfInspection, LocalError>;
+    readonly renderPage: (
+      input: PdfRenderInput,
+    ) => Effect.Effect<
+      { readonly list: PdfCoreDisplayList; readonly viewport: PdfViewport },
+      LocalError
+    >;
+  }
+>()("@signature-kit/local/PdfEngine") {}
+
+export const pdfEngineLayer = Layer.effectContext(
+  Effect.gen(function* () {
+    const documents = yield* Documents;
+    const core = yield* PdfCore;
+    const lock = yield* Semaphore.make(1);
+    const cache = yield* ScopedCache.makeWith({
+      capacity: Infinity,
+      lookup: Effect.fn("local.pdf.open")(function* (handle: Handle) {
+        const bytes = yield* documents.export(handle);
+        const { pages } = yield* core
+          .inspect(bytes, { links: false, text: false })
+          .pipe(
+            Effect.mapError(
+              ({ code }) => new LocalError({ code: "pdfInspectFailed", pdfCode: code }),
+            ),
+          );
+        const pdf = yield* core
+          .openLazy(pdfCoreBytesSource(bytes))
+          .pipe(
+            Effect.mapError(
+              ({ code }) => new LocalError({ code: "pdfRenderFailed", pdfCode: code }),
+            ),
+          );
+        return { inspection: { pageCount: pages.length, pages }, pdf };
+      }),
+    });
+
+    const getDocument = (handle: Handle) =>
+      ScopedCache.get(cache, handle).pipe(
+        Effect.onError(() => ScopedCache.invalidate(cache, handle)),
+      );
+
+    return Context.make(
+      PdfEngine,
+      PdfEngine.of({
+        inspect: (handle) =>
+          lock
+            .withPermits(1)(getDocument(handle))
+            .pipe(
+              Effect.map(({ inspection }) => inspection),
+              Effect.withSpan("local.pdf.inspect"),
+            ),
+        renderPage: Effect.fn("local.pdf.renderPage")(function* ({
+          handle,
+          pageIndex,
+          scale,
+          rotation = 0,
+        }) {
+          const { pdf, inspection } = yield* getDocument(handle);
+          if (inspection.pages[pageIndex] === undefined) {
+            return yield* new LocalError({ code: "invalidPageIndex" });
+          }
+          const [rendered] = yield* pdf
+            .renderPages({ pageIndexes: [pageIndex], scale })
+            .pipe(
+              Effect.mapError(
+                ({ code }) => new LocalError({ code: "pdfRenderFailed", pdfCode: code }),
+              ),
+            );
+          if (rendered === undefined) return yield* Effect.die("The PDF core omitted a page.");
+
+          const list = { ...rendered, rotate: rendered.rotate + rotation };
+          return { list, viewport: displayListViewport(list) };
+        }, lock.withPermits(1)),
+      }),
+    ).pipe(
+      Context.add(
+        Documents,
+        Documents.of({
+          ...documents,
+          release: (handle) =>
+            lock.withPermits(1)(
+              documents
+                .release(handle)
+                .pipe(
+                  Effect.andThen(ScopedCache.invalidate(cache, handle)),
+                  Effect.uninterruptible,
+                ),
+            ),
+        }),
+      ),
+    );
+  }),
+);

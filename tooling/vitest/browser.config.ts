@@ -2,7 +2,7 @@ import { playwright } from "@vitest/browser-playwright";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { writeLocalFirstBaseline } from "./local-first-baseline-command.ts";
-import { blockLocalRuntimeNetwork } from "./local-runtime-network.ts";
+import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-runtime-network.ts";
 
 export default defineConfig({
   assetsInclude: ["**/*.p12"],
@@ -42,7 +42,7 @@ export default defineConfig({
     },
     browser: {
       enabled: true,
-      commands: { blockLocalRuntimeNetwork, writeLocalFirstBaseline },
+      commands: { blockLocalRuntimeNetwork, trackLocalRuntimeRequests, writeLocalFirstBaseline },
       headless: true,
       provider: playwright(),
       instances: [{ browser: "chromium" }],

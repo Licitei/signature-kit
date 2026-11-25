@@ -3,7 +3,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Transferable from "effect/workers/Transferable";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
@@ -46,9 +46,53 @@ export const A1OpenInputSchema = Schema.Struct({
 });
 export type A1OpenInput = (typeof A1OpenInputSchema)["Type"];
 
+const PageIndex = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const PdfRotation = Schema.Literals([0, 90, 180, 270]);
+const PdfBox = Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite, Schema.Finite]);
+const PixelSize = Schema.Int.check(Schema.isGreaterThan(0));
+
+export const PdfInspection = Schema.Struct({
+  pageCount: PageIndex,
+  pages: Schema.Array(Schema.Struct({ mediaBox: PdfBox, cropBox: PdfBox, rotate: Schema.Int })),
+});
+export type PdfInspection = (typeof PdfInspection)["Type"];
+
+export const PdfRenderInputSchema = Schema.Struct({
+  handle: Handle,
+  pageIndex: PageIndex,
+  scale: Schema.Finite.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(64)),
+  rotation: Schema.optional(PdfRotation),
+});
+export type PdfRenderInput = (typeof PdfRenderInputSchema)["Type"];
+
+export const PdfViewport = Schema.Struct({
+  width: PixelSize,
+  height: PixelSize,
+  transform: Schema.Tuple([
+    Schema.Finite,
+    Schema.Finite,
+    Schema.Finite,
+    Schema.Finite,
+    Schema.Finite,
+    Schema.Finite,
+  ]),
+});
+export type PdfViewport = (typeof PdfViewport)["Type"];
+
+export const PdfPagePixels = Schema.Struct({
+  ...PdfViewport.fields,
+  pixels: Transferable.Uint8Array,
+});
+export type PdfPagePixels = (typeof PdfPagePixels)["Type"];
+
 export const LocalErrorCode = Schema.Literals([
   "staleHandle",
   "unknownHandle",
+  "pdfInspectFailed",
+  "pdfRenderFailed",
+  "invalidPageIndex",
+  "renderTooLarge",
+  "canvasUnavailable",
   "invalidPkcs12",
   "wrongPassword",
   "sessionClosed",
@@ -65,6 +109,11 @@ export type LocalErrorCode = (typeof LocalErrorCode)["Type"];
 export const localErrorMessages = {
   staleHandle: "The document handle belongs to another runtime instance.",
   unknownHandle: "The document handle is no longer available.",
+  pdfInspectFailed: "The PDF page geometry could not be read.",
+  pdfRenderFailed: "The PDF page could not be rendered.",
+  invalidPageIndex: "The PDF page index is outside the document.",
+  renderTooLarge: "The PDF page exceeds the raster size limit at this scale.",
+  canvasUnavailable: "The page pixels could not be painted into the canvas.",
   invalidPkcs12: "The PKCS#12 file could not be read.",
   wrongPassword: "The PKCS#12 password is incorrect.",
   sessionClosed: "The A1 session is closed.",
@@ -79,7 +128,7 @@ export const localErrorMessages = {
 
 export class LocalError extends Schema.TaggedError<LocalError, { readonly brand: unique symbol }>()(
   "LocalError",
-  { code: LocalErrorCode },
+  { code: LocalErrorCode, pdfCode: Schema.optional(Schema.String) },
 ) {
   get message(): string {
     return localErrorMessages[this.code];
@@ -106,6 +155,16 @@ export const LocalRpcs = RpcGroup.make(
   }),
   Rpc.make("DocumentsRelease", {
     payload: { handle: Handle },
+    error: LocalError,
+  }),
+  Rpc.make("PdfInspect", {
+    payload: { handle: Handle },
+    success: PdfInspection,
+    error: LocalError,
+  }),
+  Rpc.make("PdfRenderPage", {
+    payload: PdfRenderInputSchema,
+    success: PdfPagePixels,
     error: LocalError,
   }),
   Rpc.make("A1Open", {

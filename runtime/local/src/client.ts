@@ -4,7 +4,16 @@ import type { Duration } from "effect";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import { LocalError, LocalRpcs, PROTOCOL_VERSION } from "./protocol.js";
-import type { A1OpenInput, A1SessionInfo, Handle, InstanceId, RevisionRef } from "./protocol.js";
+import type {
+  A1OpenInput,
+  A1SessionInfo,
+  Handle,
+  InstanceId,
+  PdfInspection,
+  PdfPagePixels,
+  PdfRenderInput,
+  RevisionRef,
+} from "./protocol.js";
 
 export class LocalClient extends Context.Service<
   LocalClient,
@@ -13,6 +22,8 @@ export class LocalClient extends Context.Service<
     readonly openDocument: (bytes: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
     readonly exportDocument: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly releaseDocument: (handle: Handle) => Effect.Effect<void, LocalError>;
+    readonly inspectPdf: (handle: Handle) => Effect.Effect<PdfInspection, LocalError>;
+    readonly renderPage: (input: PdfRenderInput) => Effect.Effect<PdfPagePixels, LocalError>;
     readonly openA1: (input: A1OpenInput) => Effect.Effect<A1SessionInfo, LocalError>;
     readonly closeA1: () => Effect.Effect<void, LocalError>;
   }
@@ -95,6 +106,8 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
               call(() => rpc.DocumentsOpen({ bytes: new Uint8Array(bytes) })),
             exportDocument: (handle) => call(() => rpc.DocumentsExport({ handle })),
             releaseDocument: (handle) => call(() => rpc.DocumentsRelease({ handle })),
+            inspectPdf: (handle) => call(() => rpc.PdfInspect({ handle })),
+            renderPage: (input) => call(() => rpc.PdfRenderPage(input)),
             openA1: ({ pfx, password }) =>
               call(() =>
                 rpc.A1Open({
