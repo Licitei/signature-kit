@@ -1,9 +1,17 @@
 # SignatureKit 2.0 — architecture
 
-SignatureKit 2.0 is rebuilt on the `v2` branch. The 1.x packages stay in the tree
-unchanged: they are the interoperability oracle, the corpus owner and the
-performance baseline (`docs/local-first/baseline.md`). A 2.0 capability replaces a
-1.x one only after a test proves both produce artifacts the other verifies.
+SignatureKit 2.0 is rebuilt on the `v2` branch with **no backward compatibility**:
+no 1.x API, package name, export path, option or error shape is preserved, and
+there are no deprecated aliases or migration shims. Shared engines (`pdf-core`
+ABI, CMS, crypto, certificates) change freely when 2.0 needs it.
+
+While 2.0 is built, 1.x code stays in the tree only as reference, independent
+oracle and performance baseline (`docs/local-first/baseline.md`,
+`docs/local-first/baseline-v1.json`). Each 1.x package is deleted in the same cut
+that lands its 2.0 owner. Compatibility that remains is **format** interoperability:
+2.0 must read, co-sign and verify real-world PDFs, CMS and XML (including ones
+produced by 1.x and by third-party tools), checked against independent readers
+(qpdf, poppler `pdfsig`, OpenSSL, pdf.js, the ITI validator).
 
 Delivery order is fixed:
 
@@ -20,7 +28,7 @@ Delivery order is fixed:
 | --- | --- |
 | Rust/WASM `shared/pdf-core` | PDF structure: parsing, revisions, AcroForm signature fields and widgets, `/AP` appearance streams, signature dictionary and `/Contents` reservation, incremental writing, `ByteRange` digest, revision diffing, rendering. Every ABI call is a whole operation ("prepare this field of this revision"), never a per-object call. |
 | WebCrypto | The private-key operation. A1 keys are imported once per session as non-extractable `CryptoKey`s and never leave the worker. |
-| `shared/crypto`, `shared/cms`, `core/certificates` | PKCS#12, CMS/CAdES, X.509 codecs. Reused as-is in the first cuts; each in-house replacement lands only behind an oracle test against the codec it replaces and an independent implementation (OpenSSL, pkijs). |
+| `shared/crypto`, `shared/cms`, `core/certificates` | PKCS#12, CMS/CAdES, X.509 codecs. Used by the first cuts and reshaped freely for 2.0; each in-house replacement of a third-party codec (pkijs, asn1js, xmldsigjs) lands behind an oracle test against an independent implementation (OpenSSL, pkijs as test-only dependency). |
 | `@signature-kit/local` (`runtime/local`) | The 2.0 local runtime: Schema contracts, the typed error catalog, the versioned RPC group, the engine services and the Web Worker entry point / client. |
 | `@signature-kit/react` | Headless hooks over the same RPC client the demo uses. |
 
