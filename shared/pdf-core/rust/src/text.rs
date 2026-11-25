@@ -2156,6 +2156,32 @@ mod tests {
         build(&objects)
     }
 
+    #[test]
+    fn opens_documents_beyond_ten_thousand_pages() {
+        let pages: u32 = 12_000;
+        let mut objects = vec![
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".to_owned()),
+            (3, "<< /Length 0 >>\nstream\n\nendstream".to_owned()),
+        ];
+        let kids = (0..pages)
+            .map(|index| format!("{} 0 R", index + 4))
+            .collect::<Vec<_>>()
+            .join(" ");
+        objects.push((
+            2,
+            format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>"),
+        ));
+        objects.extend((0..pages).map(|index| {
+            (
+                index + 4,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 3 0 R >>".to_owned(),
+            )
+        }));
+        let bytes = build(&objects);
+        let document = Document::open(&bytes, &Limits::default()).unwrap();
+        assert_eq!(document.pages().unwrap().len(), 12_000);
+    }
+
     fn simple_pdf(content: &str) -> Vec<u8> {
         page_pdf(
             "<< /Font << /F1 5 0 R >> >>",
