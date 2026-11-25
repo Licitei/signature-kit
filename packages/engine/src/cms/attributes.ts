@@ -1,92 +1,63 @@
-import * as asn1js from "asn1js";
-import * as pkijs from "pkijs";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { encode, oidNode, primitiveNode, sequenceNode, setNode } from "../asn1/asn1.js";
+import type { Asn1Error, Asn1Node } from "../asn1/asn1.js";
 import { IcpBrasilPolicySchema, CmsOid, hashAlgorithmOid } from "./config.js";
 import type { IcpBrasilPolicy } from "./config.js";
 
-const contentTypeAttribute = (): pkijs.Attribute =>
-  new pkijs.Attribute({
-    type: CmsOid.contentType,
-    values: [new asn1js.ObjectIdentifier({ value: CmsOid.data })],
-  });
-
-const messageDigestAttribute = (messageDigest: Uint8Array): pkijs.Attribute =>
-  new pkijs.Attribute({
-    type: CmsOid.messageDigest,
-    values: [new asn1js.OctetString({ valueHex: new Uint8Array(messageDigest).buffer })],
-  });
-
-const signingCertificateV2Attribute = (certificateSha256: Uint8Array): pkijs.Attribute =>
-  new pkijs.Attribute({
-    type: CmsOid.signingCertificateV2,
-    values: [
-      new asn1js.Sequence({
-        value: [
-          new asn1js.Sequence({
-            value: [
-              new asn1js.Sequence({
-                value: [
-                  new asn1js.OctetString({ valueHex: new Uint8Array(certificateSha256).buffer }),
-                ],
-              }),
-            ],
-          }),
-        ],
-      }),
-    ],
-  });
+export type SignedAttribute = {
+  readonly type: string;
+  readonly value: Asn1Node;
+  readonly node: Asn1Node;
+};
 
 const SPURI_OID = "1.2.840.113549.1.9.16.5.1";
 
-const signaturePolicyAttribute = (policy: IcpBrasilPolicy): pkijs.Attribute => {
-  const otherHashAlgAndValue = new asn1js.Sequence({
-    value: [
-      new asn1js.Sequence({
-        value: [
-          new asn1js.ObjectIdentifier({ value: hashAlgorithmOid(policy.policyHashAlgorithm) }),
-        ],
-      }),
-      new asn1js.OctetString({ valueHex: new Uint8Array(policy.policyHash).buffer }),
-    ],
-  });
-  const qualifiers = new asn1js.Sequence({
-    value: [
-      new asn1js.Sequence({
-        value: [
-          new asn1js.ObjectIdentifier({ value: SPURI_OID }),
-          new asn1js.IA5String({ value: policy.policyUri }),
-        ],
-      }),
-    ],
-  });
-  const signaturePolicyId = new asn1js.Sequence({
-    value: [
-      new asn1js.ObjectIdentifier({ value: policy.policyOid }),
-      otherHashAlgAndValue,
-      qualifiers,
-    ],
-  });
-  return new pkijs.Attribute({
-    type: CmsOid.signaturePolicy,
-    values: [signaturePolicyId],
-  });
+const octetString = (bytes: Uint8Array) => primitiveNode(0x04, new Uint8Array(bytes));
+const ascii = (tag: number, text: string) => primitiveNode(tag, new TextEncoder().encode(text));
+
+const attribute = Effect.fnUntraced(function* (type: string, value: Asn1Node) {
+  return { type, value, node: sequenceNode([yield* oidNode(type), setNode([value])]) };
+});
+
+const signaturePolicy = Effect.fnUntraced(function* (policy: IcpBrasilPolicy) {
+  return sequenceNode([
+    yield* oidNode(policy.policyOid),
+    sequenceNode([
+      sequenceNode([yield* oidNode(hashAlgorithmOid(policy.policyHashAlgorithm))]),
+      octetString(policy.policyHash),
+    ]),
+    sequenceNode([sequenceNode([yield* oidNode(SPURI_OID), ascii(0x16, policy.policyUri)])]),
+  ]);
+});
+
+const twoDigits = (value: number) => String(value).padStart(2, "0");
+
+const signingTimeValue = (date: Date) => {
+  const year = date.getUTCFullYear();
+  const clock = [
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+  ]
+    .map(twoDigits)
+    .join("");
+  if (year >= 1950 && year < 2050) return ascii(0x17, `${twoDigits(year % 100)}${clock}Z`);
+  const fraction = String(date.getUTCMilliseconds()).padStart(3, "0").replace(/0+$/, "");
+  return ascii(0x18, `${year}${clock}${fraction === "" ? "" : `.${fraction}`}Z`);
 };
 
 export const compareDer = (a: Uint8Array, b: Uint8Array): number => {
   const length = Math.max(a.length, b.length);
   for (let index = 0; index < length; index += 1) {
-    const left = index < a.length ? a[index]! : 0;
-    const right = index < b.length ? b[index]! : 0;
+    const left = a[index] ?? 0;
+    const right = b[index] ?? 0;
     if (left !== right) return left - right;
   }
   return 0;
 };
 
-const sortAttributesDer = (attributes: readonly pkijs.Attribute[]): readonly pkijs.Attribute[] =>
-  [...attributes]
-    .map((attribute) => ({ attribute, der: new Uint8Array(attribute.toSchema().toBER()) }))
-    .sort((a, b) => compareDer(a.der, b.der))
-    .map((entry) => entry.attribute);
 const BuildSignedAttributesParamsSchema = Schema.Struct({
   messageDigest: Schema.Uint8Array,
   certificateSha256: Schema.Uint8Array,
@@ -97,27 +68,26 @@ type BuildSignedAttributesParams = (typeof BuildSignedAttributesParamsSchema)["T
 
 export const buildSignedAttributes = (
   params: BuildSignedAttributesParams,
-): readonly pkijs.Attribute[] => {
-  const attributes = [
-    contentTypeAttribute(),
-    messageDigestAttribute(params.messageDigest),
-    signingCertificateV2Attribute(params.certificateSha256),
-  ];
-  if (params.icpBrasil !== undefined) {
-    attributes.push(signaturePolicyAttribute(params.icpBrasil));
-  }
-  if (params.signingTime !== undefined) {
-    const year = params.signingTime.getUTCFullYear();
-    attributes.push(
-      new pkijs.Attribute({
-        type: CmsOid.signingTime,
-        values: [
-          year >= 1950 && year < 2050
-            ? new asn1js.UTCTime({ valueDate: params.signingTime })
-            : new asn1js.GeneralizedTime({ valueDate: params.signingTime }),
-        ],
-      }),
-    );
-  }
-  return sortAttributesDer(attributes);
-};
+): Effect.Effect<readonly SignedAttribute[], Asn1Error> =>
+  Effect.gen(function* () {
+    const attributes = [
+      yield* attribute(CmsOid.contentType, yield* oidNode(CmsOid.data)),
+      yield* attribute(CmsOid.messageDigest, octetString(params.messageDigest)),
+      yield* attribute(
+        CmsOid.signingCertificateV2,
+        sequenceNode([sequenceNode([sequenceNode([octetString(params.certificateSha256)])])]),
+      ),
+    ];
+    if (params.icpBrasil !== undefined) {
+      attributes.push(
+        yield* attribute(CmsOid.signaturePolicy, yield* signaturePolicy(params.icpBrasil)),
+      );
+    }
+    if (params.signingTime !== undefined) {
+      attributes.push(yield* attribute(CmsOid.signingTime, signingTimeValue(params.signingTime)));
+    }
+    return attributes
+      .map((entry) => ({ entry, der: encode(entry.node) }))
+      .sort((left, right) => compareDer(left.der, right.der))
+      .map(({ entry }) => entry);
+  });

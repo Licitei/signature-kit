@@ -42,7 +42,11 @@ Delivery order is fixed:
   workspace builds that asset from the `crates/wasm` cdylib with its `pdf` feature
   enabled by default. `crates/pdf` is an rlib.
 - `@signature-kit/browser/worker` assembles the worker RPC server from the public
-  engine subpaths. `/client` provides the page-side client layer and `/viewer`
+  engine subpaths. `@signature-kit/browser/signing-worker` assembles the same
+  protocol without composition, canvas rendering or verification (those calls fail
+  with `operationUnavailable`), so pages that only sign load about half the code.
+  Verification lives in its own `PdfVerification` service, and the CMS signer is
+  built on the in-house ASN.1 module, so the signing graph does not include PKI.js. `/client` provides the page-side client layer and `/viewer`
   paints pages and transforms between PDF user space and canvas pixels.
 
 ## Core model

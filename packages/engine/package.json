@@ -31,6 +31,10 @@
       "types": "./dist/evidence-fetcher.d.ts",
       "import": "./dist/evidence-fetcher.js"
     },
+    "./pdf-verification": {
+      "types": "./dist/pdf-verification.d.ts",
+      "import": "./dist/pdf-verification.js"
+    },
     "./signature-compute": {
       "types": "./dist/signature-compute.d.ts",
       "import": "./dist/signature-compute.js"

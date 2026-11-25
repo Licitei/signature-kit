@@ -6,6 +6,10 @@ import {
   pdfEngineLayer,
 } from "../../packages/engine/dist/engine.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../../packages/engine/dist/pdf-signatures.js";
+import {
+  PdfVerification,
+  pdfVerificationLayer,
+} from "../../packages/engine/dist/pdf-verification.js";
 import { exportComparisonReport } from "../../packages/engine/dist/rpc.js";
 import type { RevisionRef } from "../../packages/engine/dist/rpc.js";
 import { pdfCoreFileLayer } from "../../packages/engine/dist/wasm/file.js";
@@ -77,7 +81,7 @@ const generate = Effect.gen(function* () {
   const returned = yield* sign(first, "ecnpj", signatories[1].name);
   const signed = yield* documents.export(returned.handle);
   yield* write("cosigned.pdf", signed);
-  const report = yield* pdf.compare(sent, returned, {
+  const report = yield* (yield* PdfVerification).compare(sent, returned, {
     trust: [yield* read("root.der")],
     at: trustAt,
   });
@@ -123,7 +127,7 @@ const generate = Effect.gen(function* () {
 await Effect.runPromise(
   generate.pipe(
     Effect.provide(
-      pdfSignaturesLayer.pipe(
+      Layer.merge(pdfSignaturesLayer, pdfVerificationLayer).pipe(
         Layer.provideMerge(pdfEngineLayer),
         Layer.provideMerge(localRuntimeLayer()),
         Layer.provideMerge(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),

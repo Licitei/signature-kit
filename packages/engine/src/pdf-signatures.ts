@@ -16,15 +16,11 @@ import { PdfCore } from "./wasm/pdf-core.js";
 import { LocalError, PdfPrepareOptionsSchema, PreparationId } from "./rpc.js";
 import type {
   PdfPreparation,
-  ComparisonReport,
   PdfPrepareOptions,
   PdfValidationData,
   PdfReceipt,
-  PdfVerificationReport,
-  PdfVerifyOptions,
   RevisionRef,
 } from "./rpc.js";
-import { comparePdfRevisions, verifyPdfRevision } from "./pdf-verification.js";
 import { makeLocalCompute, prepareErrorCode } from "./signature-compute.js";
 import type { SignatureComputeService } from "./signature-compute.js";
 
@@ -67,11 +63,6 @@ export class PdfSignatures extends Context.Service<
       revision: RevisionRef,
       token: Uint8Array,
     ) => Effect.Effect<RevisionRef, LocalError>;
-    readonly compare: (
-      sent: RevisionRef,
-      returned: RevisionRef,
-      options?: PdfVerifyOptions,
-    ) => Effect.Effect<ComparisonReport, LocalError>;
     readonly prepare: (
       revision: RevisionRef,
       options: PdfPrepareOptions,
@@ -82,10 +73,6 @@ export class PdfSignatures extends Context.Service<
       owner?: symbol,
     ) => Effect.Effect<PdfReceipt, LocalError>;
     readonly release: (preparationId: PreparationId, owner?: symbol) => Effect.Effect<void>;
-    readonly verify: (
-      revision: RevisionRef,
-      options?: PdfVerifyOptions,
-    ) => Effect.Effect<PdfVerificationReport, LocalError>;
     readonly prewarm: Effect.Effect<void, LocalError>;
   }
 >()("@signature-kit/engine/PdfSignatures") {}
@@ -201,17 +188,6 @@ export const pdfSignaturesLayer = Layer.effect(
             return yield* source.append(appendix);
           }),
         ),
-      compare: Effect.fn(function* (sent, returned, options) {
-        yield* documents.validate(sent);
-        return yield* engine.withRevision(returned, (target) =>
-          Effect.gen(function* () {
-            const signing = yield* target.signing;
-            const sentBytes = yield* documents.export(sent.handle);
-            const returnedBytes = yield* documents.export(returned.handle);
-            return yield* comparePdfRevisions(signing, sentBytes, returnedBytes, options);
-          }),
-        );
-      }),
       prepare: Effect.fn("local.pdf.prepare")(function* (revision, input, allocation) {
         const options = yield* Schema.decodeUnknownEffect(PdfPrepareOptionsSchema)(input).pipe(
           Effect.mapError(() => new LocalError({ code: "pdfPrepareFailed" })),
@@ -483,14 +459,6 @@ export const pdfSignaturesLayer = Layer.effect(
           (revision) => documents.release(revision.handle).pipe(Effect.ignore),
         );
       }).pipe(Effect.withSpan("local.pdf.prewarm")),
-      verify: (revision, options) =>
-        engine.withRevision(revision, (source) =>
-          Effect.gen(function* () {
-            const bytes = yield* documents.export(revision.handle);
-            const signing = yield* source.signing;
-            return yield* verifyPdfRevision(signing, bytes, options);
-          }),
-        ),
     });
   }),
 );

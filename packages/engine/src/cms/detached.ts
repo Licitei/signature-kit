@@ -1,6 +1,6 @@
-import * as asn1js from "asn1js";
 import { Effect, Schema } from "effect";
-import * as pkijs from "pkijs";
+import { decode, encode, oidNode, sequenceNode, setNode } from "../asn1/asn1.js";
+import type { Asn1Node } from "../asn1/asn1.js";
 import { buildSignedAttributes, compareDer } from "./attributes.js";
 import {
   CmsError,
@@ -39,11 +39,27 @@ const tagged = (tag: number, values: readonly Uint8Array[]) => {
   return der;
 };
 
-const oid = (value: string) => new Uint8Array(new asn1js.ObjectIdentifier({ value }).toBER());
+const oid = (value: string) => oidNode(value).pipe(Effect.map(encode));
 const version = Uint8Array.of(0x02, 1, 1);
-const contentType = oid(CmsOid.signedData);
-const detachedContent = tagged(0x30, [oid(CmsOid.data)]);
-const rsa = tagged(0x30, [oid(rsaEncryption), Uint8Array.of(5, 0)]);
+
+const certificateError = () =>
+  new CmsError({
+    code: CmsErrorCodeValue.decodeError,
+    reason: "Failed to read the CMS certificates and signer identity.",
+    operation: CmsOperationValue.parse,
+  });
+
+const signerFields = (certificate: Asn1Node) => {
+  const [tbs] = certificate.kind === "constructed" ? certificate.children : [];
+  const fields = tbs?.kind === "constructed" ? tbs.children : [];
+  const offset = fields[0]?.class === "context" && fields[0].tag === 0 ? 1 : 0;
+  const serialNumber = fields[offset];
+  const issuer = fields[offset + 2];
+  const subjectPublicKeyInfo = fields[offset + 5];
+  return serialNumber === undefined || issuer === undefined || subjectPublicKeyInfo === undefined
+    ? Effect.fail(certificateError())
+    : Effect.succeed({ serialNumber, issuer, subjectPublicKeyInfo });
+};
 
 export const makeDetachedSigner = Effect.fn(CmsOperationValue.parse)(function* (
   input: DetachedSignerOptions,
@@ -60,34 +76,29 @@ export const makeDetachedSigner = Effect.fn(CmsOperationValue.parse)(function* (
   const { hashAlgorithm } = options;
   const certificateDer = new Uint8Array(options.certificateDer);
   const chainDer = options.chainDer.map((der) => new Uint8Array(der));
-  const { sid, spki, encodedSigner, certificates } = yield* Effect.try({
-    try: () => {
-      const certificate = pkijs.Certificate.fromBER(certificateDer);
-      const encodedSigner = new Uint8Array(certificate.toSchema().toBER());
-      const encodedChain = chainDer.map(
-        (der) => new Uint8Array(pkijs.Certificate.fromBER(der).toSchema().toBER()),
-      );
-      return {
-        sid: new Uint8Array(
-          new pkijs.IssuerAndSerialNumber({
-            issuer: certificate.issuer,
-            serialNumber: certificate.serialNumber,
-          })
-            .toSchema()
-            .toBER(),
-        ),
-        spki: certificate.subjectPublicKeyInfo.toSchema().toBER(),
-        encodedSigner,
-        certificates: tagged(0xa0, [encodedSigner, ...encodedChain].sort(compareDer)),
-      };
-    },
-    catch: () =>
-      new CmsError({
-        code: CmsErrorCodeValue.decodeError,
-        reason: "Failed to read the CMS certificates and signer identity.",
-        operation: CmsOperationValue.parse,
-      }),
-  });
+  const [signerNode, ...chainNodes] = yield* Effect.forEach([certificateDer, ...chainDer], (der) =>
+    decode(der).pipe(Effect.mapError(certificateError)),
+  );
+  if (signerNode === undefined) return yield* Effect.die("The CMS signer certificate is missing.");
+  const signer = yield* signerFields(signerNode);
+  const sid = encode(sequenceNode([signer.issuer, signer.serialNumber]));
+  const spki = new Uint8Array(encode(signer.subjectPublicKeyInfo));
+  const encodedSigner = encode(signerNode);
+  const certificates = tagged(0xa0, [encodedSigner, ...chainNodes.map(encode)].sort(compareDer));
+  const encodingError = () =>
+    new CmsError({
+      code: CmsErrorCodeValue.encodeError,
+      reason: "Failed to encode the CMS object identifiers.",
+      operation: CmsOperationValue.attributes,
+    });
+  const contentType = yield* oid(CmsOid.signedData).pipe(Effect.mapError(encodingError));
+  const detachedContent = tagged(0x30, [
+    yield* oid(CmsOid.data).pipe(Effect.mapError(encodingError)),
+  ]);
+  const rsa = tagged(0x30, [
+    yield* oid(rsaEncryption).pipe(Effect.mapError(encodingError)),
+    Uint8Array.of(5, 0),
+  ]);
   const key = yield* Effect.tryPromise({
     try: () =>
       crypto.subtle.importKey(
@@ -114,7 +125,9 @@ export const makeDetachedSigner = Effect.fn(CmsOperationValue.parse)(function* (
 
   const signatureLength = Math.ceil(key.algorithm.modulusLength / 8);
   const certificateSha256 = yield* digest("sha256", encodedSigner);
-  const algorithm = tagged(0x30, [oid(hashAlgorithmOid(hashAlgorithm))]);
+  const algorithm = tagged(0x30, [
+    yield* oid(hashAlgorithmOid(hashAlgorithm)).pipe(Effect.mapError(encodingError)),
+  ]);
   const digestAlgorithms = tagged(0x31, [algorithm]);
 
   return Effect.fnUntraced(function* (input: DetachedSignatureOptions) {
@@ -134,22 +147,19 @@ export const makeDetachedSigner = Effect.fn(CmsOperationValue.parse)(function* (
         operation: CmsOperationValue.sign,
       });
     }
-    const signedAttributes = yield* Effect.try({
-      try: () =>
-        new Uint8Array(
-          new asn1js.Set({
-            value: buildSignedAttributes({ ...options, certificateSha256 }).map((attr) =>
-              attr.toSchema(),
-            ),
-          }).toBER(),
-        ),
-      catch: () =>
-        new CmsError({
-          code: CmsErrorCodeValue.encodeError,
-          reason: "Failed to encode the CMS signed attributes.",
-          operation: CmsOperationValue.attributes,
-        }),
-    });
+    const signedAttributes = yield* buildSignedAttributes({ ...options, certificateSha256 }).pipe(
+      Effect.map(
+        (attributes) => new Uint8Array(encode(setNode(attributes.map(({ node }) => node)))),
+      ),
+      Effect.mapError(
+        () =>
+          new CmsError({
+            code: CmsErrorCodeValue.encodeError,
+            reason: "Failed to encode the CMS signed attributes.",
+            operation: CmsOperationValue.attributes,
+          }),
+      ),
+    );
     const attributesField = new Uint8Array(signedAttributes);
     attributesField[0] = 0xa0;
     const signer = tagged(0x30, [

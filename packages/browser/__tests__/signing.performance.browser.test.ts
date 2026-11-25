@@ -23,6 +23,8 @@ const plainWorker = (workers: number) => () =>
     name: String(workers),
   });
 const bundledWorker = () => new Worker(inject("bundledWorkerUrl"), { type: "module" });
+const bundledSigningWorker = () =>
+  new Worker(inject("bundledSigningWorkerUrl"), { type: "module" });
 const tracedWorker = () =>
   new Worker(new URL("./batch-benchmark.worker.ts", import.meta.url), {
     type: "module",
@@ -388,6 +390,9 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
     const coldPrewarmed = yield* Effect.forEach(Array.from({ length: 7 }), () =>
       coldPlain(contract, bundledWorker, true),
     );
+    const coldSigning = yield* Effect.forEach(Array.from({ length: 7 }), () =>
+      coldPlain(contract, bundledSigningWorker),
+    );
     const coldStages = yield* Effect.forEach(Array.from({ length: 3 }), () => coldTraced(contract));
 
     yield* client.prewarm();
@@ -432,6 +437,7 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
       cold: summarize(cold),
       coldBundled: summarize(coldBundled),
       coldPrewarmed: summarize(coldPrewarmed),
+      coldSigning: summarize(coldSigning),
       coldStages: summarize(coldStages),
       warm,
       batches,
@@ -568,6 +574,7 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
       const poolScaling = yield* scaling;
       return {
         hardwareConcurrency: navigator.hardwareConcurrency,
+        bundleSizes: JSON.parse(inject("bundleSizes")),
         signingWorkers: poolSize,
         poolScaling,
         ...measured,

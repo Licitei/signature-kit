@@ -9,6 +9,7 @@ const Result = Schema.Struct({
   cold: Summaries,
   coldBundled: Schema.optional(Summaries),
   coldPrewarmed: Schema.optional(Summaries),
+  coldSigning: Schema.optional(Summaries),
   coldStages: Summaries,
   warm: Schema.Array(
     Schema.Record(Schema.String, Schema.Union([Summary, Schema.Finite, Schema.String])),
@@ -95,6 +96,12 @@ await Effect.runPromise(
           "case",
           [{ case: "contract-1p", ...before.coldPrewarmed }],
           [{ case: "contract-1p", ...after.coldPrewarmed }],
+        ),
+        table(
+          "Cold first signature (fresh production-bundled signing-only worker)",
+          "case",
+          [{ case: "contract-1p", ...before.coldSigning }],
+          [{ case: "contract-1p", ...after.coldSigning }],
         ),
         table("Warm single signature (page-observed)", "fixture", before.warm, after.warm),
         table(

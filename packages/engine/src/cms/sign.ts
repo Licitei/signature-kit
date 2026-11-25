@@ -1,6 +1,7 @@
 import * as asn1js from "asn1js";
 import { Effect, Schema } from "effect";
 import * as pkijs from "pkijs";
+import { encode } from "../asn1/asn1.js";
 import { buildSignedAttributes } from "./attributes.js";
 import {
   CreateDetachedSignedDataInputSchema,
@@ -79,6 +80,20 @@ export const createDetachedSignedData = (
       }),
     );
 
+    const signedAttributes = yield* buildSignedAttributes({
+      messageDigest,
+      certificateSha256,
+      icpBrasil: valid.icpBrasil,
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new CmsError({
+            code: CmsErrorCodeValue.encodeError,
+            reason: "Failed to encode the CMS signed attributes.",
+            operation: CmsOperationValue.attributes,
+          }),
+      ),
+    );
     const signed = yield* Effect.try({
       try: () =>
         new pkijs.SignedData({
@@ -93,13 +108,9 @@ export const createDetachedSignedData = (
               }),
               signedAttrs: new pkijs.SignedAndUnsignedAttributes({
                 type: 0,
-                attributes: [
-                  ...buildSignedAttributes({
-                    messageDigest,
-                    certificateSha256,
-                    icpBrasil: valid.icpBrasil,
-                  }),
-                ],
+                attributes: signedAttributes.map(({ node }) =>
+                  pkijs.Attribute.fromBER(new Uint8Array(encode(node))),
+                ),
               }),
             }),
           ],

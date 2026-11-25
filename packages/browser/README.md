@@ -165,6 +165,27 @@ with `pdfEngineLayer`, `localRuntimeLayer()` and a `PdfCore` layer. The worker s
 See [warm A1 signing benchmarks](../engine/docs/signing-performance.md) for the Node and
 Chromium worker measurements and WASM copy breakdown.
 
+## Signing-only worker
+
+`@signature-kit/browser/signing-worker` is a separate worker entry for pages that only
+sign. Its module graph has no composition, canvas rendering or verification code, so a
+production bundle is about half the size of `@signature-kit/browser/worker` (531 KB
+against 964 KB minified, before compression, in the repository benchmark) and boots
+sooner. It answers the same `LocalRpcs` protocol: documents, inspection, A1 sessions,
+signature fields, preparation, confirmation, batches and telemetry work as in the full
+worker, while `composePdf`, `renderPage`, `verifyPdf` and `comparePdf` fail with
+`operationUnavailable`.
+
+```ts
+import SigningWorker from "@signature-kit/browser/signing-worker?worker";
+import { localClientLayer } from "@signature-kit/browser/client";
+
+const runtime = localClientLayer(() => new SigningWorker());
+```
+
+Custom entries import `signingWorker` from `@signature-kit/browser/signing-worker-runtime`
+and take the same options as `localWorker`.
+
 ## Local batches
 
 Use `prepareBatch` with a session binding, document revisions and a shared signing
