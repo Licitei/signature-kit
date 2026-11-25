@@ -2,17 +2,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import stylex from "@stylexjs/unplugin";
-import { mergeConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 import { playwright } from "@vitest/browser-playwright";
 
-import baseBrowserConfig from "../../tooling/vitest/browser.config";
-import { feedbackBfcache } from "./foldkit/feedback-bfcache-command";
-import { feedbackBrowserServer } from "./foldkit/feedback-browser-server";
-import { homeBrowserServer } from "./foldkit/home-browser-server";
+import { feedbackBfcache } from "./foldkit/feedback-bfcache-command.ts";
+import { feedbackBrowserServer } from "./foldkit/feedback-browser-server.ts";
+import { homeBrowserServer } from "./foldkit/home-browser-server.ts";
 
 const docsRoot = path.dirname(fileURLToPath(import.meta.url));
 
-export default mergeConfig(baseBrowserConfig, {
+export default defineConfig({
   plugins: [
     stylex.vite({
       useCSSLayers: true,
@@ -23,8 +22,20 @@ export default mergeConfig(baseBrowserConfig, {
     feedbackBrowserServer(docsRoot),
     homeBrowserServer(),
   ],
+  optimizeDeps: { include: ["posthog-js", "react/jsx-dev-runtime", "react-dom/client"] },
   test: {
+    include: ["apps/docs/**/*.browser.test.*"],
+    teardownTimeout: 2000,
+    deps: {
+      optimizer: {
+        client: { enabled: false },
+        ssr: { enabled: false },
+      },
+    },
     browser: {
+      enabled: true,
+      headless: true,
+      instances: [{ browser: "chromium" }],
       commands: { feedbackBfcache },
       provider: playwright({
         launchOptions: { channel: "chromium", ignoreDefaultArgs: ["--disable-back-forward-cache"] },
@@ -33,9 +44,11 @@ export default mergeConfig(baseBrowserConfig, {
     },
   },
   resolve: {
-    dedupe: ["react", "react-dom"],
     alias: {
       "@": docsRoot,
+      react: path.join(docsRoot, "node_modules/react"),
+      "react-dom": path.join(docsRoot, "node_modules/react-dom"),
+      "posthog-js": path.join(docsRoot, "node_modules/posthog-js"),
     },
   },
 });

@@ -1,12 +1,12 @@
 import * as ts from "typescript";
 import type { Check, CheckContext } from "../model";
 import { contractSuffixes } from "../config";
-import { isAdapterOrPackageFile, isSignatureRuntimeFile } from "./shared";
+import { isCoreOrRuntimeFile } from "./shared";
 
 const contractNamePattern = new RegExp(`^[A-Za-z_$][\\w$]*(?:${contractSuffixes.join("|")})$`);
 
 const hasManualSchemaContract = (context: CheckContext): boolean => {
-  if (!isAdapterOrPackageFile(context.path) && !isSignatureRuntimeFile(context.path)) {
+  if (!isCoreOrRuntimeFile(context.path)) {
     return false;
   }
 

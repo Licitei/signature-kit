@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import * as Server from "foldkit/experimental/server";
-import { parseContent, renderContent, resolveContent } from "./content";
+import { parseContent, renderContent } from "./content";
 import type { Locale } from "./content";
 import { Flags, init } from "./main";
 import type { Model } from "./main";
@@ -82,9 +82,15 @@ it("keeps source for invalid syntax without an unhandled rejection", async () =>
 
 it("renders localized SSR card grids with individual direct children", async () => {
   for (const locale of ["en-US", "pt-BR"] satisfies Locale[]) {
-    const page = resolveContent(locale, "docs", "");
-    expect(page).toBeDefined();
-    if (page === undefined) continue;
+    const titles = locale === "pt-BR" ? ["Arquitetura", "Conceitos"] : ["Architecture", "Concepts"];
+    const page = parseContent(`---
+title: Fixture
+---
+
+<Cards>
+  <Card title="${titles[0]}" href="/architecture" />
+  <Card title="${titles[1]}" href="/concepts" />
+</Cards>`);
     const result = await Effect.runPromise(
       Server.renderToString<Model, never, typeof Flags.Type>(
         {
@@ -100,10 +106,10 @@ it("renders localized SSR card grids with individual direct children", async () 
     );
     const doc = new DOMParser().parseFromString(result.html, "text/html");
     const grids = doc.querySelectorAll(".cards");
-    expect(grids).toHaveLength(2);
+    expect(grids).toHaveLength(1);
     for (const grid of grids) {
       expect(grid.parentElement?.tagName).not.toBe("P");
-      expect(grid.children).toHaveLength(4);
+      expect([...grid.children].map((child) => child.textContent)).toEqual(titles);
       expect(
         [...grid.children].every(
           (child) => child.classList.contains("card") && child.tagName === "A",

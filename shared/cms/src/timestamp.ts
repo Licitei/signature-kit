@@ -1,6 +1,3 @@
-import { AsnConvert, OctetString } from "@peculiar/asn1-schema";
-import { MessageImprint, TimeStampReq, TimeStampReqVersion } from "@peculiar/asn1-tsp";
-import { AlgorithmIdentifier } from "@peculiar/asn1-x509";
 import * as asn1js from "asn1js";
 import { Effect, Match, Schema } from "effect";
 import * as pkijs from "pkijs";
@@ -351,18 +348,18 @@ export const requestTimestamp = (
 
     const requestDer = yield* Effect.try({
       try: () => {
-        const request = new TimeStampReq({
-          version: TimeStampReqVersion.v1,
-          messageImprint: new MessageImprint({
-            hashAlgorithm: new AlgorithmIdentifier({
-              algorithm: hashAlgorithmOid(valid.hashAlgorithm),
+        const request = new pkijs.TimeStampReq({
+          version: 1,
+          messageImprint: new pkijs.MessageImprint({
+            hashAlgorithm: new pkijs.AlgorithmIdentifier({
+              algorithmId: hashAlgorithmOid(valid.hashAlgorithm),
             }),
-            hashedMessage: new OctetString(new Uint8Array(imprint)),
+            hashedMessage: new asn1js.OctetString({ valueHex: new Uint8Array(imprint).buffer }),
           }),
-          nonce: nonce.buffer,
+          nonce: new asn1js.Integer({ valueHex: nonce.buffer }).convertToDER(),
           certReq: true,
         });
-        return new Uint8Array(AsnConvert.serialize(request));
+        return new Uint8Array(request.toSchema().toBER(false));
       },
       catch: () =>
         new CmsError({

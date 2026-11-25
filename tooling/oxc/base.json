@@ -147,13 +147,7 @@
   },
   "overrides": [
     {
-      "files": [
-        "**/__tests__/**",
-        "**/tooling/testing/**",
-        "**/scripts/**",
-        "**/apps/docs/**",
-        "**/formats/react/src/a1.ts"
-      ],
+      "files": ["**/__tests__/**", "**/tooling/testing/**", "**/scripts/**", "**/apps/docs/**"],
       "rules": {
         "effecttsgo/strict-effect-provide": "off"
       }

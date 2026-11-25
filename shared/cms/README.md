@@ -8,7 +8,7 @@ CMS/PKCS#7 detached signing and verification helpers, ICP-Brasil PAdES policy me
 bun add @signature-kit/cms effect
 ```
 
-`effect` is a direct runtime dependency. This is a low-level support package; PDF signing normally goes through `@signature-kit/pdf`.
+`effect` is a direct runtime dependency.
 
 ## Public surface
 
@@ -34,7 +34,7 @@ certificate. SignatureKit does not use an ambient or system trust store.
 `fetchIcpBrasilPadesPolicy` accepts a downloaded policy only when its encoded hash algorithm
 and hash exactly match this pin.
 
-PAdES AD-RB signatures must not include CMS `signingTime`; the PDF dictionary owns signing time. `@signature-kit/iti` rejects generated signatures that include the prohibited attribute.
+PAdES AD-RB signatures must not include CMS `signingTime`; the PDF dictionary owns signing time.
 
 ## Example
 
@@ -58,7 +58,7 @@ const program = Effect.gen(function* () {
 
 ## Errors and i18n
 
-CMS failures use the `CmsError` code catalog and `cmsErrorMessages`. Applications can render localized copy through `@signature-kit/i18n` by passing that catalog to `errorMessage`.
+CMS failures use the `CmsError` code catalog and `cmsErrorMessages`.
 
 Docs: <https://signaturekit.dev/en-US/docs/signing/pdf>.
 

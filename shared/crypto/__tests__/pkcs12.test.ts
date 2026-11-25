@@ -4,7 +4,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { childrenOf, decode, encode, oidString } from "@signature-kit/asn1";
 import type { Asn1Node } from "@signature-kit/asn1";
 import { Effect, Option, Redacted, Result } from "effect";
-import { readA1Fixture } from "../../../tooling/testing/fixtures";
+import { readSigningFixture } from "../../../tooling/testing/fixtures";
 import { parsePkcs12 } from "../src/pkcs12";
 import { hmac } from "../src/primitives/hmac";
 import { pbkdf2 } from "../src/primitives/pbkdf2";
@@ -545,7 +545,7 @@ const makeMacOnlyPfx = (macOid: string): Uint8Array => {
 describe("parsePkcs12 hardening", () => {
   it.effect("parses supported SHA-256 MAC, PBKDF2, and AES-256 fixture paths", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const parsed = yield* parsePkcs12(pfxDer, PASSWORD);
       expect(parsed.certificate.byteLength).toBeGreaterThan(0);
       expect(parsed.privateKey.byteLength).toBeGreaterThan(0);
@@ -554,7 +554,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("preserves wrong-password classification for authenticated files", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const outcome = yield* Effect.result(parsePkcs12(pfxDer, Redacted.make("wrong-password")));
       expect(Result.isFailure(outcome)).toBe(true);
       if (Result.isFailure(outcome)) expect(outcome.failure.code).toBe("crypto.WRONG_PASSWORD");
@@ -563,7 +563,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("rejects MAC iteration counts above the KDF limit before hashing", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const malicious = yield* withMacIterations(pfxDer, LIMIT + 1);
       const started = performance.now();
       const outcome = yield* Effect.result(parsePkcs12(malicious, PASSWORD));
@@ -578,7 +578,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("rejects PBKDF2 iteration counts above the KDF limit before hashing", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const malicious = yield* withPbkdf2Parameters(pfxDer, LIMIT + 1, false);
       const started = performance.now();
       const outcome = yield* Effect.result(parsePkcs12(malicious, PASSWORD));
@@ -593,7 +593,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("rejects supported PBKDF2 work that exceeds the total per-file budget", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const malicious = yield* withPbkdf2Parameters(pfxDer, LIMIT, true);
       const started = performance.now();
       const outcome = yield* Effect.result(parsePkcs12(malicious, PASSWORD));
@@ -608,7 +608,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("cooperatively yields while an exact-limit supported MAC KDF is running", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const malicious = yield* withMacIterations(pfxDer, LIMIT);
       const outcome = yield* TestClock.withLive(
         Effect.result(parsePkcs12(malicious, PASSWORD)).pipe(Effect.timeoutOption("50 millis")),
@@ -619,7 +619,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("rejects a non-INTEGER PFX version without changing authenticated bytes", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const malformed = yield* withOctetStringPfxVersion(pfxDer);
       const outcome = yield* Effect.result(parsePkcs12(malformed, PASSWORD));
       expect(Result.isFailure(outcome)).toBe(true);
@@ -629,7 +629,7 @@ describe("parsePkcs12 hardening", () => {
 
   it.effect("rejects an application-tagged authSafe OCTET STRING", () =>
     Effect.gen(function* () {
-      const pfxDer = yield* readA1Fixture("ecpf");
+      const pfxDer = yield* readSigningFixture;
       const malformed = yield* withApplicationAuthSafeOctetString(pfxDer);
       const outcome = yield* Effect.result(parsePkcs12(malformed, PASSWORD));
       expect(Result.isFailure(outcome)).toBe(true);

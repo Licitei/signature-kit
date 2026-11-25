@@ -1,6 +1,5 @@
 import { pageRoute } from "./routes";
 import { Schema } from "effect";
-import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
 import { contentPaths, expressionText, resolveContent } from "./content";
@@ -98,16 +97,6 @@ export const searchDocs = (
           else if (section !== undefined)
             section.text += ` ${attr("title")} ${node.name === "Card" ? attr("description") : ""}`;
           visit(node.children);
-        } else if (
-          (node.type === "mdxJsxFlowElement" || node.type === "mdxJsxTextElement") &&
-          node.name === "ErrorCatalog"
-        ) {
-          for (const entry of signatureKitErrorCatalog)
-            sections.push({
-              heading: entry.code,
-              href: `${base}#${encodeURIComponent(entry.code.replace("signature-kit.", "err-"))}`,
-              text: `${entry.code} ${entry.message}${entry.overridable ? " editable" : ""}`,
-            });
         } else if (node.type === "mdxTextExpression" || node.type === "mdxFlowExpression") {
           const section = sections.at(-1);
           if (section !== undefined) section.text += ` ${expressionText(node)}`;

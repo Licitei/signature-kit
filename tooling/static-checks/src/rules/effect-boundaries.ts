@@ -3,7 +3,7 @@ import type { Check, CheckContext } from "../model";
 import { allowedEffectProvideSites, nodeBoundaryModules, promiseBoundaryModules } from "../config";
 
 const librarySourcePathPattern =
-  /^(?:core|shared|signers|formats|validators|runtime)\/[^/]+\/src\/(?!__tests__\/).+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+  /^(?:core|shared|runtime)\/[^/]+\/src\/(?!__tests__\/).+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
 const effectCallLines = new WeakMap<ts.SourceFile, ReadonlySet<string>>();
 const forbiddenEffectLines = new WeakMap<ts.SourceFile, ReadonlySet<number>>();
 const dynamicImportLines = new WeakMap<ts.SourceFile, ReadonlySet<number>>();
@@ -124,11 +124,7 @@ const hasDirectNodeOrPlatformImport = (context: CheckContext): boolean =>
   getDirectNodeImportLines(context.sourceFile).has(context.lineNumber - 1);
 
 const hasLocalEffectRunBoundary = (context: CheckContext): boolean => {
-  if (
-    !context.path.startsWith("formats/react/src/") &&
-    !context.path.startsWith("apps/docs/") &&
-    !promiseBoundaryModules.includes(context.path)
-  ) {
+  if (!context.path.startsWith("apps/docs/") && !promiseBoundaryModules.includes(context.path)) {
     return false;
   }
   const current = context.rawLine;

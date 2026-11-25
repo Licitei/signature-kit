@@ -8,7 +8,6 @@ import { checks } from "../src/rule-set";
 import { schemaContractChecks } from "../src/rules/schema-contracts";
 import { errorHandlingChecks } from "../src/rules/error-handling";
 import { typeSafetyChecks } from "../src/rules/type-safety";
-import { architectureChecks } from "../src/rules/architecture";
 import { effectBoundaryChecks } from "../src/rules/effect-boundaries";
 import { observabilityCatalogChecks } from "../src/rules/observability-catalogs";
 import { configChecks } from "../src/rules/config";
@@ -29,7 +28,6 @@ const expectedChecks = [
   ...observabilityCatalogChecks,
   ...configChecks,
   ...dependencyChecks,
-  ...architectureChecks,
 ];
 
 const context = (line: string) => {
@@ -180,30 +178,20 @@ describe("declarative smell rules", () => {
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
-        "formats/xml/src/runtime.ts",
+        "runtime/local/src/engine.ts",
         `import {
-  Signature as XmlDsigSignature,
-} from "xmldsigjs";`,
+  Certificate as ParsedCertificate,
+} from "@signature-kit/certificates";`,
       ),
     ).toBe(false);
   });
-  it("allows real package entry modules", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/clicksign/src/index.ts",
-        'import { Effect } from "effect";\nexport const clicksign = () => Effect.void;',
-      ),
-    ).toBe(false);
-  });
-
-  it("requires reasoned Effect run escapes in allowed React or docs paths", () => {
+  it("requires reasoned Effect run escapes in docs paths", () => {
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "formats/react/src/a1.ts",
+        "apps/docs/src/hooks.ts",
         `
-// effect-boundary: React hook event action [allow-run: hook event-action boundary]
+// effect-boundary: docs event action [allow-run: hook event-action boundary]
 const result = await Effect.runPromise(program);
 `,
       ),
@@ -211,9 +199,9 @@ const result = await Effect.runPromise(program);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "formats/react/src/a1.ts",
+        "apps/docs/src/hooks.ts",
         `
-// effect-boundary: React hook event action [allow-run]
+// effect-boundary: docs event action [allow-run]
 const result = await Effect.runPromise(program);
 `,
       ),
@@ -221,9 +209,9 @@ const result = await Effect.runPromise(program);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/signatures/src/signatures.ts",
+        "core/certificates/src/signatures.ts",
         `
-// effect-boundary: React hook event action [allow-run: hook event-action boundary]
+// effect-boundary: docs event action [allow-run: hook event-action boundary]
 const result = await Effect.runPromise(program);
 `,
       ),
@@ -249,11 +237,11 @@ const client = Effect.runPromise(program);
     ).toBe(path !== "shared/pdf-core/src/node.ts");
   });
 
-  it("requires a reasoned provide marker immediately before a React provide call", () => {
+  it("requires a reasoned provide marker immediately before a docs provide call", () => {
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "formats/react/src/a1.ts",
+        "apps/docs/src/hooks.ts",
         `
 // effect-boundary: browser worker injection [allow-provide: browser worker layer boundary]
 Effect.provide(Layer.empty);
@@ -263,7 +251,7 @@ Effect.provide(Layer.empty);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "formats/react/src/a1.ts",
+        "apps/docs/src/hooks.ts",
         `
 // effect-boundary: browser worker injection [allow-provide]
 Effect.provide(Layer.empty);
@@ -273,7 +261,7 @@ Effect.provide(Layer.empty);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "formats/react/src/a1.ts",
+        "apps/docs/src/hooks.ts",
         `
 // effect-boundary: browser worker injection [allow-provide: browser worker layer boundary]
 const program = Effect.void;
@@ -287,21 +275,21 @@ Effect.provide(Layer.empty);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/signatures/src/runtime.ts",
+        "core/certificates/src/runtime.ts",
         "const result = Effect.either(program);",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/signatures/src/runtime.ts",
+        "core/certificates/src/runtime.ts",
         'const module = import("./runtime-helper");',
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/signatures/src/runtime.ts",
+        "core/certificates/src/runtime.ts",
         "const module = import(moduleName);",
       ),
     ).toBe(false);
@@ -311,14 +299,14 @@ Effect.provide(Layer.empty);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/signatures/src/runtime.ts",
+        "core/certificates/src/runtime.ts",
         'import { runPromise } from "effect";\nconst result = runPromise(program);',
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/signatures/src/runtime.ts",
+        "core/certificates/src/runtime.ts",
         'import { readFile } from "node:fs/promises";',
       ),
     ).toBe(true);
@@ -331,11 +319,11 @@ Effect.provide(Layer.empty);
     ).toBe(false);
   });
 
-  it("requires reasoned secret escapes in allowed React or docs paths", () => {
+  it("requires reasoned secret escapes in docs paths", () => {
     expect(
       anyCheckMatchesSource(
         configChecks,
-        "formats/react/src/config.ts",
+        "apps/docs/src/config.ts",
         `
 const CredentialsSchema = Schema.Struct({
   // secret-boundary: UI password import boundary [allow-string-secret: hook event-action boundary]
@@ -347,7 +335,7 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         configChecks,
-        "formats/react/src/config.ts",
+        "apps/docs/src/config.ts",
         `
 const CredentialsSchema = Schema.Struct({
   // secret-boundary: UI password import boundary [allow-string-secret]
@@ -359,7 +347,7 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         configChecks,
-        "core/signatures/src/signatures.ts",
+        "core/certificates/src/signatures.ts",
         `
 const CredentialsSchema = Schema.Struct({
   // secret-boundary: UI password import boundary [allow-string-secret: hook event-action boundary]
@@ -370,153 +358,17 @@ const CredentialsSchema = Schema.Struct({
     ).toBe(true);
   });
   it("scans package manifests so dependency checks are live", () => {
-    expect(hasCheckedExtension("core/signatures/package.json")).toBe(true);
-  });
-
-  it("rejects retained Alchemy providers without an explicit no-op diff seam", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        `
-export const Example = Resource<ExampleResource>("Example.Resource", { defaultRemovalPolicy: "retain" });
-export const ExampleProvider = () =>
-  Provider.effect(
-    Example,
-    Effect.gen(function* () {
-      return Example.Provider.of({
-        list: () => Effect.succeed([]),
-        reconcile: Effect.fn(function* ({ output }) {
-          return output ?? { id: "created" };
-        }),
-        delete: Effect.fn(function* ({ output }) {
-          yield* deleteRemote(output.id);
-        }),
-      });
-    }),
-  );
-`,
-      ),
-    ).toBe(true);
-  });
-
-  it("rejects retained Alchemy provider delete branches without output", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        `
-export const Example = Resource<ExampleResource>("Example.Resource", { defaultRemovalPolicy: "retain" });
-export const ExampleProvider = () =>
-  Provider.effect(
-    Example,
-    Effect.gen(function* () {
-      return Example.Provider.of({
-        diff: Effect.fn(function* () {
-          return { action: "noop" };
-        }),
-        list: () => Effect.succeed([]),
-        reconcile: Effect.fn(function* ({ output }) {
-          return output ?? { id: "created" };
-        }),
-        delete: Effect.fn(function* ({ output }) {
-          if (output === undefined) {
-            const all = yield* listEverything();
-            yield* Effect.forEach(all, deleteRemote);
-            return;
-          }
-          yield* deleteRemote(output.id);
-        }),
-      });
-    }),
-  );
-`,
-      ),
-    ).toBe(true);
-  });
-
-  it("rejects ambient NODE_ENV base URL selection in remote signers", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        'const baseUrl = process.env.NODE_ENV === "production" ? productionUrl : sandboxUrl;',
-      ),
-    ).toBe(true);
-  });
-
-  it("checks Alchemy provider rules in every remote signer source module but excludes A1", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/provider.ts",
-        'const baseUrl = process.env.NODE_ENV === "production" ? productionUrl : sandboxUrl;',
-      ),
-    ).toBe(true);
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/a1/src/signer.ts",
-        'const baseUrl = process.env.NODE_ENV === "production" ? productionUrl : sandboxUrl;',
-      ),
-    ).toBe(false);
-  });
-
-  it("rejects hidden live HTTP transport in remote signer provider layers", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        "Layer.provide(signatureHttpClientLive)",
-      ),
-    ).toBe(true);
-  });
-
-  it("rejects remote signer provider option decode wrappers", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        "const decodeClicksignProviderOptions = (options: ClicksignProviderOptions) => Effect.void;",
-      ),
-    ).toBe(true);
-  });
-
-  it("rejects provider list array clones", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        "list: () => listRequests().pipe(Effect.map((requests) => Array.from(requests))),",
-      ),
-    ).toBe(true);
-  });
-
-  it("rejects memoized provider layers under per-call credential wrappers", () => {
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        "Layer.provide(exampleSignatureRequestProvider)",
-      ),
-    ).toBe(true);
-    expect(
-      anyCheckMatchesSource(
-        architectureChecks,
-        "signers/example/src/index.ts",
-        "Layer.provide(Layer.fresh(exampleSignatureRequestProvider))",
-      ),
-    ).toBe(false);
+    expect(hasCheckedExtension("core/certificates/package.json")).toBe(true);
   });
 
   it("flags public package scripts that shadow inferred TypeScript targets", () => {
     expect(
       anyCheckMatchesSource(
         dependencyChecks,
-        "formats/pdf/package.json",
+        "shared/pdf-core/package.json",
         `
 {
-  "name": "@signature-kit/pdf",
+  "name": "@signature-kit/pdf-core",
   "scripts": {
     "build": "tsc -b tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -532,10 +384,10 @@ export const ExampleProvider = () =>
     expect(
       anyCheckMatchesSource(
         dependencyChecks,
-        "formats/pdf/package.json",
+        "shared/pdf-core/package.json",
         `
 {
-  "name": "@signature-kit/pdf",
+  "name": "@signature-kit/pdf-core",
   "scripts": {
     "test": "vitest run"
   }
@@ -560,69 +412,6 @@ export const ExampleProvider = () =>
     ).toBe(false);
   });
 
-  it("flags core package manifest dependencies on product packages", () => {
-    expect(
-      anyCheckMatchesSource(
-        dependencyChecks,
-        "core/signatures/package.json",
-        `
-{
-  "name": "@signature-kit/signatures",
-  "version": "1.0.0",
-  "dependencies": {
-    "@signature-kit/clicksign": "workspace:*",
-    "@signature-kit/documenso": "workspace:*",
-    "@signature-kit/pdf": "workspace:*",
-    "@signature-kit/iti": "workspace:*"
-  }
-}
-`,
-      ),
-    ).toBe(true);
-  });
-  it("flags validator package manifest dependencies on signer packages", () => {
-    expect(
-      anyCheckMatchesSource(
-        dependencyChecks,
-        "validators/iti/package.json",
-        `
-{
-  "name": "@signature-kit/iti",
-  "version": "1.0.0",
-  "dependencies": {
-    "@signature-kit/clicksign": "workspace:*"
-  }
-}
-`,
-      ),
-    ).toBe(true);
-  });
-
-  it("does not flag signer manifests depending on focused core packages or core imports from shared packages", () => {
-    expect(
-      anyCheckMatchesSource(
-        dependencyChecks,
-        "signers/clicksign/package.json",
-        `
-{
-  "name": "@signature-kit/clicksign",
-  "dependencies": {
-    "@signature-kit/signatures": "workspace:*",
-    "@signature-kit/http": "workspace:*"
-  }
-}
-`,
-      ),
-    ).toBe(false);
-
-    expect(
-      anyCheckMatchesSource(
-        dependencyChecks,
-        "core/signatures/src/signatures.ts",
-        'import { Effect } from "effect";',
-      ),
-    ).toBe(false);
-  });
   it("uses stateful comment normalization for multiline blocks", () => {
     expect(
       anyCheckMatchesSource(
@@ -693,29 +482,30 @@ export const ExampleProvider = () =>
       anyCheckMatchesSource(
         typeSafetyChecks,
         "core/example/src/runtime.ts",
-        'const value: import("@signature-kit/signatures").Signatures = input;\n',
+        'const value: import("@signature-kit/certificates").Certificate = input;\n',
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
         "core/example/src/runtime.ts",
-        'import type { Signatures } from "@signature-kit/signatures";\nconst value: Signatures = input;\n',
+        'import type { Certificate } from "@signature-kit/certificates";\nconst value: Certificate = input;\n',
       ),
     ).toBe(false);
   });
 
-  it("selects the signing domain and applies application boundary rules", async () => {
-    const root = await mkdtemp(join(tmpdir(), "signature-kit-domain-selection-"));
+  it("selects the local runtime and applies library boundary rules", async () => {
+    const root = await mkdtemp(join(tmpdir(), "signature-kit-runtime-selection-"));
     onTestFinished(() => rm(root, { recursive: true, force: true }));
-    const domainRoot = "apps/signing-domain";
-    expect(roots).toContain(domainRoot);
-    await mkdir(join(root, domainRoot, "src"), { recursive: true });
-    await writeFile(join(root, domainRoot, "src/signing.ts"), "Effect.runPromise(program);\n");
+    const runtimeRoot = "runtime";
+    const packageRoot = "runtime/local";
+    expect(roots).toContain(runtimeRoot);
+    await mkdir(join(root, packageRoot, "src"), { recursive: true });
+    await writeFile(join(root, packageRoot, "src/signing.ts"), "Effect.runPromise(program);\n");
     expect(
       runDeclarativeChecks(
         root,
-        roots.filter((path) => path === domainRoot),
+        roots.filter((path) => path === runtimeRoot),
       ),
     ).toBe(true);
     expect(
@@ -727,7 +517,7 @@ export const ExampleProvider = () =>
     ).toBe(false);
     expect(
       runFileDeclarativeChecks(
-        join(root, domainRoot, "src/signing.ts"),
+        join(root, packageRoot, "src/signing.ts"),
         "// [allow-run: fixture]\nEffect.runPromise(program);\n",
         root,
       ),
@@ -739,16 +529,16 @@ export const ExampleProvider = () =>
       "shared/pdf-core/scripts/generate-font-tables.ts",
       "shared/pdf-core/scripts/generate-corpus.ts",
       "shared/pdf-core/bench/measure-speed.ts",
-      "formats/pdf/scripts/capture-anchor-goldens.ts",
-      "/repo/formats/pdf/scripts/render-corpus.ts",
+      "shared/pdf-core/scripts/capture-anchor-goldens.ts",
+      "/repo/shared/pdf-core/scripts/render-corpus.ts",
     ]) {
       expect(shouldSkip(path)).toBe(true);
     }
     for (const path of [
       "shared/pdf-core/src/pdf-core.ts",
-      "formats/pdf/__tests__/text-anchors-golden.test.ts",
-      "formats/pdf/src/scripts/anchors.ts",
-      "core/signatures/src/bench.ts",
+      "shared/pdf-core/__tests__/text-anchors-golden.test.ts",
+      "shared/pdf-core/src/scripts/anchors.ts",
+      "core/certificates/src/bench.ts",
     ]) {
       expect(shouldSkip(path)).toBe(false);
     }

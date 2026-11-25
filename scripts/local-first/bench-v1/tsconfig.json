@@ -1,7 +1,0 @@
-{
-  "extends": "../../../tsconfig.test.json",
-  "compilerOptions": {
-    "tsBuildInfoFile": ".cache/types.tsbuildinfo"
-  },
-  "include": ["*.ts"]
-}

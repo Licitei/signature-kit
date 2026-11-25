@@ -5,13 +5,11 @@ no 1.x API, package name, export path, option or error shape is preserved, and
 there are no deprecated aliases or migration shims. Shared engines (`pdf-core`
 ABI, CMS, crypto, certificates) change freely when 2.0 needs it.
 
-While 2.0 is built, 1.x code stays in the tree only as reference, independent
-oracle and performance baseline (`docs/local-first/baseline.md`,
-`docs/local-first/baseline-v1.json`). Each 1.x package is deleted in the same cut
-that lands its 2.0 owner. Compatibility that remains is **format** interoperability:
-2.0 must read, co-sign and verify real-world PDFs, CMS and XML (including ones
-produced by 1.x and by third-party tools), checked against independent readers
-(qpdf, poppler `pdfsig`, OpenSSL, pdf.js, the ITI validator).
+The 1.x implementation and benchmark harness are gone from the 2.0 tree. The
+[recorded 1.x baseline](../local-first/baseline.md) and static PDF interoperability
+fixtures remain. Format interoperability is still required. Check real-world
+documents and signatures with independent tools such as qpdf, poppler
+`pdfsig`, OpenSSL, pdf.js and the ITI validator.
 
 Delivery order is fixed:
 
@@ -28,9 +26,8 @@ Delivery order is fixed:
 | --- | --- |
 | Rust/WASM `shared/pdf-core` | PDF structure: parsing, revisions, AcroForm signature fields and widgets, `/AP` appearance streams, signature dictionary and `/Contents` reservation, incremental writing, `ByteRange` digest, revision diffing, rendering. Every ABI call is a whole operation ("prepare this field of this revision"), never a per-object call. |
 | WebCrypto | The private-key operation. A1 keys are imported once per session as non-extractable `CryptoKey`s and never leave the worker. |
-| `shared/crypto`, `shared/cms`, `core/certificates` | PKCS#12, CMS/CAdES, X.509 codecs. Used by the first cuts and reshaped freely for 2.0; each in-house replacement of a third-party codec (pkijs, asn1js, xmldsigjs) lands behind an oracle test against an independent implementation (OpenSSL, pkijs as test-only dependency). |
+| `shared/crypto`, `shared/cms`, `core/certificates` | PKCS#12, CMS/CAdES, X.509 codecs. Used by the first cuts and reshaped freely for 2.0; each in-house replacement of a third-party codec (PKI.js and ASN1.js) lands behind an oracle test against an independent implementation (OpenSSL, pkijs as test-only dependency). |
 | `@signature-kit/local` (`runtime/local`) | The 2.0 local runtime: Schema contracts, the typed error catalog, the versioned RPC group, the engine services and the Web Worker entry point / client. |
-| `@signature-kit/react` | Headless hooks over the same RPC client the demo uses. |
 
 ## Package `@signature-kit/local`
 
@@ -39,12 +36,11 @@ One package, real subpath modules (no barrels):
 - `@signature-kit/local/protocol` — Schemas, `LocalError` catalog, `LocalRpcs`
   (`RpcGroup`) and the protocol version. Platform-free; safe to import on the page.
 - `@signature-kit/local/engine` — `Context.Service` + `Layer` implementations:
-  `Documents`, `A1Sessions`, `PdfEngine`, `PdfSignatures`, `Receipts`, `Verification`.
+  `Documents`, `A1Sessions` and `PdfEngine`. The signing and verification services below are planned.
   Runs in Node tests and in the worker.
 - `@signature-kit/local/worker` — the Web Worker entry (RPC server over
   `@effect/platform-browser` worker transport).
-- `@signature-kit/local/client` — the page-side `RpcClient` layer. Hooks and demo
-  use only this.
+- `@signature-kit/local/client` — the page-side `RpcClient` layer.
 - `@signature-kit/local/viewer` — canvas painting through the local client and
   transforms between PDF user-space rectangles and canvas pixels.
 

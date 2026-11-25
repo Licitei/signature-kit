@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-
 export const checkedExtensions: Record<string, true> = {
   ".cjs": true,
   ".js": true,
@@ -21,19 +19,9 @@ export const skippedSegments: Record<string, true> = {
 export const skippedSuffixes: readonly string[] = [".d.ts", ".tsbuildinfo", "README.md"];
 
 export const packageToolingPathPattern =
-  /(?:^|\/)(?:core|signers|formats|validators|shared|runtime)\/[^/]+\/(?:scripts|bench)\//;
+  /(?:^|\/)(?:core|shared|runtime)\/[^/]+\/(?:scripts|bench)\//;
 
-export const roots = [
-  "core",
-  "signers",
-  "formats",
-  "validators",
-  "shared",
-  "runtime",
-  "apps/signing-domain",
-  "apps/docs/components/sections/providers-showcase.tsx",
-  "apps/docs/content/docs/providers",
-].filter((path) => existsSync(path));
+export const roots = ["core", "shared", "runtime"];
 
 export const promiseBoundaryModules: readonly string[] = [
   "shared/pdf-core/src/promise.ts",
@@ -51,38 +39,6 @@ export const allowedEffectProvideSites: Record<string, readonly string[]> = {
     "Layer.succeed",
     "RpcServer.layerProtocolWorkerRunner",
     "BrowserWorkerRunner.layer",
-  ],
-  "formats/pdf/src/worker-browser.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
-  "formats/pdf/src/browser.worker.ts": [
-    "pdfWorkerHandlersLayer",
-    "RpcServer.layerProtocolWorkerRunner",
-    "BrowserWorkerRunner.layer",
-  ],
-  "formats/pdf/src/render-browser.ts": ["pdfPageRendererLayer", "BrowserWorker.layer"],
-  "formats/pdf/src/render.worker.ts": [
-    "pdfPageRendererHandlersLayer",
-    "RpcServer.layerProtocolWorkerRunner",
-    "BrowserWorkerRunner.layer",
-  ],
-  "signers/assinafy/src/index.ts": [
-    "assinafySignatureRequestProvider",
-    "assinafyCredentialsLayer(options)",
-  ],
-  "signers/clicksign/src/index.ts": [
-    "clicksignSignatureRequestProvider",
-    "clicksignCredentialsLayer(options)",
-  ],
-  "signers/documenso/src/index.ts": [
-    "documensoSignatureRequestProvider",
-    "documensoCredentialsLayer(options)",
-  ],
-  "signers/docuseal/src/index.ts": [
-    "docuSealSignatureRequestProvider",
-    "docuSealCredentialsLayer(options)",
-  ],
-  "signers/zapsign/src/index.ts": [
-    "zapSignSignatureRequestProvider",
-    "zapSignCredentialsLayer(options)",
   ],
 };
 
@@ -105,11 +61,4 @@ export const contractSuffixes: readonly string[] = [
 export const exportContractDeclarationPattern = new RegExp(
   `^\\s*export\\s+(?:interface|type)\\s+([A-Za-z_$][\\w$]*(?:${contractSuffixes.join("|")}))\\b`,
 );
-export const adapterOrPackagePathPrefixes: readonly string[] = [
-  "core/",
-  "signers/",
-  "formats/",
-  "validators/",
-  "runtime/",
-];
-export const signatureRuntimePrefix = "core/signatures/";
+export const adapterOrPackagePathPrefixes: readonly string[] = ["core/", "runtime/"];

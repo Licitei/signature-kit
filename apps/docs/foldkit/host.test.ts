@@ -112,10 +112,6 @@ test("serves the Foldkit build over HTTP", async () => {
             );
             await mkdir(join(fixture, "dist-foldkit/client/assets"), { recursive: true });
             await mkdir(join(fixture, "dist-foldkit/client/r"), { recursive: true });
-            await copyFile(
-              new URL("public/r/registry.json", root),
-              join(fixture, "dist-foldkit/client/r/registry.json"),
-            );
             await writeFile(join(fixture, "dist-foldkit/client/favicon.svg"), "<svg></svg>");
             await writeFile(join(fixture, "dist-foldkit/client/manifest.json"), "private manifest");
             await writeFile(join(fixture, "dist-foldkit/client/source.ts"), "private source");
@@ -184,48 +180,6 @@ test("serves the Foldkit build over HTTP", async () => {
               expect(await head.text()).toBe("");
             }
           }
-          for (const [page, image] of [
-            ["/en-US", "/en-US/index.webp"],
-            ["/pt-BR/changelog/a1-node-esm-release", "/en-US/changelog/a1-node-esm-release.webp"],
-          ]) {
-            const pageResponse = await request(new URL(page, origin));
-            expect(pageResponse.status).toBe(200);
-            expect(await pageResponse.text()).toContain(
-              `property="og:image" content="https://signaturekit.dev${image}"`,
-            );
-            const response = await request(new URL(image, origin));
-            expect(response.status).toBe(200);
-            expect(response.headers.get("content-type")).toBe("image/webp");
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("RIFF");
-            expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8L");
-            const dimensions = new DataView(bytes.buffer).getUint32(21, true);
-            expect([(dimensions & 0x3fff) + 1, ((dimensions >>> 14) & 0x3fff) + 1]).toEqual([
-              1200, 630,
-            ]);
-            const imageHead = await request(new URL(image, origin), { method: "HEAD" });
-            expect(imageHead.status).toBe(200);
-            expect(imageHead.headers.get("content-type")).toBe("image/webp");
-            expect(await imageHead.text()).toBe("");
-            const post = await request(new URL(image, origin), { method: "POST" });
-            expect(post.status).toBe(405);
-            expect(post.headers.get("allow")).toBe("GET, HEAD");
-          }
-          expect((await request(new URL("/en-US/blog/not-real.webp", origin))).status).toBe(404);
-          const registry = await request(new URL("/r/registry.json", origin));
-          expect(registry.status).toBe(200);
-          expect(registry.headers.get("content-type")).toMatch(/application\/json/);
-          const registryBytes = await readFile(new URL("public/r/registry.json", root));
-          expect(Buffer.from(await registry.arrayBuffer())).toEqual(registryBytes);
-          const registryHead = await request(new URL("/r/registry.json", origin), {
-            method: "HEAD",
-          });
-          expect(registryHead.status).toBe(200);
-          expect(registryHead.headers.get("content-type")).toBe(
-            registry.headers.get("content-type"),
-          );
-          expect(registryHead.headers.get("content-length")).toBe(String(registryBytes.length));
-          expect(await registryHead.text()).toBe("");
           const favicon = await request(new URL("/favicon.svg", origin));
           expect(favicon.status).toBe(200);
           expect(favicon.headers.get("content-type")).toMatch(/image\/svg\+xml/);
@@ -238,7 +192,8 @@ test("serves the Foldkit build over HTTP", async () => {
             "/foldkit.build.json",
             "/manifest.json",
             "/source.ts",
-            "/r/missing.json",
+            "/r/registry.json",
+            "/en-US/index.webp",
           ]) {
             expect((await request(new URL(path, origin))).status).toBe(404);
           }

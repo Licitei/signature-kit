@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fumapressPlugin } from "@fumapress/tegami/tegami";
 import { createCli } from "tegami/cli";
 import { github } from "tegami/plugins/github";
 import { tegami } from "tegami";
@@ -19,9 +18,6 @@ export const createReleaseProject = (cwd = process.cwd()) =>
       updateLockFile: true,
     },
     plugins: [
-      fumapressPlugin({
-        dir: "apps/docs/content/changelog",
-      }),
       github({
         repo: "Licitei/signature-kit",
         versionPr: {

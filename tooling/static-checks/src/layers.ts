@@ -3,14 +3,7 @@ import { dirname, relative, resolve } from "node:path";
 import * as ts from "typescript";
 import { parseSourceFile } from "./source-context";
 
-export type WorkspaceLayer =
-  | "shared"
-  | "core"
-  | "signers"
-  | "formats"
-  | "validators"
-  | "runtime"
-  | "apps";
+export type WorkspaceLayer = "shared" | "core" | "runtime" | "apps";
 
 type JsonObject = { readonly [key: string]: unknown };
 
@@ -33,34 +26,14 @@ export type WorkspaceLayerDiagnostic = {
   readonly message: string;
 };
 
-const workspaceRoots: readonly string[] = [
-  "shared",
-  "core",
-  "signers",
-  "formats",
-  "validators",
-  "runtime",
-  "apps",
-];
+const workspaceRoots: readonly string[] = ["shared", "core", "runtime", "apps"];
 
 const allowedDependencyLayers: Record<WorkspaceLayer, readonly WorkspaceLayer[]> = {
   shared: ["shared"],
   core: ["shared", "core"],
-  signers: ["shared", "core", "signers"],
-  formats: ["shared", "core", "formats"],
-  validators: ["shared", "core", "formats", "validators"],
   runtime: ["shared", "core", "runtime"],
-  apps: ["shared", "core", "signers", "formats", "runtime", "apps"],
+  apps: ["shared", "core", "runtime", "apps"],
 };
-const allowedCrossLayerPackageDependencies: Record<string, readonly string[]> = {
-  "@signature-kit/react": ["@signature-kit/a1"],
-};
-
-const hasAllowedCrossLayerPackageDependency = (
-  workspacePackage: WorkspacePackage,
-  dependency: WorkspacePackage,
-): boolean =>
-  allowedCrossLayerPackageDependencies[workspacePackage.name]?.includes(dependency.name) ?? false;
 
 const sourceExtensions: Record<string, true> = {
   ".ts": true,
@@ -81,10 +54,7 @@ const layerForDirectory = (directory: string): WorkspaceLayer | undefined => {
   switch (segment) {
     case "shared":
     case "core":
-    case "signers":
-    case "formats":
     case "apps":
-    case "validators":
     case "runtime":
       return segment;
     default:
@@ -377,7 +347,7 @@ const packageForRelativePath = (
       path === workspacePackage.directory || path.startsWith(`${workspacePackage.directory}/`),
   );
 const librarySourcePathPattern =
-  /^(?:core|shared|signers|formats|validators|runtime)\/[^/]+\/src\/.+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+  /^(?:core|shared|runtime)\/[^/]+\/src\/.+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
 
 const hasPublishedModuleExtension = (specifier: string): boolean => {
   const extension = /\.([A-Za-z0-9]+)$/.exec(specifier)?.[1]?.toLowerCase();
@@ -435,10 +405,7 @@ const dependencyDiagnostics = (
       return [];
     }
 
-    if (
-      allowedDependencyLayers[workspacePackage.layer].includes(dependency.layer) ||
-      hasAllowedCrossLayerPackageDependency(workspacePackage, dependency)
-    ) {
+    if (allowedDependencyLayers[workspacePackage.layer].includes(dependency.layer)) {
       return [];
     }
 
@@ -529,8 +496,7 @@ const packageImportDiagnostics = (
   }
   if (
     !sourcePath.includes("/__tests__/") &&
-    !allowedDependencyLayers[workspacePackage.layer].includes(importedPackage.layer) &&
-    !hasAllowedCrossLayerPackageDependency(workspacePackage, importedPackage)
+    !allowedDependencyLayers[workspacePackage.layer].includes(importedPackage.layer)
   ) {
     diagnostics.push({
       path: sourcePath,
@@ -598,109 +564,6 @@ const importDiagnostics = (
     ]);
   });
 
-const remoteSignerPascalNames: ReadonlyMap<string, string> = new Map([
-  ["docuseal", "DocuSeal"],
-  ["zapsign", "ZapSign"],
-]);
-
-const toPascalCase = (value: string): string =>
-  value
-    .split(/[-_]/)
-    .map((part) => part[0]?.toUpperCase() + part.slice(1))
-    .join("");
-
-const remoteSignerSurfaceDiagnostics = (
-  rootDirectory: string,
-  workspacePackage: WorkspacePackage,
-): readonly WorkspaceLayerDiagnostic[] => {
-  if (workspacePackage.layer !== "signers") {
-    return [];
-  }
-  const packageName = workspacePackage.directory.split("/")[1];
-  if (packageName === undefined || packageName === "a1") {
-    return [];
-  }
-  const sourcePath = `${rootDirectory}/${workspacePackage.directory}/src/index.ts`;
-  if (!existsSync(sourcePath)) {
-    return [
-      {
-        path: normalizePath(relative(rootDirectory, sourcePath)),
-        message: `${workspacePackage.name} remote signer must expose its uniform provider surface from src/index.ts.`,
-      },
-    ];
-  }
-  const source = readFileSync(sourcePath, "utf8");
-  const sourceFile = parseSourceFile(sourcePath, source);
-  const pascalName = remoteSignerPascalNames.get(packageName) ?? toPascalCase(packageName);
-  const valueExports = [
-    `${pascalName}ProviderId`,
-    `${pascalName}ProviderOptionsSchema`,
-    `${pascalName}SignatureRequest`,
-    "providers",
-    `get${pascalName}SignatureRequest`,
-    `list${pascalName}SignatureRequests`,
-    `delete${pascalName}SignatureRequest`,
-    `download${pascalName}SignedDocument`,
-  ];
-  const typeExports = [`${pascalName}ProviderOptions`, `${pascalName}SignatureRequest`];
-  const hasExport = (name: string, typeOnly: boolean): boolean => {
-    const hasExportModifier = (node: ts.Node): boolean => {
-      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
-      return modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
-    };
-    for (const statement of sourceFile.statements) {
-      if (hasExportModifier(statement)) {
-        const declarationName = ts.isVariableStatement(statement)
-          ? statement.declarationList.declarations.find(
-              (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === name,
-            )
-          : undefined;
-        if (declarationName !== undefined && !typeOnly) {
-          return true;
-        }
-        if (
-          (ts.isFunctionDeclaration(statement) ||
-            ts.isClassDeclaration(statement) ||
-            ts.isInterfaceDeclaration(statement) ||
-            ts.isTypeAliasDeclaration(statement) ||
-            ts.isEnumDeclaration(statement)) &&
-          statement.name?.text === name &&
-          (typeOnly ||
-            (!ts.isInterfaceDeclaration(statement) && !ts.isTypeAliasDeclaration(statement)))
-        ) {
-          return true;
-        }
-      }
-      if (ts.isExportDeclaration(statement) && statement.exportClause !== undefined) {
-        if (!ts.isNamedExports(statement.exportClause)) {
-          continue;
-        }
-        for (const element of statement.exportClause.elements) {
-          if (
-            element.name.text === name &&
-            (typeOnly
-              ? statement.isTypeOnly || element.isTypeOnly
-              : !statement.isTypeOnly && !element.isTypeOnly)
-          ) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  };
-  return [...valueExports, ...typeExports].flatMap((name) => {
-    const typeOnly = typeExports.includes(name);
-    return hasExport(name, typeOnly)
-      ? []
-      : [
-          {
-            path: normalizePath(relative(rootDirectory, sourcePath)),
-            message: `${workspacePackage.name} remote signer index must export ${typeOnly ? "type " : ""}${name}.`,
-          },
-        ];
-  });
-};
 export const collectWorkspaceLayerDiagnostics = (
   rootDirectory = process.cwd(),
 ): readonly WorkspaceLayerDiagnostic[] => {
@@ -720,7 +583,6 @@ export const collectWorkspaceLayerDiagnostics = (
     ...(workspacePackage.layer === "apps"
       ? []
       : [
-          ...remoteSignerSurfaceDiagnostics(rootDirectory, workspacePackage),
           ...exportPathDiagnostics(rootDirectory, workspacePackage, pathAliases),
           ...aliasPathDiagnostics(rootDirectory, workspacePackage, pathAliases),
           ...distParityDiagnostics(rootDirectory, workspacePackage),

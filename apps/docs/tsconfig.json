@@ -4,6 +4,7 @@
     "lib": ["dom", "dom.iterable", "esnext"],
     "types": ["vite/client"],
     "allowJs": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "strict": true,
     "forceConsistentCasingInFileNames": true,
@@ -21,31 +22,5 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "vitest.browser.config.ts"],
-  "references": [
-    {
-      "path": "../signing-domain"
-    },
-    {
-      "path": "../../core/signatures"
-    },
-    {
-      "path": "../../formats/react"
-    },
-    {
-      "path": "../../formats/pdf"
-    },
-    {
-      "path": "../../core/i18n"
-    },
-    {
-      "path": "../../shared/cms"
-    },
-    {
-      "path": "../../shared/pdf-core"
-    },
-    {
-      "path": "../../signers/a1"
-    }
-  ]
+  "exclude": ["node_modules", "vitest.browser.config.ts"]
 }

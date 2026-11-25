@@ -39,7 +39,7 @@ const handleRequest = async (request: IncomingMessage, response: ServerResponse)
 describe("feedback", () => {
   it("rejects malformed payloads and routes before delivery", async () => {
     for (const body of [
-      { route: "/en-US/sign-free", opinion: "good", message: "" },
+      { route: "/en-US/not-a-page", opinion: "good", message: "" },
       { route: "/en-US/docs?secret=x", opinion: "good", message: "" },
       { route: "/en-US/docs/missing", opinion: "good", message: "" },
       { route: "/en-US/docs", opinion: "other", message: "" },

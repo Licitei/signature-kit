@@ -168,7 +168,7 @@ export const feedbackBrowserServer = (docsRoot: string): Plugin => ({
                 }),
               ],
               resolve: { alias: { "@": docsRoot } },
-              server: { middlewareMode: true, hmr: false },
+              server: { middlewareMode: true, hmr: false, ws: false },
             }),
           )
           .then((server) => {

@@ -26,7 +26,6 @@ export const LINK_FIXTURE_URIS = {
   secondary: "https://signature-kit.dev/corpus/link-secondary",
   indirect: "https://signature-kit.dev/corpus/link-indirect",
   rotated: "https://signature-kit.dev/corpus/rotated-page-link",
-  takumiSignature: "licitei:assinatura",
 };
 
 export const corpusFixturePath = (name: CorpusFixtureName): string =>

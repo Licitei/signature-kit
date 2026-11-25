@@ -1,12 +1,9 @@
-import { adapterOrPackagePathPrefixes, signatureRuntimePrefix } from "../config";
+import { adapterOrPackagePathPrefixes } from "../config";
 
 export const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export const isAdapterOrPackageFile = (path: string): boolean =>
+export const isCoreOrRuntimeFile = (path: string): boolean =>
   adapterOrPackagePathPrefixes.some((prefix) => path.startsWith(prefix));
-
-export const isSignatureRuntimeFile = (path: string): boolean =>
-  path.startsWith(signatureRuntimePrefix);
 
 export const isTaggedErrorName = (name: string): boolean => {
   const raw = name.replace(/\s*<[\s\S]*$/, "");
@@ -14,7 +11,6 @@ export const isTaggedErrorName = (name: string): boolean => {
 };
 
 export const isCatalogFile = (path: string): boolean =>
-  path === "core/signatures/src/signatures.ts" ||
   path.endsWith("/config.ts") ||
   path.endsWith("/manifest.ts") ||
   path.endsWith("/observability.ts") ||
