@@ -4,7 +4,14 @@ import { signatureKitErrorCatalog, signatureKitErrorMessages } from "@signature-
 import { errorMessage } from "@signature-kit/i18n";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
-import { contentKeys, contentMetadata, contentSources, loadContent } from "./content-data";
+import {
+  contentKeys,
+  contentMetadata,
+  contentSources,
+  loadContent,
+  loadedContentCount,
+  preloadContent,
+} from "./content-data";
 import type { ContentNode, ParsedContent } from "./content-parse";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { prose } from "./styles/prose";
@@ -27,6 +34,24 @@ export const resolveContent = (section: string, slug: string) => {
   parsedContent.set(path, parsed);
   return parsed;
 };
+export const contentRevision = () => loadedContentCount();
+const contentRoute = (key: string) => {
+  const path = key.slice("../content/".length, -4);
+  return path === "docs/index"
+    ? pageRoute({ path: "docs" })
+    : pageRoute({ path: path.split("/").map(encodeURIComponent).join("/") });
+};
+export const contentTargetsFor = (pathname: string): ReadonlyArray<string> => {
+  const route = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  if (route === pageRoute({ path: "search" })) return ["docs"];
+  if (route === pageRoute({ path: "blog" })) return ["blog"];
+  if (route === pageRoute({ path: "changelog" })) return ["changelog"];
+  return contentKeys.filter((key) => contentRoute(key) === route);
+};
+export const loadContentTargets = (targets: ReadonlyArray<string>) =>
+  preloadContent(targets).then(() => {
+    parsedContent.clear();
+  });
 const buildDocsNavigation = () => {
   const read = (dir: string) => {
     const raw = contentMetadata[`../content/docs/${dir}meta.json`];

@@ -19,3 +19,5 @@ export const loadContent = (path: string): ParsedContent | undefined => {
   const source = contentSources[path];
   return source === undefined ? undefined : parseContent(source);
 };
+export const loadedContentCount = (): number => 0;
+export const preloadContent = (_targets: ReadonlyArray<string>): Promise<void> => Promise.resolve();
