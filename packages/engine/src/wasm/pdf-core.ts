@@ -194,7 +194,7 @@ export type PdfCoreService = {
     request: PdfCorePrepareSignatureRequest,
   ) => Effect.Effect<PdfCorePreparedSignature, PdfCoreError>;
   readonly openSigningDocument: (
-    pdf: Uint8Array,
+    parts: ReadonlyArray<Uint8Array>,
   ) => Effect.Effect<PdfCoreSigningSession, PdfCoreError, Scope.Scope>;
   readonly revisionChanges: (
     pdf: Uint8Array,
@@ -1506,10 +1506,31 @@ export const makePdfCore = (
     });
 
     const openSigningDocument = Effect.fn(PdfCoreOperationValue.openSigningDocument)(function* (
-      pdf: Uint8Array,
+      parts: ReadonlyArray<Uint8Array>,
     ) {
       const operation = PdfCoreOperationValue.openSigningDocument;
-      const input = yield* copyIn(operation, pdf);
+      const length = parts.reduce((sum, part) => sum + part.byteLength, 0);
+      const input = yield* allocate(operation, length).pipe(
+        Effect.tap((allocation) =>
+          Effect.sync(() => {
+            let offset = allocation.pointer;
+            for (const part of parts) {
+              new Uint8Array(core.memory.buffer, offset, part.byteLength).set(part);
+              offset += part.byteLength;
+            }
+          }),
+        ),
+        Effect.withSpan(
+          "pdfCore.wasm.copyIn",
+          {
+            attributes: {
+              "signature_kit.wasm.input_bytes": length,
+              "signature_kit.pdf_core.operation": operation,
+            },
+          },
+          { captureStackTrace: false },
+        ),
+      );
       const lock = yield* Semaphore.make(1);
       const closed = yield* Ref.make(false);
       yield* Effect.addFinalizer(() => lock.withPermit(Ref.set(closed, true)));
