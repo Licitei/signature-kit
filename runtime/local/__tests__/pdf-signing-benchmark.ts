@@ -18,7 +18,9 @@ export const signingOptions = (session: A1SessionBinding): PdfPrepareOptions => 
 
 export const medianSigningTime = <E, R>(sample: Effect.Effect<number, E, R>) =>
   Effect.gen(function* () {
-    for (let i = 0; i < 3; i += 1) yield* sample;
+    const coldMs = yield* sample;
+    for (let i = 0; i < 2; i += 1) yield* sample;
     const samples = yield* Effect.forEach(Array.from({ length: 7 }), () => sample);
-    return samples.sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+    const medianMs = samples.sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+    return { coldMs, medianMs };
   });

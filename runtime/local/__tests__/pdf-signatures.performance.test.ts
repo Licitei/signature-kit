@@ -45,7 +45,7 @@ it.live(
           yield* documents.release(receipt.signedRevision.handle);
           return milliseconds;
         });
-        const medianMs = yield* medianSigningTime(sign.pipe(Effect.withTracerEnabled(false)));
+        const timing = yield* medianSigningTime(sign.pipe(Effect.withTracerEnabled(false)));
         yield* telemetry.drain;
 
         const { exit, spans } = yield* recordSpans(sign);
@@ -64,14 +64,14 @@ it.live(
               attributes["signature_kit.wasm.result_bytes"] ??
               attributes.byteLength,
           }));
-        expect(steps.filter(({ name }) => name === "pdfCore.wasm.copyIn")).toHaveLength(5);
-        expect(steps.filter(({ name }) => name === "pdfCore.wasm.copyOut")).toHaveLength(3);
+        expect(steps.filter(({ name }) => name === "pdfCore.wasm.copyIn")).toHaveLength(2);
+        expect(steps.filter(({ name }) => name === "pdfCore.wasm.copyOut")).toHaveLength(2);
         console.info(
           JSON.stringify({
             runtime: "node",
             corpus: name,
             bytes: bytes.byteLength,
-            medianMs,
+            ...timing,
             steps,
           }),
         );

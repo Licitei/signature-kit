@@ -17,8 +17,8 @@ use crate::syntax::{Parser, skip_whitespace_at};
 use crate::write::{Body, Changes, Packing, incremental, rewrite};
 
 pub(crate) use signing::{
-    FieldLock, PreparedSignature, SignatureField, SignatureFields, prepare_signature,
-    signature_fields, signature_references,
+    FieldLock, PreparedSignature, PreparedUpdate, SignatureField, SignatureFields,
+    prepare_signature, prepare_signature_update, signature_fields, signature_references,
 };
 
 const EDIT_MAGIC: u32 = 0x4445_4450;

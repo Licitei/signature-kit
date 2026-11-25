@@ -75,7 +75,11 @@ export const decodeSignatureContents = Effect.fnUntraced(function* (contents: Ui
 });
 
 export const embedPreparedSignature = Effect.fnUntraced(function* (
-  { pdf, contentsStart, contentsEnd }: PdfCorePreparedSignature,
+  {
+    pdf,
+    contentsStart,
+    contentsEnd,
+  }: Pick<PdfCorePreparedSignature, "pdf" | "contentsStart" | "contentsEnd">,
   cms: Uint8Array,
 ) {
   if (cms.byteLength * 2 > contentsEnd - contentsStart) {

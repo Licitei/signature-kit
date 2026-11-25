@@ -27,6 +27,10 @@
       "types": "./dist/pem.d.ts",
       "import": "./dist/pem.js"
     },
+    "./sha256": {
+      "types": "./dist/primitives/sha256.d.ts",
+      "import": "./dist/primitives/sha256.js"
+    },
     "./pkcs12": {
       "types": "./dist/pkcs12.d.ts",
       "import": "./dist/pkcs12.js"

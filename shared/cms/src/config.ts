@@ -176,16 +176,19 @@ export const CreateDetachedSignedDataInputSchema = Schema.Struct({
 });
 export type CreateDetachedSignedDataInput = (typeof CreateDetachedSignedDataInputSchema)["Type"];
 
-export const CreateDetachedSignedDataFromDigestInputSchema = Schema.Struct({
-  messageDigest: Schema.Uint8Array,
+export const DetachedSignerOptionsSchema = Schema.Struct({
   certificateDer: Schema.Uint8Array,
-  chainDer: Schema.optional(Schema.Array(Schema.Uint8Array)),
+  chainDer: Schema.Array(Schema.Uint8Array),
   hashAlgorithm: Schema.Literals(["sha256", "sha384", "sha512"]),
+});
+export type DetachedSignerOptions = (typeof DetachedSignerOptionsSchema)["Type"];
+
+export const DetachedSignatureOptionsSchema = Schema.Struct({
+  messageDigest: Schema.Uint8Array,
   signingTime: Schema.optional(Schema.Date),
   icpBrasil: Schema.optional(IcpBrasilPolicySchema),
 });
-export type CreateDetachedSignedDataFromDigestInput =
-  (typeof CreateDetachedSignedDataFromDigestInputSchema)["Type"];
+export type DetachedSignatureOptions = (typeof DetachedSignatureOptionsSchema)["Type"];
 
 export const VerifyDetachedSignedDataInputSchema = Schema.Struct({
   cms: Schema.Uint8Array,

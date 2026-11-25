@@ -40,6 +40,7 @@ type XrefRow = (u32, u16, XrefEntry);
 
 #[derive(Debug)]
 struct Written {
+    base: usize,
     entries: Vec<(u32, u16, XrefEntry)>,
     out: Vec<u8>,
 }
@@ -96,7 +97,7 @@ impl Written {
         map: &Remap<'_>,
     ) {
         self.entries
-            .push((number, generation, XrefEntry::Offset(self.out.len())));
+            .push((number, generation, XrefEntry::Offset(self.offset())));
         push_unsigned(&mut self.out, u64::from(number));
         self.out.push(b' ');
         push_unsigned(&mut self.out, u64::from(generation));
@@ -117,8 +118,12 @@ impl Written {
         self.out.extend_from_slice(b"\nendobj\n");
     }
 
+    const fn offset(&self) -> usize {
+        self.base.saturating_add(self.out.len())
+    }
+
     fn xref(&mut self, trailer: &Dict, previous: Option<usize>, as_stream: bool, number: u32) {
-        let start = self.out.len();
+        let start = self.offset();
         let mut dict = trailer.clone();
         match previous {
             Some(prev) => dict.insert(
@@ -283,6 +288,7 @@ impl Graph {
         };
         let mut written = Written {
             entries: Vec::new(),
+            base: 0,
             out: Vec::with_capacity(document.bytes().len().saturating_add(1024)),
         };
         written.out.extend_from_slice(HEADER);
@@ -349,6 +355,7 @@ impl<'data> MergeOutput<'data> {
     fn emit(&self, trailer: Dict, layout: Packing) -> Vec<u8> {
         let mut written = Written {
             entries: Vec::new(),
+            base: 0,
             out: Vec::new(),
         };
         written.out.extend_from_slice(HEADER);
@@ -585,10 +592,15 @@ pub(crate) fn create(sizes: &[[f64; 2]]) -> Outcome<Vec<u8>> {
 }
 
 pub(crate) fn incremental(document: &Document<'_>, changed: &Changes) -> Outcome<Vec<u8>> {
-    incremental_with_prefix(document, changed, document.bytes(), None).map(|(bytes, _)| bytes)
+    let original = document.bytes();
+    let (update, _) = incremental_update(document, changed, original, None)?;
+    let mut output = Vec::with_capacity(original.len().saturating_add(update.len()));
+    output.extend_from_slice(original);
+    output.extend_from_slice(&update);
+    Ok(output)
 }
 
-pub(crate) fn incremental_with_prefix(
+pub(crate) fn incremental_update(
     document: &Document<'_>,
     changed: &Changes,
     original: &[u8],
@@ -611,10 +623,10 @@ pub(crate) fn incremental_with_prefix(
         .fold(1024, usize::saturating_add);
     let mut written = Written {
         entries: Vec::new(),
-        out: Vec::with_capacity(original.len().saturating_add(appended)),
+        base: original.len(),
+        out: Vec::with_capacity(appended),
     };
-    written.out.extend_from_slice(original);
-    if written.out.last() != Some(&b'\n') {
+    if original.last() != Some(&b'\n') {
         written.out.push(b'\n');
     }
     let appended_start = written.out.len();

@@ -1,8 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { a1SignaturesLayer } from "@signature-kit/a1/signer";
-import { createDetachedSignedDataFromDigest } from "@signature-kit/cms/sign";
-import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
 import { extractPdfSignatures } from "@signature-kit/pdf/byte-range";
 import { signPdf } from "@signature-kit/pdf/sign";
 import { verifyPdf } from "@signature-kit/pdf/verify";
@@ -20,14 +18,17 @@ import { recordSpans } from "../../../tooling/testing/tracing.ts";
 import { A1Sessions, Documents, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
 import { embedPreparedSignature } from "../src/pdf-contents.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../src/pdf-signatures.js";
+import type { A1Hash } from "../src/a1-certificate.js";
 import type { A1SessionInfo, PdfPrepareOptions } from "../src/protocol.js";
 
 const wasm = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
-const layer = pdfSignaturesLayer.pipe(
-  Layer.provideMerge(pdfEngineLayer),
-  Layer.provideMerge(localRuntimeLayer()),
-  Layer.provideMerge(wasm),
-);
+const signingLayer = (options?: Parameters<typeof localRuntimeLayer>[0]) =>
+  pdfSignaturesLayer.pipe(
+    Layer.provideMerge(pdfEngineLayer),
+    Layer.provideMerge(localRuntimeLayer(options)),
+    Layer.provideMerge(wasm),
+  );
+const layer = signingLayer();
 const password = Redacted.make("changeit");
 const now = new Date("2027-01-01T00:00:00Z");
 const run = promisify(execFile);
@@ -54,6 +55,14 @@ const options = (session: A1SessionInfo, name = "Approval"): PdfPrepareOptions =
   appearance: { kind: "visible" },
   policy: "icpBrasilAdRbV11",
 });
+
+const fingerprint = (bytes: Uint8Array) =>
+  Effect.promise(async () =>
+    Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join(""),
+  );
 
 const verifyIndependently = (pdf: Uint8Array, count: number) =>
   Effect.scoped(
@@ -121,6 +130,7 @@ describe("local PDF signatures", () => {
               rect: [32, 28, 192, 76],
             });
             const preview = yield* documents.export(preparation.previewRevision.handle);
+            expect(preparation.previewRevision.digest).toBe(yield* fingerprint(preview));
             const sameOptions = yield* pdf.prepare(source, {
               policy: "icpBrasilAdRbV11",
               appearance: { kind: "visible" },
@@ -146,6 +156,7 @@ describe("local PDF signatures", () => {
             yield* a1.close();
             expect(yield* pdf.confirm(preparation.preparationId)).toEqual(receipt);
             const signed = yield* documents.export(receipt.signedRevision.handle);
+            expect(receipt.signedRevision.digest).toBe(yield* fingerprint(signed));
             expect(signed.subarray(0, sourceBytes.byteLength)).toEqual(sourceBytes);
             expect(yield* documents.export(preparation.previewRevision.handle)).toEqual(preview);
 
@@ -366,6 +377,27 @@ describe("local PDF signatures", () => {
     30_000,
   );
 
+  it.effect.each(["SHA-384", "SHA-512"] satisfies A1Hash[])(
+    "confirms and verifies a PDF with %s",
+    (a1Hash) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        const documents = yield* Documents;
+        const a1 = yield* A1Sessions;
+        const pdf = yield* PdfSignatures;
+        const pfx = yield* fixture("ecpf");
+        const session = yield* a1.open({ pfx, password });
+        const source = yield* documents.open(yield* readPdfFixture);
+        const preparation = yield* pdf.prepare(source, options(session));
+        const receipt = yield* pdf.confirm(preparation.preparationId);
+        expect((yield* pdf.verify(receipt.signedRevision)).signatures).toMatchObject([
+          { integrity: "valid", coverage: { kind: "wholeFile" } },
+        ]);
+        const signed = yield* documents.export(receipt.signedRevision.handle);
+        expect(yield* verifyPdf({ pdf: signed })).toMatchObject({ valid: true });
+      }).pipe(Effect.provide(signingLayer({ a1Hash }))),
+  );
+
   it.effect("rejects oversize CMS and refuses a valid PDF certified with DocMDP P=1", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(now.getTime());
@@ -375,7 +407,6 @@ describe("local PDF signatures", () => {
       const documents = yield* Documents;
       const pfx = yield* fixture("ecpf");
       const session = yield* a1.open({ pfx, password });
-      const { certificate, chain } = yield* parsePkcs12(Redacted.value(pfx), password);
       const source = createPdfFixture();
       const request = {
         field: { kind: "create", name: "Certifier", page: 0, rect: [0, 0, 0, 0] },
@@ -385,15 +416,24 @@ describe("local PDF signatures", () => {
         contentsCapacity: 4096,
       } satisfies Parameters<typeof core.prepareSignature>[1];
       const prepared = yield* core.prepareSignature(source, request);
-      const cms = yield* createDetachedSignedDataFromDigest(
-        {
-          messageDigest: prepared.sha256,
-          certificateDer: certificate,
-          chainDer: chain,
-          hashAlgorithm: "sha256",
-        },
-        (attributes) => a1.sign(session.sessionId, session.generation, attributes),
+      const { cms: signer } = yield* a1.certificate(session);
+      const bindCms = yield* signer;
+      const detached = yield* bindCms({ messageDigest: prepared.sha256 });
+      const cms = yield* detached.sign((attributes) =>
+        a1.sign(session.sessionId, session.generation, attributes),
       );
+      expect(yield* detached.verify(cms)).toBe(true);
+      const changedDigest = new Uint8Array(prepared.sha256).map((byte) => byte ^ 1);
+      const other = yield* bindCms({ messageDigest: changedDigest });
+      expect(yield* other.verify(cms)).toBe(false);
+      const invalid = new Uint8Array(cms);
+      invalid[invalid.length - 1] = (invalid[invalid.length - 1] ?? 0) ^ 1;
+      expect(yield* detached.verify(invalid)).toBe(false);
+      const padded = new Uint8Array(cms.length + 1);
+      padded.set(cms);
+      expect(yield* detached.verify(padded)).toBe(true);
+      padded[cms.length] = 1;
+      expect(yield* detached.verify(padded)).toBe(false);
       const small = yield* core.prepareSignature(source, { ...request, contentsCapacity: 8 });
       expect(yield* Effect.flip(embedPreparedSignature(small, cms))).toMatchObject({
         code: "signatureTooLarge",

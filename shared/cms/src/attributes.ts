@@ -72,7 +72,7 @@ const signaturePolicyAttribute = (policy: IcpBrasilPolicy): pkijs.Attribute => {
   });
 };
 
-const compareDer = (a: Uint8Array, b: Uint8Array): number => {
+export const compareDer = (a: Uint8Array, b: Uint8Array): number => {
   const length = Math.max(a.length, b.length);
   for (let index = 0; index < length; index += 1) {
     const left = index < a.length ? a[index]! : 0;

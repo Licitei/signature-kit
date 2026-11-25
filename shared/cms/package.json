@@ -23,6 +23,10 @@
       "types": "./dist/icp-brasil.d.ts",
       "import": "./dist/icp-brasil.js"
     },
+    "./detached": {
+      "types": "./dist/detached.d.ts",
+      "import": "./dist/detached.js"
+    },
     "./sign": {
       "types": "./dist/sign.d.ts",
       "import": "./dist/sign.js"

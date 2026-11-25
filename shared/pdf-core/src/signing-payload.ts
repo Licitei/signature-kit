@@ -238,6 +238,16 @@ export const decodePreparedSignature = (bytes: Uint8Array) => {
     : undefined;
 };
 
+export const decodePreparedUpdate = (bytes: Uint8Array) => {
+  const reader = new PayloadReader(bytes);
+  if (!reader.header(0x55505350)) return undefined;
+  const byteRange = [reader.u32(), reader.u32(), reader.u32(), reader.u32()];
+  const contentsStart = reader.u32();
+  const contentsEnd = reader.u32();
+  const appendix = reader.raw(reader.u32());
+  return reader.done() ? { byteRange, contentsStart, contentsEnd, appendix } : undefined;
+};
+
 export const decodeRevisionChanges = (bytes: Uint8Array) => {
   const reader = new PayloadReader(bytes);
   if (!reader.header(changesMagic)) return undefined;

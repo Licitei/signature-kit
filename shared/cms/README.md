@@ -15,6 +15,7 @@ bun add @signature-kit/cms effect
 - `@signature-kit/cms/config` — `CmsError`, `CmsErrorCodeValue`, `CmsOperationValue`, `CmsHashAlgorithmValue`, `CmsVerifyResultSchema`, `TimestampOptionsSchema`, policy schemas, and `cmsErrorMessages`.
 - `@signature-kit/cms/icp-brasil` — `IcpBrasilPadesPolicy`, `parseIcpBrasilPadesPolicy`, and `fetchIcpBrasilPadesPolicy`.
 - `@signature-kit/cms/inspect` — `inspectDetachedSignedData` plus signed-attribute and inspection schemas.
+- `@signature-kit/cms/detached` — `makeDetachedSigner` binds an RSA certificate and its verification key to a local signing session.
 - `@signature-kit/cms/sign` — `createDetachedSignedData`.
 - `@signature-kit/cms/verify` — `verifyDetachedSignedData`.
 

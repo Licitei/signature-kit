@@ -17,8 +17,7 @@ function rotr32(x: number, n: number): number {
   return ((x >>> n) | (x << (32 - n))) >>> 0;
 }
 
-function processBlock(h: Uint32Array, view: DataView, offset: number): void {
-  const w = new Uint32Array(64);
+function processBlock(h: Uint32Array, view: DataView, offset: number, w: Uint32Array): void {
   for (let t = 0; t < 16; t++) {
     w[t] = view.getUint32(offset + t * 4, false);
   }
@@ -82,8 +81,9 @@ export function sha256(data: Uint8Array): Uint8Array {
 
   const h = new Uint32Array(INIT_H);
 
+  const schedule = new Uint32Array(64);
   for (let i = 0; i < totalLen; i += 64) {
-    processBlock(h, view, i);
+    processBlock(h, view, i, schedule);
   }
 
   const digest = new Uint8Array(32);
@@ -116,8 +116,9 @@ export function sha256WithState(
 
   const h = new Uint32Array(initState);
 
+  const schedule = new Uint32Array(64);
   for (let i = 0; i < totalLen; i += 64) {
-    processBlock(h, view, i);
+    processBlock(h, view, i, schedule);
   }
 
   const digest = new Uint8Array(32);
@@ -131,6 +132,30 @@ export function sha256WithState(
 export function sha256ProcessBlock(blockBytes: Uint8Array): Uint32Array {
   const h = new Uint32Array(INIT_H);
   const view = new DataView(blockBytes.buffer, blockBytes.byteOffset, blockBytes.byteLength);
-  processBlock(h, view, 0);
+  processBlock(h, view, 0, new Uint32Array(64));
   return h;
+}
+
+export function sha256Prefix(prefix: Uint8Array) {
+  const blockLength = prefix.length - (prefix.length % 64);
+  const state = new Uint32Array(INIT_H);
+  const view = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength);
+  const schedule = new Uint32Array(64);
+  for (let offset = 0; offset < blockLength; offset += 64) {
+    processBlock(state, view, offset, schedule);
+  }
+  const tail = prefix.slice(blockLength);
+
+  return (parts: readonly Uint8Array[]) => {
+    const bytes = new Uint8Array(
+      tail.length + parts.reduce((length, part) => length + part.length, 0),
+    );
+    bytes.set(tail);
+    let offset = tail.length;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.length;
+    }
+    return sha256WithState(state, bytes, blockLength);
+  };
 }

@@ -1,6 +1,6 @@
 import { inspectDetachedSignedData, unpadSignedData } from "@signature-kit/cms/inspect";
 import { verifyDetachedSignedDataEvidence } from "@signature-kit/cms/verify";
-import type { PdfCore } from "@signature-kit/pdf-core/pdf-core";
+import type { PdfCoreSigningDocument } from "@signature-kit/pdf-core/pdf-core";
 import { Clock, Effect, Schema } from "effect";
 import { a1Profile } from "./a1-certificate.js";
 import { decodeSignatureContents, signatureContents, signedBytes } from "./pdf-contents.js";
@@ -12,7 +12,7 @@ import type {
 } from "./protocol.js";
 
 export const verifyPdfRevision = Effect.fn("local.pdf.verify")(function* (
-  core: typeof PdfCore.Service,
+  signing: PdfCoreSigningDocument,
   pdf: Uint8Array,
   input: PdfVerifyOptions = {},
 ): Effect.fn.Return<PdfVerificationReport, LocalError> {
@@ -21,15 +21,15 @@ export const verifyPdfRevision = Effect.fn("local.pdf.verify")(function* (
   );
   const at = options.at ?? new Date(yield* Clock.currentTimeMillis);
   yield* Effect.annotateCurrentSpan("byteLength", pdf.byteLength);
-  const report = yield* core
-    .signatures(pdf, "verification")
+  const report = yield* signing
+    .signatures("verification")
     .pipe(Effect.mapError(() => new LocalError({ code: "pdfReadFailed" })));
   if (report.failure !== undefined) {
     return yield* new LocalError({ code: "pdfReadFailed" });
   }
-  const fields = yield* core
-    .signatureFields(pdf)
-    .pipe(Effect.mapError(() => new LocalError({ code: "pdfReadFailed" })));
+  const fields = yield* signing.fields.pipe(
+    Effect.mapError(() => new LocalError({ code: "pdfReadFailed" })),
+  );
   const signatures = yield* Effect.forEach(
     report.dictionaries,
     (dictionary): Effect.Effect<PdfSignatureVerification> =>
@@ -55,9 +55,7 @@ export const verifyPdfRevision = Effect.fn("local.pdf.verify")(function* (
 
         const revisionEnd = range[2] + range[3];
         const changeReport =
-          range[0] === 0
-            ? yield* core.revisionChanges(pdf, revisionEnd).pipe(Effect.option)
-            : undefined;
+          range[0] === 0 ? yield* signing.changes(revisionEnd).pipe(Effect.option) : undefined;
         const changes = changeReport?._tag === "Some" ? changeReport.value : undefined;
         const coverage = {
           kind:
