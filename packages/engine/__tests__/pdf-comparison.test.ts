@@ -212,6 +212,13 @@ it.effect("creates empty widgets atomically and respects certification and field
       { mode: "incremental" },
     );
     const alteredCertification = yield* documents.open(withoutPerms);
+    expect((yield* pdf.verify(alteredCertification)).signatures[0]).toMatchObject({
+      integrity: "valid",
+      mdp: { docMdp: 1, permittedChanges: [], violations: expect.any(Array) },
+    });
+    expect((yield* pdf.compare(lockedDocument, alteredCertification)).reasons).toContain(
+      "mdpViolation",
+    );
     expect(
       yield* Effect.flip(pdf.prepare(alteredCertification, existingField(session, "Contratada"))),
     ).toMatchObject({ code: "documentLocked" });
@@ -243,5 +250,56 @@ it.effect("creates empty widgets atomically and respects certification and field
     expect(
       yield* Effect.flip(pdf.prepare(alteredLock, existingField(session, "Contratada"))),
     ).toMatchObject({ code: "documentLocked" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission %i", (docMdp) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(trustAt.getTime());
+    const documents = yield* Documents;
+    const pdf = yield* PdfSignatures;
+    const core = yield* PdfCore;
+    const a1 = yield* A1Sessions;
+    const source = yield* documents.open(yield* fixture("sent.pdf"));
+    const session = yield* a1.open({
+      pfx: Redacted.make(yield* fixture("ecpf.p12")),
+      password: Redacted.make("changeit"),
+    });
+    const certification = yield* pdf.prepare(source, {
+      ...existingField(session, "Contratante"),
+      docMdp,
+    });
+    const signed = (yield* pdf.confirm(certification.preparationId)).signedRevision;
+    const approval = yield* pdf.prepare(signed, existingField(session, "Contratada"));
+    const cosigned = (yield* pdf.confirm(approval.preparationId)).signedRevision;
+    const report = yield* pdf.verify(cosigned);
+    expect(report.signatures[0]?.mdp).toMatchObject({
+      docMdp,
+      violations: [],
+      permittedChanges: expect.arrayContaining([expect.objectContaining({ kind: "signature" })]),
+    });
+
+    const bytes = yield* documents.export(cosigned.handle);
+    const { nextObjectNumber } = yield* core.document(bytes);
+    const ref = { number: nextObjectNumber, generation: 0 };
+    const annotated = yield* core.edit(
+      bytes,
+      [
+        { op: "setObject", ref, value: "<< /Type /Annot /Subtype /Text /Rect [10 10 20 20] >>" },
+        {
+          op: "append",
+          target: { base: { kind: "page", pageIndex: 0 } },
+          key: "Annots",
+          value: `${ref.number} 0 R`,
+        },
+      ],
+      { mode: "incremental" },
+    );
+    const verified = yield* pdf.verify(yield* documents.open(annotated));
+    const policy = verified.signatures[0]?.mdp;
+    expect(policy?.[docMdp === 2 ? "violations" : "permittedChanges"]).toContainEqual(
+      expect.objectContaining({ kind: "annotation", change: "added" }),
+    );
+    if (docMdp === 3) expect(policy?.violations).toEqual([]);
   }).pipe(Effect.provide(layer)),
 );

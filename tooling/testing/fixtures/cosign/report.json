@@ -4,6 +4,7 @@
   "signatures": [
     {
       "fieldName": "Contratante",
+      "kind": "signature",
       "integrity": "valid",
       "coverage": {
         "kind": "partial",
@@ -19,7 +20,13 @@
         "holderKind": "e-cpf"
       },
       "claimedSigningTime": "2027-01-01T00:00:00.000Z",
-      "timestampEvidence": "absent",
+      "timestampEvidence": {
+        "kind": "absent"
+      },
+      "evaluationTime": {
+        "at": "2027-01-01T00:00:00.000Z",
+        "source": "caller"
+      },
       "changes": {
         "recognised": [
           {
@@ -29,7 +36,10 @@
             },
             "kind": "signatureField",
             "change": "modified",
-            "revisionEnd": 15481
+            "revisionEnd": 15481,
+            "fieldNames": [
+              "Contratada"
+            ]
           },
           {
             "ref": {
@@ -38,7 +48,10 @@
             },
             "kind": "signature",
             "change": "added",
-            "revisionEnd": 15481
+            "revisionEnd": 15481,
+            "fieldNames": [
+              "Contratada"
+            ]
           },
           {
             "ref": {
@@ -47,7 +60,10 @@
             },
             "kind": "widgetAppearance",
             "change": "added",
-            "revisionEnd": 15481
+            "revisionEnd": 15481,
+            "fieldNames": [
+              "Contratada"
+            ]
           },
           {
             "ref": {
@@ -56,7 +72,10 @@
             },
             "kind": "widgetAppearance",
             "change": "added",
-            "revisionEnd": 15481
+            "revisionEnd": 15481,
+            "fieldNames": [
+              "Contratada"
+            ]
           },
           {
             "ref": {
@@ -65,7 +84,10 @@
             },
             "kind": "widgetAppearance",
             "change": "added",
-            "revisionEnd": 15481
+            "revisionEnd": 15481,
+            "fieldNames": [
+              "Contratada"
+            ]
           }
         ],
         "unknown": [],
@@ -73,13 +95,16 @@
         "unknownObjectCount": 0,
         "pageContentChanged": false
       },
+      "mdp": null,
       "trust": "trusted",
       "revocation": {
         "kind": "notChecked"
-      }
+      },
+      "ltvLevel": "B-B"
     },
     {
       "fieldName": "Contratada",
+      "kind": "signature",
       "integrity": "valid",
       "coverage": {
         "kind": "wholeFile",
@@ -95,7 +120,13 @@
         "holderKind": "e-cnpj"
       },
       "claimedSigningTime": "2027-01-01T00:00:00.000Z",
-      "timestampEvidence": "absent",
+      "timestampEvidence": {
+        "kind": "absent"
+      },
+      "evaluationTime": {
+        "at": "2027-01-01T00:00:00.000Z",
+        "source": "caller"
+      },
       "changes": {
         "recognised": [],
         "unknown": [],
@@ -103,10 +134,12 @@
         "unknownObjectCount": 0,
         "pageContentChanged": false
       },
+      "mdp": null,
       "trust": "trusted",
       "revocation": {
         "kind": "notChecked"
-      }
+      },
+      "ltvLevel": "B-B"
     }
   ],
   "changes": {
@@ -118,7 +151,8 @@
         },
         "kind": "acroForm",
         "change": "modified",
-        "revisionEnd": 8423
+        "revisionEnd": 8423,
+        "fieldNames": []
       },
       {
         "ref": {
@@ -127,7 +161,10 @@
         },
         "kind": "signatureField",
         "change": "modified",
-        "revisionEnd": 8423
+        "revisionEnd": 8423,
+        "fieldNames": [
+          "Contratante"
+        ]
       },
       {
         "ref": {
@@ -136,7 +173,10 @@
         },
         "kind": "signature",
         "change": "added",
-        "revisionEnd": 8423
+        "revisionEnd": 8423,
+        "fieldNames": [
+          "Contratante"
+        ]
       },
       {
         "ref": {
@@ -145,7 +185,10 @@
         },
         "kind": "widgetAppearance",
         "change": "added",
-        "revisionEnd": 8423
+        "revisionEnd": 8423,
+        "fieldNames": [
+          "Contratante"
+        ]
       },
       {
         "ref": {
@@ -154,7 +197,10 @@
         },
         "kind": "widgetAppearance",
         "change": "added",
-        "revisionEnd": 8423
+        "revisionEnd": 8423,
+        "fieldNames": [
+          "Contratante"
+        ]
       },
       {
         "ref": {
@@ -163,7 +209,10 @@
         },
         "kind": "widgetAppearance",
         "change": "added",
-        "revisionEnd": 8423
+        "revisionEnd": 8423,
+        "fieldNames": [
+          "Contratante"
+        ]
       },
       {
         "ref": {
@@ -172,7 +221,10 @@
         },
         "kind": "signatureField",
         "change": "modified",
-        "revisionEnd": 15481
+        "revisionEnd": 15481,
+        "fieldNames": [
+          "Contratada"
+        ]
       },
       {
         "ref": {
@@ -181,7 +233,10 @@
         },
         "kind": "signature",
         "change": "added",
-        "revisionEnd": 15481
+        "revisionEnd": 15481,
+        "fieldNames": [
+          "Contratada"
+        ]
       },
       {
         "ref": {
@@ -190,7 +245,10 @@
         },
         "kind": "widgetAppearance",
         "change": "added",
-        "revisionEnd": 15481
+        "revisionEnd": 15481,
+        "fieldNames": [
+          "Contratada"
+        ]
       },
       {
         "ref": {
@@ -199,7 +257,10 @@
         },
         "kind": "widgetAppearance",
         "change": "added",
-        "revisionEnd": 15481
+        "revisionEnd": 15481,
+        "fieldNames": [
+          "Contratada"
+        ]
       },
       {
         "ref": {
@@ -208,7 +269,10 @@
         },
         "kind": "widgetAppearance",
         "change": "added",
-        "revisionEnd": 15481
+        "revisionEnd": 15481,
+        "fieldNames": [
+          "Contratada"
+        ]
       }
     ],
     "unknown": [],

@@ -220,11 +220,30 @@ it.effect("keeps verified revocation separate from unassessed evidence", () =>
         trust: "trusted",
         revocation: { kind: "verified", status: "good" },
       },
+      {
+        field: "third",
+        coverage: { kind: "partial" },
+        integrity: "valid",
+        trust: "trusted",
+        revocation: { kind: "verified", status: "unknown" },
+        timestamp: "unverified",
+        mdp: "violated",
+        ltvLevel: "B-LT",
+      },
     ] satisfies typeof sampleEvidence.signers;
     const bytes = yield* compose(evidenceReportTemplate({ ...sampleEvidence, signers }));
     const pages = yield* core.text(bytes);
     const extracted = pages.join("\n");
-    for (const label of ["violada", "não confiável", "revogada", "válida", "não avaliadas"]) {
+    for (const label of [
+      "violada",
+      "não confiável",
+      "revogada",
+      "válida",
+      "não avaliadas",
+      "desconhecida",
+      "não verificado",
+      "PAdES B-LT",
+    ]) {
       expect(extracted).toContain(label);
     }
   }).pipe(Effect.provide(layer)),

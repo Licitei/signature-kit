@@ -1,5 +1,9 @@
 import { PdfCoreRevisionChangeKindSchema } from "./config.js";
-import type { PdfCoreNewSignatureFields, PdfCorePrepareSignatureRequest } from "./config.js";
+import type {
+  PdfCoreNewSignatureFields,
+  PdfCorePrepareSignatureRequest,
+  PdfCoreValidationData,
+} from "./config.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8 = new TextDecoder();
@@ -269,12 +273,40 @@ export const decodeRevisionChanges = (bytes: Uint8Array) => {
   if (!reader.header(changesMagic)) return undefined;
   const pageContentChanged = reader.u32() === 1;
   const fromRevisionIndex = reader.u32();
-  const changes = reader.list(20, () => {
+  const changes = reader.list(24, () => {
     const ref = reader.ref();
     const kind = PdfCoreRevisionChangeKindSchema.literals[reader.u32()];
     const status = reader.u32();
     const change = status === 1 ? "added" : status === 2 ? "removed" : "modified";
-    return { ref, kind, change, revisionEnd: reader.u32() };
+    const revisionEnd = reader.u32();
+    const fieldNames = reader.list(4, () => reader.text());
+    return { ref, kind, change, revisionEnd, fieldNames };
   });
-  return reader.done() ? { changes, pageContentChanged, fromRevisionIndex } : undefined;
+  const policies = reader.list(44, () => ({
+    byteRange: [reader.f64(), reader.f64(), reader.f64(), reader.f64()],
+    docMdp: reader.u32() || undefined,
+    fieldName: reader.text(),
+    fieldLocks: reader.list(8, () => ({
+      action: reader.text() || undefined,
+      fields: reader.list(4, () => reader.text()),
+    })),
+  }));
+  return reader.done() ? { changes, pageContentChanged, fromRevisionIndex, policies } : undefined;
+};
+
+export const encodeValidationData = ({ certificates, ocsp, crls }: PdfCoreValidationData) => {
+  const writer = payloadWriter();
+  for (const list of [certificates, ocsp, crls]) {
+    writer.u32(list.length);
+    list.forEach(writer.bytes);
+  }
+  return writer.finish();
+};
+
+export const decodeValidationData = (bytes: Uint8Array) => {
+  const reader = new PayloadReader(bytes);
+  const certificates = reader.list(4, () => reader.raw(reader.u32()));
+  const ocsp = reader.list(4, () => reader.raw(reader.u32()));
+  const crls = reader.list(4, () => reader.raw(reader.u32()));
+  return reader.done() ? { certificates, ocsp, crls } : undefined;
 };

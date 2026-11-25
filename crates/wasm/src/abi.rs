@@ -15,8 +15,10 @@ use signature_kit_pdf_core::diagnostics::{self, PageDiagnostics, TextLayer};
 use signature_kit_pdf_core::document::{self, PageRequest};
 use signature_kit_pdf_core::edit::signing::{
     FieldLock, PreparedSignature, PreparedUpdate, SignatureField, SignatureFields,
-    add_signature_fields, prepare_signature, prepare_signature_update, signature_fields,
+    add_document_timestamp, add_signature_fields, prepare_document_timestamp, prepare_signature,
+    prepare_signature_update, signature_fields,
 };
+use signature_kit_pdf_core::edit::validation::{add_validation_data, read_validation_data};
 use signature_kit_pdf_core::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use signature_kit_pdf_core::failure::{Failure, Outcome};
 use signature_kit_pdf_core::font_tables::{Standard14Font, win_ansi_unicode};
@@ -956,6 +958,22 @@ fn encode_revision_changes(report: &RevisionChanges) -> Outcome<Writer> {
         out.u32(u32::from(change.kind));
         out.u32(u32::from(change.added) | (u32::from(change.removed) << 1_i32));
         out.u32(len32(change.revision_end)?);
+        out.u32(len32(change.field_names.len())?);
+        for field in &change.field_names {
+            sized_bytes(&mut out, field.as_bytes())?;
+        }
+    }
+    out.u32(len32(report.policies.len())?);
+    for policy in &report.policies {
+        for offset in policy.byte_range {
+            out.f64(u64_to_f64(offset));
+        }
+        out.u32(policy.doc_mdp.unwrap_or(0));
+        sized_bytes(&mut out, policy.field_name.as_bytes())?;
+        out.u32(len32(policy.field_locks.len())?);
+        for lock in &policy.field_locks {
+            encode_lock(&mut out, lock)?;
+        }
     }
     out.done()
 }
@@ -1218,6 +1236,84 @@ pub(crate) unsafe extern "C" fn pdf_core_revision_changes(
         encode_revision_changes(&revision_changes(
             bytes,
             from_revision_end,
+            &Limits::default(),
+        )?)
+    }))
+}
+
+/// # Safety
+/// The input must satisfy [`view`] until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_read_validation_data(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from the function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    finish(pdf.and_then(|bytes| {
+        let evidence = read_validation_data(bytes, &Limits::default())?;
+        let mut out = Writer::with_capacity(32);
+        for list in evidence {
+            out.u32(len32(list.len())?);
+            for der in list {
+                sized_bytes(&mut out, &der)?;
+            }
+        }
+        out.done()
+    }))
+}
+
+/// # Safety
+/// The inputs must satisfy [`view`] until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_add_validation_data(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from the function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    // SAFETY: forwarded from the function's contract.
+    let payload = unsafe { view(payload_ptr, payload_len) };
+    finish(
+        pdf.and_then(|bytes| {
+            bytes_result(&add_validation_data(bytes, payload?, &Limits::default())?)
+        }),
+    )
+}
+
+/// # Safety
+/// The input must satisfy [`view`] until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_prepare_document_timestamp(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from the function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    finish(pdf.and_then(|bytes| {
+        encode_preparation_update(&prepare_document_timestamp(bytes, &Limits::default())?)
+    }))
+}
+
+/// # Safety
+/// The inputs must satisfy [`view`] until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_add_document_timestamp(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    payload_ptr: *const u8,
+    payload_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from the function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    // SAFETY: forwarded from the function's contract.
+    let payload = unsafe { view(payload_ptr, payload_len) };
+    finish(pdf.and_then(|bytes| {
+        bytes_result(&add_document_timestamp(
+            bytes,
+            payload?,
             &Limits::default(),
         )?)
     }))

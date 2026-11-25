@@ -10,6 +10,7 @@ export type LocalRequest = {
   readonly url: URL;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
+  readonly bodyBytes: Uint8Array;
 };
 
 export type LocalResponse = {
@@ -35,14 +36,14 @@ type LocalServerStart =
     }
   | { readonly _tag: "missingTcpPort" };
 
-const collectBody = (request: IncomingMessage): Promise<string> =>
-  new Promise<string>((resolve, reject) => {
+const collectBody = (request: IncomingMessage): Promise<Buffer> =>
+  new Promise<Buffer>((resolve, reject) => {
     const chunks: Uint8Array[] = [];
     request.on("data", (chunk) => {
       chunks.push(Uint8Array.from(chunk));
     });
     request.on("end", () => {
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      resolve(Buffer.concat(chunks));
     });
     request.on("error", (error) => reject(error));
   });
@@ -67,7 +68,7 @@ export const startLocalServer = (
           void (async () => {
             const method = request.method ?? "";
             const url = new URL(request.url ?? "/", "http://127.0.0.1");
-            const body = await collectBody(request);
+            const bodyBytes = await collectBody(request);
             const recorded: LocalRequest = {
               method,
               pathname: url.pathname,
@@ -75,7 +76,8 @@ export const startLocalServer = (
               search: url.search,
               url,
               headers: normalizeHeaders(request.headers),
-              body,
+              body: bodyBytes.toString("utf8"),
+              bodyBytes,
             };
             requests.push(recorded);
 

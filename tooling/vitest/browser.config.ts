@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-runtime-network.ts";
 import { runBatchResume, sampleBatchPageHeap } from "./batch-command.ts";
 import { runCosignMilestone } from "./cosign-command.ts";
+import { runLtvMilestone } from "./ltv-command.ts";
 
 export default defineConfig({
   assetsInclude: ["**/*.p12"],
@@ -12,6 +13,7 @@ export default defineConfig({
       "packages/browser/src/worker{,-telemetry}.ts",
       "packages/browser/__tests__/cosign-page.ts",
       "packages/browser/__tests__/batch-page.ts",
+      "packages/browser/__tests__/ltv-page.ts",
     ],
     include: [
       "@effect/opentelemetry",
@@ -41,6 +43,7 @@ export default defineConfig({
         blockLocalRuntimeNetwork,
         trackLocalRuntimeRequests,
         runCosignMilestone,
+        runLtvMilestone,
         runBatchResume,
         sampleBatchPageHeap,
       },

@@ -80,14 +80,12 @@ Relatório de assinaturas
 Identidade do documento, validação por signatário e histórico de revisões.
 DOCUMENTO ANALISADO
 Contrato de prestação de serviços.pdf
-SHA-256
-1f6a9db5c7e2f498e7402418477cbda43f1cd6ae05dd7c0f495b8c8264917216e2
+SHA-256 1f6a9db5c7e2f498e7402418477cbda43f1cd6ae05dd7c0f495b8c8264917216e2
 Signatários
 SIGNATÁRIO 01
 Marina Ferreira
-Campo: assinatura-contratante
 e-CPF
-25 nov. 2026, 10:42 BRT
+assinatura-contratante · 25 nov. 2026, 10:42 BRT
 Cobertura
 revisão parcial
 Integridade
@@ -96,21 +94,34 @@ Confiança
 confiável
 Revogação
 evidência embutida
-Após a assinatura: 1 alteração reconhecida 2 alterações desconhecidas
+Carimbo do tempo
+não verificado
+Certificação
+respeitada
+Longo prazo
+PAdES B-B
+Após a assinatura
+2 desconhecidas de 3
 SIGNATÁRIO 02
 Estúdio Campo Digital Ltda.
-Campo: assinatura-contratada
 e-CNPJ
-25 nov. 2026, 11:08 BRT
+assinatura-contratada · 25 nov. 2026, 11:08 BRT
 Cobertura
 arquivo inteiro
 Integridade
 íntegra
 Confiança
-não avaliada
+confiável
 Revogação
-não verificada
-Após a assinatura: 0 alterações reconhecidas 0 alterações desconhecidas
+válida
+Carimbo do tempo
+verificado
+Certificação
+sem restrição
+Longo prazo
+PAdES B-LTA
+Após a assinatura
+nenhuma alteração
 Linha do tempo
 25 nov. · 10:30 Revisão 0 · documento original criado
 25 nov. · 10:42 Revisão 1 · assinatura da contratante adicionada

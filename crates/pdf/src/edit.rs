@@ -1,6 +1,9 @@
 #[path = "signing.rs"]
 pub mod signing;
 
+#[path = "validation.rs"]
+pub mod validation;
+
 use alloc::rc::Rc;
 use core::str;
 use std::collections::HashSet;

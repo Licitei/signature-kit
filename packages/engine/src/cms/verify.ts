@@ -1,6 +1,8 @@
 import * as asn1js from "asn1js";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import * as pkijs from "pkijs";
+import { Hex } from "effect/encoding";
+import { embeddedRevocation } from "../validation/revocation.js";
 import {
   VerifyDetachedSignedDataEvidenceInputSchema,
   CmsError,
@@ -24,20 +26,6 @@ const SignedDataVerifyErrorSchema = Schema.Struct({
   signerCertificateVerified: Schema.optional(Schema.NullOr(Schema.Boolean)),
 });
 
-const BASIC_OCSP_RESPONSE_OID = "1.3.6.1.5.5.7.48.1.1";
-
-const revocationEvidence = (signed: pkijs.SignedData) => ({
-  ocspCount:
-    (signed.ocsps?.filter((entry) => entry instanceof pkijs.BasicOCSPResponse).length ?? 0) +
-    (signed.crls?.filter(
-      (entry) =>
-        entry instanceof pkijs.OtherRevocationInfoFormat &&
-        entry.otherRevInfoFormat === BASIC_OCSP_RESPONSE_OID,
-    ).length ?? 0),
-  crlCount:
-    signed.crls?.filter((entry) => entry instanceof pkijs.CertificateRevocationList).length ?? 0,
-});
-
 const signerSerialHex = (signed: pkijs.SignedData): string | null => {
   const sid = signed.signerInfos[0]?.sid;
   if (sid === null || typeof sid !== "object") return null;
@@ -47,9 +35,7 @@ const signerSerialHex = (signed: pkijs.SignedData): string | null => {
   if (valueBlock === null || typeof valueBlock !== "object") return null;
   const view = "valueHexView" in valueBlock ? valueBlock.valueHexView : null;
   if (!isUint8Array(view)) return null;
-  let output = "";
-  for (const byte of view) output += byte.toString(16).padStart(2, "0");
-  return output;
+  return Hex.encode(view);
 };
 
 const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
@@ -118,9 +104,11 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
         revocationStatus: "not_checked",
         signerSerialNumber: signerSerialHex(signed),
       } satisfies CmsVerifyResult,
-      revocation: { ocspCount: 0, crlCount: 0 },
+      revocation: { ocsp: [], crls: [] },
+      certificatePath: [],
       claimedSigningTime: undefined,
-      timestampPresent: false,
+      timestampTokens: [],
+      signatureValue: undefined,
     };
   }
 
@@ -137,6 +125,20 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
       }),
   });
 
+  if (valid.certificates !== undefined && valid.certificates.length > 0) {
+    const certificates = yield* Effect.forEach(valid.certificates, (der) =>
+      Effect.try({
+        try: () => pkijs.Certificate.fromBER(new Uint8Array(der)),
+        catch: () =>
+          new CmsError({
+            code: CmsErrorCodeValue.decodeError,
+            reason: "Failed to parse a DSS certificate DER.",
+            operation: CmsOperationValue.verify,
+          }),
+      }).pipe(Effect.option),
+    );
+    signed.certificates = [...(signed.certificates ?? []), ...certificates.flatMap(Option.toArray)];
+  }
   const serial = signerSerialHex(signed);
   const checkChain = trustedCerts.length > 0;
   yield* Effect.annotateCurrentSpan({
@@ -147,7 +149,7 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     "signature_kit.cms.chain_checked": checkChain,
   });
 
-  const revocation = revocationEvidence(signed);
+  const revocation = embeddedRevocation(signed);
   const signer = signed.signerInfos[0];
   const times = signer?.signedAttrs?.attributes.filter(({ type }) => type === CmsOid.signingTime);
   const time =
@@ -158,10 +160,9 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
       : undefined;
   const claimedSigningTime =
     date !== undefined && Number.isFinite(date.getTime()) ? date : undefined;
-  const timestampPresent =
-    signer?.unsignedAttrs?.attributes.some(
-      ({ type, values }) => type === CmsOid.timeStampToken && values.length > 0,
-    ) ?? false;
+  const timestampTokens = (signer?.unsignedAttrs?.attributes ?? [])
+    .filter(({ type }) => type === CmsOid.timeStampToken)
+    .flatMap(({ values }) => values.map((value) => new Uint8Array(value.toBER(false))));
   if (!checkRevocation) {
     delete signed.crls;
     delete signed.ocsps;
@@ -183,6 +184,7 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
           onFailure: () => Effect.die(cause),
           onSuccess: (error) =>
             Effect.succeed({
+              certificatePath: [],
               signatureVerified: error.signatureVerified === true,
               signerCertificateVerified: error.signerCertificateVerified === true,
             }),
@@ -195,7 +197,7 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     valid: verification.signatureVerified === true,
     chainValid: checkChain ? verification.signerCertificateVerified === true : false,
     revocationStatus:
-      checkChain && checkRevocation && revocation.ocspCount + revocation.crlCount > 0
+      checkChain && checkRevocation && revocation.ocsp.length + revocation.crls.length > 0
         ? "checked"
         : "not_checked",
     signerSerialNumber: serial,
@@ -205,7 +207,14 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     "signature_kit.cms.chain_valid": result.chainValid,
     "signature_kit.cms.revocation_status": result.revocationStatus,
   });
-  return { result, revocation, claimedSigningTime, timestampPresent };
+  return {
+    result,
+    revocation,
+    certificatePath: result.chainValid ? verification.certificatePath : [],
+    claimedSigningTime,
+    timestampTokens,
+    signatureValue: signer?.signature.valueBlock.valueHexView,
+  };
 });
 
 export const verifyDetachedSignedDataEvidence = (input: VerifyDetachedSignedDataEvidenceInput) =>

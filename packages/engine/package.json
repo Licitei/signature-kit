@@ -27,6 +27,10 @@
       "types": "./dist/pdf-signatures.d.ts",
       "import": "./dist/pdf-signatures.js"
     },
+    "./evidence-fetcher": {
+      "types": "./dist/evidence-fetcher.d.ts",
+      "import": "./dist/evidence-fetcher.js"
+    },
     "./telemetry": {
       "types": "./dist/telemetry.d.ts",
       "import": "./dist/telemetry.js"
