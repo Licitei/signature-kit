@@ -2,6 +2,7 @@ use alloc::collections::btree_map::Entry;
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::{Result as FmtResult, Write as _};
 use core::mem;
+use std::collections::HashMap;
 
 use signature_kit_font::{sfnt::Face, subset::GlyphSet};
 use signature_kit_pdf_core::{
@@ -17,6 +18,7 @@ use crate::text::{Line, Symbol, glyph};
 
 #[derive(Debug)]
 struct Writer<'data> {
+    adjustments: HashMap<u64, String>,
     faces: &'data [Face<'data>],
     fields: BTreeMap<String, u32>,
     glyphs: Vec<GlyphSet>,
@@ -34,6 +36,19 @@ struct PageContext {
 }
 
 impl Writer<'_> {
+    fn adjustment(&mut self, out: &mut String, value: f64) {
+        let key = value.to_bits();
+        if let Some(rendered) = self.adjustments.get(&key) {
+            out.push_str(rendered);
+        } else if self.adjustments.len() < 1_024 {
+            let rendered = format!("{value:.4} ");
+            out.push_str(&rendered);
+            let _previous = self.adjustments.insert(key, rendered);
+        } else {
+            let _written: FmtResult = write!(out, "{value:.4} ");
+        }
+    }
+
     fn anchor(
         &mut self,
         out: &mut String,
@@ -45,9 +60,19 @@ impl Writer<'_> {
         let y = page.height - area.y - area.height + 4.0_f64;
         let _written: FmtResult =
             writeln!(out, "BT /F0 8 Tf 3 Tr 1 0 0 1 {:.4} {y:.4} Tm [", area.x);
+        let mut hex = false;
         for character in name.chars() {
-            let _advance: f64 = self.character(out, 0, character)?;
+            let face = self
+                .faces
+                .first()
+                .ok_or_else(|| Failure::request("Missing anchor font"))?;
+            push_glyph(
+                out,
+                &mut hex,
+                self.cid(0, character, glyph(face, character)?)?,
+            );
         }
+        close_glyphs(out, &mut hex);
         out.push_str("] TJ ET\n");
         if !field {
             return Ok(None);
@@ -64,22 +89,13 @@ impl Writer<'_> {
         Ok(Some(annotation))
     }
 
-    fn character(&mut self, out: &mut String, font: usize, character: char) -> Outcome<f64> {
-        let face = self
-            .faces
-            .get(font)
-            .ok_or_else(|| Failure::request("Unknown font face"))?;
-        let glyph = glyph(face, character)?;
+    fn cid(&mut self, font: usize, character: char, glyph: u16) -> Outcome<u16> {
         let set = self
             .glyphs
             .get_mut(font)
             .ok_or_else(|| Failure::request("Unknown glyph set"))?;
-        let cid = set
-            .cid(character, glyph)
-            .ok_or_else(|| Failure::limit("Too many unique glyphs"))?;
-        let _written: FmtResult = write!(out, "<{cid:04X}>");
-        face.width(glyph)
-            .ok_or_else(|| Failure::request("Missing glyph width"))
+        set.cid(character, glyph)
+            .ok_or_else(|| Failure::limit("Too many unique glyphs"))
     }
 
     fn counter_width(&self, style: TextStyle, number: &str) -> Outcome<f64> {
@@ -204,8 +220,9 @@ impl Writer<'_> {
         area: Area,
         line: &Line,
     ) -> Outcome<()> {
-        let y = page.height - area.y - (area.height - line.size) * 0.5_f64 - line.size * 0.81_f64;
+        let y = page.height - area.y - line.baseline();
         let mut previous: Option<TextStyle> = None;
+        let mut hex = false;
         let current = page.number.to_string();
         let total = page.total.to_string();
         let counter = |kind| {
@@ -231,6 +248,7 @@ impl Writer<'_> {
             let style = letter.style;
             if previous != Some(style) {
                 if previous.is_some() {
+                    close_glyphs(out, &mut hex);
                     out.push_str("] TJ ET\n");
                 }
                 let [red, green, blue] = rgb(style.color);
@@ -243,13 +261,18 @@ impl Writer<'_> {
             }
             let em = 1_000.0_f64 / style.size;
             if letter.kern.abs() > 0.000_1_f64 {
-                let _written: FmtResult = write!(out, "{:.4} ", -letter.kern * em);
+                close_glyphs(out, &mut hex);
+                self.adjustment(out, -letter.kern * em);
             }
             let mut space = 0.0_f64;
             let mut advance = letter.advance;
             match letter.symbol {
                 Symbol::Character(character) => {
-                    let _advance: f64 = self.character(out, style.face, character)?;
+                    push_glyph(
+                        out,
+                        &mut hex,
+                        self.cid(style.face, character, letter.glyph)?,
+                    );
                     if character == ' ' {
                         space = line.stretch;
                     }
@@ -257,19 +280,48 @@ impl Writer<'_> {
                 Symbol::Counter(kind) => {
                     advance = style.tracking;
                     for character in counter(kind).chars() {
-                        advance += self.character(out, style.face, character)? / em;
+                        let face = self
+                            .faces
+                            .get(style.face)
+                            .ok_or_else(|| Failure::request("Unknown page counter font"))?;
+                        let gid = glyph(face, character)?;
+                        advance += face
+                            .width(gid)
+                            .ok_or_else(|| Failure::request("Missing page counter width"))?
+                            / em;
+                        push_glyph(out, &mut hex, self.cid(style.face, character, gid)?);
                     }
                 }
             }
             x += advance + letter.kern + space;
             if (style.tracking + space).abs() > 0.000_1_f64 {
-                let _written: FmtResult = write!(out, "{:.4} ", -(style.tracking + space) * em);
+                close_glyphs(out, &mut hex);
+                self.adjustment(out, -(style.tracking + space) * em);
             }
         }
         if previous.is_some() {
+            close_glyphs(out, &mut hex);
             out.push_str("] TJ ET\n");
         }
         Ok(())
+    }
+}
+
+fn push_glyph(out: &mut String, hex: &mut bool, cid: u16) {
+    if !*hex {
+        out.push('<');
+        *hex = true;
+    }
+    for shift in [12_u32, 8, 4, 0] {
+        let digit = u32::from(cid.wrapping_shr(shift) & 0xF);
+        out.push(char::from_digit(digit, 16).unwrap_or('0'));
+    }
+}
+
+fn close_glyphs(out: &mut String, hex: &mut bool) {
+    if *hex {
+        out.push('>');
+        *hex = false;
     }
 }
 
@@ -450,6 +502,7 @@ pub(crate) fn write(
     metadata: [&str; 3],
 ) -> Outcome<Vec<u8>> {
     let mut writer = Writer {
+        adjustments: HashMap::new(),
         faces,
         fields: BTreeMap::new(),
         glyphs: faces.iter().map(|_| GlyphSet::default()).collect(),

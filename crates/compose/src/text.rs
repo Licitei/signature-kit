@@ -1,6 +1,7 @@
-use core::{iter::from_fn, mem};
+use core::{cell::RefCell, iter::from_fn, mem};
 use signature_kit_font::sfnt::Face;
 use signature_kit_pdf_core::failure::{Failure, Outcome};
+use std::collections::HashMap;
 
 use crate::spec::{Run, Style, TextStyle};
 
@@ -13,6 +14,7 @@ pub(crate) enum Symbol {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Letter {
     pub(crate) advance: f64,
+    pub(crate) glyph: u16,
     pub(crate) kern: f64,
     pub(crate) style: TextStyle,
     pub(crate) symbol: Symbol,
@@ -27,6 +29,57 @@ pub(crate) struct Line {
     pub(crate) size: f64,
     pub(crate) stretch: f64,
     pub(crate) width: f64,
+}
+
+impl Line {
+    pub(crate) fn baseline(&self) -> f64 {
+        (self.height - self.size) * 0.5_f64 + self.size * 0.81_f64
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FontMetrics<'face, 'data> {
+    face: &'face Face<'data>,
+    glyphs: RefCell<HashMap<char, (u16, f64)>>,
+    pairs: RefCell<HashMap<(u16, u16), f64>>,
+}
+
+impl<'face, 'data> FontMetrics<'face, 'data> {
+    fn character(&self, character: char) -> Outcome<(u16, f64)> {
+        let mut glyphs = self.glyphs.borrow_mut();
+        if let Some(&metrics) = glyphs.get(&character) {
+            return Ok(metrics);
+        }
+        let index = glyph(self.face, character)?;
+        let width = self
+            .face
+            .width(index)
+            .ok_or_else(|| Failure::request("Missing glyph width"))?;
+        if glyphs.len() < 8_192 {
+            let _previous = glyphs.insert(character, (index, width));
+        }
+        Ok((index, width))
+    }
+
+    fn kern(&self, left: u16, right: u16) -> f64 {
+        let mut pairs = self.pairs.borrow_mut();
+        if let Some(&kern) = pairs.get(&(left, right)) {
+            return kern;
+        }
+        let kern = self.face.kern(left, right);
+        if pairs.len() < 8_192 {
+            let _previous = pairs.insert((left, right), kern);
+        }
+        kern
+    }
+
+    pub(crate) fn new(face: &'face Face<'data>) -> Self {
+        Self {
+            face,
+            glyphs: RefCell::default(),
+            pairs: RefCell::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -74,40 +127,36 @@ pub(crate) fn glyph(face: &Face<'_>, character: char) -> Outcome<u16> {
 
 fn add_letter(
     line: &mut Line,
-    faces: &[Face<'_>],
+    fonts: &[FontMetrics<'_, '_>],
     style: TextStyle,
     symbol: Symbol,
 ) -> Outcome<()> {
-    let face = faces
+    let font = fonts
         .get(style.face)
         .ok_or_else(|| Failure::request("Unknown font face"))?;
-    let mut kern = 0.0_f64;
-    let advance = match symbol {
-        Symbol::Character(character) => {
-            let current = glyph(face, character)?;
-            if let Some(previous) = line.letters.last()
-                && previous.style == style
-                && let Symbol::Character(left) = previous.symbol
-            {
-                kern = face.kern(glyph(face, left)?, current) * style.size / 1_000.0_f64;
-            }
-            face.width(current)
-                .ok_or_else(|| Failure::request("Missing glyph width"))?
-                * style.size
-                / 1_000.0_f64
-        }
+    let (glyph, width) = match symbol {
+        Symbol::Character(character) => font.character(character)?,
         Symbol::Counter(_) => {
-            face.width(glyph(face, '0')?)
-                .ok_or_else(|| Failure::request("Missing counter width"))?
-                * style.size
-                * 4.0_f64
-                / 1_000.0_f64
+            let (glyph, width) = font.character('0')?;
+            (glyph, width * 4.0_f64)
         }
-    } + style.tracking;
+    };
+    let kern = line.letters.last().map_or(0.0_f64, |previous| {
+        if previous.style == style
+            && matches!(previous.symbol, Symbol::Character(_))
+            && matches!(symbol, Symbol::Character(_))
+        {
+            font.kern(previous.glyph, glyph) * style.size / 1_000.0_f64
+        } else {
+            0.0_f64
+        }
+    });
+    let advance = width * style.size / 1_000.0_f64 + style.tracking;
     line.width += advance + kern;
     line.size = line.size.max(style.size);
     line.letters.push(Letter {
         advance,
+        glyph,
         kern,
         style,
         symbol,
@@ -161,7 +210,7 @@ fn finish(mut line: Line, style: &Style, width: f64, wrapped: bool) -> Line {
 }
 
 pub(crate) fn lines(
-    faces: &[Face<'_>],
+    fonts: &[FontMetrics<'_, '_>],
     runs: &[Run<'_>],
     style: &Style,
     width: f64,
@@ -181,7 +230,7 @@ pub(crate) fn lines(
                 if line.letters.is_empty() && matches!(symbol, Symbol::Character(' ')) {
                     continue;
                 }
-                add_letter(&mut line, faces, text_style, symbol)?;
+                add_letter(&mut line, fonts, text_style, symbol)?;
                 if matches!(symbol, Symbol::Character(' ' | '-' | '\u{2010}' | '/')) {
                     edge = line.letters.len();
                 }
@@ -193,7 +242,7 @@ pub(crate) fn lines(
                     lines.push(finish(mem::take(&mut line), style, width, true));
                     edge = 0;
                     for letter in rest {
-                        add_letter(&mut line, faces, letter.style, letter.symbol)?;
+                        add_letter(&mut line, fonts, letter.style, letter.symbol)?;
                     }
                 }
             }

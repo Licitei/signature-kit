@@ -1,13 +1,11 @@
-import { Schema } from "effect";
+import { Match, Schema } from "effect";
 import {
   Badge,
-  Box,
   Document,
   Heading,
   KeepTogether,
   Link,
   Page,
-  PageBreak,
   PageNumber,
   Paragraph,
   Path,
@@ -21,6 +19,7 @@ import {
   TotalPages,
 } from "./compose.js";
 import type { ComposeNode, PathCommand, Style } from "./compose.js";
+import { A1Profile } from "./rpc.js";
 
 const LabelStyle = {
   color: "accent",
@@ -28,7 +27,7 @@ const LabelStyle = {
   fontWeight: 700,
   letterSpacing: 1.1,
 } satisfies Style;
-const labels = (text: string) => Text(text, LabelStyle);
+const labels = (text: string, style: Style = {}) => Text(text, { ...LabelStyle, ...style });
 const small = (text: string, style: Style = {}) =>
   Text(text, { fontSize: "small", color: "muted", ...style });
 
@@ -66,12 +65,11 @@ const clause = (number: string, title: string, body: string): ComposeNode =>
   KeepTogether(
     [
       Row(
-        [labels(number), Heading(title, { fontSize: "subtitle" })].map((node, index) =>
-          Box([node], index === 0 ? { width: 36, shrink: 0 } : { grow: 1 }),
-        ),
-        {
-          align: "center",
-        },
+        [
+          labels(number, { width: 36, shrink: 0 }),
+          Heading(title, { fontSize: "subtitle", grow: 1 }),
+        ],
+        { align: "baseline" },
       ),
       Paragraph(body, { textAlign: "justify" }),
     ],
@@ -167,77 +165,113 @@ export const contractTemplate = (pageCount = 2) => {
     ],
     { gap: "sm" },
   );
-  const body =
-    pageCount === 1
-      ? [Stack([...first, sign], { gap: "md" })]
-      : [
-          Stack(first, { gap: "xl" }),
-          ...Array.from({ length: pageCount - 1 }, (_, index) => [
-            PageBreak(),
-            Stack(
-              [
-                ...(index === 0
-                  ? [
-                      heading(
-                        "CONDIÇÕES GERAIS",
-                        "Execução e aceite",
-                        "Condições de trabalho, responsabilidades e assinatura das partes.",
-                      ),
-                      ...continuation,
-                    ]
-                  : [
-                      heading(
-                        "ANEXO CONTRATUAL",
-                        `Registro de execução ${index}`,
-                        "Acompanhamento das etapas acordadas entre as partes.",
-                      ),
-                      ...continuation,
-                    ]),
-                ...(index === pageCount - 2 ? [sign] : []),
-              ],
-              { gap: "lg" },
-            ),
-          ]).flat(),
-        ];
-  return Document(
-    Page(body, {
-      header: Stack([small("AURORA EDITORIAL     /     INSTRUMENTO PARTICULAR"), Rule()], {
-        gap: "sm",
-        margin: [0, 0, 24, 0],
-      }),
-      footer: footer("CTS–2026–014   /   PRESTAÇÃO DE SERVIÇOS"),
+  const bands = {
+    header: Stack([small("AURORA EDITORIAL     /     INSTRUMENTO PARTICULAR"), Rule()], {
+      gap: "sm",
+      margin: [0, 0, 24, 0],
     }),
+    footer: footer("CTS–2026–014   /   PRESTAÇÃO DE SERVIÇOS"),
+  };
+  if (pageCount === 1) return Document(Page([Stack([...first, sign], { gap: "md" })], bands));
+  const remaining = (index: number, last: boolean) =>
+    Stack(
+      [
+        KeepTogether(
+          [
+            heading(
+              index === 0 ? "CONDIÇÕES GERAIS" : "ANEXO CONTRATUAL",
+              index === 0 ? "Execução e aceite" : `Registro de execução ${index}`,
+              index === 0
+                ? "Condições de trabalho, responsabilidades e assinatura das partes."
+                : "Acompanhamento das etapas acordadas entre as partes.",
+            ),
+            ...continuation.slice(0, 1),
+          ],
+          { gap: "lg" },
+        ),
+        ...continuation.slice(1),
+        ...(last ? [sign] : []),
+      ],
+      { gap: "lg" },
+    );
+  return Document(
+    Page([Stack(first, { gap: "xl" }), remaining(0, pageCount === 2)], bands),
+    ...Array.from({ length: pageCount - 2 }, (_, index) =>
+      Page([remaining(index + 1, index === pageCount - 3)], bands),
+    ),
   );
 };
 
-const Evidence = Schema.Literals(["confirmado", "parcial", "pendente", "divergente"]);
-const Signer = Schema.Struct({
-  name: Schema.String,
-  certificate: Schema.Literals(["e-CPF", "e-CNPJ"]),
-  signedAt: Schema.String,
-  field: Schema.String,
-  coverage: Evidence,
-  integrity: Evidence,
-  trust: Evidence,
-  revocation: Evidence,
+const ChangeCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const ReportSignature = Schema.Struct({
+  signer: Schema.optional(Schema.String),
+  holderKind: Schema.optional(A1Profile.fields.holderKind),
+  signedAt: Schema.optional(Schema.String),
+  field: Schema.optional(Schema.String),
+  coverage: Schema.Struct({ kind: Schema.Literals(["wholeFile", "partial", "invalid"]) }),
+  integrity: Schema.Literals(["valid", "invalid", "unsupported"]),
+  trust: Schema.Literals(["trusted", "untrusted", "notEvaluated"]),
+  revocation: Schema.Union([
+    Schema.Literals(["notChecked", "embeddedEvidence"]),
+    Schema.Struct({
+      kind: Schema.Literal("verified"),
+      status: Schema.Literals(["good", "revoked"]),
+    }),
+  ]),
+  changes: Schema.optional(Schema.Struct({ recognised: ChangeCount, unknown: ChangeCount })),
 });
 const TimelineEntry = Schema.Struct({ time: Schema.String, detail: Schema.String });
 export const EvidenceReport = Schema.Struct({
   document: Schema.String,
   digest: Schema.String.check(Schema.isPattern(/^[\da-f]{64}$/i)),
-  signers: Schema.Array(Signer),
+  signers: Schema.Array(ReportSignature),
   timeline: Schema.Array(TimelineEntry),
 });
 export type EvidenceReport = typeof EvidenceReport.Type;
 
-const evidenceStyles = {
-  confirmado: { color: "accent", background: "tint" },
-  parcial: { color: "ink", background: "#d5e6de" },
-  pendente: { color: "muted", background: "#ebeef0" },
-  divergente: { color: "white", background: "ink" },
-} satisfies Record<typeof Evidence.Type, Style>;
-const status = (name: string, value: typeof Evidence.Type) =>
-  Stack([small(name), Badge(value, { ...evidenceStyles[value], textAlign: "center" })], {
+const statusStyles = {
+  success: { color: "accent", background: "tint" },
+  neutral: { color: "muted", background: "#ebeef0" },
+  warning: { color: "#7a410c", background: "#fff0d5" },
+  danger: { color: "#9c252c", background: "#fae7e7" },
+} satisfies Record<string, Style>;
+
+const coverageBadges = {
+  wholeFile: { label: "arquivo inteiro", tone: "success" },
+  partial: { label: "revisão parcial", tone: "neutral" },
+  invalid: { label: "inválida", tone: "danger" },
+} satisfies Record<typeof ReportSignature.Type.coverage.kind, Status>;
+const integrityBadges = {
+  valid: { label: "íntegra", tone: "success" },
+  invalid: { label: "violada", tone: "danger" },
+  unsupported: { label: "não avaliada", tone: "neutral" },
+} satisfies Record<typeof ReportSignature.Type.integrity, Status>;
+const trustBadges = {
+  trusted: { label: "confiável", tone: "success" },
+  untrusted: { label: "não confiável", tone: "danger" },
+  notEvaluated: { label: "não avaliada", tone: "neutral" },
+} satisfies Record<typeof ReportSignature.Type.trust, Status>;
+const holderLabels = {
+  "e-cpf": "e-CPF",
+  "e-cnpj": "e-CNPJ",
+  other: "Outro certificado",
+} satisfies Record<NonNullable<typeof ReportSignature.Type.holderKind>, string>;
+
+type Status = { label: string; tone: keyof typeof statusStyles };
+const revocationBadge = (revocation: typeof ReportSignature.Type.revocation): Status =>
+  Match.value(revocation).pipe(
+    Match.when("notChecked", (): Status => ({ label: "não verificada", tone: "neutral" })),
+    Match.when("embeddedEvidence", (): Status => ({
+      label: "evidência embutida",
+      tone: "warning",
+    })),
+    Match.when({ status: "good" }, (): Status => ({ label: "válida", tone: "success" })),
+    Match.when({ status: "revoked" }, (): Status => ({ label: "revogada", tone: "danger" })),
+    Match.exhaustive,
+  );
+
+const status = (name: string, { label, tone }: Status) =>
+  Stack([small(name), Badge(label, { ...statusStyles[tone], textAlign: "center" })], {
     gap: "xs",
   });
 
@@ -259,47 +293,72 @@ export const evidenceReportTemplate = (data: EvidenceReport) =>
                 small("SHA-256"),
                 Text(data.digest, { fontSize: "caption", letterSpacing: 0.32 }),
               ],
-              { background: "tint" },
+              { background: "tint", padding: 13 },
             ),
             Heading("Signatários", { fontSize: "subtitle" }),
             ...data.signers.map((signer, index) =>
-              card([
-                Row([
-                  Stack(
+              card(
+                [
+                  Row([
+                    Stack(
+                      [
+                        labels(`SIGNATÁRIO ${String(index + 1).padStart(2, "0")}`),
+                        Text(signer.signer ?? "Identidade não disponível", { fontWeight: 700 }),
+                        small(`Campo: ${signer.field ?? "não identificado"}`),
+                      ],
+                      { gap: "xs" },
+                    ),
+                    Stack(
+                      [
+                        Text(
+                          signer.holderKind === undefined
+                            ? "Certificado não identificado"
+                            : holderLabels[signer.holderKind],
+                          {
+                            color: "accent",
+                            fontWeight: 700,
+                            textAlign: "right",
+                          },
+                        ),
+                        small(signer.signedAt ?? "Data não informada", { textAlign: "right" }),
+                      ],
+                      { gap: "xs" },
+                    ),
+                  ]),
+                  Rule(),
+                  Row(
                     [
-                      labels(`SIGNATÁRIO 0${index + 1}`),
-                      Text(signer.name, { fontWeight: 700 }),
-                      small(`Campo: ${signer.field}`),
+                      status("Cobertura", coverageBadges[signer.coverage.kind]),
+                      status("Integridade", integrityBadges[signer.integrity]),
+                      status("Confiança", trustBadges[signer.trust]),
+                      status("Revogação", revocationBadge(signer.revocation)),
                     ],
-                    { gap: "xs" },
+                    { gap: "sm" },
                   ),
-                  Stack(
-                    [
-                      Text(signer.certificate, {
-                        color: "accent",
-                        fontWeight: 700,
-                        textAlign: "right",
-                      }),
-                      small(signer.signedAt, { textAlign: "right" }),
-                    ],
-                    { gap: "xs" },
-                  ),
-                ]),
-                Rule(),
-                Row(
-                  [
-                    status("Cobertura", signer.coverage),
-                    status("Integridade", signer.integrity),
-                    status("Confiança", signer.trust),
-                    status("Revogação", signer.revocation),
-                  ],
-                  { gap: "sm" },
-                ),
-              ]),
+                  ...(signer.changes === undefined
+                    ? [small("Alterações após a assinatura não avaliadas")]
+                    : [
+                        Row(
+                          [
+                            small(
+                              `Após a assinatura: ${signer.changes.recognised} ${signer.changes.recognised === 1 ? "alteração reconhecida" : "alterações reconhecidas"}`,
+                            ),
+                            Badge(
+                              signer.changes.unknown === 1
+                                ? "1 alteração desconhecida"
+                                : `${signer.changes.unknown} alterações desconhecidas`,
+                              statusStyles[signer.changes.unknown > 0 ? "warning" : "neutral"],
+                            ),
+                          ],
+                          { align: "center", gap: "sm" },
+                        ),
+                      ]),
+                ],
+                { padding: 13 },
+              ),
             ),
-            Heading("Linha do tempo", { fontSize: "subtitle" }),
             Table(
-              [],
+              [Heading("Linha do tempo", { fontSize: "subtitle", margin: [0, 0, 6, 0] })],
               data.timeline.map(({ time, detail }) =>
                 Stack(
                   [
@@ -318,7 +377,7 @@ export const evidenceReportTemplate = (data: EvidenceReport) =>
               { gap: 6 },
             ),
           ],
-          { gap: "md" },
+          { gap: 10 },
         ),
       ],
       { footer: footer("RELATÓRIO DE ASSINATURAS  /  R01") },
@@ -330,24 +389,26 @@ export const sampleEvidence: EvidenceReport = {
   digest: "1f6a9db5c7e2f498e7402418477cbda43f1cd6ae05dd7c0f495b8c8264917216e2",
   signers: [
     {
-      name: "Marina Ferreira",
-      certificate: "e-CPF",
+      signer: "Marina Ferreira",
+      holderKind: "e-cpf",
       signedAt: "25 nov. 2026, 10:42 BRT",
       field: "assinatura-contratante",
-      coverage: "confirmado",
-      integrity: "confirmado",
-      trust: "confirmado",
-      revocation: "pendente",
+      coverage: { kind: "partial" },
+      integrity: "valid",
+      trust: "trusted",
+      revocation: "embeddedEvidence",
+      changes: { recognised: 1, unknown: 2 },
     },
     {
-      name: "Estúdio Campo Digital Ltda.",
-      certificate: "e-CNPJ",
+      signer: "Estúdio Campo Digital Ltda.",
+      holderKind: "e-cnpj",
       signedAt: "25 nov. 2026, 11:08 BRT",
       field: "assinatura-contratada",
-      coverage: "parcial",
-      integrity: "confirmado",
-      trust: "pendente",
-      revocation: "pendente",
+      coverage: { kind: "wholeFile" },
+      integrity: "valid",
+      trust: "notEvaluated",
+      revocation: "notChecked",
+      changes: { recognised: 0, unknown: 0 },
     },
   ],
   timeline: [
@@ -390,14 +451,12 @@ const invoiceLine = (description: string, quantity: string, amount: string, head
           Text(quantity, { ...cellStyle, textAlign: "right", width: 55 }),
           Text(amount, { ...cellStyle, textAlign: "right", width: 95 }),
         ],
-        { gap: "md" },
+        { gap: "md", padding: [8, 12, 8, 12] },
       ),
       ...(!header ? [Rule()] : []),
     ],
     {
       background: header ? "tint" : "white",
-      padding: [8, 12, 8, 12],
-      gap: 8,
       borderRadius: header ? 4 : 0,
     },
   );
