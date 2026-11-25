@@ -476,8 +476,12 @@ const referenceDiagnostics = (
         ],
   );
 
+  const declaredDependencies = new Set([
+    ...internalDependencyNames,
+    ...workspacePackage.devDependencies,
+  ]);
   const undeclaredReferences = [...referenceNames].flatMap((dependencyName) =>
-    internalDependencyNames.has(dependencyName)
+    declaredDependencies.has(dependencyName)
       ? []
       : [
           {

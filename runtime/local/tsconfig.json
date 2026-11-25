@@ -9,10 +9,19 @@
       "path": "../../shared/crypto"
     },
     {
+      "path": "../../shared/cms"
+    },
+    {
       "path": "../../core/certificates"
     },
     {
       "path": "../../shared/asn1"
+    },
+    {
+      "path": "../../formats/pdf"
+    },
+    {
+      "path": "../../signers/a1"
     }
   ]
 }

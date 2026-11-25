@@ -26,6 +26,10 @@
       "types": "./dist/engine.d.ts",
       "import": "./dist/engine.js"
     },
+    "./pdf-signatures": {
+      "types": "./dist/pdf-signatures.d.ts",
+      "import": "./dist/pdf-signatures.js"
+    },
     "./worker": {
       "types": "./dist/worker.d.ts",
       "import": "./dist/worker.js"
@@ -61,11 +65,14 @@
     "@effect/platform-browser": "4.1.0",
     "@signature-kit/asn1": "^0.2.1",
     "@signature-kit/certificates": "^0.4.0",
+    "@signature-kit/cms": "^0.3.0",
     "@signature-kit/crypto": "^0.3.0",
     "@signature-kit/pdf-core": "^0.4.0",
     "effect": "4.1.0"
   },
   "devDependencies": {
+    "@signature-kit/a1": "^0.5.0",
+    "@signature-kit/pdf": "^0.7.0",
     "pdfjs-dist": "6.3.289"
   },
   "peerDependencies": {

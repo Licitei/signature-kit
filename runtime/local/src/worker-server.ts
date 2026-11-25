@@ -11,6 +11,7 @@ import {
   localRuntimeLayer,
   pdfEngineLayer,
 } from "./engine.js";
+import { PdfSignatures, pdfSignaturesLayer } from "./pdf-signatures.js";
 import { LocalError, LocalRpcs, PROTOCOL_VERSION } from "./protocol.js";
 import { LocalTelemetry, localTelemetryLayer, withQueueTiming } from "./telemetry.js";
 
@@ -20,6 +21,7 @@ const localHandlersLayer = LocalRpcs.toLayer(
     const documents = yield* Documents;
     const a1 = yield* A1Sessions;
     const pdf = yield* PdfEngine;
+    const signatures = yield* PdfSignatures;
     const telemetry = Option.getOrUndefined(yield* Effect.serviceOption(LocalTelemetry));
     const raster = withQueueTiming(
       yield* Semaphore.make(1),
@@ -76,6 +78,11 @@ const localHandlersLayer = LocalRpcs.toLayer(
         ),
       A1Open: a1.open,
       A1Close: a1.close,
+      PdfSignatureFields: ({ revision }) => signatures.fields(revision),
+      PdfPrepare: ({ revision, options }) => signatures.prepare(revision, options),
+      PdfConfirm: ({ preparationId }) => signatures.confirm(preparationId),
+      PdfRelease: ({ preparationId }) => signatures.release(preparationId),
+      PdfVerify: ({ revision, options }) => signatures.verify(revision, options),
       TelemetryDrain: () =>
         telemetry?.drain ??
         Effect.succeed({ spans: [], bytes: 0, droppedSpans: 0, droppedAttributes: 0 }),
@@ -91,6 +98,7 @@ export const localWorker = (telemetry: boolean) =>
     }).pipe(
       Layer.provide(
         localHandlersLayer.pipe(
+          Layer.provide(pdfSignaturesLayer),
           Layer.provide(pdfEngineLayer),
           Layer.provide(localRuntimeLayer()),
           Layer.provide(pdfCoreBrowserLayer),

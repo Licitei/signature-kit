@@ -3,16 +3,119 @@ import { Effect, Schema } from "effect";
 import * as pkijs from "pkijs";
 import { buildSignedAttributes } from "./attributes.js";
 import {
+  CreateDetachedSignedDataFromDigestInputSchema,
   CreateDetachedSignedDataInputSchema,
   CmsError,
   CmsErrorCodeValue,
   CmsOid,
   CmsOperationValue,
+  hashAlgorithmOid,
   webCryptoHashName,
 } from "./config.js";
-import type { CreateDetachedSignedDataInput } from "./config.js";
+import type {
+  CreateDetachedSignedDataFromDigestInput,
+  CreateDetachedSignedDataInput,
+} from "./config.js";
 import { digest } from "./engine.js";
 import { requestTimestamp } from "./timestamp.js";
+
+export const createDetachedSignedDataFromDigest = <E, R>(
+  input: CreateDetachedSignedDataFromDigestInput,
+  sign: (signedAttributesDer: Uint8Array) => Effect.Effect<Uint8Array, E, R>,
+): Effect.Effect<Uint8Array, CmsError | E, R> =>
+  Effect.gen(function* () {
+    const valid = yield* Schema.decodeUnknownEffect(CreateDetachedSignedDataFromDigestInputSchema)(
+      input,
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new CmsError({ code: CmsErrorCodeValue.signError, operation: CmsOperationValue.sign }),
+      ),
+    );
+    const digestLengths = { sha256: 32, sha384: 48, sha512: 64 };
+    if (valid.messageDigest.byteLength !== digestLengths[valid.hashAlgorithm]) {
+      return yield* new CmsError({
+        code: CmsErrorCodeValue.signError,
+        operation: CmsOperationValue.sign,
+        reason: "The message digest has the wrong length for the selected algorithm.",
+      });
+    }
+
+    const [certificate, ...chain] = yield* Effect.try({
+      try: () =>
+        [valid.certificateDer, ...(valid.chainDer ?? [])].map((der) =>
+          pkijs.Certificate.fromBER(new Uint8Array(der).buffer),
+        ),
+      catch: () =>
+        new CmsError({
+          code: CmsErrorCodeValue.decodeError,
+          operation: CmsOperationValue.parse,
+          reason: "Failed to parse the CMS certificates.",
+        }),
+    });
+    if (certificate === undefined) return yield* Effect.die("Missing CMS signer certificate.");
+
+    const certificateSha256 = yield* digest("sha256", valid.certificateDer);
+    const { attributes, signedAttributesDer } = yield* Effect.try({
+      try: () => {
+        const attributes = [...buildSignedAttributes({ ...valid, certificateSha256 })];
+        const signedAttributesDer = new Uint8Array(
+          new asn1js.Set({ value: attributes.map((attr) => attr.toSchema()) }).toBER(false),
+        );
+        return { attributes, signedAttributesDer };
+      },
+      catch: () =>
+        new CmsError({
+          code: CmsErrorCodeValue.encodeError,
+          operation: CmsOperationValue.attributes,
+          reason: "Failed to encode the CMS signed attributes.",
+        }),
+    });
+    const signature = yield* sign(signedAttributesDer);
+
+    return yield* Effect.try({
+      try: () => {
+        const digestAlgorithm = new pkijs.AlgorithmIdentifier({
+          algorithmId: hashAlgorithmOid(valid.hashAlgorithm),
+        });
+        const signer = new pkijs.SignerInfo({
+          version: 1,
+          sid: new pkijs.IssuerAndSerialNumber({
+            issuer: certificate.issuer,
+            serialNumber: certificate.serialNumber,
+          }),
+          digestAlgorithm,
+          signatureAlgorithm: new pkijs.AlgorithmIdentifier({
+            algorithmId: "1.2.840.113549.1.1.1",
+            algorithmParams: new asn1js.Null(),
+          }),
+          signedAttrs: new pkijs.SignedAndUnsignedAttributes({ type: 0, attributes }),
+        });
+        signer.signature.valueBlock.valueHexView = new Uint8Array(signature);
+        const signed = new pkijs.SignedData({
+          version: 1,
+          digestAlgorithms: [digestAlgorithm],
+          encapContentInfo: new pkijs.EncapsulatedContentInfo({ eContentType: CmsOid.data }),
+          signerInfos: [signer],
+          certificates: [certificate, ...chain],
+        });
+        return new Uint8Array(
+          new pkijs.ContentInfo({
+            contentType: CmsOid.signedData,
+            content: signed.toSchema(true),
+          })
+            .toSchema()
+            .toBER(false),
+        );
+      },
+      catch: () =>
+        new CmsError({
+          code: CmsErrorCodeValue.encodeError,
+          operation: CmsOperationValue.encode,
+          reason: "Failed to serialize the detached CMS ContentInfo.",
+        }),
+    });
+  });
 
 export const createDetachedSignedData = (
   input: CreateDetachedSignedDataInput,

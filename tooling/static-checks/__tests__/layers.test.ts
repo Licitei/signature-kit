@@ -222,6 +222,31 @@ describe("workspace layer checks", () => {
     });
   });
 
+  it("allows project references for declared test-only workspace dependencies", async () => {
+    const root = await createTempWorkspace();
+    await writePackage(
+      root,
+      "formats/pdf",
+      "@signature-kit/pdf",
+      {},
+      [],
+      "export const pdf = true;\n",
+    );
+    await writePackage(
+      root,
+      "runtime/local",
+      "@signature-kit/local",
+      {},
+      ["../../formats/pdf"],
+      "export const local = true;\n",
+    );
+    await writeJson(join(root, "runtime/local/package.json"), {
+      name: "@signature-kit/local",
+      devDependencies: { "@signature-kit/pdf": "workspace:*" },
+    });
+    expect(collectWorkspaceLayerDiagnostics(root)).toEqual([]);
+  });
+
   it("rejects relative imports into another workspace package", async () => {
     const root = await createTempWorkspace();
     await writePackage(
