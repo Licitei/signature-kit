@@ -19,6 +19,7 @@ import { darkTheme } from "./styles/tokens.stylex";
 import { prose } from "./styles/prose";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
+import { ComposePreviewMount, ComposeTemplate, previewChoices } from "./compose-preview";
 
 export const Flags = Schema.Struct({
   locale: Locale,
@@ -36,6 +37,8 @@ export const Model = Schema.Struct({
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
   themeTip: Tooltip.Model,
+  composeTemplate: ComposeTemplate,
+  composeStatus: Schema.Literals(["loading", "ready", "error"]),
 });
 export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
@@ -43,6 +46,8 @@ export const Message = defineMessageUnion({
   ThemeToggled: {},
   ThemeLoaded: { theme: Theme },
   ThemeSaved: {},
+  ComposeTemplateSelected: { template: ComposeTemplate },
+  ComposePreviewFinished: { ok: Schema.Boolean },
   QueryChanged: { value: Schema.String },
   SearchSubmitted: {},
   TextFeedbackSubmitted: {},
@@ -69,6 +74,8 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
       focusSelector: "[data-overlay-focus]",
     }),
     overlayKind: "menu",
+    composeTemplate: "contract",
+    composeStatus: "loading",
     themeTip: Tooltip.init({ id: "theme-tip", showDelay: "300 millis" }),
   },
 });
@@ -176,6 +183,10 @@ export const update = (model: Model, message: Message) =>
     },
     ThemeLoaded: ({ theme }) => ({ model: { ...model, theme } }),
     ThemeSaved: () => ({ model }),
+    ComposeTemplateSelected: ({ template }) => ({ model: { ...model, composeTemplate: template } }),
+    ComposePreviewFinished: ({ ok }) => ({
+      model: { ...model, composeStatus: ok ? "ready" : "error" },
+    }),
   });
 export const createView = (source: {
   paths: typeof contentPaths;
@@ -715,6 +726,83 @@ export const createView = (source: {
                                       ? [h.p([], [content.description])]
                                       : []),
                                     ...renderContent(content.nodes, h),
+                                    ...(model.path === "/docs/compose"
+                                      ? [
+                                          h.div(
+                                            [],
+                                            previewChoices.map(({ id, pt, en }) =>
+                                              Button.view(
+                                                {
+                                                  onClick: Message.ComposeTemplateSelected({
+                                                    template: id,
+                                                  }),
+                                                  toView: ({ button }) =>
+                                                    h.button(
+                                                      [
+                                                        ...button,
+                                                        h.Attribute(
+                                                          "aria-pressed",
+                                                          id === model.composeTemplate
+                                                            ? "true"
+                                                            : "false",
+                                                        ),
+                                                        ...sx(h, shell.pill),
+                                                      ],
+                                                      [model.locale === "pt-BR" ? pt : en],
+                                                    ),
+                                                },
+                                                h,
+                                              ),
+                                            ),
+                                          ),
+                                          h.p(
+                                            [h.Attribute("role", "status")],
+                                            [
+                                              model.composeStatus === "ready"
+                                                ? ""
+                                                : model.composeStatus === "error"
+                                                  ? model.locale === "pt-BR"
+                                                    ? "Não foi possível gerar o PDF."
+                                                    : "Could not generate the PDF."
+                                                  : model.locale === "pt-BR"
+                                                    ? "Gerando PDF…"
+                                                    : "Generating PDF…",
+                                            ],
+                                          ),
+                                          h.div(
+                                            [
+                                              h.OnMount(
+                                                Mount.mapMessage(ComposePreviewMount(), ({ ok }) =>
+                                                  Message.ComposePreviewFinished({ ok }),
+                                                ),
+                                              ),
+                                            ],
+                                            previewChoices.map(({ id, pages }) =>
+                                              h.keyed("div")(
+                                                id,
+                                                [
+                                                  h.Attribute("data-compose-template", id),
+                                                  h.Hidden(id !== model.composeTemplate),
+                                                ],
+                                                Array.from({ length: pages }, (_, index) =>
+                                                  h.canvas([
+                                                    h.Attribute(
+                                                      "style",
+                                                      "display:block;max-width:100%;height:auto;margin-block:16px",
+                                                    ),
+                                                    h.Attribute(
+                                                      "aria-label",
+                                                      model.locale === "pt-BR"
+                                                        ? `Página ${index + 1}`
+                                                        : `Page ${index + 1}`,
+                                                    ),
+                                                  ]),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ]
+                                      : []),
                                   ],
                                 ),
                                 h.section(

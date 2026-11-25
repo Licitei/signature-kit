@@ -8,6 +8,7 @@ import { defineConfig } from "vite";
 const docsRoot = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  worker: { format: "es" },
   envPrefix: ["VITE_", "WAKU_PUBLIC_"],
   define: {
     "process.env.VERCEL_PROJECT_PRODUCTION_URL": JSON.stringify(

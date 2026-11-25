@@ -10,6 +10,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Transferable from "effect/workers/Transferable";
 import type { Effect } from "effect";
+import { ComposeOptionsSchema, DocumentSchema } from "./composition/config.js";
 
 export const RpcMethod = Schema.Literals([
   "Hello",
@@ -17,6 +18,7 @@ export const RpcMethod = Schema.Literals([
   "DocumentsExport",
   "DocumentsRelease",
   "PdfInspect",
+  "PdfCompose",
   "PdfRenderPage",
   "A1Open",
   "A1Close",
@@ -307,6 +309,7 @@ export const LocalErrorCode = Schema.Literals([
   "staleHandle",
   "unknownHandle",
   "pdfInspectFailed",
+  "pdfComposeFailed",
   "pdfRenderFailed",
   "invalidPageIndex",
   "renderTooLarge",
@@ -339,6 +342,7 @@ export type LocalErrorCode = (typeof LocalErrorCode)["Type"];
 export const localErrorMessages = {
   staleHandle: "The document handle belongs to another runtime instance.",
   unknownHandle: "The document handle is no longer available.",
+  pdfComposeFailed: "The PDF could not be composed.",
   pdfInspectFailed: "The PDF page geometry could not be read.",
   pdfRenderFailed: "The PDF page could not be rendered.",
   invalidPageIndex: "The PDF page index is outside the document.",
@@ -377,6 +381,12 @@ export class LocalError extends Schema.TaggedError<LocalError, { readonly brand:
   }
 }
 
+export const PdfComposeInputSchema = Schema.Struct({
+  document: DocumentSchema,
+  options: Schema.optional(ComposeOptionsSchema),
+});
+export type PdfComposeInput = typeof PdfComposeInputSchema.Type;
+
 const Version = Schema.Int.check(Schema.isGreaterThan(0));
 
 export const LocalRpcs = RpcGroup.make(
@@ -399,6 +409,11 @@ export const LocalRpcs = RpcGroup.make(
     payload: { handle: Handle },
     error: LocalError,
   }),
+  Rpc.make("PdfCompose", {
+    payload: PdfComposeInputSchema,
+    success: RevisionRef,
+    error: LocalError,
+  }).annotate(Rpc.ParseOptions, { onExcessProperty: "error" }),
   Rpc.make("PdfInspect", {
     payload: { handle: Handle },
     success: PdfInspection,

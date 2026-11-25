@@ -1,0 +1,19 @@
+[package]
+name = "signature-kit-compose"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "In-house paginated PDF composition"
+repository = "https://github.com/Licitei/signature-kit"
+readme = "../../packages/engine/README.md"
+keywords = ["pdf", "wasm", "signature"]
+categories = ["wasm"]
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+signature-kit-font = { path = "../font" }
+signature-kit-pdf-core = { path = "../pdf" }
+
+[lints]
+workspace = true

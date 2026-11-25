@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pdf", "crates/wasm"]
+members = ["crates/compose", "crates/font", "crates/pdf", "crates/wasm"]
 exclude = ["crates/pdf/fuzz"]
 resolver = "3"
 

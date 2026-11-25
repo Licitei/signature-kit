@@ -1,9 +1,11 @@
-use crate::num::{read_u16, read_u32, sort_total, widen};
+use crate::num::{read_u16, read_u32, sort_total};
 use crate::object::Dict;
 use crate::object::Object;
 use crate::object::Resolver;
 use crate::object::Stream;
 use core::cell::OnceCell;
+use signature_kit_font::cmap::{Subtable, for_each, lookup as lookup_cmap, read_cmap_directory};
+use signature_kit_font::sfnt::tables;
 use std::collections::HashMap;
 
 use crate::cff::CffFont;
@@ -14,9 +16,7 @@ use crate::glyph::{Type1Glyphs, parse_type1, truetype_outline};
 use crate::inspection::Limits;
 
 const MAX_TABLES: usize = 128;
-const MAX_SUBTABLES: usize = 64;
 const MAX_GLYPHS: usize = 0xFFFF;
-const MAX_REVERSE_CODES: usize = 0x0004_0000;
 const MAX_LOOKUPS: usize = 128;
 const MAX_LOOKUP_SUBTABLES: usize = 64;
 const MAX_LIGATURES: usize = 0x4000;
@@ -293,14 +293,6 @@ static POST_STANDARD_GLYPH_NAMES: [&str; POST_STANDARD_NAMES] = [
 
 pub(crate) const SFNT_DIRECTORY_LEN: usize = 12 + 16 * MAX_TABLES;
 
-#[derive(Clone, Copy)]
-struct CmapSubtable {
-    encoding: u16,
-    format: u16,
-    offset: usize,
-    platform: u16,
-}
-
 #[derive(Clone, Copy, Default)]
 struct TrueTypeOutlines {
     glyf: usize,
@@ -345,7 +337,7 @@ pub(crate) struct FontStyle {
 
 pub(crate) struct FontProgram {
     cff_start: usize,
-    cmaps: Vec<CmapSubtable>,
+    cmaps: Vec<Subtable>,
     codes: OnceCell<HashMap<u16, u32>>,
     data: Vec<u8>,
     glyph_count: usize,
@@ -389,7 +381,7 @@ impl FontProgram {
                         .iter()
                         .filter(|sub| sub.platform == platform && sub.encoding == encoding)
                     {
-                        cmap_for_each(&self.data, *sub, &mut |code, glyph| {
+                        for_each(&self.data, *sub, &mut |code, glyph| {
                             let code_next = if platform == 3 && encoding == 0 && code >= 0xF000 {
                                 code & 0xFF
                             } else {
@@ -410,7 +402,7 @@ impl FontProgram {
             self.cmaps
                 .iter()
                 .filter(|sub| sub.platform == platform && sub.encoding == encoding)
-                .find_map(|sub| cmap_lookup(&self.data, *sub, query))
+                .find_map(|sub| lookup_cmap(&self.data, *sub, query))
         };
         if symbolic {
             for base in [0_u32, 0xF000, 0xF100, 0xF200] {
@@ -675,7 +667,7 @@ impl FontProgram {
                     .iter()
                     .filter(|sub| sub.platform == platform && sub.encoding == encoding)
                 {
-                    cmap_for_each(&self.data, *sub, &mut |code, gid| {
+                    for_each(&self.data, *sub, &mut |code, gid| {
                         let _: &mut u32 = map.entry(gid).or_insert(code);
                     });
                 }
@@ -760,10 +752,6 @@ pub(crate) fn parse_font_program(bytes: Vec<u8>) -> Option<FontProgram> {
 }
 
 fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
-    let table_count = usize::from(read_u16(bytes, 4)?);
-    if table_count == 0 || table_count > MAX_TABLES {
-        return None;
-    }
     let mut cmap = None;
     let mut head = None;
     let mut maxp = None;
@@ -773,20 +761,7 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
     let mut hhea = None;
     let mut hmtx = None;
     let mut os2 = None;
-    for index in 0..table_count {
-        let base = 12_usize.checked_add(index.checked_mul(16)?)?;
-        let tag = [
-            *bytes.get(base)?,
-            *bytes.get(base.saturating_add(1))?,
-            *bytes.get(base.saturating_add(2))?,
-            *bytes.get(base.saturating_add(3))?,
-        ];
-        let offset = usize::try_from(read_u32(bytes, base.checked_add(8)?)?).ok()?;
-        let length = usize::try_from(read_u32(bytes, base.checked_add(12)?)?).ok()?;
-        let end = offset.checked_add(length)?;
-        if end > bytes.len() || length == 0 {
-            continue;
-        }
+    for (tag, offset, end) in tables(bytes)? {
         let range = Some((offset, end));
         match &tag {
             b"cmap" => cmap = range,
@@ -808,7 +783,7 @@ fn parse_sfnt(bytes: &[u8], program: &mut FontProgram) -> Option<()> {
         program.glyph_count = usize::from(read_u16(bytes, offset.checked_add(4)?)?);
     }
     if let Some((offset, end)) = cmap {
-        read_cmap_directory(bytes, offset, end, program);
+        program.cmaps = read_cmap_directory(bytes, offset, end);
     }
     if let Some((offset, end)) = cff {
         let font = CffFont::parse(bytes.get(offset..end)?)?;
@@ -896,40 +871,6 @@ fn sfnt_style(
     }
 }
 
-fn read_cmap_directory(bytes: &[u8], offset: usize, end: usize, program: &mut FontProgram) {
-    let count = read_u16(bytes, offset.saturating_add(2)).map_or(0, usize::from);
-    for index in 0..count.min(MAX_SUBTABLES) {
-        let head = offset.saturating_add((index.saturating_mul(8)).saturating_add(4));
-        let (Some(platform), Some(encoding), Some(relative)) = (
-            read_u16(bytes, head),
-            read_u16(bytes, head.saturating_add(2)),
-            read_u32(bytes, head.saturating_add(4)),
-        ) else {
-            return;
-        };
-        let Some(sub) = usize::try_from(relative)
-            .ok()
-            .and_then(|inner_relative| offset.checked_add(inner_relative))
-        else {
-            continue;
-        };
-        if sub >= end.min(bytes.len()) {
-            continue;
-        }
-        let Some(format) = read_u16(bytes, sub) else {
-            continue;
-        };
-        if matches!(format, 0 | 4 | 6 | 12) {
-            program.cmaps.push(CmapSubtable {
-                platform,
-                encoding,
-                offset: sub,
-                format,
-            });
-        }
-    }
-}
-
 fn glyph_range(data: &[u8], outlines: &TrueTypeOutlines, gid: u16) -> Option<(usize, usize)> {
     let index = usize::from(gid);
     let (first, next) = if outlines.long_offsets {
@@ -957,234 +898,6 @@ fn glyph_range(data: &[u8], outlines: &TrueTypeOutlines, gid: u16) -> Option<(us
     let start = outlines.glyf.checked_add(first)?;
     let end = outlines.glyf.checked_add(next)?;
     (end <= outlines.glyf_end).then_some((start, end))
-}
-
-fn cmap_lookup(data: &[u8], sub: CmapSubtable, code: u32) -> Option<u16> {
-    let gid = match sub.format {
-        0 => lookup_format0(data, sub.offset, code),
-        4 => lookup_format4(data, sub.offset, code),
-        6 => lookup_format6(data, sub.offset, code),
-        12 => lookup_format12(data, sub.offset, code),
-        _ => None,
-    }?;
-    (gid != 0).then_some(gid)
-}
-
-fn lookup_format0(data: &[u8], offset: usize, code: u32) -> Option<u16> {
-    if code > 255 {
-        return None;
-    }
-    let position = offset.checked_add(6)?.checked_add(widen(code))?;
-    data.get(position).copied().map(u16::from)
-}
-
-fn lookup_format4(data: &[u8], offset: usize, code: u32) -> Option<u16> {
-    let code_u16 = u16::try_from(code).ok()?;
-    let seg_count = usize::from(read_u16(data, offset.checked_add(6)?)?) >> 1_i32;
-    let ends = offset.checked_add(14)?;
-    let starts = ends
-        .checked_add(seg_count.saturating_mul(2))?
-        .checked_add(2)?;
-    let deltas = starts.checked_add(seg_count.saturating_mul(2))?;
-    let ranges = deltas.checked_add(seg_count.saturating_mul(2))?;
-    let mut low = 0_usize;
-    let mut high = seg_count;
-    while low < high {
-        let mid = low.midpoint(high);
-        if read_u16(data, ends.checked_add(mid.saturating_mul(2))?)? < code_u16 {
-            low = mid.saturating_add(1);
-        } else {
-            high = mid;
-        }
-    }
-    if low >= seg_count {
-        return None;
-    }
-    let start = read_u16(data, starts.checked_add(low.saturating_mul(2))?)?;
-    if start > code_u16 {
-        return None;
-    }
-    let delta = read_u16(data, deltas.checked_add(low.saturating_mul(2))?)?;
-    let range = read_u16(data, ranges.checked_add(low.saturating_mul(2))?)?;
-    if range == 0 {
-        return Some(code_u16.wrapping_add(delta));
-    }
-    let position = ranges
-        .checked_add(low.saturating_mul(2))?
-        .checked_add(usize::from(range))?
-        .checked_add(usize::from(code_u16.saturating_sub(start)) * 2)?;
-    let glyph = read_u16(data, position)?;
-    (glyph != 0).then(|| glyph.wrapping_add(delta))
-}
-
-fn lookup_format6(data: &[u8], offset: usize, code: u32) -> Option<u16> {
-    let first = u32::from(read_u16(data, offset.checked_add(6)?)?);
-    let count = u32::from(read_u16(data, offset.checked_add(8)?)?);
-    if code < first || code >= first.saturating_add(count) {
-        return None;
-    }
-    let index = usize::try_from(code.saturating_sub(first)).ok()?;
-    read_u16(
-        data,
-        offset
-            .checked_add(10)?
-            .checked_add(index.saturating_mul(2))?,
-    )
-}
-
-fn lookup_format12(data: &[u8], offset: usize, code: u32) -> Option<u16> {
-    let groups = usize::try_from(read_u32(data, offset.checked_add(12)?)?).ok()?;
-    let base = offset.checked_add(16)?;
-    let mut low = 0_usize;
-    let mut high = groups.min(MAX_REVERSE_CODES);
-    while low < high {
-        let mid = low.midpoint(high);
-        let group = base.checked_add(mid.checked_mul(12)?)?;
-        let start = read_u32(data, group)?;
-        let end = read_u32(data, group.checked_add(4)?)?;
-        if code < start {
-            high = mid;
-        } else if code > end {
-            low = mid.saturating_add(1);
-        } else {
-            let first = read_u32(data, group.checked_add(8)?)?;
-            return u16::try_from(first.checked_add(code.saturating_sub(start))?).ok();
-        }
-    }
-    None
-}
-
-fn cmap_for_each(data: &[u8], sub: CmapSubtable, visit: &mut dyn FnMut(u32, u16)) {
-    let mut budget = MAX_REVERSE_CODES;
-    match sub.format {
-        0 => each_format0(data, sub.offset, visit),
-        4 => each_format4(data, sub.offset, &mut budget, visit),
-        6 => each_format6(data, sub.offset, visit),
-        12 => each_format12(data, sub.offset, &mut budget, visit),
-        _ => {}
-    }
-}
-
-const fn spend(budget: &mut usize) -> bool {
-    if *budget == 0 {
-        return false;
-    }
-    *budget = budget.saturating_sub(1);
-    true
-}
-
-fn each_format0(data: &[u8], offset: usize, visit: &mut dyn FnMut(u32, u16)) {
-    for code in 0..256_u32 {
-        let Some(gid) = data
-            .get(offset.saturating_add(6).saturating_add(widen(code)))
-            .map(|gid| u16::from(*gid))
-        else {
-            return;
-        };
-        if gid != 0 {
-            visit(code, gid);
-        }
-    }
-}
-
-fn each_format4(data: &[u8], offset: usize, budget: &mut usize, visit: &mut dyn FnMut(u32, u16)) {
-    let Some(seg_count) =
-        read_u16(data, offset.saturating_add(6)).map(|value| usize::from(value) >> 1_i32)
-    else {
-        return;
-    };
-    let ends = offset.saturating_add(14);
-    let starts = ends
-        .saturating_add(seg_count.saturating_mul(2))
-        .saturating_add(2);
-    let deltas = starts.saturating_add(seg_count.saturating_mul(2));
-    let ranges = deltas.saturating_add(seg_count.saturating_mul(2));
-    for seg in 0..seg_count {
-        let (Some(end), Some(start), Some(delta), Some(range)) = (
-            read_u16(data, ends.saturating_add(seg.saturating_mul(2))),
-            read_u16(data, starts.saturating_add(seg.saturating_mul(2))),
-            read_u16(data, deltas.saturating_add(seg.saturating_mul(2))),
-            read_u16(data, ranges.saturating_add(seg.saturating_mul(2))),
-        ) else {
-            return;
-        };
-        if end < start || start == 0xFFFF {
-            continue;
-        }
-        for code in start..=end {
-            if !spend(budget) {
-                return;
-            }
-            let gid = if range == 0 {
-                code.wrapping_add(delta)
-            } else {
-                let position = ranges
-                    .saturating_add(seg.saturating_mul(2))
-                    .saturating_add(usize::from(range))
-                    .saturating_add(usize::from(code.saturating_sub(start)) * 2);
-                match read_u16(data, position) {
-                    Some(0) | None => continue,
-                    Some(glyph) => glyph.wrapping_add(delta),
-                }
-            };
-            if gid != 0 {
-                visit(u32::from(code), gid);
-            }
-        }
-    }
-}
-
-fn each_format6(data: &[u8], offset: usize, visit: &mut dyn FnMut(u32, u16)) {
-    let (Some(first), Some(count)) = (
-        read_u16(data, offset.saturating_add(6)),
-        read_u16(data, offset.saturating_add(8)),
-    ) else {
-        return;
-    };
-    for index in 0..usize::from(count) {
-        let Some(gid) = read_u16(
-            data,
-            offset.saturating_add(index.saturating_mul(2).saturating_add(10)),
-        ) else {
-            return;
-        };
-        if gid != 0 {
-            visit(
-                u32::from(first).saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
-                gid,
-            );
-        }
-    }
-}
-
-fn each_format12(data: &[u8], offset: usize, budget: &mut usize, visit: &mut dyn FnMut(u32, u16)) {
-    let Some(groups) = read_u32(data, offset.saturating_add(12)) else {
-        return;
-    };
-    for index in 0..usize::try_from(groups).unwrap_or(0).min(MAX_REVERSE_CODES) {
-        let base = offset.saturating_add(index.saturating_mul(12).saturating_add(16));
-        let (Some(start), Some(end), Some(first)) = (
-            read_u32(data, base),
-            read_u32(data, base.saturating_add(4)),
-            read_u32(data, base.saturating_add(8)),
-        ) else {
-            return;
-        };
-        if end < start {
-            continue;
-        }
-        for step in 0..=end.saturating_sub(start) {
-            if !spend(budget) {
-                return;
-            }
-            let Ok(gid) = u16::try_from(first.saturating_add(step)) else {
-                break;
-            };
-            if gid != 0 {
-                visit(start.saturating_add(step), gid);
-            }
-        }
-    }
 }
 
 fn read_gsub_ligatures(table: &[u8], out: &mut HashMap<u16, Vec<u16>>) {
@@ -1858,16 +1571,16 @@ pub(crate) mod tests {
             .iter()
             .find(|sub| sub.format == 6)
             .expect("fmt6");
-        assert_eq!(cmap_lookup(&program.data, *sub6, 0x31), Some(21));
-        assert_eq!(cmap_lookup(&program.data, *sub6, 0x33), None);
+        assert_eq!(lookup_cmap(&program.data, *sub6, 0x31), Some(21));
+        assert_eq!(lookup_cmap(&program.data, *sub6, 0x33), None);
         let sub12 = program
             .cmaps
             .iter()
             .find(|sub| sub.format == 12)
             .expect("fmt12");
-        assert_eq!(cmap_lookup(&program.data, *sub12, 0x1F601), Some(31));
-        assert_eq!(cmap_lookup(&program.data, *sub12, 0x1F602), None);
-        assert_eq!(cmap_lookup(&program.data, *sub12, 0x10), None);
+        assert_eq!(lookup_cmap(&program.data, *sub12, 0x1F601), Some(31));
+        assert_eq!(lookup_cmap(&program.data, *sub12, 0x1F602), None);
+        assert_eq!(lookup_cmap(&program.data, *sub12, 0x10), None);
     }
 
     #[test]

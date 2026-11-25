@@ -22,7 +22,17 @@ export default defineConfig({
     feedbackBrowserServer(docsRoot),
     homeBrowserServer(),
   ],
-  optimizeDeps: { include: ["posthog-js", "react/jsx-dev-runtime", "react-dom/client"] },
+  optimizeDeps: {
+    include: [
+      "posthog-js",
+      "react/jsx-dev-runtime",
+      "react-dom/client",
+      "@effect/platform-browser/BrowserRuntime",
+      "@effect/platform-browser/BrowserWorkerRunner",
+      "effect/encoding",
+      "effect/rpc/RpcServer",
+    ],
+  },
   test: {
     include: ["apps/docs/**/*.browser.test.*"],
     teardownTimeout: 2000,

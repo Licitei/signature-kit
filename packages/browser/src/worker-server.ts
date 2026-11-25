@@ -1,4 +1,6 @@
 import * as BrowserWorkerRunner from "@effect/platform-browser/BrowserWorkerRunner";
+import { compose } from "@signature-kit/engine/compose";
+import { composeBrowserLayer } from "@signature-kit/engine/wasm/compose";
 import { pdfCoreBrowserLayer } from "@signature-kit/engine/wasm/browser";
 import { paintDisplayList, prepareDisplayListImages } from "@signature-kit/engine/wasm/canvas";
 import { Effect, Layer, Option, References, Semaphore } from "effect";
@@ -37,6 +39,13 @@ const localHandlersLayer = LocalRpcs.toLayer(
       DocumentsOpen: ({ bytes }) => documents.open(bytes),
       DocumentsExport: ({ handle }) => documents.export(handle),
       DocumentsRelease: ({ handle }) => documents.release(handle),
+      PdfCompose: ({ document, options }) =>
+        compose(document, options).pipe(
+          Effect.mapError(
+            ({ code }) => new LocalError({ code: "pdfComposeFailed", pdfCode: code }),
+          ),
+          Effect.flatMap(documents.open),
+        ),
       PdfInspect: ({ handle }) => pdf.inspect(handle),
       PdfRenderPage: (input) =>
         raster(
@@ -102,6 +111,7 @@ export const localWorker = (telemetry: boolean) =>
           Layer.provide(pdfEngineLayer),
           Layer.provide(localRuntimeLayer()),
           Layer.provide(pdfCoreBrowserLayer),
+          Layer.provide(composeBrowserLayer),
         ),
       ),
       Layer.provide(

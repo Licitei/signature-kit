@@ -16,6 +16,7 @@ crate-type = ["rlib"]
 path = "src/lib.rs"
 
 [dependencies]
+signature-kit-font = { path = "../font" }
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }

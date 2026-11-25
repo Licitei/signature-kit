@@ -3,15 +3,13 @@ use crate::font_tables::BuiltinEncoding as FontEncoding;
 use crate::font_tables::encoding_glyph_name;
 use crate::glyph::charge;
 use crate::inflate::inflate;
-use crate::num::{f64_to_f32, f64_to_i64, parse_decimal, read_u16, read_u32, sort_total};
+use crate::num::{f64_to_f32, f64_to_i64, read_u16, read_u32, sort_total};
 use core::array;
-use core::mem;
+use signature_kit_font::cff::{Index, dict_values, parse_dict, read_fd_select};
 use std::sync::OnceLock;
 include!(concat!(env!("OUT_DIR"), "/cff_tables.rs"));
 
 const MAX_GLYPHS: usize = 0xFFFF;
-const MAX_DICT_ENTRIES: usize = 256;
-const MAX_OPERANDS: usize = 48;
 const MAX_CUSTOM_STRINGS: usize = 0xFFFF;
 const ISO_ADOBE_LAST_SID: usize = 228;
 const OP_CHARSET: u16 = 15;
@@ -56,88 +54,6 @@ pub(crate) struct CffFont {
 struct PrivateDict {
     matrix: Option<[f64; 6]>,
     subrs: Option<Index>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Index {
-    count: usize,
-    data: usize,
-    end: usize,
-    off_size: usize,
-    offsets: usize,
-}
-
-impl Index {
-    const fn empty(position: usize) -> Self {
-        Self {
-            count: 0,
-            data: position,
-            end: position,
-            off_size: 0,
-            offsets: position,
-        }
-    }
-
-    fn get<'data>(&self, bytes: &'data [u8], item: usize) -> Option<&'data [u8]> {
-        if item >= self.count {
-            return None;
-        }
-        let first = read_offset(
-            bytes,
-            self.offsets.checked_add(item.checked_mul(self.off_size)?)?,
-            self.off_size,
-        )?;
-        let next = read_offset(
-            bytes,
-            self.offsets
-                .checked_add(item.checked_add(1)?.checked_mul(self.off_size)?)?,
-            self.off_size,
-        )?;
-        if first == 0 || next < first {
-            return None;
-        }
-        let start = self.data.checked_add(first)?.checked_sub(1)?;
-        let stop = self.data.checked_add(next)?.checked_sub(1)?;
-        if stop > self.end {
-            return None;
-        }
-        bytes.get(start..stop)
-    }
-
-    fn parse(bytes: &[u8], position: usize) -> Option<Self> {
-        let count = usize::from(read_u16(bytes, position)?);
-        if count == 0 {
-            return Some(Self {
-                count: 0,
-                off_size: 0,
-                offsets: position.checked_add(2)?,
-                data: position.checked_add(2)?,
-                end: position.checked_add(2)?,
-            });
-        }
-        let off_size = usize::from(*bytes.get(position.checked_add(2)?)?);
-        if !(1..=4).contains(&off_size) {
-            return None;
-        }
-        let offsets = position.checked_add(3)?;
-        let data = offsets.checked_add(count.checked_add(1)?.checked_mul(off_size)?)?;
-        let last = read_offset(
-            bytes,
-            offsets.checked_add(count.checked_mul(off_size)?)?,
-            off_size,
-        )?;
-        let end = data.checked_add(last)?.checked_sub(1)?;
-        if end > bytes.len() {
-            return None;
-        }
-        Some(Self {
-            count,
-            data,
-            end,
-            off_size,
-            offsets,
-        })
-    }
 }
 
 impl CffFont {
@@ -242,13 +158,13 @@ impl CffFont {
         }
         let header_size = usize::from(*bytes.get(2)?);
         let names = Index::parse(bytes, header_size)?;
-        let top_dicts = Index::parse(bytes, names.end)?;
-        let strings = Index::parse(bytes, top_dicts.end)?;
+        let top_dicts = Index::parse(bytes, names.end())?;
+        let strings = Index::parse(bytes, top_dicts.end())?;
         let top = parse_dict(top_dicts.get(bytes, 0)?);
         let offset = |op: u16| dict_offset(&top, op);
         let charstrings_offset = usize::try_from(offset(OP_CHARSTRINGS)?).ok()?;
         let charstrings = Index::parse(bytes, charstrings_offset)?;
-        let glyph_count = charstrings.count;
+        let glyph_count = charstrings.count();
         if glyph_count == 0 || glyph_count > MAX_GLYPHS {
             return None;
         }
@@ -256,7 +172,7 @@ impl CffFont {
         let charset_offset = offset(OP_CHARSET).unwrap_or(0_i32);
         let charset = read_charset(bytes, charset_offset, glyph_count, cid_keyed)?;
         let mut custom_strings = Vec::new();
-        for item in 0..strings.count.min(MAX_CUSTOM_STRINGS) {
+        for item in 0..strings.count().min(MAX_CUSTOM_STRINGS) {
             custom_strings.push(strings.get(bytes, item)?.to_vec());
         }
         let encoding = if cid_keyed {
@@ -274,7 +190,7 @@ impl CffFont {
             sort_total(&mut cid_index, &Ord::cmp);
         }
         let global_subrs =
-            Index::parse(bytes, strings.end).unwrap_or_else(|| Index::empty(strings.end));
+            Index::parse(bytes, strings.end()).unwrap_or_else(|| Index::empty(strings.end()));
         let (privates, fd_select) = if cid_keyed {
             read_font_dicts(bytes, &top, glyph_count)
         } else {
@@ -339,7 +255,8 @@ impl Type2<'_> {
         };
         let raw = f64_to_i64(self.stack.pop()?);
         let biased =
-            usize::try_from(raw.checked_add(i64::try_from(subr_bias(index.count)).ok()?)?).ok()?;
+            usize::try_from(raw.checked_add(i64::try_from(subr_bias(index.count())).ok()?)?)
+                .ok()?;
         let code = index.get(self.bytes, biased)?;
         self.run(code, depth.saturating_add(1))
     }
@@ -857,96 +774,6 @@ fn read_encoding(bytes: &[u8], offset: i32, charset: &[u16]) -> Option<BuiltinEn
     Some(BuiltinEncoding::Table(table))
 }
 
-fn parse_dict(bytes: &[u8]) -> Vec<(u16, Vec<f64>)> {
-    let mut entries: Vec<(u16, Vec<f64>)> = Vec::new();
-    let mut operands: Vec<f64> = Vec::new();
-    let mut position = 0_usize;
-    while let Some(&byte) = bytes.get(position) {
-        position = position.saturating_add(1);
-        match byte {
-            0..=21 => {
-                let op = if byte == 12 {
-                    let next = bytes.get(position).copied().unwrap_or(0);
-                    position = position.saturating_add(1);
-                    0x0C00 | u16::from(next)
-                } else {
-                    u16::from(byte)
-                };
-                if entries.len() >= MAX_DICT_ENTRIES {
-                    break;
-                }
-                entries.push((op, mem::take(&mut operands)));
-            }
-            28 => {
-                let value = read_u16(bytes, position).map(|value| i32::from(value.cast_signed()));
-                position = position.saturating_add(2);
-                push_operand(&mut operands, f64::from(value.unwrap_or(0_i32)));
-            }
-            29 => {
-                let value = read_u32(bytes, position).map(u32::cast_signed);
-                position = position.saturating_add(4);
-                push_operand(&mut operands, f64::from(value.unwrap_or(0_i32)));
-            }
-            30 => {
-                let mut text: Vec<u8> = Vec::new();
-                'nibbles: while let Some(&pair) = bytes.get(position) {
-                    position = position.saturating_add(1);
-                    for nibble in [pair >> 4_i32, pair & 0x0F] {
-                        match nibble {
-                            0..=9 => text.push(b'0'.saturating_add(nibble)),
-                            0x0A => text.push(b'.'),
-                            0x0B => text.push(b'E'),
-                            0x0C => text.extend_from_slice(b"E-"),
-                            0x0E => text.push(b'-'),
-                            0x0F => break 'nibbles,
-                            _ => {}
-                        }
-                    }
-                }
-                push_operand(&mut operands, parse_decimal(&text).unwrap_or(0.0_f64));
-            }
-            32..=246 => push_operand(
-                &mut operands,
-                f64::from(i32::from(byte).saturating_sub(139)),
-            ),
-            247..=250 => {
-                let next = i32::from(bytes.get(position).copied().unwrap_or(0));
-                position = position.saturating_add(1);
-                push_operand(
-                    &mut operands,
-                    f64::from(
-                        (((i32::from(byte).saturating_sub(247)).saturating_mul(256))
-                            .saturating_add(next))
-                        .saturating_add(108),
-                    ),
-                );
-            }
-            251..=254 => {
-                let next = i32::from(bytes.get(position).copied().unwrap_or(0));
-                position = position.saturating_add(1);
-                push_operand(
-                    &mut operands,
-                    f64::from(
-                        251_i32
-                            .saturating_sub(i32::from(byte))
-                            .saturating_mul(256)
-                            .saturating_sub(next)
-                            .saturating_sub(108),
-                    ),
-                );
-            }
-            _ => {}
-        }
-    }
-    entries
-}
-
-fn dict_values(dict: &[(u16, Vec<f64>)], op: u16) -> Option<&[f64]> {
-    dict.iter()
-        .find(|(key, _)| *key == op)
-        .map(|(_, values)| values.as_slice())
-}
-
 fn dict_offset(dict: &[(u16, Vec<f64>)], op: u16) -> Option<i32> {
     let value = *dict_values(dict, op)?.first()?;
     i32::try_from(f64_to_i64(value)).ok()
@@ -983,7 +810,7 @@ fn read_font_dicts(
         .and_then(|offset| usize::try_from(offset).ok())
         .and_then(|offset| Index::parse(bytes, offset))
     {
-        for item in 0..array.count.min(MAX_FONT_DICTS) {
+        for item in 0..array.count().min(MAX_FONT_DICTS) {
             let dict = array.get(bytes, item).map(parse_dict).unwrap_or_default();
             privates.push(read_private(bytes, &dict));
         }
@@ -995,30 +822,6 @@ fn read_font_dicts(
     (privates, select)
 }
 
-fn read_fd_select(bytes: &[u8], offset: usize, glyph_count: usize) -> Option<Vec<u8>> {
-    let format = *bytes.get(offset)?;
-    let start = offset.checked_add(1)?;
-    match format {
-        0 => Some(bytes.get(start..start.checked_add(glyph_count)?)?.to_vec()),
-        3 => {
-            let ranges = usize::from(read_u16(bytes, start)?);
-            let mut select = vec![0_u8; glyph_count];
-            let mut position = start.checked_add(2)?;
-            for _ in 0..ranges {
-                let first = usize::from(read_u16(bytes, position)?);
-                let fd = *bytes.get(position.checked_add(2)?)?;
-                let next = usize::from(read_u16(bytes, position.checked_add(3)?)?);
-                if let Some(slots) = select.get_mut(first..next.min(glyph_count)) {
-                    slots.fill(fd);
-                }
-                position = position.checked_add(3)?;
-            }
-            Some(select)
-        }
-        _ => None,
-    }
-}
-
 const fn subr_bias(count: usize) -> usize {
     if count < 1240 {
         107
@@ -1027,20 +830,6 @@ const fn subr_bias(count: usize) -> usize {
     } else {
         0x8000
     }
-}
-
-fn push_operand(operands: &mut Vec<f64>, value: f64) {
-    if operands.len() < MAX_OPERANDS {
-        operands.push(value);
-    }
-}
-
-fn read_offset(bytes: &[u8], position: usize, size: usize) -> Option<usize> {
-    let mut value = 0_usize;
-    for step in 0..size {
-        value = (value << 8_i32) | usize::from(*bytes.get(position.checked_add(step)?)?);
-    }
-    Some(value)
 }
 
 #[cfg(test)]

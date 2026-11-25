@@ -1,0 +1,5 @@
+cargo::rerun-if-changed=build.rs
+cargo::rerun-if-changed=/home/yorizel/.t3/worktrees/trustsign/v2-d6a338a884eda70e/shared/pdf-core/rust/data/glyphlist.txt
+cargo::rerun-if-changed=/home/yorizel/.t3/worktrees/trustsign/v2-d6a338a884eda70e/shared/pdf-core/rust/data/encodings.txt
+cargo::rerun-if-changed=/home/yorizel/.t3/worktrees/trustsign/v2-d6a338a884eda70e/shared/pdf-core/rust/data/standard14.txt
+cargo::rerun-if-changed=/home/yorizel/.t3/worktrees/trustsign/v2-d6a338a884eda70e/shared/pdf-core/rust/data/cff.txt

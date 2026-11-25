@@ -7,6 +7,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { compose } from "../../dist/compose.js";
+import { contractTemplate } from "../../dist/templates.js";
+import { composeFileLayer } from "../../dist/wasm/compose.js";
 import { PdfCoreErrorCodeValue } from "../../dist/wasm/config.js";
 import type {
   PdfCorePrepareSignatureRequest,
@@ -215,4 +218,42 @@ it.effect.skipIf(unavailable.length > 0)(
         revisionEnd: signed.signed.byteLength,
       });
     }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect.skipIf(unavailable.length > 0)("signs an existing composed AcroForm widget by name", () =>
+  Effect.gen(function* () {
+    const core = yield* PdfCore;
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "pdf-compose-signing-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    yield* command("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-noenc",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=Compose Test",
+      "-keyout",
+      join(directory, "key.pem"),
+      "-out",
+      join(directory, "cert.pem"),
+    ]);
+    const bytes = yield* compose(contractTemplate());
+    const field = "assinatura-contratante";
+    const prepared = yield* core.prepareSignature(bytes, {
+      ...request(field),
+      field: { kind: "existing", name: field },
+    });
+    expect(prepared.pdf.subarray(0, bytes.length)).toEqual(bytes);
+    const signed = yield* sign(directory, "contract", prepared);
+    expect(signed.verification).toContain(`Signature Field Name: ${field}`);
+    expect(signed.verification).toContain("Signature is Valid");
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.merge(layer, composeFileLayer.pipe(Layer.provide(NodeServices.layer)))),
+  ),
 );

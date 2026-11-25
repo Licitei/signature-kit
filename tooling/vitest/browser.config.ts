@@ -12,6 +12,7 @@ export default defineConfig({
       "@effect/platform-browser/BrowserWorkerRunner",
       "@opentelemetry/exporter-trace-otlp-http",
       "effect/rpc/RpcServer",
+      "effect/encoding",
     ],
     exclude: ["@typeonce/effect-machine"],
   },

@@ -17,8 +17,10 @@ crate-type = ["cdylib"]
 [features]
 default = ["pdf"]
 pdf = ["dep:signature-kit-pdf-core"]
+compose = ["dep:signature-kit-compose"]
 
 [dependencies]
+signature-kit-compose = { path = "../compose", optional = true }
 signature-kit-pdf-core = { path = "../pdf", optional = true }
 
 [lints]
