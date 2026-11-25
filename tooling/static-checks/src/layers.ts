@@ -3,7 +3,14 @@ import { dirname, relative, resolve } from "node:path";
 import * as ts from "typescript";
 import { parseSourceFile } from "./source-context";
 
-export type WorkspaceLayer = "shared" | "core" | "signers" | "formats" | "validators" | "apps";
+export type WorkspaceLayer =
+  | "shared"
+  | "core"
+  | "signers"
+  | "formats"
+  | "validators"
+  | "runtime"
+  | "apps";
 
 type JsonObject = { readonly [key: string]: unknown };
 
@@ -32,6 +39,7 @@ const workspaceRoots: readonly string[] = [
   "signers",
   "formats",
   "validators",
+  "runtime",
   "apps",
 ];
 
@@ -41,7 +49,8 @@ const allowedDependencyLayers: Record<WorkspaceLayer, readonly WorkspaceLayer[]>
   signers: ["shared", "core", "signers"],
   formats: ["shared", "core", "formats"],
   validators: ["shared", "core", "formats", "validators"],
-  apps: ["shared", "core", "signers", "formats", "apps"],
+  runtime: ["shared", "core", "runtime"],
+  apps: ["shared", "core", "signers", "formats", "runtime", "apps"],
 };
 const allowedCrossLayerPackageDependencies: Record<string, readonly string[]> = {
   "@signature-kit/react": ["@signature-kit/a1"],
@@ -76,6 +85,7 @@ const layerForDirectory = (directory: string): WorkspaceLayer | undefined => {
     case "formats":
     case "apps":
     case "validators":
+    case "runtime":
       return segment;
     default:
       return undefined;
@@ -367,7 +377,7 @@ const packageForRelativePath = (
       path === workspacePackage.directory || path.startsWith(`${workspacePackage.directory}/`),
   );
 const librarySourcePathPattern =
-  /^(?:core|shared|signers|formats|validators)\/[^/]+\/src\/.+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
+  /^(?:core|shared|signers|formats|validators|runtime)\/[^/]+\/src\/.+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
 
 const hasPublishedModuleExtension = (specifier: string): boolean => {
   const extension = /\.([A-Za-z0-9]+)$/.exec(specifier)?.[1]?.toLowerCase();

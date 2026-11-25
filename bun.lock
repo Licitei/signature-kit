@@ -208,6 +208,17 @@
         "@signature-kit/a1": "^0.5.0",
       },
     },
+    "runtime/local": {
+      "name": "@signature-kit/local",
+      "version": "2.0.0-alpha.0",
+      "dependencies": {
+        "@effect/platform-browser": "4.1.0",
+        "@signature-kit/asn1": "^0.2.1",
+        "@signature-kit/certificates": "^0.4.0",
+        "@signature-kit/crypto": "^0.3.0",
+        "effect": "4.1.0",
+      },
+    },
     "shared/asn1": {
       "name": "@signature-kit/asn1",
       "version": "0.2.4",
@@ -1092,6 +1103,8 @@
     "@signature-kit/i18n": ["@signature-kit/i18n@workspace:core/i18n"],
 
     "@signature-kit/iti": ["@signature-kit/iti@workspace:validators/iti"],
+
+    "@signature-kit/local": ["@signature-kit/local@workspace:runtime/local"],
 
     "@signature-kit/pdf": ["@signature-kit/pdf@workspace:formats/pdf"],
 

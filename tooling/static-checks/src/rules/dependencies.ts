@@ -15,7 +15,7 @@ const hasProductManifestDependency = (line: string): boolean =>
   hasValidatorManifestDependency(line);
 
 const publicPackageManifestPattern =
-  /^(?:core|formats|shared|signers|validators)\/[^/]+\/package\.json$/;
+  /^(?:core|formats|shared|signers|validators|runtime)\/[^/]+\/package\.json$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -57,7 +57,7 @@ export const dependencyChecks: readonly Check[] = [
     message:
       "OpenTelemetry must be optional for the consumer; do not add @effect/opentelemetry or @opentelemetry/* to package dependencies.",
     test: (context) =>
-      /^(?:core|signers|formats|validators)\/[^/]+\/package\.json$/.test(context.path) &&
+      /^(?:core|signers|formats|validators|runtime)\/[^/]+\/package\.json$/.test(context.path) &&
       hasManifestDependency(context, hasMandatoryOtelDependency),
     ignoreImportLine: false,
   },
@@ -82,7 +82,7 @@ export const dependencyChecks: readonly Check[] = [
       "Non-validator packages must not depend on validator packages; validators are leaf product surfaces.",
     test: (context) =>
       !context.path.startsWith("validators/") &&
-      /^(?:core|signers|formats|shared)\/[^/]+\/package\.json$/.test(context.path) &&
+      /^(?:core|signers|formats|shared|runtime)\/[^/]+\/package\.json$/.test(context.path) &&
       hasManifestDependency(context, hasValidatorManifestDependency),
     ignoreImportLine: false,
   },
