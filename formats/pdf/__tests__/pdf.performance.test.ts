@@ -52,6 +52,7 @@ describe("PDF workflow performance", () => {
       }).pipe(Effect.provide(layer));
       const verification = yield* verifyPdf({ pdf: signed });
       const elapsedMillis = millisecondsSince(startedAt);
+      console.info(`bench-v1-internal pdf.rubric-fresh-sign ${elapsedMillis}`);
 
       expect(stamped.byteLength).toBeGreaterThan(pdf.byteLength);
       expect(signed.byteLength).toBeGreaterThan(stamped.byteLength);

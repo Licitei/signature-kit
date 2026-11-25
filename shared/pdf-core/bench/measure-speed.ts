@@ -21,7 +21,7 @@ const labelIdx = args.indexOf("--label");
 const label = labelIdx >= 0 ? (args[labelIdx + 1] ?? "step") : "step";
 const quick: boolean = args.includes("--quick");
 
-const pdfDir = join(repo, ".cache/bench/pdfs");
+const pdfDir = process.env.PDF_CORPUS ?? join(repo, ".cache/bench/pdfs");
 const fixtureDir = join(pkg, "__tests__/fixtures");
 
 async function loadCore() {
@@ -189,6 +189,7 @@ const result = {
     documentMs: median(habRuns.map((r) => r.documentMs)),
     textMs: median(habRuns.map((r) => r.textMs)),
     bytes: habRuns[0]?.bytes ?? 0,
+    samples: habRuns,
   },
   largeEdital: quick
     ? null
@@ -198,6 +199,7 @@ const result = {
         documentMs: median(largeRuns.map((r) => r.documentMs)),
         textMs: median(largeRuns.map((r) => r.textMs)),
         bytes: largeRuns[0]?.bytes ?? 0,
+        samples: largeRuns,
       },
 };
 

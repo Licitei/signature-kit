@@ -20,6 +20,7 @@ type BenchRow = {
   readonly warmP50Ms: number;
   readonly warmP95Ms: number;
   readonly outputBytes: number;
+  readonly warmSamples: ReadonlyArray<number>;
 };
 
 const benchDirectory = dirname(fileURLToPath(import.meta.url));
@@ -112,6 +113,7 @@ const measure = async (
     warmP50Ms: percentile(warm, 0.5),
     warmP95Ms: percentile(warm, 0.95),
     outputBytes,
+    warmSamples: warm,
   };
 };
 

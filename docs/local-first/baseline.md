@@ -1,8 +1,157 @@
 # Local-first signing baseline
 
-The baseline exercises visible PDF preparation, A1 signing, and local verification in one Chromium page. A separate worker test exercises the state machine and interruption lifecycle that a later batch can build on.
+This document records the SignatureKit 1.x performance reference for 2.0 and retains the original Chromium signing and worker lifecycle spike.
 
-## Reproduce
+## SignatureKit 1.x benchmark matrix
+
+Use the same fixtures and operation IDs when comparing 2.0. Run from the repository root with the lockfile installed and Playwright Chromium available.
+
+```sh
+/home/yorizel/.local/bin/resource-run --cpu 8 --mem 10G bun run bench:v1
+```
+
+The command builds the published entry points, runs the Node and Chromium Vitest matrix sequentially, executes the existing PDF-core probes and performance tests, and builds five standalone Vite consumers. Intermediate outputs are under `.cache/bench-v1/`. The checked-in [baseline-v1.json](baseline-v1.json) records 330 timing cases with the measured Git SHA, environment, sample counts, percentiles, memory and bundle sizes. Raw timing samples are in `node.json`, `chromium.json` and `pdf-core.json` from each run.
+
+### What is timed
+
+- Each operation runs sequentially with three warmups and 21 measured samples. The adapter-construction case collects 101 samples. Foldkit batches use one warmup and five measured batches per size. Median and p95 use nearest rank. The reused PDF adapter already has its Web Crypto signing key from setup. Fresh PDF signing includes PFX parsing and first key import in the same operation.
+- The PDF corpus includes the original synthetic 1, 20 and 200 pages, a valid 20-page synthetic PDF with a deterministic 21 MiB stream on the last page, and checked-in real fixtures for xref recovery, WinAnsi text and encryption. Co-signing uses a second test certificate on a PDF created and signed by the same 1.x run. Verification checks signature count, cryptographic integrity and byte coverage without trust roots, TSA or revocation lookups. Protected PDFs exercise the typed rejection. The read-only matrix covers xref recovery and the encrypted signed fixture.
+- The renderer measures the first page at scales 0.25 and 1. The timed operation includes the real canvas painter and image encoding. Render-worker startup includes WASM setup and a first thumbnail reply. A1 startup uses the first empty-session `Dispose` round trip. It includes WASM setup and scope shutdown. Repeated empty-session `Dispose` approximates warm A1 RPC overhead. Startup and batch timings include module loading from Vitest's Vite dev server. The profile and adapter paths each parse the PFX once, checked on the real Initialize handler with Effect RPC's in-process test transport.
+- Worker byte counts are PDF payload bytes in both directions. The React A1 worker uses a plain byte-array Schema on both sides and the request buffer remains attached after the real call. The measured calls use structured cloning. Wire framing and schema metadata are outside the byte counts.
+- Batch totals include opening and initializing a fresh Foldkit worker, running the real in-memory domain state machine, all signing RPCs and disposal. The per-item timings cover each signing RPC. The caller samples page heap at domain transitions as well as around each batch.
+- Node samples RSS, JavaScript heap and ArrayBuffers with `process.memoryUsage()`. Chromium samples page JavaScript heap through CDP `Performance.getMetrics` around each operation and uses `performance.memory` at batch item boundaries. Peaks are the largest observed snapshot. Short-lived allocations between snapshots, worker isolates, browser-process RSS and WASM capacity fall outside the Chromium page measurements. The separate PDF-core memory probe reports subprocess peak RSS and WASM linear-memory capacity.
+- For sign and verify, the harness counts explicit JS-to-WASM byte writes via `pdfCore.wasm.copyIn` and observes the page-index writes and result-buffer slices in a Vitest-only transform. This covers boundary buffer copies on those paths. Direct numeric reads, UTF-8 decoding, internal WASM allocations and copies entirely within JavaScript are outside that count. The JSON retains only counts and byte lengths.
+- The existing PDF-core scripts run under Bun and keep their own sample counts. The speed probe uses five runs and a two-document file corpus. The lazy-file probe uses three warm trials, the generator uses ten warm trials, and the memory probe uses one fresh subprocess per row. The lazy probe is local and its results do not estimate HTTP latency. Vite entry totals sum each emitted chunk or asset once within that entry. Gzip uses level 9 and Brotli uses quality 11.
+- Host snapshots record `ci-status` job counts and reservations plus OS load averages before and after each phase. Job counts include the benchmark's reservation. The PDF-core speed probe also repeats once if its first five-run range exceeds 35% of the median. The runner repeats a Node or Chromium phase once if another broker job is present and the 21 MiB warm-sign or verify-two p95 exceeds 1.35 times its median. It retains the initial raw run and reports both medians and p95s. CPU contention between snapshots and non-broker jobs can still affect measurements.
+
+### Recorded results
+
+Product baseline `001975608555ef7026bed5ad3ae94d8140f3d994` ran on Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz, 28 logical CPUs, linux 7.3.6-arch1-1 x64, Node 26.13.1, Chromium 156.0.8078.4 and Bun 1.4.3. Each timing cell reports median / p95 in milliseconds unless the table gives another unit.
+
+#### Certificate, CMS and XML
+
+| Operation | Fixture or policy | Node | Chromium |
+| --- | ---: | ---: | ---: |
+| PKCS#12 parse | ecpf | 55.58 / 85.01 | 46.60 / 53.50 |
+| PKCS#12 parse | ecnpj | 52.49 / 84.04 | 44.50 / 56.50 |
+| Certificate parse | ecpf | 56.63 / 90.82 | 46.20 / 64.90 |
+| Certificate parse | ecnpj | 59.27 / 84.06 | 48.80 / 57.10 |
+| A1 certificate profile | ecpf | 47.49 / 86.82 | 40.70 / 46.40 |
+| A1 certificate profile | ecnpj | 44.54 / 81.69 | 43.60 / 54.00 |
+| A1 adapter load | ecpf | 45.61 / 83.96 | 41.50 / 49.90 |
+| A1 adapter load | ecnpj | 54.33 / 79.05 | 48.90 / 58.10 |
+| Web Crypto key import | ecpf | 0.25 / 0.41 | 1.10 / 1.60 |
+| Web Crypto key import | ecnpj | 0.33 / 0.39 | 1.10 / 1.20 |
+| Detached CMS create | pades-ades | 4.26 / 10.53 | 4.80 / 7.30 |
+| Detached CMS create | icp-brasil-ad-rb-v11 | 4.81 / 13.91 | 5.50 / 6.80 |
+| Detached CMS verify | pades-ades | 4.12 / 10.35 | 4.30 / 4.80 |
+| Detached CMS verify | icp-brasil-ad-rb-v11 | 3.83 / 7.67 | 4.10 / 5.40 |
+| Detached CMS inspect | pades-ades | 6.06 / 18.95 | 6.80 / 8.10 |
+| Detached CMS inspect | icp-brasil-ad-rb-v11 | 6.06 / 11.64 | 8.40 / 13.90 |
+| XML sign | xml-small | 5.71 / 20.00 | — |
+| XML sign | xml-1mib | 134.00 / 151.08 | — |
+| XML verify | xml-small | 3.23 / 5.32 | 3.50 / 4.60 |
+| XML verify | xml-1mib | 106.33 / 133.51 | 96.90 / 106.40 |
+
+Chromium returned `xml.SIGN_FAILED` during serialization for both inputs. The 1.x runtime parses with xmldom while xml-core picks the native Chromium serializer. Chromium verification uses the XML that 1.x signed in Node.
+
+#### PDF signing and verification
+
+| Corpus | Runtime | Fresh sign | Warm sign | Co-sign | Verify one | Verify two |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| synthetic-1 | node | 71.69 / 116.44 | 7.10 / 10.05 | 6.89 / 8.49 | 4.51 / 5.62 | 9.54 / 10.49 |
+| synthetic-1 | chromium | 65.40 / 82.10 | 9.70 / 10.60 | 7.10 / 8.10 | 5.30 / 6.00 | 13.20 / 18.20 |
+| synthetic-20 | node | 68.43 / 110.92 | 8.17 / 9.83 | 11.03 / 12.76 | 5.81 / 7.06 | 12.20 / 14.60 |
+| synthetic-20 | chromium | 48.00 / 59.40 | 7.90 / 12.10 | 6.60 / 7.80 | 5.50 / 6.70 | 11.00 / 12.10 |
+| synthetic-200 | node | 63.90 / 115.56 | 14.74 / 23.28 | 15.47 / 17.08 | 8.85 / 9.29 | 13.95 / 14.82 |
+| synthetic-200 | chromium | 68.10 / 88.10 | 14.20 / 18.60 | 15.20 / 22.60 | 12.40 / 16.20 | 23.30 / 28.90 |
+| synthetic-21mib | node | 200.12 / 240.04 | 170.62 / 211.65 | 154.46 / 186.92 | 111.90 / 128.75 | 200.78 / 250.79 |
+| synthetic-21mib | chromium | 232.40 / 314.00 | 151.20 / 202.80 | 143.50 / 170.60 | 115.50 / 123.40 | 199.80 / 213.90 |
+
+#### PDF operations on the 20-page fixture
+
+| Operation | Node | Chromium |
+| --- | ---: | ---: |
+| Visual preview | 1.97 / 3.19 | 2.70 / 3.20 |
+| Visible stamp | 1.35 / 1.64 | 2.30 / 3.60 |
+| Vector rubric on 19 pages | 4.28 / 5.17 | 5.10 / 6.10 |
+| Text anchor search | 1.47 / 1.58 | 1.60 / 1.80 |
+| Best-guess builder placement | 0.08 / 0.10 | 0.10 / 0.20 |
+| Placeholder and ByteRange | 1.96 / 2.25 | 2.20 / 2.40 |
+| Merge two copies | 1.17 / 1.54 | 2.00 / 2.40 |
+| Extract first page | 0.47 / 0.55 | 0.90 / 1.00 |
+| Inspect | 0.30 / 0.34 | 0.70 / 0.90 |
+| Extract text | 0.73 / 1.11 | 1.70 / 2.00 |
+| Extract tables | 0.67 / 0.77 | 1.40 / 1.60 |
+| Read first page lazily | 1.48 / 1.53 | 2.20 / 2.40 |
+| Scan one signature | 0.25 / 0.27 | 0.40 / 0.60 |
+| Paint and encode thumbnail | — | 2.20 / 3.30 |
+| Paint and encode full page | — | 3.80 / 4.80 |
+
+The synthetic ruled-table fixture contains one extracted table with three rows and two columns. Table extraction measured 0.58 / 0.81 ms in Node and 0.50 / 0.70 ms in Chromium.
+
+#### Chromium workers and Foldkit batch
+
+| Worker operation | Median / p95 (ms) |
+| --- | ---: |
+| A1 cold first reply | 703.20 / 808.10 |
+| A1 warm empty RPC | 0.60 / 1.10 |
+| A1 initialize | 114.70 / 131.30 |
+| A1 worker sign | 15.00 / 19.30 |
+| Render worker cold thumbnail | 612.50 / 701.90 |
+| Render worker warm thumbnail | 3.60 / 5.20 |
+
+| Documents | Batch median / p95 (ms) | Item median / p95 (ms) | Sampled page heap peak (MiB) |
+| --- | ---: | ---: | ---: |
+| 10 | 1156.70 / 1280.50 | 15.20 / 54.10 | 116.2 |
+| 50 | 1769.50 / 1823.50 | 10.40 / 17.10 | 129.0 |
+
+Each measured A1 signing RPC cloned a 725-byte input PDF and a 35,318-byte signed response. Initialization ran the PKCS#12 parser twice.
+
+#### PDF-core byte copies
+
+| Document | Runtime | Sign copies / bytes | Verify copies / bytes |
+| --- | ---: | ---: | ---: |
+| synthetic-1 | node | 10 / 73,527 | 2 / 69,106 |
+| synthetic-20 | node | 10 / 115,639 | 2 / 81,158 |
+| synthetic-200 | node | 10 / 521,366 | 2 / 197,100 |
+| synthetic-21mib | node | 10 / 154,258,996 | 2 / 44,122,140 |
+| synthetic-1 | chromium | 10 / 73,527 | 2 / 69,106 |
+| synthetic-20 | chromium | 10 / 115,639 | 2 / 81,158 |
+| synthetic-200 | chromium | 10 / 521,366 | 2 / 197,100 |
+| synthetic-21mib | chromium | 10 / 154,258,996 | 2 / 44,122,140 |
+
+#### Vite production builds
+
+| Consumer entry | Raw bytes | Gzip bytes | Brotli bytes |
+| --- | ---: | ---: | ---: |
+| react-a1 | 2,855,782 | 904,999 | 713,899 |
+| pdf-sign | 1,819,360 | 632,195 | 498,375 |
+| pdf-verify | 1,601,695 | 573,970 | 458,345 |
+| xml | 837,348 | 208,430 | 173,014 |
+| pdf-viewer | 1,474,484 | 577,185 | 466,322 |
+| PDF-core WASM asset | 1,030,833 | 438,260 | 344,071 |
+
+#### Existing benchmark scripts
+
+| Probe | Corpus | Median / p95 |
+| --- | ---: | ---: |
+| Read text (ms/page) | two-document-corpus | 0.25 / 0.35 |
+| Build display lists (ms/page) | two-document-corpus | 0.30 / 0.43 |
+| Lazy file read (ms) | synthetic-21mib | 3.74 / 4.88 |
+| Full file read (ms) | synthetic-21mib | 21.58 / 24.74 |
+| Warm PDF generation (ms) | react-pdf | 37.97 / 171.83 |
+| Warm PDF generation (ms) | takumi-pdf | 50.27 / 157.02 |
+
+The speed script repeated after its initial sample spread. Text spread changed from 18.7% to 44.6% of the median and display list spread from 35.0% to 60.9%. The table reports the second run.
+
+| Repeated Vitest phase | Operation | First median / p95 (ms) | Repeat median / p95 (ms) |
+| --- | ---: | ---: | ---: |
+| v1-node | pdf.sign.warm-a1 | 156.46 / 215.45 | 170.62 / 211.65 |
+
+All 6 tests in 4 existing performance suites passed. The JSON includes internal timings for the four instrumented operations and PDF-core versus pdf.js anchor medians for 10 fixtures.
+
+## Reproduce the original browser spike
 
 Run these commands from the repository root on the shared host.
 
@@ -33,7 +182,7 @@ The React shadcn viewer in `apps/docs/registry/default/signature-pdf-viewer/sign
 - The published React and PDF packages include the transpiled TypeScript worker entry points in `dist/`. Vite bundles worker dependencies at the application boundary. The Foldkit client build emitted a signing worker and two separately named render worker chunks, all referencing the same PDF-core WASM asset. The packed React consumer browser test also checks that its Vite build requests an A1 worker chunk and the WASM asset.
 - `apps/docs/scripts/build-registry.ts` embeds the six registry source files under `apps/docs/registry/default` into tracked JSON under `apps/docs/public/r`. The build additionally copies those JSON files and the registry index into `apps/docs/dist-foldkit/client/r`. The embedded sources and emitted JSON copies matched their inputs byte for byte.
 
-## Chromium benchmark
+## Original Chromium benchmark
 
 The PDFs are generated in Chromium with the existing `createFixturePdf` helper. The corpus has 1, 20, and 200 pages, each with one synthetic text line, and a fixed stamp rectangle on the first page. The existing synthetic `ecpf.p12` and `ecnpj.p12` fixtures are parsed individually. The signing cases use the eCPF fixture. Each case runs three warmups and 21 sequential samples. The median uses the middle sample and p95 uses nearest rank.
 

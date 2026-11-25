@@ -245,7 +245,16 @@ const run = async (corpus: string, mode: string | undefined) => {
       const equal =
         left.length === right.length && left.every((page, index) => page === right[index]);
       mismatches += equal ? 0 : 1;
-      console.log(JSON.stringify({ file, equal, lazy: partialStats, full: completeStats }));
+      console.log(
+        JSON.stringify({
+          file,
+          equal,
+          lazy: partialStats,
+          full: completeStats,
+          lazySamples: partialTrials.map((trial) => trial.latencyMs),
+          fullSamples: completeTrials.map((trial) => trial.latencyMs),
+        }),
+      );
       lazy.push(partial);
       full.push(complete);
     } catch (cause) {
