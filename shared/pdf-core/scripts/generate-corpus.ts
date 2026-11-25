@@ -1,5 +1,4 @@
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,18 +12,9 @@ import { PdfCore, pdfCoreLayer } from "../src/pdf-core.ts";
 import { Effect } from "effect";
 
 import { LINK_FIXTURE_URIS, PDF_CORE_FIXTURES_DIR } from "../__tests__/corpus.ts";
-import { renderTakumiDeclarationPdf } from "./takumi-declaration-document.ts";
-
-const { renderToBuffer, Document, Link, Page, Text, View, Font, StyleSheet } =
-  await import("@react-pdf/renderer");
-const React = await import("react");
-
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const PAGE_SIZE: readonly [number, number] = [612, 792];
-const icpSource = join(repoRoot, "validators/iti/__tests__/fixtures/icp-brasil-ad-rb-signed.pdf");
 const encoder = new TextEncoder();
-const CORPUS_CREATION_DATE = new Date(Date.UTC(2026, 0, 1));
 
 const MINIMAL_PNG = Uint8Array.from(
   atob(
@@ -263,58 +253,6 @@ const buildHelveticaWinansi = buildPdf([
     },
   },
 ]);
-
-const requireFromModule = createRequire(import.meta.url);
-
-const liberationFontPath = (): string => {
-  const pdfjsPackage = requireFromModule.resolve("pdfjs-dist/package.json");
-  return join(dirname(pdfjsPackage), "standard_fonts", "LiberationSans-Regular.ttf");
-};
-
-const buildReactPdfDeclaration = async (): Promise<Uint8Array> => {
-  Font.register({
-    family: "Liberation",
-    src: liberationFontPath(),
-  });
-  const styles = StyleSheet.create({
-    page: { padding: 48, fontSize: 11, fontFamily: "Helvetica" },
-    title: { fontSize: 16, marginBottom: 12, fontFamily: "Helvetica-Bold" },
-    paragraph: { marginBottom: 8, lineHeight: 1.4 },
-    embedded: { fontFamily: "Liberation", marginBottom: 8 },
-    anchorRow: { width: 300 },
-    anchor: { fontSize: 4, color: "#ffffff" },
-  });
-  const body = React.createElement(
-    Document,
-    { creationDate: CORPUS_CREATION_DATE },
-    React.createElement(
-      Page,
-      { size: "A4", style: styles.page },
-      React.createElement(Text, { style: styles.title }, "Declaração de Habilitação"),
-      React.createElement(
-        Text,
-        { style: styles.paragraph },
-        "Declaro, sob as penas da lei, que atendo às condições de habilitação exigidas no edital, com ênfase em documentação, qualificação técnica e regularidade fiscal.",
-      ),
-      React.createElement(
-        Text,
-        { style: styles.embedded },
-        "Texto com fonte incorporada: ção, ênfase, à disposição.",
-      ),
-      React.createElement(
-        View,
-        { style: styles.anchorRow },
-        React.createElement(Text, { style: styles.anchor }, "[[licitei-assinatura]]"),
-      ),
-      React.createElement(
-        Text,
-        { style: styles.paragraph },
-        "Local e data: Curitiba, 15 de janeiro de 2024.",
-      ),
-    ),
-  );
-  return new Uint8Array(await renderToBuffer(body));
-};
 
 const buildRotatedCropped = buildPdf(
   [90, 270].map((rotation) => ({
@@ -643,43 +581,6 @@ const buildMarkdownTwoColumn = buildPdf([
     },
   },
 ]);
-
-const buildMarkdownHeadingsReact = async (): Promise<Uint8Array> => {
-  const styles = StyleSheet.create({
-    page: { padding: 48, fontFamily: "Helvetica" },
-    title: { fontSize: 20, marginBottom: 10, fontFamily: "Helvetica-Bold" },
-    h2: { fontSize: 16, marginBottom: 8, fontFamily: "Helvetica-Bold" },
-    h3: { fontSize: 13, marginBottom: 6, fontFamily: "Helvetica-Bold" },
-    body: { fontSize: 11, marginBottom: 6, lineHeight: 1.3 },
-    link: { fontSize: 11, color: "#0b57d0" },
-  });
-  const body = React.createElement(
-    Document,
-    { creationDate: CORPUS_CREATION_DATE },
-    React.createElement(
-      Page,
-      { size: "A4", style: styles.page },
-      React.createElement(Text, { style: styles.title }, "Título sem numeração"),
-      React.createElement(Text, { style: styles.h2 }, "1. Seção principal"),
-      React.createElement(Text, { style: styles.h3 }, "1.1. Subseção"),
-      React.createElement(
-        Text,
-        { style: styles.body },
-        "Corpo com ",
-        React.createElement(Text, { style: { fontFamily: "Helvetica-Bold" } }, "negrito"),
-        " e ",
-        React.createElement(Text, { style: { fontFamily: "Helvetica-Oblique" } }, "itálico"),
-        " no mesmo parágrafo.",
-      ),
-      React.createElement(
-        Link,
-        { src: "https://signature-kit.dev/corpus/headings-link", style: styles.link },
-        "Documentação",
-      ),
-    ),
-  );
-  return new Uint8Array(await renderToBuffer(body));
-};
 
 type RawObject = string | { readonly dict: string; readonly data: Uint8Array };
 
@@ -1351,17 +1252,13 @@ const program = Effect.gen(function* () {
   writeFixture("markdown-page-continue.pdf", yield* buildMarkdownPageContinue);
   writeFixture("markdown-nested-lists.pdf", yield* buildMarkdownNestedLists);
   writeFixture("markdown-two-column.pdf", yield* buildMarkdownTwoColumn);
-  writeFixture("markdown-headings-react.pdf", yield* Effect.promise(buildMarkdownHeadingsReact));
   writeFixture("helvetica-winansi.pdf", yield* buildHelveticaWinansi);
-  writeFixture("react-pdf-declaration.pdf", yield* Effect.promise(buildReactPdfDeclaration));
-  writeFixture("takumi-declaration.pdf", yield* Effect.promise(renderTakumiDeclarationPdf));
   writeFixture("rotated-cropped.pdf", yield* buildRotatedCropped);
   writeFixture("links.pdf", yield* buildLinks);
   writeFixture("habilitacao-150.pdf", yield* buildHabilitacao150);
   writeFixture("object-streams.pdf", yield* buildObjectStreams);
   writeFixture("incremental-update.pdf", yield* buildIncrementalUpdate);
   writeFixture("broken-xref.pdf", yield* buildBrokenXref);
-  copyFileSync(icpSource, join(PDF_CORE_FIXTURES_DIR, "icp-signed.pdf"));
 });
 
 const pdfCoreModule = await WebAssembly.compile(

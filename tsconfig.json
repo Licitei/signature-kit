@@ -14,52 +14,10 @@
       "path": "./shared/pdf-core"
     },
     {
-      "path": "./core/signatures"
-    },
-    {
-      "path": "./core/http"
-    },
-    {
-      "path": "./core/i18n"
-    },
-    {
       "path": "./core/certificates"
     },
     {
-      "path": "./signers/a1"
-    },
-    {
-      "path": "./signers/clicksign"
-    },
-    {
-      "path": "./signers/assinafy"
-    },
-    {
-      "path": "./signers/zapsign"
-    },
-    {
-      "path": "./signers/docuseal"
-    },
-    {
-      "path": "./signers/documenso"
-    },
-    {
-      "path": "./formats/xml"
-    },
-    {
-      "path": "./formats/pdf"
-    },
-    {
-      "path": "./formats/react"
-    },
-    {
-      "path": "./validators/iti"
-    },
-    {
       "path": "./runtime/local"
-    },
-    {
-      "path": "./apps/signing-domain"
     }
   ]
 }

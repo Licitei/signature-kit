@@ -2,26 +2,21 @@ import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { DOMParser } from "@xmldom/xmldom";
+import { JSDOM } from "jsdom";
 import { articles } from "./articles";
 import { contentPaths, resolveContent } from "./content";
 import { renderRss } from "./feeds";
-import { renderDocument, renderPage } from "./entry.server";
+import { renderPage } from "./entry.server";
 
 const response = async (path: string, method = "GET") => {
   const result = await renderPage(new Request(`https://example.test${path}`, { method }), "test");
   if (result._tag !== "Responded") return undefined;
   return result.response;
 };
-const parse = (xml: string) =>
-  new DOMParser({
-    onError: (level, message) => {
-      if (level !== "warning") expect.fail(message);
-    },
-  }).parseFromString(xml, "application/xml");
+const parse = (xml: string) => new JSDOM(xml, { contentType: "application/xml" }).window.document;
 
 describe("feeds", () => {
-  it("renders both localized RSS feeds from actual articles", async () => {
+  it("renders both localized RSS feeds", async () => {
     for (const locale of ["en-US", "pt-BR"] satisfies ("en-US" | "pt-BR")[]) {
       const result = await response(`/${locale}/blog/rss.xml?secret=ignored`);
       expect(result?.status).toBe(200);
@@ -32,13 +27,6 @@ describe("feeds", () => {
         document.getElementsByTagName("channel")[0]?.getElementsByTagName("title")[0]?.textContent,
       ).toBe(locale === "en-US" ? "SignatureKit Blog" : "Blog do SignatureKit");
       expect(document.getElementsByTagName("language")[0]?.textContent).toBe(locale);
-      expect(document.getElementsByTagName("item").length).toBeGreaterThan(0);
-      expect(
-        document.getElementsByTagName("item")[0]?.getElementsByTagName("title")[0]?.textContent,
-      ).toBe(articles(locale, "blog")[0]?.title);
-      expect(
-        document.getElementsByTagName("item")[0]?.getElementsByTagName("link")[0]?.textContent,
-      ).toMatch(/^https:\/\/signaturekit\.dev\//);
       const expected = articles(locale, "blog").filter((entry) =>
         resolveContent(locale, "blog", entry.slug),
       );
@@ -56,7 +44,7 @@ describe("feeds", () => {
     }
   });
   it("escapes reserved characters in XML text and URLs", () => {
-    const entry = articles("en-US", "blog")[0];
+    const entry = articles("en-US", "changelog")[0];
     if (entry === undefined) return expect.fail("Missing article");
     const document = parse(
       renderRss("en-US", [
@@ -110,7 +98,6 @@ describe("feeds", () => {
         `/${locale}/blog`,
         `/${locale}/blog/tags`,
         `/${locale}/changelog`,
-        locale === "pt-BR" ? "/pt-BR/assine-documentos-gratis" : "/en-US/sign-free",
         ...docs,
         ...posts,
         ...tags,
@@ -131,23 +118,17 @@ describe("feeds", () => {
       const loc = entry.getElementsByTagName("loc")[0]?.textContent ?? "";
       const path = new URL(loc).pathname.replace(/^\/(en-US|pt-BR)/, "");
       const links = Array.from(entry.getElementsByTagName("xhtml:link"));
-      const signing = path === "/sign-free" || path === "/assine-documentos-gratis";
       expect(
         links.map((link) => [link.getAttribute("hreflang"), link.getAttribute("href")]),
       ).toEqual(
         ["en-US", "pt-BR"]
-          .filter(
-            (locale) =>
-              signing ||
-              expected.some(
-                (candidate) =>
-                  candidate.split("/").map(encodeURIComponent).join("/") === `/${locale}${path}`,
-              ),
+          .filter((locale) =>
+            expected.some(
+              (candidate) =>
+                candidate.split("/").map(encodeURIComponent).join("/") === `/${locale}${path}`,
+            ),
           )
-          .map((locale) => [
-            locale,
-            `https://signaturekit.dev/${locale}${signing ? (locale === "pt-BR" ? "/assine-documentos-gratis" : "/sign-free") : path}`,
-          ]),
+          .map((locale) => [locale, `https://signaturekit.dev/${locale}${path}`]),
       );
     }
     const find = (path: string) =>
@@ -155,17 +136,12 @@ describe("feeds", () => {
         (entry) =>
           entry.getElementsByTagName("loc")[0]?.textContent === `https://signaturekit.dev${path}`,
       );
-    const translated = find("/pt-BR/blog/signature-kit-x-licitei");
-    expect(translated?.getElementsByTagName("lastmod")[0]?.textContent).toBe(
-      articles("pt-BR", "blog").find((entry) => entry.slug === "signature-kit-x-licitei")?.date,
-    );
-    expect(
-      Array.from(translated?.getElementsByTagName("xhtml:link") ?? []).map((link) =>
-        link.getAttribute("hreflang"),
-      ),
-    ).toEqual(["en-US", "pt-BR"]);
     expect(find("/pt-BR/changelog/a1-node-esm-release")).toBeUndefined();
-    expect(find("/en-US/changelog/a1-node-esm-release")).toBeDefined();
+    expect(
+      find("/en-US/changelog/a1-node-esm-release")?.getElementsByTagName("lastmod")[0]?.textContent,
+    ).toBe(
+      articles("en-US", "changelog").find((entry) => entry.slug === "a1-node-esm-release")?.date,
+    );
     expect(find("/en-US/docs")).toBeDefined();
   });
   it("serves feeds over HTTP", async () => {
@@ -246,99 +222,6 @@ describe("feeds", () => {
       ).pipe(Effect.timeout("10 seconds")),
     );
   }, 15000);
-  it("serves social images over HTTP and advertises the matching URL", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const failures: unknown[] = [];
-          const server = yield* Effect.acquireRelease(
-            Effect.sync(() =>
-              createServer((request, reply) => {
-                const handle = async () => {
-                  const result = await renderPage(
-                    new Request(`http://localhost${request.url ?? "/"}`, {
-                      method: request.method,
-                    }),
-                    "test",
-                  );
-                  if (result._tag === "Responded") {
-                    reply.writeHead(
-                      result.response.status,
-                      Object.fromEntries(result.response.headers.entries()),
-                    );
-                    reply.end(Buffer.from(await result.response.arrayBuffer()));
-                  } else {
-                    reply.writeHead(200, { "Content-Type": "text/html" });
-                    reply.end(
-                      renderDocument(result.application, {
-                        entryScript: "/entry.js",
-                        stylesheets: [],
-                        modulePreloads: [],
-                      }),
-                    );
-                  }
-                };
-                handle().catch((error: unknown) => {
-                  failures.push(error);
-                  reply.writeHead(500).end();
-                });
-              }),
-            ),
-            (server) =>
-              Effect.promise(
-                () =>
-                  new Promise<void>((resolve, reject) => {
-                    server.closeAllConnections();
-                    server.close((error) => (error !== undefined ? reject(error) : resolve()));
-                  }),
-              ).pipe(Effect.timeout("3 seconds"), Effect.orDie),
-          );
-          server.listen(0, "127.0.0.1");
-          yield* Effect.promise(() => once(server, "listening"));
-          const address = server.address();
-          if (address === null || typeof address === "string")
-            return expect.fail("Missing server address");
-          yield* Effect.promise(async (signal) => {
-            const base = `http://127.0.0.1:${address.port}`;
-            for (const [page, image] of [
-              ["/en-US", "/en-US/index.webp"],
-              ["/pt-BR/blog/signature-kit-x-licitei", "/pt-BR/blog/signature-kit-x-licitei.webp"],
-            ]) {
-              const pageResponse = await fetch(`${base}${page}`, { signal });
-              if (pageResponse.status !== 200)
-                return expect.fail(
-                  `Page request returned ${pageResponse.status}: ${String(failures[0])}`,
-                );
-              const html = await pageResponse.text();
-              expect(html).toContain(
-                `property="og:image" content="https://signaturekit.dev${image}"`,
-              );
-              const response = await fetch(`${base}${image}`, { signal });
-              if (response.status !== 200)
-                return expect.fail(`Image request failed: ${String(failures[0])}`);
-              expect(response.headers.get("content-type")).toBe("image/webp");
-              const bytes = new Uint8Array(await response.arrayBuffer());
-              expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("RIFF");
-              expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8L");
-              const dimensions = new DataView(bytes.buffer).getUint32(21, true);
-              expect([(dimensions & 0x3fff) + 1, ((dimensions >>> 14) & 0x3fff) + 1]).toEqual([
-                1200, 630,
-              ]);
-              const head = await fetch(`${base}${image}`, { method: "HEAD", signal });
-              expect(head.status).toBe(200);
-              expect(head.headers.get("content-type")).toBe("image/webp");
-              expect(await head.text()).toBe("");
-              const post = await fetch(`${base}${image}`, { method: "POST", signal });
-              expect(post.status).toBe(405);
-              expect(post.headers.get("allow")).toBe("GET, HEAD");
-            }
-            expect((await fetch(`${base}/en-US/blog/not-real.webp`, { signal })).status).toBe(404);
-            expect((await fetch(`${base}/en-US/.webp`, { signal })).status).toBe(404);
-          });
-        }),
-      ).pipe(Effect.timeout("30 seconds")),
-    );
-  }, 35000);
   it("honors HEAD and rejects invalid routes and methods", async () => {
     for (const path of ["/sitemap.xml", "/en-US/blog/rss.xml"]) {
       const head = await response(path, "HEAD");

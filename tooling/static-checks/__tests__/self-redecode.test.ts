@@ -32,19 +32,7 @@ const hasDecodeCall = (source: string, schemaName: string): boolean => {
 };
 
 describe("typed report construction", () => {
-  it("does not re-decode reports built inside trusted ITI and CMS internals", () => {
-    expect(
-      hasDecodeCall(
-        readFileSync("validators/iti/src/conformance.ts", "utf8"),
-        "ItiConformanceReportSchema",
-      ),
-    ).toBe(false);
-    expect(
-      hasDecodeCall(
-        readFileSync("validators/iti/src/remote.ts", "utf8"),
-        "ItiRemoteValidationReportSchema",
-      ),
-    ).toBe(false);
+  it("does not re-decode reports built inside trusted CMS internals", () => {
     expect(
       hasDecodeCall(
         readFileSync("shared/cms/src/inspect.ts", "utf8"),

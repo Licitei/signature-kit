@@ -66,6 +66,7 @@
     "effect": "4.1.0"
   },
   "devDependencies": {
+    "@typeonce/effect-machine": "0.47.1",
     "pdfjs-dist": "6.3.289"
   },
   "peerDependencies": {

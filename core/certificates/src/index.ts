@@ -8,18 +8,16 @@ import {
   CertificateSubjectSchema,
   CertificateValiditySchema,
   CertificateSchema,
-  SignatureKitError,
-  SignatureKitErrorCodeValue,
-  SignatureKitOperationValue,
-} from "@signature-kit/signatures";
-import type {
-  BrazilianFields,
-  Certificate,
-  CertificateValidity,
-  SignerIdentity,
-} from "@signature-kit/signatures";
+  CertificateError,
+  CertificateErrorCodeValue,
+  CertificateOperationValue,
+} from "./config.js";
+import type { BrazilianFields, Certificate, CertificateValidity } from "./config.js";
 import type { Redacted } from "effect";
 import { Clock, Effect, Match, Schema } from "effect";
+
+export { CertificateSchema, CertificateError, certificateErrorMessages } from "./config.js";
+export type { Certificate, CertificateValidity } from "./config.js";
 
 const OID_COMMON_NAME = "2.5.4.3";
 const OID_COUNTRY = "2.5.4.6";
@@ -70,16 +68,15 @@ export type CertificateSource = (typeof CertificateSourceSchema)["Type"];
 export const parseCertificate = (
   source: CertificateSource,
   password: Redacted.Redacted<string>,
-): Effect.Effect<Certificate, SignatureKitError> =>
+): Effect.Effect<Certificate, CertificateError> =>
   Effect.gen(function* () {
     const validSource = yield* Schema.decodeUnknownEffect(CertificateSourceSchema)(source).pipe(
       Effect.mapError(
         (issue) =>
-          new SignatureKitError({
-            code: SignatureKitErrorCodeValue.invalidInput,
-            retryable: false,
+          new CertificateError({
+            code: CertificateErrorCodeValue.invalidInput,
             reason: "Invalid certificate source.",
-            operation: SignatureKitOperationValue.schemaDecode,
+            operation: CertificateOperationValue.schemaDecode,
             schemaName: "CertificateSource",
             issueMessage: String(issue),
           }),
@@ -88,16 +85,14 @@ export const parseCertificate = (
     const pfx = certificateBytes(validSource);
     yield* Effect.annotateCurrentSpan("signature_kit.pkcs12.bytes", pfx.length);
     if (pfx.length === 0) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.emptyFile,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.emptyFile,
       });
     }
     if (!isLikelyPkcs12(pfx)) {
       const detected = detectFileType(pfx);
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.invalidFormat,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.invalidFormat,
         reason: `The file does not appear to be a PKCS#12 certificate${detected === null ? "" : ` (detected: ${detected})`}.`,
       });
     }
@@ -105,11 +100,10 @@ export const parseCertificate = (
     const pkcs12 = yield* parsePkcs12(pfx, password).pipe(
       Effect.mapError(
         (error) =>
-          new SignatureKitError({
+          new CertificateError({
             code: cryptoErrorCode(error),
-            retryable: false,
             reason: error.reason ?? error.message,
-            operation: SignatureKitOperationValue.pkcs12Parse,
+            operation: CertificateOperationValue.pkcs12Parse,
           }),
       ),
     );
@@ -142,11 +136,10 @@ export const parseCertificate = (
     }).pipe(
       Effect.mapError(
         (issue) =>
-          new SignatureKitError({
-            code: SignatureKitErrorCodeValue.x509ParseFailed,
-            retryable: false,
+          new CertificateError({
+            code: CertificateErrorCodeValue.x509ParseFailed,
             reason: "Invalid parsed X.509 certificate.",
-            operation: SignatureKitOperationValue.schemaDecode,
+            operation: CertificateOperationValue.schemaDecode,
             schemaName: "Certificate",
             issueMessage: String(issue),
           }),
@@ -165,19 +158,6 @@ export const extractBrazilianFields = (
   return { cnpj, cpf };
 };
 
-export const toSignerIdentity = (cert: Certificate): SignerIdentity => {
-  const document = cert.brazilian.cnpj ?? cert.brazilian.cpf;
-  return {
-    subject: cert.subject.raw,
-    issuer: cert.issuer.raw,
-    serialNumber: cert.serialNumber,
-    thumbprint: cert.fingerprint,
-    validFrom: cert.validity.notBefore,
-    validTo: cert.validity.notAfter,
-    ...(document === null ? {} : { document }),
-  };
-};
-
 export const CertificateValidityStatusSchema = Schema.Literals(["notYetValid", "valid", "expired"]);
 export type CertificateValidityStatus = (typeof CertificateValidityStatusSchema)["Type"];
 
@@ -193,10 +173,9 @@ export const inspectCertificateValidity = Effect.fn(function* (validity: Certifi
   const valid = yield* Schema.decodeUnknownEffect(CertificateValiditySchema)(validity).pipe(
     Effect.mapError(
       (issue) =>
-        new SignatureKitError({
-          code: SignatureKitErrorCodeValue.invalidInput,
-          retryable: false,
-          operation: SignatureKitOperationValue.schemaDecode,
+        new CertificateError({
+          code: CertificateErrorCodeValue.invalidInput,
+          operation: CertificateOperationValue.schemaDecode,
           schemaName: "CertificateValidity",
           issueMessage: String(issue),
           reason: "Invalid certificate validity interval.",
@@ -206,10 +185,9 @@ export const inspectCertificateValidity = Effect.fn(function* (validity: Certifi
   const notBefore = valid.notBefore.getTime();
   const notAfter = valid.notAfter.getTime();
   if (notBefore > notAfter) {
-    return yield* new SignatureKitError({
-      code: SignatureKitErrorCodeValue.invalidInput,
-      retryable: false,
-      operation: SignatureKitOperationValue.schemaDecode,
+    return yield* new CertificateError({
+      code: CertificateErrorCodeValue.invalidInput,
+      operation: CertificateOperationValue.schemaDecode,
       schemaName: "CertificateValidity",
       reason: "Certificate validity starts after its expiration.",
     });
@@ -255,23 +233,23 @@ const certificateBytes = (source: CertificateSource): Uint8Array => {
   return new Uint8Array(source);
 };
 
-const cryptoErrorCode = (error: CryptoError): SignatureKitError["code"] =>
+const cryptoErrorCode = (error: CryptoError): CertificateError["code"] =>
   Match.value(error.code).pipe(
-    Match.when("crypto.WRONG_PASSWORD", () => SignatureKitErrorCodeValue.wrongPassword),
+    Match.when("crypto.WRONG_PASSWORD", () => CertificateErrorCodeValue.wrongPassword),
     Match.when(
       "crypto.UNSUPPORTED_ALGORITHM",
-      () => SignatureKitErrorCodeValue.unsupportedAlgorithm,
+      () => CertificateErrorCodeValue.unsupportedAlgorithm,
     ),
-    Match.when("crypto.NO_CERTIFICATE", () => SignatureKitErrorCodeValue.noCertificate),
-    Match.when("crypto.NO_PRIVATE_KEY", () => SignatureKitErrorCodeValue.noPrivateKey),
-    Match.when("crypto.INVALID_FORMAT", () => SignatureKitErrorCodeValue.invalidFormat),
+    Match.when("crypto.NO_CERTIFICATE", () => CertificateErrorCodeValue.noCertificate),
+    Match.when("crypto.NO_PRIVATE_KEY", () => CertificateErrorCodeValue.noPrivateKey),
+    Match.when("crypto.INVALID_FORMAT", () => CertificateErrorCodeValue.invalidFormat),
     Match.whenOr(
       "crypto.DECODE_ERROR",
       "crypto.CORRUPTED_FILE",
       "crypto.CIPHER_ERROR",
-      () => SignatureKitErrorCodeValue.corruptedFile,
+      () => CertificateErrorCodeValue.corruptedFile,
     ),
-    Match.when("crypto.UNKNOWN", () => SignatureKitErrorCodeValue.unknown),
+    Match.when("crypto.UNKNOWN", () => CertificateErrorCodeValue.unknown),
     Match.exhaustive,
   );
 
@@ -286,14 +264,13 @@ const toBufferSource = (data: Uint8Array): Uint8Array<ArrayBuffer> => {
   return copy;
 };
 
-const digestSha256Hex = (data: Uint8Array): Effect.Effect<string, SignatureKitError> =>
+const digestSha256Hex = (data: Uint8Array): Effect.Effect<string, CertificateError> =>
   Effect.tryPromise({
     try: () => crypto.subtle.digest("SHA-256", toBufferSource(data)),
     catch: () =>
-      new SignatureKitError({
-        code: SignatureKitErrorCodeValue.digestFailed,
-        retryable: false,
-        operation: SignatureKitOperationValue.cryptoDigest,
+      new CertificateError({
+        code: CertificateErrorCodeValue.digestFailed,
+        operation: CertificateOperationValue.cryptoDigest,
       }),
   }).pipe(Effect.map((buffer) => bytesToHex(new Uint8Array(buffer))));
 
@@ -390,7 +367,7 @@ const formatDN = (fields: Record<string, string>): string => {
 
 const parseName = (
   nameNode: Asn1Node,
-): Effect.Effect<Record<string, string>, SignatureKitError | Asn1Error> =>
+): Effect.Effect<Record<string, string>, CertificateError | Asn1Error> =>
   Effect.gen(function* () {
     const result: Record<string, string> = {};
     if (nameNode.kind !== "constructed") return result;
@@ -484,14 +461,13 @@ const parseTimeWithZone = (text: string, yearDigits: 2 | 4): Date | null => {
   return new Date(base);
 };
 
-const parseTime = (node: Asn1Node): Effect.Effect<Date, SignatureKitError> => {
+const parseTime = (node: Asn1Node): Effect.Effect<Date, CertificateError> => {
   if (node.kind !== "primitive" || node.class !== "universal") {
     return Effect.fail(
-      new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Expected a primitive time node.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       }),
     );
   }
@@ -504,11 +480,10 @@ const parseTime = (node: Asn1Node): Effect.Effect<Date, SignatureKitError> => {
         : null;
   if (parsed === null) {
     return Effect.fail(
-      new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: `Unsupported time format: tag ${node.tag}.`,
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       }),
     );
   }
@@ -517,34 +492,31 @@ const parseTime = (node: Asn1Node): Effect.Effect<Date, SignatureKitError> => {
 
 const parseValidity = (
   node: Asn1Node,
-): Effect.Effect<{ readonly notBefore: Date; readonly notAfter: Date }, SignatureKitError> =>
+): Effect.Effect<{ readonly notBefore: Date; readonly notAfter: Date }, CertificateError> =>
   Effect.gen(function* () {
     if (!isUniversalSequence(node) || node.children.length !== 2) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Invalid Validity structure.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const before = node.children[0];
     const after = node.children[1];
     if (before === undefined || after === undefined) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing validity dates.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const notBefore = yield* parseTime(before);
     const notAfter = yield* parseTime(after);
     if (notBefore.getTime() > notAfter.getTime()) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Invalid Validity interval.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     return { notBefore, notAfter };
@@ -558,7 +530,7 @@ const normalizeIcpOtherName = (oid: string, value: string): string => {
 };
 const parseOtherName = (
   node: Asn1Node,
-): Effect.Effect<string | null, SignatureKitError | Asn1Error> =>
+): Effect.Effect<string | null, CertificateError | Asn1Error> =>
   Effect.gen(function* () {
     if (node.kind !== "constructed") return null;
     const oidNode = node.children[0];
@@ -608,7 +580,7 @@ const formatIpAddress = (bytes: Uint8Array): string | null => {
 
 const parseGeneralName = (
   node: Asn1Node,
-): Effect.Effect<string | null, SignatureKitError | Asn1Error> =>
+): Effect.Effect<string | null, CertificateError | Asn1Error> =>
   Effect.gen(function* () {
     if (node.class !== "context") {
       return node.kind === "primitive" ? decodeText(node.bytes) : null;
@@ -643,7 +615,7 @@ const parseGeneralName = (
 
 const parseSan = (
   extensionsNode: Asn1Node,
-): Effect.Effect<string | null, SignatureKitError | Asn1Error> =>
+): Effect.Effect<string | null, CertificateError | Asn1Error> =>
   Effect.gen(function* () {
     if (extensionsNode.kind !== "constructed") return null;
     const extsSeq = extensionsNode.children[0];
@@ -681,24 +653,22 @@ const isUniversalSequence = (
 ): node is Extract<Asn1Node, { readonly kind: "constructed" }> =>
   node.kind === "constructed" && node.class === "universal" && node.tag === 0x10;
 
-export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKitError> =>
+export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, CertificateError> =>
   Effect.gen(function* () {
     const cert = yield* decode(der);
     if (!isUniversalSequence(cert) || cert.children.length < 3) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Invalid X.509 certificate: expected SEQUENCE.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const tbsCert = cert.children[0];
     if (tbsCert === undefined || !isUniversalSequence(tbsCert)) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Invalid TBSCertificate.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const tbs = tbsCert.children;
@@ -719,11 +689,10 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
         versionNode.bytes[0] === undefined ||
         versionNode.bytes[0] > 2
       ) {
-        return yield* new SignatureKitError({
-          code: SignatureKitErrorCodeValue.x509ParseFailed,
-          retryable: false,
+        return yield* new CertificateError({
+          code: CertificateErrorCodeValue.x509ParseFailed,
           reason: "Invalid TBSCertificate version.",
-          operation: SignatureKitOperationValue.x509Parse,
+          operation: CertificateOperationValue.x509Parse,
         });
       }
       idx++;
@@ -736,11 +705,10 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
       serialNode.class !== "universal" ||
       serialNode.tag !== 0x02
     ) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing or invalid serial number.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const serialNumber = bytesToHex(serialNode.bytes);
@@ -754,31 +722,28 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
       !isUniversalSequence(issuerNode) ||
       issuerNode.children.length === 0
     ) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing or invalid issuer.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const issuer = yield* parseName(issuerNode);
     if (formatDN(issuer) === "") {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing or invalid issuer.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
 
     const validityNode = tbs[idx];
     idx++;
     if (validityNode === undefined) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing validity.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const validity = yield* parseValidity(validityNode);
@@ -786,11 +751,10 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
     const subjectNode = tbs[idx];
     idx++;
     if (subjectNode === undefined) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing subject.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const subject = yield* parseName(subjectNode);
@@ -798,11 +762,10 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
     const spkiNode = tbs[idx];
     idx++;
     if (spkiNode === undefined || !isUniversalSequence(spkiNode)) {
-      return yield* new SignatureKitError({
-        code: SignatureKitErrorCodeValue.x509ParseFailed,
-        retryable: false,
+      return yield* new CertificateError({
+        code: CertificateErrorCodeValue.x509ParseFailed,
         reason: "Missing SubjectPublicKeyInfo.",
-        operation: SignatureKitOperationValue.x509Parse,
+        operation: CertificateOperationValue.x509Parse,
       });
     }
     const publicKeyDer = encode(spkiNode);
@@ -839,11 +802,10 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
     }).pipe(
       Effect.mapError(
         (issue) =>
-          new SignatureKitError({
-            code: SignatureKitErrorCodeValue.x509ParseFailed,
-            retryable: false,
+          new CertificateError({
+            code: CertificateErrorCodeValue.x509ParseFailed,
             reason: "Invalid parsed X.509 certificate.",
-            operation: SignatureKitOperationValue.schemaDecode,
+            operation: CertificateOperationValue.schemaDecode,
             schemaName: "X509Info",
             issueMessage: String(issue),
           }),
@@ -852,11 +814,10 @@ export const parseX509 = (der: Uint8Array): Effect.Effect<X509Info, SignatureKit
   }).pipe(
     Effect.mapError((error) =>
       error._tag === "Asn1Error"
-        ? new SignatureKitError({
-            code: SignatureKitErrorCodeValue.x509ParseFailed,
-            retryable: false,
+        ? new CertificateError({
+            code: CertificateErrorCodeValue.x509ParseFailed,
             reason: error.reason ?? error.message,
-            operation: SignatureKitOperationValue.x509Parse,
+            operation: CertificateOperationValue.x509Parse,
           })
         : error,
     ),

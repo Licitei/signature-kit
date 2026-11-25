@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
-import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import * as Server from "foldkit/experimental/server";
 import {
   contentPaths,
@@ -41,12 +40,12 @@ describe("Foldkit content", () => {
   });
 
   it("resolves both locales and the navigation from the existing corpus", () => {
-    expect(resolveContent("en-US", "docs", "")?.title).toBe("Introduction");
+    expect(resolveContent("en-US", "docs", "")?.title).toBe("SignatureKit 2.0 is being rebuilt");
     expect(resolveContent("pt-BR", "docs", "")?.title).toBeTruthy();
     expect(
       docsNavigation("en-US")
         .flatMap((group) => group.links)
-        .some((link) => link.href === "/en-US/docs/get-started/quickstart"),
+        .some((link) => link.href === "/en-US/docs/concepts/effect-runtime"),
     ).toBe(true);
     expect(resolveContent("en-US", "docs", "missing")).toBeUndefined();
   });
@@ -89,7 +88,7 @@ describe("Foldkit content", () => {
 
   it("splits phrasing around nested flow components with hydratable server markup", async () => {
     const source =
-      '---\ntitle: Flow\n---\n\nBefore <Steps><Step title="One">Body</Step></Steps> after\n\n*Em before <Callout title="Notice">Inside **bold**</Callout> em after*\n\n- List before <Cards><Card title="Card">Card body</Card></Cards> list after\n\nCatalog before <ErrorCatalog /> catalog after\n\n<Callout>Outer before <Steps><Step title="Nested">Nested body</Step></Steps> outer after</Callout>';
+      '---\ntitle: Flow\n---\n\nBefore <Steps><Step title="One">Body</Step></Steps> after\n\n*Em before <Callout title="Notice">Inside **bold**</Callout> em after*\n\n- List before <Cards><Card title="Card">Card body</Card></Cards> list after\n\n<Callout>Outer before <Steps><Step title="Nested">Nested body</Step></Steps> outer after</Callout>';
     const page = parseContent(source);
     const fixtureView = (_model: object, h: HtmlBuilder<never>) => ({
       title: page.title,
@@ -111,8 +110,6 @@ describe("Foldkit content", () => {
     expect(html).toContain('List before </p><div class="cards');
     expect(html).toContain("Card body</span></div><p");
     expect(html).toContain(" list after");
-    expect(html).toMatch(/<p[^>]*>Catalog before <\/p><div class="error-catalog/);
-    expect(html).toMatch(/<p[^>]*> catalog after<\/p>/);
     expect(html).toMatch(
       /Outer before <\/p><ol class="steps[^"]*"><li[^>]*><h3>Nested<\/h3>Nested body<\/li><\/ol><p[^>]*> outer after/,
     );
@@ -190,49 +187,6 @@ describe("Foldkit content", () => {
     }
   });
 
-  it("renders substantial real documentation content including links, code and tables", async () => {
-    const page = async (path: string) =>
-      JSON.stringify(
-        await Effect.runPromise(
-          Server.renderToString<Model, Message, typeof Flags.Type>(
-            { Flags, init, view },
-            { flags: { locale: "en-US", path }, buildId: "test" },
-          ),
-        ),
-      );
-    const introduction = await page("/docs");
-    expect(introduction).toContain("SignatureKit is a library from");
-    expect(introduction).toContain("Choose the path");
-    expect(introduction).toContain('href=\\"https://licitei.com.br\\"');
-    expect(introduction).toContain("language-ts");
-    const recipe = await page("/docs/recipes/react-components");
-    expect(recipe).toContain("Install UI with the shadcn registry");
-    expect(recipe).toContain("Registry items");
-    expect(recipe).toContain("<table");
-    expect(recipe).toContain("signature-certificate-form");
-    expect(recipe).toContain("language-tsx");
-    expect(recipe).toContain('href=\\"/en-US/docs/recipes/react-pdf-preview\\"');
-  });
-
-  it("renders the real error catalog and stable Portuguese anchor", async () => {
-    const result = await Effect.runPromise(
-      Server.renderToString<Model, Message, typeof Flags.Type>(
-        { Flags, init, view },
-        { flags: { locale: "pt-BR", path: "/docs/signing/errors" }, buildId: "test" },
-      ),
-    );
-    const html = JSON.stringify(result);
-    expect(html).toContain('id=\\"error-catalog\\"');
-    expect(signatureKitErrorCatalog).toHaveLength(21);
-    for (const entry of signatureKitErrorCatalog) {
-      expect(html).toContain(
-        `<div id=\\"${entry.code.replace("signature-kit.", "err-")}\\"><code>${entry.code}</code><span>${entry.message}${entry.overridable ? " · editable" : ""}</span></div>`,
-      );
-    }
-    expect(html.split('id=\\"err-')).toHaveLength(signatureKitErrorCatalog.length + 1);
-    expect(html).not.toContain("Unsupported MDX component");
-  });
-
   it("rejects malformed frontmatter and unsupported expressions", async () => {
     for (const source of [
       "---\ntitle: [\n---\n",
@@ -256,17 +210,14 @@ describe("Foldkit content", () => {
     );
   });
 
-  it("renders both error routes through the hydratable SSR structural validator", async () => {
+  it("links the localized 2.0 docs to the architecture", async () => {
     for (const locale of ["en-US", "pt-BR"]) {
       const result = await renderPage(
-        new Request(`https://signaturekit.dev/${locale}/docs/signing/errors`),
+        new Request(`https://signaturekit.dev/${locale}/docs`),
         "test",
       );
-      expect(result._tag).toBe("Rendered");
-      if (result._tag === "Rendered") {
-        expect(result.application.html).toContain("XmlError");
-        expect(result.application.html).toContain("PdfError");
-      }
+      if (result._tag !== "Rendered") return expect.fail(`Missing ${locale} docs`);
+      expect(result.application.html).toContain("/docs/v2/ARCHITECTURE.md");
     }
   });
 

@@ -1,11 +1,1 @@
-{
-  "title": "Conceitos",
-  "icon": "Lightbulb",
-  "pages": [
-    "mental-model",
-    "signer-boundary",
-    "effect-runtime",
-    "document-formats",
-    "remote-signature-requests"
-  ]
-}
+{"title":"Conceitos","pages":["effect-runtime"]}

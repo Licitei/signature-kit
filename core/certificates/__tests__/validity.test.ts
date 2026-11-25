@@ -38,7 +38,7 @@ describe("certificate validity inspection", () => {
         const result = yield* Effect.result(inspectCertificateValidity(validity));
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isFailure(result)) {
-          expect(result.failure.code).toBe("signature-kit.INVALID_INPUT");
+          expect(result.failure.code).toBe("certificates.INVALID_INPUT");
           expect(result.failure.schemaName).toBe("CertificateValidity");
         }
       }

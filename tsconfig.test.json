@@ -14,15 +14,9 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "apps/signing-domain/__tests__/**/*.ts",
     "core/**/__tests__/**/*.ts",
-    "formats/**/__tests__/**/*.ts",
-    "formats/**/__tests__/**/*.tsx",
     "shared/**/__tests__/**/*.ts",
-    "signers/**/__tests__/**/*.ts",
-    "validators/**/__tests__/**/*.ts",
     "runtime/**/__tests__/**/*.ts",
-    "tooling/integration-tests/**/*.ts",
     "tooling/static-checks/**/*.ts",
     "tooling/testing/**/*.ts",
     "tooling/vitest/**/*.ts"

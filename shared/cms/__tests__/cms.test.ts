@@ -1,6 +1,4 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ESSCertIDv2, SigningCertificateV2 } from "@peculiar/asn1-ess";
-import { AsnConvert, OctetString } from "@peculiar/asn1-schema";
 import { buildSignedAttributes } from "../src/attributes";
 import {
   CmsHashAlgorithmValue,
@@ -58,10 +56,9 @@ describe("CMS contracts", () => {
     );
     expect(encoded.byteLength).toBeGreaterThan(0);
     expect(containsBytes(encoded, certificateSha256)).toBe(true);
-    const expected = new SigningCertificateV2({
-      certs: [new ESSCertIDv2({ certHash: new OctetString(certificateSha256.buffer) })],
-    });
-    expect(encoded).toEqual(new Uint8Array(AsnConvert.serialize(expected)));
+    expect(encoded).toEqual(
+      Uint8Array.of(0x30, 38, 0x30, 36, 0x30, 34, 0x04, 32, ...certificateSha256),
+    );
   });
 
   it("adds ICP-Brasil signature policy attribute when policy metadata is present", () => {

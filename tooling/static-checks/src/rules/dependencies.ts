@@ -3,19 +3,7 @@ import type { Check } from "../model";
 const hasMandatoryOtelDependency = (line: string): boolean =>
   /"@(?:effect\/opentelemetry|opentelemetry\/[^"/]+)"\s*:/.test(line);
 
-const hasSignerManifestDependency = (line: string): boolean =>
-  /"@signature-kit\/(?:a1|assinafy|clicksign|documenso|docuseal|zapsign)"\s*:/.test(line);
-const hasFormatManifestDependency = (line: string): boolean =>
-  /"@signature-kit\/(?:xml|pdf)"\s*:/.test(line);
-const hasValidatorManifestDependency = (line: string): boolean =>
-  /"@signature-kit\/iti"\s*:/.test(line);
-const hasProductManifestDependency = (line: string): boolean =>
-  hasSignerManifestDependency(line) ||
-  hasFormatManifestDependency(line) ||
-  hasValidatorManifestDependency(line);
-
-const publicPackageManifestPattern =
-  /^(?:core|formats|shared|signers|validators|runtime)\/[^/]+\/package\.json$/;
+const publicPackageManifestPattern = /^(?:core|shared|runtime)\/[^/]+\/package\.json$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -57,33 +45,8 @@ export const dependencyChecks: readonly Check[] = [
     message:
       "OpenTelemetry must be optional for the consumer; do not add @effect/opentelemetry or @opentelemetry/* to package dependencies.",
     test: (context) =>
-      /^(?:core|signers|formats|validators|runtime)\/[^/]+\/package\.json$/.test(context.path) &&
+      /^(?:core|runtime)\/[^/]+\/package\.json$/.test(context.path) &&
       hasManifestDependency(context, hasMandatoryOtelDependency),
-    ignoreImportLine: false,
-  },
-  {
-    message:
-      "Core package manifests must not declare signer, format, or validator package dependencies; dependency direction is core <- product packages.",
-    test: (context) =>
-      /^core\/[^/]+\/package\.json$/.test(context.path) &&
-      hasManifestDependency(context, hasProductManifestDependency),
-    ignoreImportLine: false,
-  },
-  {
-    message:
-      "Validator package manifests must not declare signer package dependencies; dependency direction is signers <- validators is forbidden.",
-    test: (context) =>
-      /^validators\/[^/]+\/package\.json$/.test(context.path) &&
-      hasManifestDependency(context, hasSignerManifestDependency),
-    ignoreImportLine: false,
-  },
-  {
-    message:
-      "Non-validator packages must not depend on validator packages; validators are leaf product surfaces.",
-    test: (context) =>
-      !context.path.startsWith("validators/") &&
-      /^(?:core|signers|formats|shared|runtime)\/[^/]+\/package\.json$/.test(context.path) &&
-      hasManifestDependency(context, hasValidatorManifestDependency),
     ignoreImportLine: false,
   },
 ];

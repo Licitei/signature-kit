@@ -31,7 +31,6 @@
   "dependencies": {
     "@signature-kit/asn1": "^0.2.1",
     "@signature-kit/crypto": "^0.3.0",
-    "@signature-kit/signatures": "^0.4.0",
     "effect": "4.1.0"
   },
   "nx": {

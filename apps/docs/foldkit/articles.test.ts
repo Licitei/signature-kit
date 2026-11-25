@@ -1,8 +1,6 @@
 import { Popover } from "@foldkit/ui";
 import { describe, expect, it } from "vitest";
-import { createServer } from "node:http";
-import { once } from "node:events";
-import { DOMParser } from "@xmldom/xmldom";
+import { JSDOM } from "jsdom";
 import { Effect, Schema } from "effect";
 import * as Server from "foldkit/experimental/server";
 import { parseContent, renderContent } from "./content";
@@ -26,7 +24,7 @@ import {
 import type { Locale } from "./content";
 
 const alternateLanguages = (html: string) => {
-  const document = new DOMParser({ onError: () => {} }).parseFromString(html, "text/html");
+  const document = new JSDOM(html).window.document;
   return Array.from(document.getElementsByTagName("link")).flatMap((link) =>
     Array.from(link.attributes)
       .filter((attribute) => attribute.name.toLowerCase() === "hreflang")
@@ -131,7 +129,8 @@ describe("Foldkit articles", () => {
         "test",
       );
       if (sitemap._tag !== "Responded") return expect.fail("Missing sitemap");
-      const xml = new DOMParser().parseFromString(await sitemap.response.text(), "application/xml");
+      const xml = new JSDOM(await sitemap.response.text(), { contentType: "application/xml" })
+        .window.document;
       const urls = Array.from(xml.getElementsByTagName("url"));
       const tagUrls = urls.filter((item) =>
         item.getElementsByTagName("loc")[0]?.textContent?.includes("/blog/tags/"),
@@ -185,92 +184,7 @@ describe("Foldkit articles", () => {
     expect(sharedMenu).toContain(`href="/en-US/blog/tags/${shared}"`);
     const searchMenu = await menu("pt-BR", "/search", "ação & api");
     expect(searchMenu).toContain('href="/en-US/search?q=a%C3%A7%C3%A3o+%26+api"');
-    const signingMenu = await menu("pt-BR", "/assine-documentos-gratis");
-    expect(signingMenu).toContain('href="/en-US/sign-free"');
   });
-  it("serves fixture canonical images and page HEAD over HTTP", async () => {
-    const app = createServerComposition(fixtureSource());
-    const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const failures: unknown[] = [];
-          const server = yield* Effect.acquireRelease(
-            Effect.sync(() =>
-              createServer((request, reply) => {
-                const handle = async () => {
-                  const webRequest = new Request(`http://localhost${request.url ?? "/"}`, {
-                    method: request.method,
-                  });
-                  const response = new URL(webRequest.url).pathname.endsWith(".webp")
-                    ? Server.toResponse(
-                        (application) => app.renderDocument(application, assets),
-                        await app.renderPage(webRequest, "test"),
-                      )
-                    : await Server.handleRequest(webRequest, {
-                        renderPage: (input) => app.renderPage(input, "test"),
-                        renderDocument: (application) => app.renderDocument(application, assets),
-                      });
-                  reply.writeHead(response.status, Object.fromEntries(response.headers.entries()));
-                  reply.end(Buffer.from(await response.arrayBuffer()));
-                };
-                handle().catch((error: unknown) => {
-                  failures.push(error);
-                  reply.writeHead(500).end();
-                });
-              }),
-            ),
-            (server) =>
-              Effect.promise(
-                () =>
-                  new Promise<void>((resolve, reject) => {
-                    server.closeAllConnections();
-                    server.close((error) => (error !== undefined ? reject(error) : resolve()));
-                  }),
-              ).pipe(Effect.timeout("3 seconds"), Effect.orDie),
-          );
-          server.listen(0, "127.0.0.1");
-          yield* Effect.promise(() => once(server, "listening"));
-          const address = server.address();
-          if (address === null || typeof address === "string")
-            return expect.fail("Missing server address");
-          yield* Effect.promise(async (signal) => {
-            const base = `http://127.0.0.1:${address.port}`;
-            for (const [page, image] of [
-              ["/pt-BR/blog/fallback", "/en-US/blog/fallback.webp"],
-              [
-                "/pt-BR/blog/a%C3%A7%C3%A3o%20%26%20api",
-                "/pt-BR/blog/a%C3%A7%C3%A3o%20%26%20api.webp",
-              ],
-              [
-                "/pt-BR/blog/tags/s%C3%A3o-paulo-%26-100%25",
-                "/pt-BR/blog/tags/s%C3%A3o-paulo-%26-100%25.webp",
-              ],
-            ]) {
-              const pageResponse = await fetch(`${base}${page}`, { signal });
-              if (pageResponse.status !== 200)
-                return expect.fail(`Page failed: ${String(failures[0])}`);
-              expect(await pageResponse.text()).toContain(
-                `property="og:image" content="https://signaturekit.dev${image}"`,
-              );
-              const head = await fetch(`${base}${page}`, { method: "HEAD", signal });
-              expect(head.status).toBe(200);
-              expect(await head.text()).toBe("");
-              const imageResponse = await fetch(`${base}${image}`, { signal });
-              if (imageResponse.status !== 200)
-                return expect.fail(`Image failed: ${String(failures[0])}`);
-              expect(imageResponse.headers.get("content-type")).toBe("image/webp");
-              const bytes = new Uint8Array(await imageResponse.arrayBuffer());
-              expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("RIFF");
-              expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8L");
-              const size = new DataView(bytes.buffer).getUint32(21, true);
-              expect([(size & 0x3fff) + 1, ((size >>> 14) & 0x3fff) + 1]).toEqual([1200, 630]);
-            }
-          });
-        }),
-      ).pipe(Effect.timeout("30 seconds")),
-    );
-  }, 35000);
   it("groups parsed localized articles without indexing fallback tags", () => {
     const english = parseContent(
       '---\ntitle: English\ndate: 2026-01-01\ntags: ["São Paulo & Effect", TypeScript]\n---\n',
@@ -339,8 +253,6 @@ describe("Foldkit articles", () => {
   });
 
   it("indexes localized articles and falls back to English for missing translations", () => {
-    expect(articles("en-US", "blog")[0]?.title).toContain("signing in the browser");
-    expect(articles("pt-BR", "blog")[0]?.title).toContain("assinar com A1");
     const changelog = articles("pt-BR", "changelog");
     expect(changelog.length).toBeGreaterThan(1);
     expect(changelog.map((entry) => entry.timestamp)).toEqual(
@@ -378,8 +290,6 @@ describe("Foldkit articles", () => {
           expect(html).toContain(
             `https://signaturekit.dev/${locale === "pt-BR" && section === "changelog" ? "en-US" : locale}/${section}/${entry.slug}`,
           );
-          if (locale === "pt-BR" && section === "blog" && entry.slug === "signature-kit-x-licitei")
-            expect(html).toContain("/pt-BR/docs/signing/certificates");
         }
       }, 30_000);
     }
@@ -402,10 +312,7 @@ describe("Foldkit articles", () => {
       expect(alternateLanguages(html)).toContain("x-default");
       expect(alternateLanguages(html)).not.toContain("pt-BR");
     }
-    const translated = await renderPage(
-      new Request("https://signaturekit.dev/pt-BR/blog/signature-kit-x-licitei"),
-      "test",
-    );
+    const translated = await renderPage(new Request("https://signaturekit.dev/pt-BR/docs"), "test");
     if (translated._tag === "Rendered") {
       const html = renderDocument(translated.application, assets);
       expect(alternateLanguages(html)).toContain("pt-BR");
@@ -416,13 +323,7 @@ describe("Foldkit articles", () => {
 
   it("renders social metadata and localized collection alternates with a fixed origin", async () => {
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
-    for (const path of [
-      "/en-US/blog",
-      "/pt-BR/blog/tags",
-      "/en-US/sign-free",
-      "/pt-BR/assine-documentos-gratis",
-      "/en-US/blog/signature-kit-x-licitei",
-    ]) {
+    for (const path of ["/en-US/blog", "/pt-BR/blog/tags", "/en-US/docs"]) {
       const result = await renderPage(new Request(`https://hostile.example${path}`), "test");
       if (result._tag !== "Rendered") return expect.fail(`Missing ${path}`);
       const html = renderDocument(result.application, assets);
@@ -505,13 +406,7 @@ describe("Foldkit articles", () => {
   });
 
   it("rejects unknown articles and noncanonical locales", async () => {
-    for (const path of [
-      "/en-US/blog/missing",
-      "/pt-BR/changelog/missing",
-      "/pt-br/blog",
-      "/en-US/blog/signature-kit-x-licitei.pt-BR",
-      "/pt-BR/blog/signature-kit-x-licitei.pt-BR",
-    ]) {
+    for (const path of ["/en-US/blog/missing", "/pt-BR/changelog/missing", "/pt-br/blog"]) {
       const result = await renderPage(new Request(`https://signaturekit.dev${path}`), "test");
       expect(result._tag).toBe("Responded");
       if (result._tag === "Responded") expect(result.response.status).toBe(404);

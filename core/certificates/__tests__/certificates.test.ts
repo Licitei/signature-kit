@@ -259,7 +259,7 @@ describe("certificates", () => {
         );
         expect(Result.isFailure(result), malformed).toBe(true);
         if (Result.isFailure(result)) {
-          expect(result.failure.code).toBe("signature-kit.X509_PARSE_FAILED");
+          expect(result.failure.code).toBe("certificates.X509_PARSE_FAILED");
         }
       }
 
@@ -268,7 +268,7 @@ describe("certificates", () => {
       );
       expect(Result.isFailure(invalidGeneralizedYear)).toBe(true);
       if (Result.isFailure(invalidGeneralizedYear)) {
-        expect(invalidGeneralizedYear.failure.code).toBe("signature-kit.X509_PARSE_FAILED");
+        expect(invalidGeneralizedYear.failure.code).toBe("certificates.X509_PARSE_FAILED");
       }
     }),
   );
@@ -325,7 +325,7 @@ describe("certificates", () => {
         const result = yield* Effect.result(parseX509(malformedDer));
         expect(Result.isFailure(result), label).toBe(true);
         if (Result.isFailure(result)) {
-          expect(result.failure.code, label).toBe("signature-kit.X509_PARSE_FAILED");
+          expect(result.failure.code, label).toBe("certificates.X509_PARSE_FAILED");
         }
       }
     }),
@@ -341,7 +341,7 @@ describe("certificates", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("signature-kit.X509_PARSE_FAILED");
+        expect(result.failure.code).toBe("certificates.X509_PARSE_FAILED");
       }
     }),
   );
@@ -359,7 +359,7 @@ describe("certificates", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("signature-kit.X509_PARSE_FAILED");
+        expect(result.failure.code).toBe("certificates.X509_PARSE_FAILED");
       }
     }),
   );
@@ -380,7 +380,7 @@ describe("certificates", () => {
         const result = yield* Effect.result(parseX509(malformedDer));
         expect(Result.isFailure(result), label).toBe(true);
         if (Result.isFailure(result)) {
-          expect(result.failure.code, label).toBe("signature-kit.X509_PARSE_FAILED");
+          expect(result.failure.code, label).toBe("certificates.X509_PARSE_FAILED");
         }
       }
     }),
@@ -482,25 +482,25 @@ describe("certificates", () => {
 
       expect(Result.isFailure(wrongPassword)).toBe(true);
       if (Result.isFailure(wrongPassword)) {
-        expect(wrongPassword.failure.code).toBe("signature-kit.WRONG_PASSWORD");
+        expect(wrongPassword.failure.code).toBe("certificates.WRONG_PASSWORD");
         expect(wrongPassword.failure.reason).toBeDefined();
       }
       expect(Result.isFailure(invalidText)).toBe(true);
       if (Result.isFailure(invalidText)) {
-        expect(invalidText.failure.code).toBe("signature-kit.INVALID_FORMAT");
+        expect(invalidText.failure.code).toBe("certificates.INVALID_FORMAT");
       }
       expect(Result.isFailure(empty)).toBe(true);
       if (Result.isFailure(empty)) {
-        expect(empty.failure.code).toBe("signature-kit.EMPTY_FILE");
+        expect(empty.failure.code).toBe("certificates.EMPTY_FILE");
       }
       expect(Result.isFailure(fakePdf)).toBe(true);
       if (Result.isFailure(fakePdf)) {
-        expect(fakePdf.failure.code).toBe("signature-kit.INVALID_FORMAT");
+        expect(fakePdf.failure.code).toBe("certificates.INVALID_FORMAT");
         expect(fakePdf.failure.message).toContain("PDF");
       }
       expect(Result.isFailure(fakePng)).toBe(true);
       if (Result.isFailure(fakePng)) {
-        expect(fakePng.failure.code).toBe("signature-kit.INVALID_FORMAT");
+        expect(fakePng.failure.code).toBe("certificates.INVALID_FORMAT");
         expect(fakePng.failure.message).toContain("PNG");
       }
     }),

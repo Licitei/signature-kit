@@ -3,9 +3,6 @@
   "include": ["src/**/*.ts"],
   "references": [
     {
-      "path": "../signatures"
-    },
-    {
       "path": "../../shared/asn1"
     },
     {

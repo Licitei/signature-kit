@@ -1,7 +1,7 @@
 import type { Check, CheckContext } from "../model";
 
 const hasLocalPlainSecretBoundary = (context: CheckContext): boolean => {
-  if (!context.path.startsWith("formats/react/src/") && !context.path.startsWith("apps/docs/")) {
+  if (!context.path.startsWith("apps/docs/")) {
     return false;
   }
   const current = context.rawLine;

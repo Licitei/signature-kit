@@ -1,121 +1,15 @@
 import { createServer } from "vite";
 import type { Plugin } from "vite";
 import { fileURLToPath } from "node:url";
-import { gunzipSync } from "node:zlib";
-import { Effect } from "effect";
 import stylex from "@stylexjs/unplugin";
-import { defineBrowserCommand } from "@vitest/browser-playwright";
 import * as Server from "foldkit/experimental/server";
-import type { renderDocument, renderPage } from "./entry.server";
+import type { renderDocument, renderPage } from "./entry.server.ts";
 
 const docsRoot = fileURLToPath(new URL("..", import.meta.url));
 
-const homeDeniedClipboard = defineBrowserCommand(async ({ context, page }) => {
-  const browser = context.browser();
-  if (browser === null) return { permission: "unavailable", status: null };
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const isolated = yield* Effect.acquireRelease(
-          Effect.promise(() => browser.newContext()),
-          (resource) => Effect.promise(() => resource.close()),
-        );
-        const origin = new URL(page.url()).origin;
-        yield* Effect.promise(() => isolated.grantPermissions([], { origin }));
-        const tab = yield* Effect.promise(() => isolated.newPage());
-        yield* Effect.promise(() => tab.goto(`${origin}/en-US`));
-        yield* Effect.promise(async () => {
-          for (let attempt = 0; attempt < 100; attempt++) {
-            await tab.keyboard.press("Control+k");
-            if ((await tab.locator("#site-overlay[open]").count()) > 0) return;
-            await tab.waitForTimeout(200);
-          }
-        });
-        yield* Effect.promise(() => tab.keyboard.press("Escape"));
-        yield* Effect.promise(() =>
-          tab.locator("#site-overlay:not([open])").waitFor({ state: "attached" }),
-        );
-        yield* Effect.promise(() => tab.locator('main [data-overlay="providers"]').click());
-        yield* Effect.promise(() =>
-          tab.getByRole("tab", { name: "Assinafy", exact: true }).dispatchEvent("click"),
-        );
-        yield* Effect.promise(() =>
-          tab.waitForFunction(() => {
-            const ready =
-              document
-                .querySelector(".home-code")
-                ?.textContent?.includes("AssinafySignatureRequest") === true;
-            if (!ready)
-              [...document.querySelectorAll<HTMLButtonElement>(".home-providers button")]
-                .find((button) => button.textContent === "Assinafy")
-                ?.click();
-            return ready;
-          }),
-        );
-        const permission = yield* Effect.promise(() =>
-          tab.evaluate(() =>
-            navigator.clipboard.writeText("signaturekit clipboard probe").then(
-              () => "granted",
-              () => "denied",
-            ),
-          ),
-        );
-        yield* Effect.promise(() => tab.locator(".home-code .home-copy").dispatchEvent("click"));
-        yield* Effect.promise(() =>
-          tab.getByRole("status").filter({ hasText: "Could not copy." }).waitFor(),
-        );
-        yield* Effect.promise(() =>
-          tab.waitForFunction(
-            async () =>
-              (await (await fetch("/__home_analytics__/events")).text()).includes(
-                "provider_snippet_copy_failed",
-              ),
-            undefined,
-            { timeout: 20000 },
-          ),
-        );
-        const status = yield* Effect.promise(() => tab.locator(".home-status").textContent());
-        return { permission, status };
-      }),
-    ),
-  );
-});
-
 export const homeBrowserServer = (): Plugin => ({
   name: "home-browser-test-server",
-  config: () => ({
-    test: { browser: { commands: { homeDeniedClipboard } } },
-    define: {
-      "import.meta.env.WAKU_PUBLIC_POSTHOG_PROJECT_TOKEN": JSON.stringify("local-home-test-token"),
-      "import.meta.env.WAKU_PUBLIC_POSTHOG_HOST":
-        '(typeof window === "undefined" ? "http://localhost/__home_analytics__" : window.location.origin + "/__home_analytics__")',
-    },
-  }),
   configureServer(server) {
-    const received: string[] = [];
-    server.middlewares.use("/__home_analytics__", (request, response) => {
-      if (request.url === "/events") {
-        response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify(received));
-        return;
-      }
-      if (request.url === "/reset") {
-        received.length = 0;
-        response.writeHead(204).end();
-        return;
-      }
-      const chunks: Uint8Array[] = [];
-      request.on("data", (chunk: Uint8Array) => chunks.push(chunk));
-      request.on("end", () => {
-        const body = Buffer.concat(chunks);
-        const decoded =
-          body[0] === 0x1f && body[1] === 0x8b ? gunzipSync(body).toString() : body.toString();
-        const encoded = new URLSearchParams(decoded).get("data");
-        received.push(encoded === null ? decoded : Buffer.from(encoded, "base64").toString());
-        response.setHeader("content-type", "application/json");
-        response.end("{}");
-      });
-    });
     const runtime = createServer({
       configFile: false,
       root: docsRoot,
@@ -129,7 +23,7 @@ export const homeBrowserServer = (): Plugin => ({
           unstable_moduleResolution: { type: "commonJS", rootDir: docsRoot },
         }),
       ],
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, ws: false },
     });
     server.httpServer?.once("close", () => {
       void runtime.then((instance) => instance.close());

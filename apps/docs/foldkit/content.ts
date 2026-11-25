@@ -2,7 +2,6 @@ import { pageRoute } from "./routes";
 import type { Locale } from "./routes";
 export type { Locale } from "./routes";
 import { Effect, Schema } from "effect";
-import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
 import remarkGfm from "remark-gfm";
@@ -136,7 +135,7 @@ export const renderContent = <Message>(
     isFlow(node) || ("children" in node && node.children.some(containsFlow));
   const isFlow = (node: ContentNode): boolean =>
     (node.type === "mdxJsxFlowElement" || node.type === "mdxJsxTextElement") &&
-    (["Cards", "Steps", "Callout", "ErrorCatalog"].includes(node.name ?? "") ||
+    (["Cards", "Steps", "Callout"].includes(node.name ?? "") ||
       (node.name === "Card" && (node.children ?? []).some(containsFlow)));
   const validate = (nodes: ContentNode[], parent: string, phrasing: boolean) => {
     for (const node of nodes) {
@@ -394,22 +393,6 @@ export const renderContent = <Message>(
                 ? h.span([...sx(h, "card", prose.card)], body)
                 : h.div([...sx(h, "card", prose.card)], body);
           }
-          case "ErrorCatalog":
-            return h.div(
-              [...sx(h, "error-catalog", prose.catalog)],
-              [
-                h.div([], [h.span([], ["Code"]), h.span([], ["Default message"])]),
-                ...signatureKitErrorCatalog.map((entry) =>
-                  h.div(
-                    [h.Id(entry.code.replace("signature-kit.", "err-"))],
-                    [
-                      h.code([], [entry.code]),
-                      h.span([], [entry.message, entry.overridable ? " · editable" : ""]),
-                    ],
-                  ),
-                ),
-              ],
-            );
           case "Callout":
             return h.aside(
               [...sx(h, `callout ${attr("type") ?? "info"}`, prose.callout)],

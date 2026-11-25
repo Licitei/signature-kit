@@ -38,7 +38,7 @@ const program = Effect.gen(function* () {
 
 ## Errors and i18n
 
-Crypto failures use the `CryptoError` code catalog and `cryptoErrorMessages`. Applications can render localized copy through `@signature-kit/i18n` by passing that catalog to `errorMessage`.
+Crypto failures use the `CryptoError` code catalog and `cryptoErrorMessages`.
 
 Docs: <https://signaturekit.dev/en-US/docs/concepts/document-formats>.
 

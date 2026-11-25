@@ -7,7 +7,7 @@ import { siteOrigin } from "./site-origin";
 
 const locales: Locale[] = ["en-US", "pt-BR"];
 const origin = siteOrigin;
-const escapeXml = (value: string) =>
+export const escapeXml = (value: string) =>
   value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -62,7 +62,6 @@ export const createFeeds = (source: {
         "/blog",
         "/blog/tags",
         "/changelog",
-        locale === "pt-BR" ? "/assine-documentos-gratis" : "/sign-free",
         ...blogTags(locale).map(({ slug }) => `/blog/tags/${slug}`),
       ];
       const docs = source
@@ -91,13 +90,7 @@ export const createFeeds = (source: {
     const entries = pages
       .map((page) => {
         const links = pages
-          .filter(
-            (candidate) =>
-              candidate.path === page.path ||
-              ((page.path === "/sign-free" || page.path === "/assine-documentos-gratis") &&
-                (candidate.path === "/sign-free" ||
-                  candidate.path === "/assine-documentos-gratis")),
-          )
+          .filter((candidate) => candidate.path === page.path)
           .map(
             (candidate) =>
               `<xhtml:link rel="alternate" hreflang="${candidate.locale}" href="${escapeXml(url(candidate.path === "" ? homeRoute({ locale: candidate.locale }) : pageRoute({ locale: candidate.locale, path: candidate.path.slice(1) })))}" />`,

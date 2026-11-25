@@ -7,7 +7,7 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
 
 - Code identifiers, file names, and public API names are English only.
 - Keep APIs boring, typed, explicit, KISS. One clear Schema over clever wrappers.
-- Boring names win: `parseCertificate`, `a1SignaturesLayer`, `signatures.sign`.
+- Prefer clear names such as `parseCertificate` and `localClientLayer`.
 
 ## Effect-native rules
 
@@ -17,8 +17,6 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
   Do not silently fall back for required configuration or impossible states.
 - Use `Context.Service` + `Layer` (v4) for services and dependencies. Do not use
   `Context.Tag`, `Context.GenericTag`, `Effect.Tag`, or `Effect.Service`.
-  (`Context.Tag` is the Effect 3 API and does not exist in Effect 4; Alchemy v2
-  code uses `Context.Service` + `Layer` for portable seams.)
 - Do not hide requirements with `Effect.provide` deep inside library code.
   `Effect.provide` is allowed in tests, application/runtime boundaries, and docs;
   package internals should expose requirements in the Effect environment.
@@ -28,17 +26,15 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
 - Effect-boundary escape comments use `[allow-run: <reason>]`,
   `[allow-provide: <reason>]`, or `[allow-string-secret: <reason>]`; the reason
   is required, and these directive comments are allowed only under
-  `formats/react/src/` and `apps/docs/`. The one library exception is the
-  Promise entry point for apps without Effect (`promiseBoundaryModules` in
+  `apps/docs/`. The library exceptions are the
+  Promise entry points for apps without Effect (`promiseBoundaryModules` in
   `tooling/static-checks/src/config.ts`).
 - Do not add explanatory comments to code. Keep only machine-required directive
   comments (`[allow-*]`, TypeScript references, generated-file pragmas).
 - Use static imports for modules known at author time. Dynamic import is only for
   runtime-selected plugins, platform-specific modules, or test cases that
   explicitly exercise module loading.
-- Stateful/global setup is a service dependency. XML-DSig is exposed through
-  `XmlRuntime`/`xmlRuntimeLayer`, whose real capabilities include parsing,
-  `SignedXml` construction, and cached verification-key import.
+- Stateful and global setup belongs in a service dependency.
 - Never read ambient process state (`NODE_ENV`, env vars, globals) inside package
   internals to choose behavior. Decode explicit config through Schema or require a
   provided service/layer.
@@ -92,11 +88,10 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
   at the provider, resource, or public API boundary.
 - Default error-message catalogs are source-of-truth data next to the
   `TaggedError`, backed by Schema-derived entry types. Apps resolve
-  localized display copy by code through `@signature-kit/i18n`, never by
-  matching `reason` text.
+  localized display copy by code from these catalogs.
 - HTTP errors must never serialize secrets. If an upstream forces credentials into
   a URL query string, carry the real transport URL separately from a redacted
-  diagnostic URL and use only the diagnostic URL in `SignatureKitError.reason`.
+  diagnostic URL and use only the diagnostic URL in the tagged error reason.
 
 ## Schema and type rules
 
@@ -111,12 +106,9 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
   unions so reads narrow without assertions.
 - No manual interfaces for config/data contracts when `Schema` can derive the type.
 - If public docs need an example value for a Schema-backed contract, make the
-  snippet use the real contract shape (`contentBase64` for remote resource props,
-  not byte-only helper input) so examples do not become a parallel API.
+  snippet use the actual public contract shape.
 - Pure functions that accept a Schema-derived type do not secretly decode it
-  again. Decode untrusted values explicitly at the caller boundary; for example,
-  validate unknown i18n options with `ErrorMessageOptionsSchema` before calling
-  the synchronous `errorMessage` lookup.
+  again. Decode untrusted values explicitly at the caller boundary.
 
 ## Effect 4 idioms
 
@@ -155,107 +147,6 @@ runtimes. A1 / PKCS#12 is the first backend, not the product definition.
 - Long-lived resources live in `Layer.scoped` with `Effect.acquireRelease`;
   short critical cleanup uses `Effect.ensuring`/`onExit`.
 
-## Alchemy v2 — a core architecture primitive
-
-Alchemy v2 is not an optional integration package; it is the seam every
-declarable, reconcilable, or persisted contract passes through. If something must
-be declared, reconciled, or stored, it takes Alchemy's shape — never a bespoke
-wrapper. The signer adapters are already modeled this way (each is a `Resource`
-with a `Provider.effect` and a collection layer); follow that shape.
-
-- Read the upstream v2 guides before changing provider, auth, or state-store shape:
-  `https://v2.alchemy.run/guides/custom-provider/#declare-the-resource-constructor-the-tag`,
-  `https://v2.alchemy.run/environments/custom-auth-provider/`,
-  `https://v2.alchemy.run/guides/infrastructure-layers/`, and
-  `https://v2.alchemy.run/guides/custom-state-store/`.
-
-- **The resource constructor is the tag.** One named string literal is the
-  resource type, repeated identically in the type alias, the constructor const,
-  and the export name — never derived, never repeated raw at call sites:
-  `export type X = Resource<"Vendor.Thing", XProps, XAttributes>` and
-  `export const X = Resource<X>("Vendor.Thing")`. Alchemy resolves providers by
-  that literal at plan time.
-  Import `Resource` from the root `alchemy` package, matching the upstream v2
-  guide; use subpath imports only for dedicated modules such as
-  `alchemy/Provider`.
-- **One `reconcile`, plus `delete` — never separate create/update.** A provider is
-  `Provider.effect(X, Effect.gen(/* acquire shared deps once */) → X.Provider.of({ reconcile, delete }))`.
-  `reconcile` covers create AND update and decides which by inspecting
-  `output`/`olds` (both `undefined` ⇒ greenfield create); `delete` returns void.
-  Both are idempotent and treat a missing remote (404) as success. Build the
-  service through the typed `X.Provider.of({ ... })` constructor.
-- **Wire by visibility.** `Layer.provide` for private resource providers;
-  `Layer.provideMerge` for public credential/auth machinery a consumer also needs.
-  Bundle a provider collection as a `providers()` layer.
-  A signer `providers(options)` layer may provide private credentials, but it must
-  not bake in `signatureHttpClientLive`; transport remains a caller-provided
-  `SignatureHttpClient` requirement.
-- **The public provider surface is the resource, not its wiring.** Export the
-  Alchemy resource constructor, `providers(options)`, and real upstream lifecycle
-  helper Effects. Keep credential services/layers, the concrete `Provider.effect`
-  layer, and the `ProviderCollection` class package-private. Define the concrete
-  provider once as a layer value, not as a zero-argument factory. Tests resolve it
-  through `Provider.findProvider(Resource)` after providing `providers(options)`.
-- **Credentials are lazy Effects.** Provider credential services store the
-  deferred credential/options effect, not an eagerly-decoded struct:
-  `Context.Service<XCredentials, Effect.Effect<XProviderOptions, SignatureKitError>>`.
-  Build `xCredentialsLayer(options)` by wrapping `Schema.decodeUnknownEffect(...)`
-  in `Effect.cached(...)` inside `Layer.effect(...)`, so provider layers can be
-  constructed without touching secrets or config. In `Provider.effect`, `yield*`
-  the credential service once, then `yield*` the cached Effect inside lifecycle
-  hooks that actually need credentials; retained `list` hooks and `read` calls
-  without cached output must not demand credentials.
-- **Retained remote-signature requests are immutable.** If the upstream workflow
-  cannot be safely updated or deleted after creation, say so in the provider:
-  `reconcile` returns cached `output` after creation, `delete` only acts on a
-  provided output id, and each signer owns its retained no-op `diff` locally so
-  changed props never advertise update/replacement semantics the provider cannot
-  execute. Provider `list` hooks for retained resources return `Effect.succeed([])`
-  and set `nuke: { skip: true }`; never feed account-wide upstream enumeration
-  into `alchemy nuke`. Package-level `list*SignatureRequests(options)` functions
-  own upstream list endpoints.
-- **Remote provider lifecycle APIs mirror upstream facts.** Keep the Alchemy
-  `create...Request` resource as the reconcile entry point, and expose
-  provider-specific `get`/`list`/`cancel`/`delete`/`download` functions only when
-  the upstream really has those endpoints. These functions use provider-owned
-  schemas plus `SignatureHttpClient`, map remote status into the signer
-  package's local state model without lossy string helpers, and test
-  path/method/auth redaction/binary downloads against a local HTTP server. Never
-  fake list/delete behavior through Alchemy when the provider cannot perform it.
-  JSON response decoding belongs in the HTTP client's `requestJson(...)` method,
-  not repeated after each remote call. The HTTP seam owns
-  parse failures, schema decode failures, provider/status metadata, and redacted
-  diagnostic URLs.
-  Decode Alchemy resource `news` inside the signer package with that provider
-  domain's resource-props Schema. Do not put remote-signature request,
-  recipient, document, provider, status, schema-name, or retained-diff contracts
-  in core or in a new shared hub. Encode provider capabilities in that local
-  schema: single-document and single-PDF providers use a tuple/refinement there
-  instead of runtime rejecting a generic shape.
-  Retained request providers use their local no-op `diff`, `read` a cached output
-  to detect missing remotes, and `delete` only the provided output id. Create-flow
-  rollback deletes remote state only on unambiguous pre-effect 4xx failures; never
-  for 408, 409, 429, 5xx, timeout, response-shape failures, or after notifications
-  are dispatched. Signed-document downloads first read state and fail with typed
-  `unsupportedOperation` before completion.
-- **Infrastructure is layered: Service → Layer → Binding → Runtime.** A runtime
-  contract is a `Context.Service`; a
-  `Layer.effect(Service, Effect.gen(function* () { const r = yield* ResourceDecl; const client = yield* Binding(r); return { ...methods } }))`
-  implements it over concrete resources; the consumption boundary `yield*`s the
-  Service and never touches resources directly. Swappable backends are separate
-  layers of the SAME service, named by suffix (`XServiceKv`, `XServiceR2`), so a
-  backend swap is a one-line `Layer.provide` change. Resources carry stable logical
-  ids, so two consumers providing the same layer collapse to one shared resource.
-- **State stores are Effect layers too.** A custom store is a `Layer` providing a
-  lazily-built `StateService` (defer init with `Effect.cached`; own a connection
-  with `Layer.scoped` + `Effect.acquireRelease`). `set` is an idempotent upsert
-  keyed on `(stack, stage, fqn)`; a missing `get` returns `undefined`, never an
-  error; serialize only through `encodeState`/`reviveState` (they handle
-  `Redacted`/`Date` — do not hand-roll JSON); reserve `StateStoreError` for
-  transport faults, and let any other cause be a defect.
-  Do not introduce a custom state-store package until a real durable backend is
-  required; demos and tests use Alchemy's built-in in-memory state.
-
 ## Keep ownership small
 
 - Prefer native contracts and lifecycles. An abstraction must own domain policy,
@@ -273,145 +164,32 @@ with a `Provider.effect` and a collection layer); follow that shape.
   over handwritten lexers or name-based bans; test aliases, shadowing, multiline
   syntax, template expressions, and actual file selection.
 
-## Architecture taste
+## SignatureKit 2.0
 
-- Core is a set of focused provider-agnostic packages: `@signature-kit/signatures`
-  owns certificate contract schemas, byte-signing contracts, `Signatures`, and
-  `SignatureKitError`; `@signature-kit/http` owns `SignatureHttpClient` transport;
-  `@signature-kit/certificates` owns PKCS#12/X.509 parsing. There is no umbrella
-  core package and no standalone errors package. Signers depend on focused core
-  packages; core never imports or enumerates signer, format, or validator packages.
-  `konsistent` enforces source-level dependency direction imports; static
-  workspace checks enforce manifests, TypeScript references, and export/path alias
-  lockstep. Package exports point at `dist/` files built by `tsc`; CI builds
-  before tests because `dist/` is gitignored.
-- Workspace packages imported only by tests belong in `devDependencies`; runtime
-  source imports belong in `dependencies`.
+The local browser runtime comes first, followed by the server runtime. External
+providers are rebuilt last on 2.0 contracts. See [the architecture](docs/v2/ARCHITECTURE.md).
 
-- No barrel files that only re-export. Package exports point at the real module
-  (`@signature-kit/pdf/sign`, `@signature-kit/signatures`,
-  `@signature-kit/xml/engine`) unless the package has one genuine root module.
-  `konsistent` enforces this and the remote-signer package shape.
-  Source filenames should name the real seam too: keep `@signature-kit/a1/signer`
-  backed by `src/signer.ts`, and keep `@signature-kit/asn1` backed by an ASN.1 API
-  module rather than a misleading `config.ts` root.
-- Avoid `types.ts`. Keep schemas and `Schema.TaggedError` catalogs beside
-  the API they validate — usually `config.ts`, or the package root module when the
-  root specifier is the real API.
-- The signer backend is not the document format. A `SignerAdapter` owns "where the
-  signing power comes from"; it must not own XML/PDF document mutation.
-- `shared/*` packages are low-level support packages that may be published so
-  public packages install cleanly from npm, but they are not the product surface.
-  Keep their exports narrow and dependency-driven. Public product packages live in
-  `core/`, `signers/`, `formats/`, and `validators/`; there is no `integrations/*`
-  layer. Validators may depend on core/shared/formats, never on signers, and remote
-  validator transport goes through `SignatureHttpClient`.
-- Tests live with the package that owns the behavior. Browser-facing React tests
-  belong in `formats/react/__tests__`; app packages keep only page/app smoke tests.
-- No super-atomic files. Split a module only when it owns a genuinely separate
-  concern; do not spawn one-symbol files or files that exist only to hold a single
-  trivial helper. Code-split when it clarifies, not by reflex.
-- No anxiety helpers. A helper earns its name by removing real duplication or
-  naming a real concept. A function that only wraps a cause, renames a value, or
-  re-guards something readable inline (a `toSafeMetadata`-style wrapper) just adds
-  a reading hop and hides intent — inline it. With Effect + Alchemy the failure
-  surface is known; an unexpected cause is a defect/panic, not a value to launder.
-- Avoid copies that only placate types. If an API requires a mutable array, make
-  the decoded schema or internal return type mutable instead of `Array.from(...)`.
-
-## React and TanStack
-
-React package APIs are hooks-only and data-first: build validated A1 browser
-signing state with Effect/Schema, keep explicit stores outside render hot paths,
-and expose headless certificate/signer/browser-PDF hooks. UI components are not
-npm-published; apps consume the shadcn registry copies they own.
-
-- **React stays intentionally narrow.** `@signature-kit/react` exposes headless
-  hooks and the data seams those hooks need (`a1`, `config`, `sync-store`,
-  `browser-pdf`). It does not expose UI components, provider-specific bridges,
-  app queues, fetch/tRPC glue, storage, toasts/modals, rendering adapters
-  (`react-pdf`, DocuSeal, remote signer flows), or app state. Future browser
-  PDF/XML work extends through core document seams and hooks, not package-level
-  UI state machines.
-
-- **The store lives outside React.** Browser demos use a tiny module-level sync
-  store (`createSyncStore`) and subscribe with `useSyncExternalStore`; never
-  allocate app state with `useRef`/`useState`/`useMemo` in render and never mirror
-  external store state into component-local state. Module-level functions write
-  via `store.setState(...)`; React only subscribes and renders.
-- **Signature queues are Effect programs, not Pacer/TanStack state machines.**
-  Keep queue state boring and explicit (`busy`, per-document rows/status,
-  active document id). Seed demo queues at module load or event boundaries with
-  `Effect.runPromise(...)`; derive UI progress from the store fields the worker
-  writes, and reset `busy` in the same Effect program that owns the batch. Do not
-  add `@tanstack/react-pacer`/`@tanstack/react-store` unless a package feature
-  genuinely requires them.
-- **Best-guess placement stays pure geometry.** Do not render pages through
-  pdf-core or pdf.js per document just to place the default signature rectangle. Use the parsed
-  `pageDims` already owned by `@signature-kit/pdf` and run the placement queue at
-  concurrency 1 so focus/progress paints per document without racing.
-- **Rubric queues never stamp the main signature page.** "Rubric every page"
-  means every page except the page that receives the full visible signature
-  block. Use `rubricPageIndexesExcludingSignature(...)`; single-page documents
-  skip the rubric pass and receive only the main block.
-- **Effects are a last resort in React.** Prefer callback refs,
-  `useSyncExternalStore`, and event-boundary `Effect.runPromise(...)`. A React
-  effect is allowed only for unavoidable resource loading, with explicit
-  cancellation/cleanup; never add a mount effect solely to seed or drain a queue.
-  Create and revoke object URLs inside the action that needs them.
-- **Compose shadcn, not raw chrome.** Build UI from `components/ui/*` primitives
-  (`Button` / `Badge` / `Card` / `Dialog` / `ScrollArea`); never hand-style a raw
-  `<button>`/`<div>`. Merge classes with `cn`.
-- **Server by default; isolate heavy client libs.** Sections are server components
-  unless they need interactivity; async server work (shiki highlight) runs on the
-  server and is handed to clients as pre-rendered nodes. Load heavy client-only
-  libs (pdf.js, react-pdf) via `dynamic(() => import(...), { ssr: false })` so they
-  never run during SSG prerender.
-- **i18n is request-scoped and canonical.** Call `setServerLocale(lang)` at the top
-  of EVERY server segment that renders translated chrome (layout and each page
-  render independently). Locales are canonical and case-sensitive (`en-US`,
-  `pt-BR`), shared verbatim by URL, router, message catalog, and content suffix —
-  never a casing map (lowercasing triggers a redirect loop).
-- **Effect runs at the boundary only.** `runPromise` belongs in app event handlers,
-  queue workers, docs, and ratified `@signature-kit/react` hook actions. The React
-  package's product is hooks, so their event-actions are app boundaries like docs
-  event handlers. Provide layers at that call site with `.pipe(Effect.provide(...))`.
-  Never hide `runPromise` or `Effect.provide` in package internals — return the
-  `Effect` and let the app boundary run it.
-- **Docs display capabilities; packages own capabilities.** `apps/docs` can wire UI
-  events and call package APIs, but PDF parsing, anchor text search, text-box
-  collision detection, visible stamping, vector initials rubrics, high-level
-  prepare-and-sign workflows, rubric placement, Effect queues, batch preparation,
-  and signing behavior live in `@signature-kit/pdf` (or the owning format
-  package). Browser-specific adapters such as the `@signature-kit/pdf-core` WASM
-  layers and its canvas page painter still belong behind
-  `@signature-kit/pdf` exports; docs imports those capabilities and shows the
-  flow instead of reimplementing them.
-- Use external apps (e.g. `app-licitei-next`) only to discover product needs; never
-  copy their hook shapes, hardcoded options, or state leakage into public packages.
+- `runtime/local` owns the RPC protocol, document revisions, A1 sessions, worker,
+  and client. Private signing keys stay inside the worker as non-extractable
+  WebCrypto keys.
+- `core/certificates` owns certificate parsing and schemas. `shared/*` owns the
+  low-level engines and codecs. Dependencies point from runtime to core and shared.
+- Package exports point at real modules in `dist/`, built by `tsc`. Avoid pure
+  re-export barrels. Keep workspace dependencies, TypeScript references, and source
+  aliases aligned. Imports used exclusively in tests belong in `devDependencies`.
+- Keep tests with the packages that own their behavior. Docs may assemble public
+  capabilities. Use Foldkit and the existing UI primitives in the docs app.
 
 ## Packages
 
-```text
-shared/asn1       @signature-kit/asn1       pure ASN.1 DER decode/encode (Effect boundary)
-shared/crypto     @signature-kit/crypto     PKCS#12, PEM, hashing, cipher primitives
-shared/cms        @signature-kit/cms        CMS/PKCS#7 and RFC 3161 timestamping
-shared/pdf-core   @signature-kit/pdf-core   in-house Rust/WASM PDF engine (page geometry, links, text)
-core/signatures  @signature-kit/signatures runtime schemas, typed errors, Signatures service
-core/i18n       @signature-kit/i18n       locale schemas and error-message lookup
-core/http        @signature-kit/http       HTTP client service and transport schemas
-core/certificates @signature-kit/certificates Effect-safe PKCS#12/X.509 certificate API
-signers/a1        @signature-kit/a1         A1 / PKCS#12 local signer adapter
-signers/clicksign @signature-kit/clicksign  Clicksign remote signer
-signers/assinafy  @signature-kit/assinafy   Assinafy remote signer
-signers/docuseal  @signature-kit/docuseal   DocuSeal remote signer
-signers/documenso @signature-kit/documenso  Documenso remote signer
-signers/zapsign   @signature-kit/zapsign    ZapSign remote signer
-formats/xml       @signature-kit/xml        XML-DSig document mutation
-formats/pdf       @signature-kit/pdf        PDF/PAdES detached-signature adapter
-formats/react     @signature-kit/react      hooks-only browser A1 signing helpers
-validators/iti     @signature-kit/iti       ITI local and remote signature conformance validation
-```
+| Directory | Package | Responsibility |
+| --- | --- | --- |
+| `runtime/local` | `@signature-kit/local` | Local RPC and worker engine |
+| `core/certificates` | `@signature-kit/certificates` | PKCS#12 and X.509 parsing |
+| `shared/pdf-core` | `@signature-kit/pdf-core` | Rust/WASM PDF engine |
+| `shared/asn1` | `@signature-kit/asn1` | ASN.1 DER codec |
+| `shared/crypto` | `@signature-kit/crypto` | Crypto and PKCS#12 primitives |
+| `shared/cms` | `@signature-kit/cms` | CMS/PKCS#7 and RFC 3161 |
 
 ## Validation
 
@@ -422,7 +200,7 @@ validators/iti     @signature-kit/iti       ITI local and remote signature confo
 - Prefer structural and static checks over ad-hoc review:
   - `bun run check:konsistent` validates `konsistent.json` and enforces
     structural conventions: source dependency-direction imports, no barrel-only
-    source modules, required package files, and remote-signer index surfaces.
+    source modules, required package files, and source-level dependency boundaries.
   - `bun run check:declarative-errors` owns content-level bans and manifest/
     workspace checks that `konsistent` cannot express.
   - no `runSync`/`runPromise`/`runFork` in library internals
@@ -431,23 +209,14 @@ validators/iti     @signature-kit/iti       ITI local and remote signature confo
   - no `throw`, `instanceof`, or library `try/catch`
   - no legacy Effect service APIs
   - no manual config/data contracts when `Schema` can derive the type
-  - no hidden live transport in provider layers
   - no ambient `NODE_ENV` behavior selection
   - no stale `dist/` files or export/path alias drift
   - secrets use `Redacted`
-- Tests for Effect workflows use `@effect/vitest` (or `bun test`). Offline
-  remote-signer suites use a local HTTP server as a scoped resource
-  (`Effect.acquireRelease`); handlers record requests and assertions live in test
-  bodies. No `try/finally` and no casts, even in tests.
-- PDF/PAdES changes must run the local PDF suite plus the relevant matrix:
-  `bunx vitest run formats/pdf/__tests__` for local behavior,
-  `bun run test:integration:browser` for Chromium A1 signing,
-  `bun run test:validar-iti` (with `SIGNATURE_KIT_ITI_VALIDATE=1` and optional
-  external certificate env) for the live ITI validator, and
-  `bun run test:performance` when byte-range, stamping, signing, or parsing hot
-  paths change. PDF verification fails closed on non-conforming `/Contents`, but
-  tolerates ISO-32000-legal whitespace and odd-hex forms; unsigned holes must be
-  zero or whitespace padding.
+- Tests for Effect workflows use `@effect/vitest` or Bun. Use a scoped local
+  HTTP server for network behavior.
+- For PDF changes run the relevant `shared/pdf-core` and `runtime/local` suites
+  and `bun run test:integration:browser`. Run `bun run test:performance` when
+  changing hot paths. Use independent readers to check PDF interoperability.
 
 ## Test and release contracts
 
@@ -466,8 +235,8 @@ validators/iti     @signature-kit/iti       ITI local and remote signature confo
   boundaries where relevant. Static gates assert architecture; behavior tests do
   not substitute source spelling or copied constants for execution.
 - Release validation includes package build, static/type checks, local tests,
-  server and browser integration, performance checks, site build, and package
-  packing. Report local, CI, publication, and live-provider evidence separately.
+  browser integration, performance checks, site build, and package packing.
+  Report local, CI, and publication evidence separately.
 - Preserve the repository's Tegami release owner and npm trusted publishing.
   Prepare a changelog, run `bun run release version`, and commit the generated
   versions, changelog, and publish lock for CI review before publication;
@@ -486,10 +255,6 @@ validators/iti     @signature-kit/iti       ITI local and remote signature confo
   void success channel in the installed Effect version; preserve
   `Effect.succeed(undefined)` when an optional-value contract requires undefined.
   Do not enable `effect-succeed-with-void` until it respects that distinction. Do not duplicate those diagnostics in custom checks.
-- `any-unknown-in-error-context` remains opt-out because it also reports Alchemy's
-  native provider signatures and unknown SDK causes before boundary decoding.
-  This does not permit erasing public errors or requirements; existing typed
-  boundary rules still apply. Do not wrap native providers to silence a diagnostic.
 - Integration tests execute the installed patched Oxlint on real TypeScript
   programs and assert both rejection and acceptance. A config entry alone does
   not prove that type-aware analysis or the binary patch is active.

@@ -14,6 +14,7 @@
     "chromium": "156.0.8078.4"
   },
   "gitSha": "001975608555ef7026bed5ad3ae94d8140f3d994",
+  "harnessGitSha": "19e97bc6682f36ccf8e45d9aaca31b098e117e1b",
   "phases": [
     {
       "name": "build",

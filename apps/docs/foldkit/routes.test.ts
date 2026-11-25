@@ -22,20 +22,18 @@ describe("public routes", () => {
   });
 
   it("preserves public routing and rejects unknown pages at the server boundary", async () => {
-    for (const path of [
-      "/en-US",
-      "/pt-BR",
-      "/en-US/search?q=a+%26+b",
-      "/pt-BR/assine-documentos-gratis",
-    ]) {
+    for (const path of ["/en-US", "/pt-BR", "/en-US/search?q=a+%26+b", "/pt-BR/docs"]) {
       const response = await renderPage(new Request(`https://signaturekit.dev${path}`), "test");
       expect(response._tag, path).toBe("Rendered");
     }
-    const response = await renderPage(
-      new Request("https://signaturekit.dev/en-US/not-a-page"),
-      "test",
-    );
-    expect(response._tag).toBe("Responded");
-    if (response._tag === "Responded") expect(response.response.status).toBe(404);
+    for (const path of [
+      "/en-US/not-a-page",
+      "/en-US/sign-free",
+      "/pt-BR/assine-documentos-gratis",
+    ]) {
+      const response = await renderPage(new Request(`https://signaturekit.dev${path}`), "test");
+      expect(response._tag, path).toBe("Responded");
+      if (response._tag === "Responded") expect(response.response.status, path).toBe(404);
+    }
   });
 });

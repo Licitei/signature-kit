@@ -3,7 +3,7 @@ import { parsePkcs12 } from "@signature-kit/crypto/pkcs12";
 import { Effect, Redacted } from "effect";
 import { createHash, verify, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { readA1Fixture } from "../../../tooling/testing/fixtures.ts";
+import { readSigningFixture } from "../../../tooling/testing/fixtures.ts";
 import { recordSpans } from "../../../tooling/testing/tracing.ts";
 import { importA1SigningKey } from "../src/a1-certificate.js";
 import { A1Sessions, Documents, localRuntimeLayer } from "../src/engine.js";
@@ -55,7 +55,7 @@ describe("local A1 sessions", () => {
   it.effect("reports MAC authentication failure without returning a key or profile", () =>
     Effect.gen(function* () {
       const a1 = yield* A1Sessions;
-      const pfx = Redacted.make(new Uint8Array(yield* readA1Fixture("ecpf")));
+      const pfx = Redacted.make(new Uint8Array(yield* readSigningFixture));
       expect(
         yield* Effect.flip(a1.open({ pfx, password: Redacted.make("wrong-password") })),
       ).toMatchObject({ code: "wrongPassword" });
@@ -69,7 +69,7 @@ describe("local A1 sessions", () => {
     Effect.gen(function* () {
       const cpf = yield* readSanFixture("ecpf");
       const cnpj = yield* readSanFixture("ecnpj");
-      const other = yield* readA1Fixture("ecpf");
+      const other = yield* readSigningFixture;
       const bytes = new TextEncoder().encode("private document text");
       const { exit, spans } = yield* recordSpans(
         Effect.gen(function* () {
@@ -147,7 +147,7 @@ describe("local A1 sessions", () => {
 
   it.effect("imports a non-extractable signing key through the engine importer", () =>
     Effect.gen(function* () {
-      const pfx = yield* readA1Fixture("ecpf");
+      const pfx = yield* readSigningFixture;
       const { privateKey } = yield* parsePkcs12(pfx, password);
       const key = yield* importA1SigningKey(privateKey, "SHA-256").pipe(
         Effect.ensuring(Effect.sync(() => privateKey.fill(0))),
@@ -165,7 +165,7 @@ describe("local A1 sessions", () => {
 
   it.effect("drops the active key when its layer scope closes", () =>
     Effect.gen(function* () {
-      const pfx = Redacted.make(new Uint8Array(yield* readA1Fixture("ecpf")));
+      const pfx = Redacted.make(new Uint8Array(yield* readSigningFixture));
       const { a1, session } = yield* Effect.gen(function* () {
         const a1 = yield* A1Sessions;
         const session = yield* a1.open({ pfx, password });

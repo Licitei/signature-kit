@@ -1,15 +1,11 @@
 {
   "$schema": "node_modules/konsistent/konsistent.schema.json",
   "version": "v1",
-  "kebabToPascalMap": {
-    "docuseal": "DocuSeal",
-    "zapsign": "ZapSign"
-  },
   "conventions": [
     {
       "name": "package-directories-have-required-files",
       "description": "Publishable package directories must keep the source directory, manifest, and changelog together.",
-      "paths": "{core,shared,formats,signers,validators,runtime}/{packageName}",
+      "paths": "{core,shared,runtime}/{packageName}",
       "must": {
         "haveType": "directory",
         "haveFiles": ["src", "package.json", "CHANGELOG.md"]
@@ -18,274 +14,27 @@
     {
       "name": "source-modules-are-not-barrels",
       "description": "Source modules must not be pure re-export barrels; package exports point at real modules instead.",
-      "paths": "{core,shared,formats,signers,validators,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "paths": "{core,shared,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
         "areBarrelFiles": true
       }
     },
     {
-      "name": "non-signer-sources-must-not-import-remote-signers",
-      "description": "Core, shared, format, validator, and runtime sources cannot import remote signer packages.",
-      "paths": "{core,shared,formats,validators,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-      "must": [
-        {
-          "name": "forbid-assinafy",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/assinafy",
-            "importTypesFrom": "@signature-kit/assinafy"
-          }
-        },
-        {
-          "name": "forbid-clicksign",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/clicksign",
-            "importTypesFrom": "@signature-kit/clicksign"
-          }
-        },
-        {
-          "name": "forbid-documenso",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/documenso",
-            "importTypesFrom": "@signature-kit/documenso"
-          }
-        },
-        {
-          "name": "forbid-docuseal",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/docuseal",
-            "importTypesFrom": "@signature-kit/docuseal"
-          }
-        },
-        {
-          "name": "forbid-zapsign",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/zapsign",
-            "importTypesFrom": "@signature-kit/zapsign"
-          }
-        }
-      ]
-    },
-    {
-      "name": "non-react-sources-must-not-import-a1",
-      "description": "A1 is a signer package; only the React browser hooks package may import it.",
-      "paths": [
-        "{core,shared,validators,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "formats/{format:matches(^(pdf|xml)$)}/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/a1",
-        "importTypesFrom": "@signature-kit/a1"
-      }
-    },
-    {
-      "name": "core-shared-sources-must-not-import-formats",
-      "description": "Core, shared, and runtime sources cannot import format packages.",
-      "paths": "{core,shared,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-      "must": [
-        {
-          "name": "forbid-pdf",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/pdf",
-            "importTypesFrom": "@signature-kit/pdf"
-          }
-        },
-        {
-          "name": "forbid-react",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/react",
-            "importTypesFrom": "@signature-kit/react"
-          }
-        },
-        {
-          "name": "forbid-xml",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/xml",
-            "importTypesFrom": "@signature-kit/xml"
-          }
-        }
-      ]
-    },
-    {
       "name": "shared-sources-must-not-import-core",
       "description": "Shared packages are lower-level support and cannot import core product packages.",
       "paths": "shared/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-      "must": [
-        {
-          "name": "forbid-certificates",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/certificates",
-            "importTypesFrom": "@signature-kit/certificates"
-          }
-        },
-        {
-          "name": "forbid-http",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/http",
-            "importTypesFrom": "@signature-kit/http"
-          }
-        },
-        {
-          "name": "forbid-i18n",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/i18n",
-            "importTypesFrom": "@signature-kit/i18n"
-          }
-        },
-        {
-          "name": "forbid-signatures",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/signatures",
-            "importTypesFrom": "@signature-kit/signatures"
-          }
-        }
-      ]
-    },
-    {
-      "name": "non-validator-sources-must-not-import-validator",
-      "description": "Validators are leaf product surfaces and cannot be imported by non-validator sources.",
-      "paths": "{core,shared,formats,signers,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
-        "importValuesFrom": "@signature-kit/iti",
-        "importTypesFrom": "@signature-kit/iti"
+        "importValuesFrom": "@signature-kit/certificates",
+        "importTypesFrom": "@signature-kit/certificates"
       }
     },
     {
       "name": "existing-packages-must-not-import-local",
-      "description": "Core, shared, format, signer, and validator sources cannot import the local runtime.",
-      "paths": "{core,shared,formats,signers,validators}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "description": "Core and shared packages cannot import the local runtime.",
+      "paths": "{core,shared}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
         "importValuesFrom": "@signature-kit/local",
         "importTypesFrom": "@signature-kit/local"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-a1",
-      "description": "Signer packages are self-contained and cannot import another signer package.",
-      "paths": [
-        "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "!signers/a1/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/a1",
-        "importTypesFrom": "@signature-kit/a1"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-assinafy",
-      "description": "Signer packages are self-contained and cannot import another signer package.",
-      "paths": [
-        "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "!signers/assinafy/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/assinafy",
-        "importTypesFrom": "@signature-kit/assinafy"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-clicksign",
-      "description": "Signer packages are self-contained and cannot import another signer package.",
-      "paths": [
-        "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "!signers/clicksign/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/clicksign",
-        "importTypesFrom": "@signature-kit/clicksign"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-documenso",
-      "description": "Signer packages are self-contained and cannot import another signer package.",
-      "paths": [
-        "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "!signers/documenso/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/documenso",
-        "importTypesFrom": "@signature-kit/documenso"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-docuseal",
-      "description": "Signer packages are self-contained and cannot import another signer package.",
-      "paths": [
-        "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "!signers/docuseal/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/docuseal",
-        "importTypesFrom": "@signature-kit/docuseal"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-zapsign",
-      "description": "Signer packages are self-contained and cannot import another signer package.",
-      "paths": [
-        "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-        "!signers/zapsign/src/**/*.{ts,tsx,js,jsx,mjs,cjs}"
-      ],
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/zapsign",
-        "importTypesFrom": "@signature-kit/zapsign"
-      }
-    },
-    {
-      "name": "signer-sources-must-not-import-formats",
-      "description": "Signer adapters cannot depend on PDF, React, or XML document mutation packages.",
-      "paths": "signers/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-      "must": [
-        {
-          "name": "forbid-pdf",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/pdf",
-            "importTypesFrom": "@signature-kit/pdf"
-          }
-        },
-        {
-          "name": "forbid-react",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/react",
-            "importTypesFrom": "@signature-kit/react"
-          }
-        },
-        {
-          "name": "forbid-xml",
-          "mustNot": {
-            "importValuesFrom": "@signature-kit/xml",
-            "importTypesFrom": "@signature-kit/xml"
-          }
-        }
-      ]
-    },
-    {
-      "name": "remote-signer-index-surface",
-      "description": "Remote signer entry modules expose the uniform provider surface.",
-      "paths": "signers/{signer:matches(^(assinafy|clicksign|documenso|docuseal|zapsign)$)}/src/index.{ts,tsx,js,jsx,mjs,cjs}",
-      "must": {
-        "exportTypes": [
-          "${signer.toPascalCase()}ProviderOptions",
-          "${signer.toPascalCase()}SignatureRequest"
-        ],
-        "exportValues": [
-          "${signer.toPascalCase()}ProviderId",
-          "${signer.toPascalCase()}ProviderOptionsSchema",
-          "${signer.toPascalCase()}SignatureRequest",
-          "providers",
-          "get${signer.toPascalCase()}SignatureRequest",
-          "list${signer.toPascalCase()}SignatureRequests",
-          "delete${signer.toPascalCase()}SignatureRequest",
-          "download${signer.toPascalCase()}SignedDocument"
-        ]
-      }
-    },
-    {
-      "name": "signatures-sources-must-not-import-i18n",
-      "description": "Signature contracts remain independent of the display-layer localization package.",
-      "paths": "core/signatures/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
-      "mustNot": {
-        "importValuesFrom": "@signature-kit/i18n",
-        "importTypesFrom": "@signature-kit/i18n"
       }
     }
   ]

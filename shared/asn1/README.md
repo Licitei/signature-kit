@@ -37,7 +37,7 @@ const program = Effect.gen(function* () {
 
 ## Errors and i18n
 
-ASN.1 failures use the `Asn1Error` code catalog and `asn1ErrorMessages`. Applications can render localized copy through `@signature-kit/i18n` by passing that catalog to `errorMessage`.
+ASN.1 failures use the `Asn1Error` code catalog and `asn1ErrorMessages`.
 
 Docs: <https://signaturekit.dev/en-US/docs/concepts/document-formats>.
 

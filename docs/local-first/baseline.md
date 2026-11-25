@@ -1,5 +1,7 @@
 # Local-first signing baseline
 
+The 1.x benchmark harness was removed with SignatureKit 1.x. [baseline-v1.json](baseline-v1.json) records the harness source as `harnessGitSha` ([`19e97bc6682f36ccf8e45d9aaca31b098e117e1b`](https://github.com/Licitei/signature-kit/tree/19e97bc6682f36ccf8e45d9aaca31b098e117e1b)) and the measured product revision separately as `gitSha`. The commands below describe the harness checkout.
+
 This document records the SignatureKit 1.x performance reference for 2.0 and retains the original Chromium signing and worker lifecycle spike.
 
 ## SignatureKit 1.x benchmark matrix
@@ -174,7 +176,7 @@ The existing Chromium config discovers both tests through the browser suite glob
 | Foldkit live signing demo | `apps/docs/foldkit/signing-view.ts` uses `signing-runtime.ts` for the batch and worker session. `apps/signing-domain/src/signing.ts` defines the Alchemy Domain aggregate, commands, and events. The page-side runtime coordinates batch transitions and calls the RPC worker in `apps/docs/foldkit/signing.worker.ts`. The worker handles `Initialize`, `Preview`, `Sign`, and `Dispose`. It uses the same shared signature session and PDF workflow, with separate certificate profile and adapter loads during initialization. |
 | Package PDF helpers | `formats/pdf/src/workflow.ts` exposes visual preview, prepare-and-sign, and field-based signing. `stamp.ts` writes the appearance using PDF-core WASM. `sign.ts` writes the placeholder and byte range, obtains the key through `Signatures`, and embeds the detached CMS. `verify.ts` checks CMS and byte-range coverage locally. The generic preparation RPC lives in `worker.ts`, `worker-browser.ts`, and `browser.worker.ts`. The render RPC lives in `render-browser.ts` and `render.worker.ts` and produces thumbnails independently of signing. |
 
-The React shadcn viewer in `apps/docs/registry/default/signature-pdf-viewer/signature-pdf-viewer.tsx` imports the docs package's `react-pdf@11.0.0` and sets `pdfjs.GlobalWorkerOptions.workerSrc` to jsDelivr using the library's `pdfjs.version`. The lockfile resolves this to `https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.min.mjs`. Its generated registry payload carries the same CDN URL. Replacing this viewer with the existing PDF-core renderer would remove that viewer's `react-pdf` dependency and runtime CDN request. The `pdfjs-dist@6.3.289` entry in `formats/pdf/package.json` is a dev dependency used by the text-anchor comparison benchmark. Review the React package's direct `@signature-kit/a1` and `@effect/platform-browser` dependencies when the shared signing worker owns the signer and transport. React currently imports both. The remote signer packages and their Alchemy dependencies belong to separate provider workflows. The Foldkit batch's `@alchemy.run/domain` dependency is a candidate for review when batch ownership moves into the worker.
+The React shadcn viewer in `apps/docs/registry/default/signature-pdf-viewer/signature-pdf-viewer.tsx` imports the docs package's `react-pdf@11.0.0` and sets `pdfjs.GlobalWorkerOptions.workerSrc` to jsDelivr using the library's `pdfjs.version`. The lockfile resolves this to `https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.min.mjs`. Its generated registry payload carries the same CDN URL. Replacing this viewer with the existing PDF-core renderer would remove that viewer's `react-pdf` dependency and runtime CDN request. The `pdfjs-dist@6.3.289` entry in `formats/pdf/package.json` is a dev dependency used by the text-anchor comparison benchmark. Review the React package's direct <code>&#64;signature-kit/a1</code> and `@effect/platform-browser` dependencies when the shared signing worker owns the signer and transport. React currently imports both. The remote signer packages and their Alchemy dependencies belong to separate provider workflows. The Foldkit batch's `@alchemy.run/domain` dependency is a candidate for review when batch ownership moves into the worker.
 
 ## Artifact reuse and duplication
 
@@ -223,55 +225,55 @@ The following tables are the verbatim output of `bun scripts/local-first/invento
 
 | Package | Dist files | Raw bytes | Gzip bytes | Runtime dependencies | Peers |
 | --- | --- | --- | --- | --- | --- |
-| `@signature-kit/certificates` | 3 | 32912 | 7630 | `@signature-kit/asn1@^0.2.1`, `@signature-kit/crypto@^0.3.0`, `@signature-kit/signatures@^0.4.0`, `effect@4.1.0` | — |
-| `@signature-kit/http` | 3 | 18457 | 4367 | `@signature-kit/signatures@^0.4.0`, `effect@4.1.0` | — |
-| `@signature-kit/i18n` | 3 | 5377 | 1488 | `effect@4.1.0` | — |
-| `@signature-kit/signatures` | 6 | 40537 | 8336 | `effect@4.1.0` | — |
-| `@signature-kit/pdf` | 57 | 448362 | 83572 | `@effect/platform-browser@4.1.0`, `@signature-kit/cms@^0.3.0`, `@signature-kit/i18n@^0.1.0`, `@signature-kit/pdf-core@^0.4.0`, `@signature-kit/signatures@^0.4.0`, `effect@4.1.0`, `qrcode-generator@^2.0.4` | — |
-| `@signature-kit/react` | 21 | 83436 | 15446 | `@effect/platform-browser@4.1.0`, `@signature-kit/a1@^0.5.0`, `@signature-kit/cms@^0.3.0`, `@signature-kit/pdf@^0.7.0`, `@signature-kit/pdf-core@^0.4.0`, `@signature-kit/signatures@^0.4.0`, `effect@4.1.0` | `react@>=18.3.0 \|\| >=19.0.0` |
-| `@signature-kit/xml` | 12 | 75444 | 16943 | `@peculiar/x509@2.2.0`, `@signature-kit/crypto@^0.3.0`, `@signature-kit/i18n@^0.1.0`, `@signature-kit/signatures@^0.4.0`, `@xmldom/xmldom@^0.9.12`, `effect@4.1.0`, `reflect-metadata@^0.2.2`, `xml-core@^1.2.6`, `xmldsigjs@2.8.8` | — |
+| `@signature-kit/certificates` | 3 | 32912 | 7630 | `@signature-kit/asn1@^0.2.1`, `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/signatures@^0.4.0</code>, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/http</code> | 3 | 18457 | 4367 | <code>&#64;signature-kit/signatures@^0.4.0</code>, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/i18n</code> | 3 | 5377 | 1488 | `effect@4.1.0` | — |
+| <code>&#64;signature-kit/signatures</code> | 6 | 40537 | 8336 | `effect@4.1.0` | — |
+| <code>&#64;signature-kit/pdf</code> | 57 | 448362 | 83572 | `@effect/platform-browser@4.1.0`, `@signature-kit/cms@^0.3.0`, <code>&#64;signature-kit/i18n@^0.1.0</code>, `@signature-kit/pdf-core@^0.4.0`, <code>&#64;signature-kit/signatures@^0.4.0</code>, `effect@4.1.0`, `qrcode-generator@^2.0.4` | — |
+| <code>&#64;signature-kit/react</code> | 21 | 83436 | 15446 | `@effect/platform-browser@4.1.0`, <code>&#64;signature-kit/a1@^0.5.0</code>, `@signature-kit/cms@^0.3.0`, <code>&#64;signature-kit/pdf@^0.7.0</code>, `@signature-kit/pdf-core@^0.4.0`, <code>&#64;signature-kit/signatures@^0.4.0</code>, `effect@4.1.0` | `react@>=18.3.0 \|\| >=19.0.0` |
+| <code>&#64;signature-kit/xml</code> | 12 | 75444 | 16943 | `@peculiar/x509@2.2.0`, `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/i18n@^0.1.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `@xmldom/xmldom@^0.9.12`, `effect@4.1.0`, `reflect-metadata@^0.2.2`, `xml-core@^1.2.6`, `xmldsigjs@2.8.8` | — |
 | `@signature-kit/asn1` | 3 | 19799 | 4533 | `effect@4.1.0` | — |
 | `@signature-kit/cms` | 24 | 85869 | 21882 | `@peculiar/asn1-cms@2.11.0`, `@peculiar/asn1-schema@2.11.0`, `@peculiar/asn1-tsp@2.11.0`, `@peculiar/asn1-x509@2.11.0`, `@signature-kit/asn1@^0.2.1`, `asn1js@4.0.0`, `effect@4.1.0`, `pkijs@3.4.3` | — |
 | `@signature-kit/crypto` | 39 | 97117 | 28190 | `@signature-kit/asn1@^0.2.1`, `effect@4.1.0` | — |
 | `@signature-kit/pdf-core` | 22 | 1233162 | 474850 | `effect@4.1.0` | — |
-| `@signature-kit/a1` | 6 | 15956 | 4345 | `@signature-kit/certificates@^0.4.0`, `@signature-kit/crypto@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/signatures@^0.4.0`, `effect@4.1.0` | — |
-| `@signature-kit/assinafy` | 3 | 34448 | 6712 | `@signature-kit/crypto@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/signatures@^0.4.0`, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
-| `@signature-kit/clicksign` | 3 | 37436 | 6977 | `@signature-kit/crypto@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/signatures@^0.4.0`, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
-| `@signature-kit/documenso` | 3 | 35325 | 6607 | `@signature-kit/crypto@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/signatures@^0.4.0`, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
-| `@signature-kit/docuseal` | 3 | 34131 | 6534 | `@signature-kit/crypto@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/signatures@^0.4.0`, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
-| `@signature-kit/zapsign` | 3 | 33168 | 6628 | `@signature-kit/crypto@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/signatures@^0.4.0`, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
-| `@signature-kit/iti` | 6 | 60856 | 9704 | `@peculiar/asn1-ess@2.11.0`, `@peculiar/asn1-schema@2.11.0`, `@signature-kit/cms@^0.3.0`, `@signature-kit/http@^0.2.0`, `@signature-kit/pdf@^0.7.0`, `@signature-kit/pdf-core@^0.4.0`, `@signature-kit/signatures@^0.4.0`, `asn1js@4.0.0`, `effect@4.1.0`, `pkijs@3.4.3` | — |
+| <code>&#64;signature-kit/a1</code> | 6 | 15956 | 4345 | `@signature-kit/certificates@^0.4.0`, `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/assinafy</code> | 3 | 34448 | 6712 | `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/clicksign</code> | 3 | 37436 | 6977 | `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/documenso</code> | 3 | 35325 | 6607 | `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/docuseal</code> | 3 | 34131 | 6534 | `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/zapsign</code> | 3 | 33168 | 6628 | `@signature-kit/crypto@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/signatures@^0.4.0</code>, `alchemy@2.0.0-beta.85`, `effect@4.1.0` | — |
+| <code>&#64;signature-kit/iti</code> | 6 | 60856 | 9704 | `@peculiar/asn1-ess@2.11.0`, `@peculiar/asn1-schema@2.11.0`, `@signature-kit/cms@^0.3.0`, <code>&#64;signature-kit/http@^0.2.0</code>, <code>&#64;signature-kit/pdf@^0.7.0</code>, `@signature-kit/pdf-core@^0.4.0`, <code>&#64;signature-kit/signatures@^0.4.0</code>, `asn1js@4.0.0`, `effect@4.1.0`, `pkijs@3.4.3` | — |
 
 ### Published export subpaths
 
 | Specifier | Published target | Workspace source or build script |
 | --- | --- | --- |
 | `@signature-kit/certificates` | `core/certificates/dist/index.js` | `core/certificates/src/index.ts` |
-| `@signature-kit/http` | `core/http/dist/http.js` | `core/http/src/http.ts` |
-| `@signature-kit/i18n` | `core/i18n/dist/i18n.js` | `core/i18n/src/i18n.ts` |
-| `@signature-kit/signatures` | `core/signatures/dist/signatures.js` | `core/signatures/src/signatures.ts` |
-| `@signature-kit/signatures/session` | `core/signatures/dist/session.js` | `core/signatures/src/session.ts` |
-| `@signature-kit/pdf/config` | `formats/pdf/dist/config.js` | `formats/pdf/src/config.ts` |
-| `@signature-kit/pdf/builder` | `formats/pdf/dist/builder.js` | `formats/pdf/src/builder.ts` |
-| `@signature-kit/pdf/builder-store` | `formats/pdf/dist/builder-store.js` | `formats/pdf/src/builder-store.ts` |
-| `@signature-kit/pdf/workflow` | `formats/pdf/dist/workflow.js` | `formats/pdf/src/workflow.ts` |
-| `@signature-kit/pdf/sign` | `formats/pdf/dist/sign.js` | `formats/pdf/src/sign.ts` |
-| `@signature-kit/pdf/stamp` | `formats/pdf/dist/stamp.js` | `formats/pdf/src/stamp.ts` |
-| `@signature-kit/pdf/anchors` | `formats/pdf/dist/anchors.js` | `formats/pdf/src/anchors.ts` |
-| `@signature-kit/pdf/merge` | `formats/pdf/dist/merge.js` | `formats/pdf/src/merge.ts` |
-| `@signature-kit/pdf/render-browser` | `formats/pdf/dist/render-browser.js` | `formats/pdf/src/render-browser.ts` |
-| `@signature-kit/pdf/verify` | `formats/pdf/dist/verify.js` | `formats/pdf/src/verify.ts` |
-| `@signature-kit/pdf/byte-range` | `formats/pdf/dist/byte-range.js` | `formats/pdf/src/byte-range.ts` |
-| `@signature-kit/pdf/worker` | `formats/pdf/dist/worker.js` | `formats/pdf/src/worker.ts` |
-| `@signature-kit/pdf/worker-browser` | `formats/pdf/dist/worker-browser.js` | `formats/pdf/src/worker-browser.ts` |
-| `@signature-kit/react/a1` | `formats/react/dist/a1.js` | `formats/react/src/a1.ts` |
-| `@signature-kit/react/config` | `formats/react/dist/config.js` | `formats/react/src/config.ts` |
-| `@signature-kit/react/sync-store` | `formats/react/dist/sync-store.js` | `formats/react/src/sync-store.ts` |
-| `@signature-kit/react/browser-pdf` | `formats/react/dist/browser-pdf.js` | `formats/react/src/browser-pdf.ts` |
-| `@signature-kit/xml/config` | `formats/xml/dist/config.js` | `formats/xml/src/config.ts` |
-| `@signature-kit/xml/sign` | `formats/xml/dist/sign.js` | `formats/xml/src/sign.ts` |
-| `@signature-kit/xml/verify` | `formats/xml/dist/verify.js` | `formats/xml/src/verify.ts` |
-| `@signature-kit/xml/runtime` | `formats/xml/dist/runtime.js` | `formats/xml/src/runtime.ts` |
+| <code>&#64;signature-kit/http</code> | `core/http/dist/http.js` | `core/http/src/http.ts` |
+| <code>&#64;signature-kit/i18n</code> | `core/i18n/dist/i18n.js` | `core/i18n/src/i18n.ts` |
+| <code>&#64;signature-kit/signatures</code> | `core/signatures/dist/signatures.js` | `core/signatures/src/signatures.ts` |
+| <code>&#64;signature-kit/signatures/session</code> | `core/signatures/dist/session.js` | `core/signatures/src/session.ts` |
+| <code>&#64;signature-kit/pdf/config</code> | `formats/pdf/dist/config.js` | `formats/pdf/src/config.ts` |
+| <code>&#64;signature-kit/pdf/builder</code> | `formats/pdf/dist/builder.js` | `formats/pdf/src/builder.ts` |
+| <code>&#64;signature-kit/pdf/builder-store</code> | `formats/pdf/dist/builder-store.js` | `formats/pdf/src/builder-store.ts` |
+| <code>&#64;signature-kit/pdf/workflow</code> | `formats/pdf/dist/workflow.js` | `formats/pdf/src/workflow.ts` |
+| <code>&#64;signature-kit/pdf/sign</code> | `formats/pdf/dist/sign.js` | `formats/pdf/src/sign.ts` |
+| <code>&#64;signature-kit/pdf/stamp</code> | `formats/pdf/dist/stamp.js` | `formats/pdf/src/stamp.ts` |
+| <code>&#64;signature-kit/pdf/anchors</code> | `formats/pdf/dist/anchors.js` | `formats/pdf/src/anchors.ts` |
+| <code>&#64;signature-kit/pdf/merge</code> | `formats/pdf/dist/merge.js` | `formats/pdf/src/merge.ts` |
+| <code>&#64;signature-kit/pdf/render-browser</code> | `formats/pdf/dist/render-browser.js` | `formats/pdf/src/render-browser.ts` |
+| <code>&#64;signature-kit/pdf/verify</code> | `formats/pdf/dist/verify.js` | `formats/pdf/src/verify.ts` |
+| <code>&#64;signature-kit/pdf/byte-range</code> | `formats/pdf/dist/byte-range.js` | `formats/pdf/src/byte-range.ts` |
+| <code>&#64;signature-kit/pdf/worker</code> | `formats/pdf/dist/worker.js` | `formats/pdf/src/worker.ts` |
+| <code>&#64;signature-kit/pdf/worker-browser</code> | `formats/pdf/dist/worker-browser.js` | `formats/pdf/src/worker-browser.ts` |
+| <code>&#64;signature-kit/react/a1</code> | `formats/react/dist/a1.js` | `formats/react/src/a1.ts` |
+| <code>&#64;signature-kit/react/config</code> | `formats/react/dist/config.js` | `formats/react/src/config.ts` |
+| <code>&#64;signature-kit/react/sync-store</code> | `formats/react/dist/sync-store.js` | `formats/react/src/sync-store.ts` |
+| <code>&#64;signature-kit/react/browser-pdf</code> | `formats/react/dist/browser-pdf.js` | `formats/react/src/browser-pdf.ts` |
+| <code>&#64;signature-kit/xml/config</code> | `formats/xml/dist/config.js` | `formats/xml/src/config.ts` |
+| <code>&#64;signature-kit/xml/sign</code> | `formats/xml/dist/sign.js` | `formats/xml/src/sign.ts` |
+| <code>&#64;signature-kit/xml/verify</code> | `formats/xml/dist/verify.js` | `formats/xml/src/verify.ts` |
+| <code>&#64;signature-kit/xml/runtime</code> | `formats/xml/dist/runtime.js` | `formats/xml/src/runtime.ts` |
 | `@signature-kit/asn1` | `shared/asn1/dist/asn1.js` | `shared/asn1/src/asn1.ts` |
 | `@signature-kit/cms/config` | `shared/cms/dist/config.js` | `shared/cms/src/config.ts` |
 | `@signature-kit/cms/icp-brasil` | `shared/cms/dist/icp-brasil.js` | `shared/cms/src/icp-brasil.ts` |
@@ -290,15 +292,15 @@ The following tables are the verbatim output of `bun scripts/local-first/invento
 | `@signature-kit/pdf-core/node` | `shared/pdf-core/dist/node.js` | `shared/pdf-core/src/node.ts` |
 | `@signature-kit/pdf-core/canvas` | `shared/pdf-core/dist/canvas.js` | `shared/pdf-core/src/canvas.ts` |
 | `@signature-kit/pdf-core/pdf-core.wasm` | `shared/pdf-core/dist/pdf-core.wasm` | `shared/pdf-core/scripts/build-wasm.sh` |
-| `@signature-kit/a1/config` | `signers/a1/dist/config.js` | `signers/a1/src/config.ts` |
-| `@signature-kit/a1/signer` | `signers/a1/dist/signer.js` | `signers/a1/src/signer.ts` |
-| `@signature-kit/assinafy` | `signers/assinafy/dist/index.js` | `signers/assinafy/src/index.ts` |
-| `@signature-kit/clicksign` | `signers/clicksign/dist/index.js` | `signers/clicksign/src/index.ts` |
-| `@signature-kit/documenso` | `signers/documenso/dist/index.js` | `signers/documenso/src/index.ts` |
-| `@signature-kit/docuseal` | `signers/docuseal/dist/index.js` | `signers/docuseal/src/index.ts` |
-| `@signature-kit/zapsign` | `signers/zapsign/dist/index.js` | `signers/zapsign/src/index.ts` |
-| `@signature-kit/iti/conformance` | `validators/iti/dist/conformance.js` | `validators/iti/src/conformance.ts` |
-| `@signature-kit/iti/remote` | `validators/iti/dist/remote.js` | `validators/iti/src/remote.ts` |
+| <code>&#64;signature-kit/a1/config</code> | `signers/a1/dist/config.js` | `signers/a1/src/config.ts` |
+| <code>&#64;signature-kit/a1/signer</code> | `signers/a1/dist/signer.js` | `signers/a1/src/signer.ts` |
+| <code>&#64;signature-kit/assinafy</code> | `signers/assinafy/dist/index.js` | `signers/assinafy/src/index.ts` |
+| <code>&#64;signature-kit/clicksign</code> | `signers/clicksign/dist/index.js` | `signers/clicksign/src/index.ts` |
+| <code>&#64;signature-kit/documenso</code> | `signers/documenso/dist/index.js` | `signers/documenso/src/index.ts` |
+| <code>&#64;signature-kit/docuseal</code> | `signers/docuseal/dist/index.js` | `signers/docuseal/src/index.ts` |
+| <code>&#64;signature-kit/zapsign</code> | `signers/zapsign/dist/index.js` | `signers/zapsign/src/index.ts` |
+| <code>&#64;signature-kit/iti/conformance</code> | `validators/iti/dist/conformance.js` | `validators/iti/src/conformance.ts` |
+| <code>&#64;signature-kit/iti/remote</code> | `validators/iti/dist/remote.js` | `validators/iti/src/remote.ts` |
 
 ### WASM files
 

@@ -62,15 +62,7 @@
   "plugins": [
     {
       "plugin": "@nx/js/typescript",
-      "include": [
-        "core/**/tsconfig.json",
-        "formats/**/tsconfig.json",
-        "shared/**/tsconfig.json",
-        "signers/**/tsconfig.json",
-        "validators/**/tsconfig.json",
-        "runtime/**/tsconfig.json",
-        "apps/signing-domain/tsconfig.json"
-      ],
+      "include": ["core/**/tsconfig.json", "shared/**/tsconfig.json", "runtime/**/tsconfig.json"],
       "options": {
         "compiler": "tsc",
         "typecheck": {

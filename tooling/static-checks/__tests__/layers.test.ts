@@ -67,8 +67,8 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "core/signatures",
-      "@signature-kit/signatures",
+      "core/certificates",
+      "@signature-kit/certificates",
       {},
       [],
       "export const signatures = true;\n",
@@ -77,41 +77,15 @@ describe("workspace layer checks", () => {
       root,
       "shared/asn1",
       "@signature-kit/asn1",
-      { "@signature-kit/signatures": "workspace:*" },
-      ["../../core/signatures"],
-      "import { signatures } from '@signature-kit/signatures';\nexport const value = signatures;\n",
+      { "@signature-kit/certificates": "workspace:*" },
+      ["../../core/certificates"],
+      "import { signatures } from '@signature-kit/certificates';\nexport const value = signatures;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
       path: "shared/asn1/package.json",
       message:
-        "@signature-kit/asn1 is a shared package and cannot depend on @signature-kit/signatures (core).",
-    });
-  });
-
-  it("rejects validators depending on signer packages", async () => {
-    const root = await createTempWorkspace();
-    await writePackage(
-      root,
-      "signers/a1",
-      "@signature-kit/a1",
-      {},
-      [],
-      "export const signer = true;\n",
-    );
-    await writePackage(
-      root,
-      "validators/iti",
-      "@signature-kit/iti",
-      { "@signature-kit/a1": "workspace:*" },
-      ["../../signers/a1"],
-      "import { signer } from '@signature-kit/a1';\nexport const value = signer;\n",
-    );
-
-    expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "validators/iti/package.json",
-      message:
-        "@signature-kit/iti is a validators package and cannot depend on @signature-kit/a1 (signers).",
+        "@signature-kit/asn1 is a shared package and cannot depend on @signature-kit/certificates (core).",
     });
   });
 
@@ -226,25 +200,25 @@ describe("workspace layer checks", () => {
     const root = await createTempWorkspace();
     await writePackage(
       root,
-      "signers/a1",
-      "@signature-kit/a1",
+      "core/certificates",
+      "@signature-kit/certificates",
       {},
       [],
       "export const signer = true;\n",
     );
     await writePackage(
       root,
-      "formats/pdf",
-      "@signature-kit/pdf",
+      "runtime/local",
+      "@signature-kit/local",
       {},
       [],
-      "import { signer } from '../../../signers/a1/src/index';\nexport const value = signer;\n",
+      "import { signer } from '../../../core/certificates/src/index';\nexport const value = signer;\n",
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "formats/pdf/src/index.ts",
+      path: "runtime/local/src/index.ts",
       message:
-        "@signature-kit/pdf reaches into @signature-kit/a1 through a relative import; import the package entry point instead.",
+        "@signature-kit/local reaches into @signature-kit/certificates through a relative import; import the package entry point instead.",
     });
   });
 
@@ -367,22 +341,6 @@ describe("workspace layer checks", () => {
         "shared/crypto/src/index.ts uses extensionless relative import ./pem; emitted library modules must use an explicit .js, .mjs, .cjs, .json, or asset extension.",
     });
   });
-  it("requires every remote signer package to expose the uniform index surface", async () => {
-    const root = await createTempWorkspace();
-    await writePackage(
-      root,
-      "signers/new-signer",
-      "@signature-kit/new-signer",
-      {},
-      [],
-      "export const providers = true;\n",
-    );
-
-    expect(collectWorkspaceLayerDiagnostics(root)).toContainEqual({
-      path: "signers/new-signer/src/index.ts",
-      message: "@signature-kit/new-signer remote signer index must export NewSignerProviderId.",
-    });
-  });
   it("rejects exported dist entries that have no source module", async () => {
     const root = await createTempWorkspace();
     await writePackage(
@@ -461,31 +419,6 @@ describe("workspace layer checks", () => {
       {},
       [],
       "// import '@signature-kit/dep';\n/* from '@signature-kit/dep' */\nexport const use = true;\n",
-    );
-
-    expect(collectWorkspaceLayerDiagnostics(root)).toEqual([]);
-  });
-
-  it("accepts type-only exports declared with export specifiers", async () => {
-    const root = await createTempWorkspace();
-    await writePackage(
-      root,
-      "signers/new-signer",
-      "@signature-kit/new-signer",
-      {},
-      [],
-      `type NewSignerProviderOptions = { token: string };
-export { type NewSignerProviderOptions };
-export type NewSignerSignatureRequest = { id: string };
-export const NewSignerProviderId = "new-signer";
-export const NewSignerProviderOptionsSchema = {};
-export const NewSignerSignatureRequest = {};
-export const providers = {};
-export const getNewSignerSignatureRequest = () => {};
-export const listNewSignerSignatureRequests = () => {};
-export const deleteNewSignerSignatureRequest = () => {};
-export const downloadNewSignerSignedDocument = () => {};
-`,
     );
 
     expect(collectWorkspaceLayerDiagnostics(root)).toEqual([]);

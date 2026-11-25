@@ -1,5 +1,3 @@
-import { ESSCertIDv2, SigningCertificateV2 } from "@peculiar/asn1-ess";
-import { AsnConvert, OctetString } from "@peculiar/asn1-schema";
 import { describe, expect, it } from "@effect/vitest";
 import * as asn1js from "asn1js";
 import { Effect, Result, Schema } from "effect";
@@ -159,10 +157,14 @@ const timestampSignedAttributes = async (
       ),
     ),
   ]);
-  const signingCertificate = new SigningCertificateV2({
-    certs: certificateHashes.map(
-      (certificateHash) => new ESSCertIDv2({ certHash: new OctetString(certificateHash) }),
-    ),
+  const signingCertificate = new asn1js.Sequence({
+    value: [
+      new asn1js.Sequence({
+        value: certificateHashes.map(
+          (valueHex) => new asn1js.Sequence({ value: [new asn1js.OctetString({ valueHex })] }),
+        ),
+      }),
+    ],
   });
   return new pkijs.SignedAndUnsignedAttributes({
     type: 0,
@@ -177,7 +179,7 @@ const timestampSignedAttributes = async (
       }),
       new pkijs.Attribute({
         type: CmsOid.signingCertificateV2,
-        values: [asn1js.fromBER(AsnConvert.serialize(signingCertificate)).result],
+        values: [signingCertificate],
       }),
     ],
   });
