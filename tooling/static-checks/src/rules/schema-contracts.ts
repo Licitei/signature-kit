@@ -1,12 +1,12 @@
 import * as ts from "typescript";
 import type { Check, CheckContext } from "../model";
 import { contractSuffixes } from "../config";
-import { isCoreOrRuntimeFile } from "./shared";
+import { isLibraryFile } from "./shared";
 
 const contractNamePattern = new RegExp(`^[A-Za-z_$][\\w$]*(?:${contractSuffixes.join("|")})$`);
 
 const hasManualSchemaContract = (context: CheckContext): boolean => {
-  if (!isCoreOrRuntimeFile(context.path)) {
+  if (!isLibraryFile(context.path)) {
     return false;
   }
 
@@ -25,6 +25,12 @@ const hasManualSchemaContract = (context: CheckContext): boolean => {
     }
 
     const name = statement.name.text;
+    if (
+      (context.path === "packages/engine/src/wasm/pdf-core.ts" && name === "PdfCoreLazyDocument") ||
+      (context.path === "packages/engine/src/wasm/promise.ts" && name === "PdfCorePromiseDocument")
+    ) {
+      return false;
+    }
     if (
       ts.isTypeAliasDeclaration(statement) &&
       (statement.type.getText(context.sourceFile).includes("Resource<") ||

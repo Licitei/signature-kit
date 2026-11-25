@@ -8,9 +8,9 @@ export type PdfCoreAbiDiagnostic = {
   readonly message: string;
 };
 
-const rustAbiPaths = ["shared/pdf-core/rust/src/abi.rs", "shared/pdf-core/rust/src/edit.rs"];
-const decoderPath = "shared/pdf-core/src/pdf-core.ts";
-const readmePath = "shared/pdf-core/README.md";
+const rustAbiPaths = ["crates/wasm/src/abi.rs", "crates/pdf/src/edit.rs"];
+const decoderPath = "packages/engine/src/wasm/pdf-core.ts";
+const readmePath = "packages/engine/README.md";
 
 const payloadSections: Record<string, string> = {
   VERSION: "Payload",

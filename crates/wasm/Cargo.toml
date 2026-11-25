@@ -1,0 +1,25 @@
+[package]
+name = "signature-kit-wasm"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "WebAssembly C ABI for SignatureKit engines"
+repository = "https://github.com/Licitei/signature-kit"
+readme = "../../packages/engine/README.md"
+keywords = ["pdf", "wasm", "signature"]
+categories = ["wasm"]
+rust-version = "1.92"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["pdf"]
+pdf = ["dep:signature-kit-pdf-core"]
+
+[dependencies]
+signature-kit-pdf-core = { path = "../pdf", optional = true }
+
+[lints]
+workspace = true

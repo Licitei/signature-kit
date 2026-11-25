@@ -3,7 +3,7 @@ import type { Check } from "../model";
 const hasMandatoryOtelDependency = (line: string): boolean =>
   /"@(?:effect\/opentelemetry|opentelemetry\/[^"/]+)"\s*:/.test(line);
 
-const publicPackageManifestPattern = /^(?:core|shared|runtime)\/[^/]+\/package\.json$/;
+const publicPackageManifestPattern = /^packages\/[^/]+\/package\.json$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -45,7 +45,7 @@ export const dependencyChecks: readonly Check[] = [
     message:
       "OpenTelemetry must be optional for the consumer; do not add @effect/opentelemetry or @opentelemetry/* to package dependencies.",
     test: (context) =>
-      /^(?:core|runtime)\/[^/]+\/package\.json$/.test(context.path) &&
+      publicPackageManifestPattern.test(context.path) &&
       hasManifestDependency(context, hasMandatoryOtelDependency),
     ignoreImportLine: false,
   },

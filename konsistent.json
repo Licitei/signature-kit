@@ -4,37 +4,56 @@
   "conventions": [
     {
       "name": "package-directories-have-required-files",
-      "description": "Publishable package directories must keep the source directory, manifest, and changelog together.",
-      "paths": "{core,shared,runtime}/{packageName}",
+      "description": "Publishable packages keep source, manifest, and changelog together.",
+      "paths": "packages/{packageName}",
       "must": {
         "haveType": "directory",
         "haveFiles": ["src", "package.json", "CHANGELOG.md"]
       }
     },
     {
+      "name": "crate-directories-have-required-files",
+      "description": "Rust engines and the WASM boundary are Cargo workspace members.",
+      "paths": "crates/{crateName}",
+      "must": {
+        "haveType": "directory",
+        "haveFiles": ["src", "Cargo.toml"]
+      }
+    },
+    {
       "name": "source-modules-are-not-barrels",
-      "description": "Source modules must not be pure re-export barrels; package exports point at real modules instead.",
-      "paths": "{core,shared,runtime}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "description": "Package exports point at real implementation modules.",
+      "paths": "packages/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
         "areBarrelFiles": true
       }
     },
     {
-      "name": "shared-sources-must-not-import-core",
-      "description": "Shared packages are lower-level support and cannot import core product packages.",
-      "paths": "shared/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "name": "engine-does-not-import-browser",
+      "description": "The browser worker and page code depend on the engine.",
+      "paths": "packages/engine/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
       "mustNot": {
-        "importValuesFrom": "@signature-kit/certificates",
-        "importTypesFrom": "@signature-kit/certificates"
+        "importValuesFrom": ["@signature-kit/browser", "@signature-kit/browser/*"],
+        "importTypesFrom": ["@signature-kit/browser", "@signature-kit/browser/*"]
       }
     },
     {
-      "name": "existing-packages-must-not-import-local",
-      "description": "Core and shared packages cannot import the local runtime.",
-      "paths": "{core,shared}/*/src/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "name": "page-code-imports-the-rpc-boundary",
+      "description": "Page-side browser modules import the RPC contract from the engine.",
+      "paths": "packages/browser/src/{client,viewer,telemetry-otlp}.ts",
       "mustNot": {
-        "importValuesFrom": "@signature-kit/local",
-        "importTypesFrom": "@signature-kit/local"
+        "importValuesFrom": [
+          "@signature-kit/engine",
+          "@signature-kit/engine/engine",
+          "@signature-kit/engine/wasm/*",
+          "@signature-kit/engine/telemetry"
+        ],
+        "importTypesFrom": [
+          "@signature-kit/engine",
+          "@signature-kit/engine/engine",
+          "@signature-kit/engine/wasm/*",
+          "@signature-kit/engine/telemetry"
+        ]
       }
     }
   ]

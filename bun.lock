@@ -79,24 +79,12 @@
         "vite": "8.3.5",
       },
     },
-    "core/certificates": {
-      "name": "@signature-kit/certificates",
-      "version": "0.4.0",
-      "dependencies": {
-        "@signature-kit/asn1": "^0.2.1",
-        "@signature-kit/crypto": "^0.3.0",
-        "effect": "4.1.0",
-      },
-    },
-    "runtime/local": {
-      "name": "@signature-kit/local",
-      "version": "2.0.0-alpha.0",
+    "packages/browser": {
+      "name": "@signature-kit/browser",
+      "version": "2.0.0-alpha.1",
       "dependencies": {
         "@effect/platform-browser": "4.1.0",
-        "@signature-kit/asn1": "^0.2.1",
-        "@signature-kit/certificates": "^0.4.0",
-        "@signature-kit/crypto": "^0.3.0",
-        "@signature-kit/pdf-core": "^0.4.0",
+        "@signature-kit/engine": "workspace:^",
         "effect": "4.1.0",
       },
       "devDependencies": {
@@ -114,36 +102,13 @@
         "@opentelemetry/exporter-trace-otlp-http",
       ],
     },
-    "shared/asn1": {
-      "name": "@signature-kit/asn1",
-      "version": "0.2.4",
+    "packages/engine": {
+      "name": "@signature-kit/engine",
+      "version": "2.0.0-alpha.1",
       "dependencies": {
-        "effect": "4.1.0",
-      },
-    },
-    "shared/cms": {
-      "name": "@signature-kit/cms",
-      "version": "0.3.0",
-      "dependencies": {
-        "@signature-kit/asn1": "^0.2.1",
         "asn1js": "3.1.0",
         "effect": "4.1.0",
         "pkijs": "3.4.3",
-      },
-    },
-    "shared/crypto": {
-      "name": "@signature-kit/crypto",
-      "version": "0.3.0",
-      "dependencies": {
-        "@signature-kit/asn1": "^0.2.1",
-        "effect": "4.1.0",
-      },
-    },
-    "shared/pdf-core": {
-      "name": "@signature-kit/pdf-core",
-      "version": "0.4.0",
-      "dependencies": {
-        "effect": "4.1.0",
       },
       "devDependencies": {
         "binaryen": "130.0.0",
@@ -714,19 +679,11 @@
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
 
-    "@signature-kit/asn1": ["@signature-kit/asn1@workspace:shared/asn1"],
-
-    "@signature-kit/certificates": ["@signature-kit/certificates@workspace:core/certificates"],
-
-    "@signature-kit/cms": ["@signature-kit/cms@workspace:shared/cms"],
-
-    "@signature-kit/crypto": ["@signature-kit/crypto@workspace:shared/crypto"],
+    "@signature-kit/browser": ["@signature-kit/browser@workspace:packages/browser"],
 
     "@signature-kit/docs": ["@signature-kit/docs@workspace:apps/docs"],
 
-    "@signature-kit/local": ["@signature-kit/local@workspace:runtime/local"],
-
-    "@signature-kit/pdf-core": ["@signature-kit/pdf-core@workspace:shared/pdf-core"],
+    "@signature-kit/engine": ["@signature-kit/engine@workspace:packages/engine"],
 
     "@stylexjs/babel-plugin": ["@stylexjs/babel-plugin@0.19.1", "", { "dependencies": { "@babel/core": "^7.26.8", "@babel/helper-module-imports": "^7.25.9", "@babel/traverse": "^7.26.8", "@babel/types": "^7.26.8", "@dual-bundle/import-meta-resolve": "^4.1.0", "@stylexjs/shared": "0.19.1", "@stylexjs/stylex": "0.19.1", "postcss-value-parser": "^4.1.0" } }, "sha512-Ig3crX6MuGWDEAx+f89aLxTQUWVeEc2Aco2moIdcObyvo7hZJgU26rxJN3k7geFjhi+5dfna6TNR8iTRK0PQGA=="],
 

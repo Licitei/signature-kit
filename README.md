@@ -8,12 +8,12 @@ See the [2.0 architecture](docs/v2/ARCHITECTURE.md) for the prepare, preview, co
 
 | Package | Responsibility |
 | --- | --- |
-| [@signature-kit/local](runtime/local/README.md) | Local RPC, document revisions, A1 sessions, offline viewer and optional telemetry |
-| [@signature-kit/pdf-core](shared/pdf-core/README.md) | Rust/WASM PDF parsing, editing, inspection and rendering |
-| [@signature-kit/certificates](core/certificates/README.md) | PKCS#12 and X.509 certificate parsing |
-| [@signature-kit/cms](shared/cms/README.md) | CMS/PKCS#7 signing, verification and timestamping primitives |
-| [@signature-kit/crypto](shared/crypto/README.md) | Cryptographic and PKCS#12 primitives |
-| [@signature-kit/asn1](shared/asn1/README.md) | ASN.1 DER codec |
+| [@signature-kit/engine](packages/engine/README.md) | Local RPC, document revisions, A1 sessions, codecs and Rust/WASM PDF operations |
+| [@signature-kit/browser](packages/browser/README.md) | Browser worker, client, offline viewer and optional OTLP export |
+
+The Cargo workspace contains the PDF engine in `crates/pdf` and the C ABI in
+`crates/wasm`. The WASM crate assembles the enabled engines into
+`signature-kit.wasm`.
 
 ## Development
 

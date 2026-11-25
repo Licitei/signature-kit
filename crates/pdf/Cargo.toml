@@ -1,0 +1,24 @@
+[package]
+name = "signature-kit-pdf-core"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "In-house zero-dependency PDF engine for SignatureKit"
+repository = "https://github.com/Licitei/signature-kit"
+readme = "../../packages/engine/README.md"
+keywords = ["pdf", "wasm", "text-extraction"]
+categories = ["parser-implementations", "wasm"]
+rust-version = "1.92"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

@@ -13,12 +13,13 @@ const writeWorkspace = async (files: {
 }): Promise<string> => {
   const root = await mkdtemp(join(tmpdir(), "signature-kit-pdf-core-abi-"));
   temporaryRoots.push(root);
-  await mkdir(join(root, "shared/pdf-core/rust/src"), { recursive: true });
-  await mkdir(join(root, "shared/pdf-core/src"), { recursive: true });
-  await writeFile(join(root, "shared/pdf-core/rust/src/abi.rs"), files.abi);
-  await writeFile(join(root, "shared/pdf-core/rust/src/edit.rs"), "const EDIT_VERSION: u32 = 1;\n");
-  await writeFile(join(root, "shared/pdf-core/src/pdf-core.ts"), files.decoder);
-  await writeFile(join(root, "shared/pdf-core/README.md"), files.readme);
+  await mkdir(join(root, "crates/wasm/src"), { recursive: true });
+  await mkdir(join(root, "crates/pdf/src"), { recursive: true });
+  await mkdir(join(root, "packages/engine/src/wasm"), { recursive: true });
+  await writeFile(join(root, "crates/wasm/src/abi.rs"), files.abi);
+  await writeFile(join(root, "crates/pdf/src/edit.rs"), "const EDIT_VERSION: u32 = 1;\n");
+  await writeFile(join(root, "packages/engine/src/wasm/pdf-core.ts"), files.decoder);
+  await writeFile(join(root, "packages/engine/README.md"), files.readme);
   return root;
 };
 
@@ -104,9 +105,9 @@ describe("pdf-core ABI lockstep", () => {
 
   it("rejects a missing decoder", async () => {
     const root = await writeWorkspace({ abi, decoder, readme });
-    await rm(join(root, "shared/pdf-core/src/pdf-core.ts"));
+    await rm(join(root, "packages/engine/src/wasm/pdf-core.ts"));
     expect(collectPdfCoreAbiDiagnostics(root)).toEqual([
-      { path: "shared/pdf-core/src/pdf-core.ts", message: "pdf-core ABI file is missing." },
+      { path: "packages/engine/src/wasm/pdf-core.ts", message: "pdf-core ABI file is missing." },
     ]);
   });
 });

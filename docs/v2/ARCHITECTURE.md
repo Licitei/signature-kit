@@ -24,25 +24,25 @@ Delivery order is fixed:
 
 | Owner | Responsibility |
 | --- | --- |
-| Rust/WASM `shared/pdf-core` | PDF structure: parsing, revisions, AcroForm signature fields and widgets, `/AP` appearance streams, signature dictionary and `/Contents` reservation, incremental writing, `ByteRange` digest, revision diffing, rendering. Every ABI call is a whole operation ("prepare this field of this revision"), never a per-object call. |
-| WebCrypto | The private-key operation. A1 keys are imported once per session as non-extractable `CryptoKey`s and never leave the worker. |
-| `shared/crypto`, `shared/cms`, `core/certificates` | PKCS#12, CMS/CAdES, X.509 codecs. Used by the first cuts and reshaped freely for 2.0; each in-house replacement of a third-party codec (PKI.js and ASN1.js) lands behind an oracle test against an independent implementation (OpenSSL, pkijs as test-only dependency). |
-| `@signature-kit/local` (`runtime/local`) | The 2.0 local runtime: Schema contracts, the typed error catalog, the versioned RPC group, the engine services and the Web Worker entry point / client. |
+| `crates/pdf` | PDF structure, rendering, revision analysis, AcroForm fields, appearance streams, incremental writes and ByteRange digests. |
+| `crates/wasm` | C ABI around the enabled Rust engines. Each call performs a complete operation. |
+| `packages/engine/src/{asn1,crypto,cms,certificates}` | Internal TypeScript implementations of ASN.1, PKCS#12, CMS/CAdES and X.509. In-house codec replacements use independent oracle tests. |
+| WebCrypto | Private-key operations. A1 keys are imported once per session as non-extractable `CryptoKey`s and remain in the worker. |
+| `packages/browser` | Browser transport, worker assembly, viewer and optional page-side OTLP export. |
 
-## Package `@signature-kit/local`
+## Packages
 
-One package, real subpath modules (no barrels):
-
-- `@signature-kit/local/protocol` — Schemas, `LocalError` catalog, `LocalRpcs`
-  (`RpcGroup`) and the protocol version. Platform-free; safe to import on the page.
-- `@signature-kit/local/engine` — `Context.Service` + `Layer` implementations:
-  `Documents`, `A1Sessions` and `PdfEngine`. The signing and verification services below are planned.
-  Runs in Node tests and in the worker.
-- `@signature-kit/local/worker` — the Web Worker entry (RPC server over
-  `@effect/platform-browser` worker transport).
-- `@signature-kit/local/client` — the page-side `RpcClient` layer.
-- `@signature-kit/local/viewer` — canvas painting through the local client and
-  transforms between PDF user-space rectangles and canvas pixels.
+- `@signature-kit/engine/rpc` defines the versioned RPC group, Schema contracts
+  and typed errors. Page-side code can import it without loading WASM or engine
+  services.
+- `@signature-kit/engine/engine` owns `Documents`, `A1Sessions` and `PdfEngine`
+  services. The signing and verification services below are planned.
+- Engine subpaths under `/wasm/` load and call `signature-kit.wasm`. The Cargo
+  workspace builds that asset from the `crates/wasm` cdylib with its `pdf` feature
+  enabled by default. `crates/pdf` is an rlib.
+- `@signature-kit/browser/worker` assembles the worker RPC server from the public
+  engine subpaths. `/client` provides the page-side client layer and `/viewer`
+  paints pages and transforms between PDF user space and canvas pixels.
 
 ## Core model
 

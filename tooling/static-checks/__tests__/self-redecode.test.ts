@@ -35,7 +35,7 @@ describe("typed report construction", () => {
   it("does not re-decode reports built inside trusted CMS internals", () => {
     expect(
       hasDecodeCall(
-        readFileSync("shared/cms/src/inspect.ts", "utf8"),
+        readFileSync("packages/engine/src/cms/inspect.ts", "utf8"),
         "CmsSignedDataInspectionSchema",
       ),
     ).toBe(false);

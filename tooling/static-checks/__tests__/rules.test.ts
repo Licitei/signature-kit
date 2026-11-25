@@ -31,7 +31,7 @@ const expectedChecks = [
 ];
 
 const context = (line: string) => {
-  const first = createCheckContexts("core/example/src/index.ts", line)[0];
+  const first = createCheckContexts("packages/example/src/index.ts", line)[0];
   if (first === undefined) {
     throw new Error("fixture context missing");
   }
@@ -130,14 +130,14 @@ describe("declarative smell rules", () => {
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
-        "core/example/__tests__/fixture.test.ts",
+        "packages/example/__tests__/fixture.test.ts",
         "const value = input as unknown;",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
-        "core/example/__tests__/fixture.test.ts",
+        "packages/example/__tests__/fixture.test.ts",
         "const values = ['ok'] as const;",
       ),
     ).toBe(true);
@@ -147,7 +147,7 @@ describe("declarative smell rules", () => {
     expect(
       anyCheckMatchesSource(
         errorHandlingChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         "throw new SignatureKitError({ code: 'invalid' });",
       ),
     ).toBe(true);
@@ -157,14 +157,14 @@ describe("declarative smell rules", () => {
     expect(
       anyCheckMatchesSource(
         errorHandlingChecks,
-        "core/example/__tests__/fixture.test.ts",
+        "packages/example/__tests__/fixture.test.ts",
         "try { await run(); } finally { cleanup(); }",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         errorHandlingChecks,
-        "core/example/__tests__/fixture.test.ts",
+        "packages/example/__tests__/fixture.test.ts",
         'throw new Error("expected failure");',
       ),
     ).toBe(false);
@@ -178,7 +178,7 @@ describe("declarative smell rules", () => {
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
-        "runtime/local/src/engine.ts",
+        "packages/engine/src/engine.ts",
         `import {
   Certificate as ParsedCertificate,
 } from "@signature-kit/certificates";`,
@@ -209,7 +209,7 @@ const result = await Effect.runPromise(program);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/certificates/src/signatures.ts",
+        "packages/engine/src/certificates/signatures.ts",
         `
 // effect-boundary: docs event action [allow-run: hook event-action boundary]
 const result = await Effect.runPromise(program);
@@ -219,9 +219,9 @@ const result = await Effect.runPromise(program);
   });
 
   it.each([
-    ["shared/pdf-core/src/promise.ts", false],
-    ["shared/pdf-core/src/node.ts", false],
-    ["shared/pdf-core/src/pdf-core.ts", true],
+    ["packages/engine/src/wasm/promise.ts", false],
+    ["packages/engine/src/wasm/node.ts", false],
+    ["packages/engine/src/wasm/pdf-core.ts", true],
   ])("limits Promise entry run escapes and node imports to their modules (%s)", (path, flagged) => {
     const run = `
 // effect-boundary: promise entry point [allow-run: rejects with the tagged error]
@@ -234,7 +234,7 @@ const client = Effect.runPromise(program);
         path,
         'import { readFile } from "node:fs/promises";',
       ),
-    ).toBe(path !== "shared/pdf-core/src/node.ts");
+    ).toBe(path !== "packages/engine/src/wasm/node.ts");
   });
 
   it("requires a reasoned provide marker immediately before a docs provide call", () => {
@@ -275,21 +275,21 @@ Effect.provide(Layer.empty);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/certificates/src/runtime.ts",
+        "packages/engine/src/certificates/runtime.ts",
         "const result = Effect.either(program);",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/certificates/src/runtime.ts",
+        "packages/engine/src/certificates/runtime.ts",
         'const module = import("./runtime-helper");',
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/certificates/src/runtime.ts",
+        "packages/engine/src/certificates/runtime.ts",
         "const module = import(moduleName);",
       ),
     ).toBe(false);
@@ -299,14 +299,14 @@ Effect.provide(Layer.empty);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/certificates/src/runtime.ts",
+        "packages/engine/src/certificates/runtime.ts",
         'import { runPromise } from "effect";\nconst result = runPromise(program);',
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/certificates/src/runtime.ts",
+        "packages/engine/src/certificates/runtime.ts",
         'import { readFile } from "node:fs/promises";',
       ),
     ).toBe(true);
@@ -347,7 +347,7 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         configChecks,
-        "core/certificates/src/signatures.ts",
+        "packages/engine/src/certificates/signatures.ts",
         `
 const CredentialsSchema = Schema.Struct({
   // secret-boundary: UI password import boundary [allow-string-secret: hook event-action boundary]
@@ -358,17 +358,17 @@ const CredentialsSchema = Schema.Struct({
     ).toBe(true);
   });
   it("scans package manifests so dependency checks are live", () => {
-    expect(hasCheckedExtension("core/certificates/package.json")).toBe(true);
+    expect(hasCheckedExtension("packages/engine/package.json")).toBe(true);
   });
 
   it("flags public package scripts that shadow inferred TypeScript targets", () => {
     expect(
       anyCheckMatchesSource(
         dependencyChecks,
-        "shared/pdf-core/package.json",
+        "packages/engine/package.json",
         `
 {
-  "name": "@signature-kit/pdf-core",
+  "name": "@signature-kit/engine",
   "scripts": {
     "build": "tsc -b tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -384,10 +384,10 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         dependencyChecks,
-        "shared/pdf-core/package.json",
+        "packages/engine/package.json",
         `
 {
-  "name": "@signature-kit/pdf-core",
+  "name": "@signature-kit/engine",
   "scripts": {
     "test": "vitest run"
   }
@@ -416,21 +416,21 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         errorHandlingChecks,
-        "core/example/src/comments.ts",
+        "packages/example/src/comments.ts",
         "/*\nthrow new Error('comment');\ntry {\n}\n*/\nexport const value = true;\n",
       ),
     ).toBe(false);
     expect(
       anyCheckMatchesSource(
         errorHandlingChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         "try\n{\n  run();\n}\n",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         errorHandlingChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         "throw\nnew SignatureKitError({ code: 'invalid' });\n",
       ),
     ).toBe(true);
@@ -440,14 +440,14 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         'import { runPromise } from "effect";\nclient.runPromise(program);\nEffect.effectfulApi(program);\nEffect.eitherThing(program);\n',
       ),
     ).toBe(false);
     expect(
       anyCheckMatchesSource(
         effectBoundaryChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         'import { runPromise } from "effect";\nrunPromise(program);\n',
       ),
     ).toBe(true);
@@ -457,21 +457,21 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         schemaContractChecks,
-        "core/example/src/contracts.ts",
+        "packages/example/src/contracts.ts",
         "const StatusCodes = [\n  'pending',\n  'complete',\n];\n",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         schemaContractChecks,
-        "core/example/src/contracts.ts",
+        "packages/example/src/contracts.ts",
         "export interface ExampleConfig {\n  enabled: boolean;\n}\nconst ExampleConfigSchema = 1;\n",
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         schemaContractChecks,
-        "core/example/src/contracts.ts",
+        "packages/example/src/contracts.ts",
         "export interface ExampleConfig {\n  enabled: boolean;\n}\nconst ExampleConfigSchema = Schema.Struct({ enabled: Schema.Boolean });\n",
       ),
     ).toBe(false);
@@ -481,14 +481,14 @@ const CredentialsSchema = Schema.Struct({
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         'const value: import("@signature-kit/certificates").Certificate = input;\n',
       ),
     ).toBe(true);
     expect(
       anyCheckMatchesSource(
         typeSafetyChecks,
-        "core/example/src/runtime.ts",
+        "packages/example/src/runtime.ts",
         'import type { Certificate } from "@signature-kit/certificates";\nconst value: Certificate = input;\n',
       ),
     ).toBe(false);
@@ -497,15 +497,15 @@ const CredentialsSchema = Schema.Struct({
   it("selects the local runtime and applies library boundary rules", async () => {
     const root = await mkdtemp(join(tmpdir(), "signature-kit-runtime-selection-"));
     onTestFinished(() => rm(root, { recursive: true, force: true }));
-    const runtimeRoot = "runtime";
-    const packageRoot = "runtime/local";
-    expect(roots).toContain(runtimeRoot);
+    const packagesRoot = "packages";
+    const packageRoot = "packages/browser";
+    expect(roots).toContain(packagesRoot);
     await mkdir(join(root, packageRoot, "src"), { recursive: true });
     await writeFile(join(root, packageRoot, "src/signing.ts"), "Effect.runPromise(program);\n");
     expect(
       runDeclarativeChecks(
         root,
-        roots.filter((path) => path === runtimeRoot),
+        roots.filter((path) => path === packagesRoot),
       ),
     ).toBe(true);
     expect(
@@ -526,19 +526,19 @@ const CredentialsSchema = Schema.Struct({
 
   it("skips package tooling directories but keeps library sources and tests", () => {
     for (const path of [
-      "shared/pdf-core/scripts/generate-font-tables.ts",
-      "shared/pdf-core/scripts/generate-corpus.ts",
-      "shared/pdf-core/bench/measure-speed.ts",
-      "shared/pdf-core/scripts/capture-anchor-goldens.ts",
-      "/repo/shared/pdf-core/scripts/render-corpus.ts",
+      "packages/engine/scripts/generate-font-tables.ts",
+      "packages/engine/scripts/generate-corpus.ts",
+      "packages/engine/bench/measure-speed.ts",
+      "packages/engine/scripts/capture-anchor-goldens.ts",
+      "/repo/packages/engine/scripts/render-corpus.ts",
     ]) {
       expect(shouldSkip(path)).toBe(true);
     }
     for (const path of [
-      "shared/pdf-core/src/pdf-core.ts",
-      "shared/pdf-core/__tests__/text-anchors-golden.test.ts",
-      "shared/pdf-core/src/scripts/anchors.ts",
-      "core/certificates/src/bench.ts",
+      "packages/engine/src/wasm/pdf-core.ts",
+      "packages/engine/__tests__/text-anchors-golden.test.ts",
+      "packages/engine/src/wasm/scripts/anchors.ts",
+      "packages/engine/src/certificates/bench.ts",
     ]) {
       expect(shouldSkip(path)).toBe(false);
     }
@@ -546,14 +546,14 @@ const CredentialsSchema = Schema.Struct({
 
   it("runs fixtures through the declarative entry point", async () => {
     const root = await mkdtemp(join(tmpdir(), "signature-kit-static-"));
-    const file = join(root, "core/example/src/index.ts");
-    await mkdir(join(root, "core/example/src"), { recursive: true });
+    const file = join(root, "packages/example/src/index.ts");
+    await mkdir(join(root, "packages/example/src"), { recursive: true });
     await writeFile(
       file,
       "/*\nthrow new Error('comment');\nimport '@signature-kit/unused';\n*/\nexport const value = true;\n",
     );
     expect(runDeclarativeChecks(root, [file])).toBe(false);
-    const badFile = join(root, "core/example/src/bad.ts");
+    const badFile = join(root, "packages/example/src/bad.ts");
     await writeFile(badFile, "throw\nnew SignatureKitError({ code: 'invalid' });\n");
     expect(runDeclarativeChecks(root, [badFile])).toBe(true);
     await rm(root, { recursive: true, force: true });

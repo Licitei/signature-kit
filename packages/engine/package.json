@@ -1,0 +1,147 @@
+{
+  "name": "@signature-kit/engine",
+  "version": "2.0.0-alpha.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Licitei/signature-kit.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./rpc": {
+      "types": "./dist/rpc.d.ts",
+      "import": "./dist/rpc.js"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.js"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry.d.ts",
+      "import": "./dist/telemetry.js"
+    },
+    "./wasm/config": {
+      "types": "./dist/wasm/config.d.ts",
+      "import": "./dist/wasm/config.js"
+    },
+    "./wasm/pdf-core": {
+      "types": "./dist/wasm/pdf-core.d.ts",
+      "import": "./dist/wasm/pdf-core.js"
+    },
+    "./wasm/browser": {
+      "types": "./dist/wasm/browser.d.ts",
+      "import": "./dist/wasm/browser.js"
+    },
+    "./wasm/file": {
+      "types": "./dist/wasm/file.d.ts",
+      "import": "./dist/wasm/file.js"
+    },
+    "./wasm/promise": {
+      "types": "./dist/wasm/promise.d.ts",
+      "import": "./dist/wasm/promise.js"
+    },
+    "./wasm/node": {
+      "types": "./dist/wasm/node.d.ts",
+      "import": "./dist/wasm/node.js"
+    },
+    "./wasm/canvas": {
+      "types": "./dist/wasm/canvas.d.ts",
+      "import": "./dist/wasm/canvas.js"
+    },
+    "./signature-kit.wasm": "./dist/wasm/signature-kit.wasm"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "asn1js": "3.1.0",
+    "effect": "4.1.0",
+    "pkijs": "3.4.3"
+  },
+  "devDependencies": {
+    "binaryen": "130.0.0",
+    "pdfjs-dist": "6.3.289"
+  },
+  "nx": {
+    "targets": {
+      "build-wasm": {
+        "executor": "nx:run-commands",
+        "cache": true,
+        "inputs": [
+          "{workspaceRoot}/Cargo.toml",
+          "{workspaceRoot}/Cargo.lock",
+          "{workspaceRoot}/rust-toolchain.toml",
+          "{workspaceRoot}/crates/pdf/Cargo.toml",
+          "{workspaceRoot}/crates/pdf/build.rs",
+          "{workspaceRoot}/crates/pdf/src/**/*",
+          "{workspaceRoot}/crates/pdf/data/**/*",
+          "{workspaceRoot}/crates/wasm/Cargo.toml",
+          "{workspaceRoot}/crates/wasm/src/**/*",
+          "{workspaceRoot}/crates/wasm/scripts/*.sh",
+          "{workspaceRoot}/bun.lock",
+          {
+            "runtime": "rustc --version"
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/dist/wasm/signature-kit.wasm"
+        ],
+        "options": {
+          "command": "bash crates/wasm/scripts/build-wasm-cached.sh",
+          "cwd": "{workspaceRoot}"
+        }
+      },
+      "build": {
+        "dependsOn": [
+          "...",
+          "build-wasm"
+        ],
+        "inputs": [
+          "...",
+          "{workspaceRoot}/Cargo.toml",
+          "{workspaceRoot}/Cargo.lock",
+          "{workspaceRoot}/rust-toolchain.toml",
+          "{workspaceRoot}/crates/pdf/Cargo.toml",
+          "{workspaceRoot}/crates/pdf/build.rs",
+          "{workspaceRoot}/crates/pdf/src/**/*",
+          "{workspaceRoot}/crates/pdf/data/**/*",
+          "{workspaceRoot}/crates/wasm/Cargo.toml",
+          "{workspaceRoot}/crates/wasm/src/**/*",
+          "{workspaceRoot}/crates/wasm/scripts/*.sh",
+          "{workspaceRoot}/bun.lock",
+          {
+            "runtime": "rustc --version"
+          }
+        ]
+      },
+      "npm-pack": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "bun pm pack --dry-run",
+          "cwd": "{projectRoot}"
+        }
+      },
+      "npm-publish": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "npm publish --access public",
+          "cwd": "{projectRoot}"
+        }
+      }
+    },
+    "tags": [
+      "npm:public",
+      "layer:engine"
+    ]
+  }
+}

@@ -1,0 +1,195 @@
+[workspace]
+members = ["crates/pdf", "crates/wasm"]
+exclude = ["crates/pdf/fuzz"]
+resolver = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+unused_lifetimes = "deny"
+single_use_lifetimes = "deny"
+elided_lifetimes_in_paths = "deny"
+let_underscore_drop = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unused_import_braces = "deny"
+redundant_lifetimes = "deny"
+unit_bindings = "deny"
+non_ascii_idents = "deny"
+meta_variable_misuse = "deny"
+unused_macro_rules = "deny"
+dead_code = "deny"
+unused = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+rust_2024_compatibility = { level = "deny", priority = -1 }
+missing_docs = "allow" # crate is internal behind a C ABI; public items are pub(crate) contracts documented in the TypeScript package
+absolute_paths_not_starting_with_crate = "deny"
+ambiguous_negative_literals = "deny"
+closure_returning_async_block = "deny"
+dead_code_pub_in_binary = "deny"
+deprecated_in_future = "deny"
+deprecated_safe_2024 = "deny"
+deref_into_dyn_supertrait = "deny"
+edition_2024_expr_fragment_specifier = "deny"
+explicit_outlives_requirements = "deny"
+ffi_unwind_calls = "deny"
+if_let_rescope = "deny"
+impl_trait_overcaptures = "deny"
+impl_trait_redundant_captures = "deny"
+keyword_idents_2018 = "deny"
+keyword_idents_2024 = "deny"
+linker_info = "deny"
+macro_use_extern_crate = "deny"
+missing_unsafe_on_extern = "deny"
+raw_borrows_via_references = "deny"
+redundant_imports = "deny"
+rust_2021_incompatible_closure_captures = "deny"
+rust_2021_incompatible_or_patterns = "deny"
+rust_2021_prefixes_incompatible_syntax = "deny"
+rust_2021_prelude_collisions = "deny"
+rust_2024_guarded_string_incompatible_syntax = "deny"
+rust_2024_incompatible_pat = "deny"
+rust_2024_prelude_collisions = "deny"
+tail_expr_drop_order = "deny"
+unnameable_types = "deny"
+unsafe_attr_outside_unsafe = "deny"
+unstable_features = "deny"
+unused_crate_dependencies = "deny"
+unused_extern_crates = "deny"
+unused_results = "deny"
+variant_size_differences = "deny"
+unfulfilled_lint_expectations = "deny"
+unknown_lints = "warn"
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_html_tags = "deny"
+invalid_rust_codeblocks = "deny"
+bare_urls = "deny"
+unescaped_backticks = "deny"
+redundant_explicit_links = "deny"
+invalid_markdown_table = "deny"
+invalid_codeblock_attributes = "deny"
+missing_crate_level_docs = "allow" # cdylib consumed only through the C ABI; documentation lives in ../README.md
+private_doc_tests = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+restriction = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+integer_division = "deny"
+string_slice = "deny"
+get_unwrap = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+mem_forget = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+wildcard_enum_match_arm = "deny"
+shadow_unrelated = "deny"
+clone_on_ref_ptr = "deny"
+rc_buffer = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+unneeded_field_pattern = "deny"
+rest_pattern_accessible_field = "allow" # contradicts unneeded_field_pattern: one of `..` or `field: _` must be allowed
+self_named_module_files = "deny"
+str_to_string = "deny"
+format_push_string = "deny"
+if_then_some_else_none = "deny"
+impl_trait_in_params = "deny"
+lossy_float_literal = "deny"
+map_err_ignore = "deny"
+mixed_read_write_in_expression = "deny"
+redundant_type_annotations = "deny"
+same_name_method = "deny"
+try_err = "deny"
+unseparated_literal_suffix = "deny"
+verbose_file_reads = "deny"
+tests_outside_test_module = "deny"
+empty_structs_with_brackets = "deny"
+empty_enum_variants_with_brackets = "deny"
+deref_by_slicing = "deny"
+infinite_loop = "deny"
+partial_pub_fields = "deny"
+ref_patterns = "deny"
+renamed_function_params = "deny"
+unused_result_ok = "deny"
+unused_trait_names = "deny"
+missing_asserts_for_indexing = "deny"
+float_cmp = "deny"
+float_cmp_const = "deny"
+missing_const_for_fn = "deny"
+needless_pass_by_value = "deny"
+large_stack_arrays = "deny"
+large_types_passed_by_value = "deny"
+cognitive_complexity = "deny"
+too_many_lines = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+absolute_paths = "deny"
+arbitrary_source_item_ordering = "deny"
+big_endian_bytes = "allow" # PDF, sfnt and CFF are big-endian formats; from_be_bytes is the correct decoder
+blanket_clippy_restriction_lints = "allow" # the restriction group is enabled on purpose and individual contradictions are allowed below
+default_numeric_fallback = "deny"
+exhaustive_enums = "deny"
+exhaustive_structs = "deny"
+float_arithmetic = "allow" # PDF geometry is defined in floating point
+host_endian_bytes = "deny"
+implicit_return = "allow" # contradicts needless_return
+little_endian_bytes = "allow" # the wasm ABI payload is little-endian by contract
+min_ident_chars = "deny"
+missing_docs_in_private_items = "allow" # repository rule forbids explanatory comments in code
+missing_inline_in_public_items = "deny"
+missing_trait_methods = "allow" # default trait methods are the intended behaviour
+mod_module_files = "deny"
+pattern_type_mismatch = "allow" # contradicts needless_borrowed_reference and match ergonomics used throughout
+pub_with_shorthand = "allow" # contradicts pub_without_shorthand; rustfmt emits pub(crate)
+question_mark_used = "allow" # ? is the error propagation idiom required by the crate
+semicolon_inside_block = "allow" # contradicts semicolon_outside_block
+separated_literal_suffix = "allow" # contradicts unseparated_literal_suffix
+shadow_reuse = "deny"
+shadow_same = "deny"
+single_call_fn = "allow" # functions name concepts even when called once; contradicts too_many_lines
+std_instead_of_alloc = "deny"
+std_instead_of_core = "deny"
+redundant_pub_crate = "allow" # contradicts unreachable_pub inside private modules
+suboptimal_flops = "allow" # fused mul_add lowers to a libm software call on wasm32 and the x86-64 baseline
+imprecise_flops = "allow" # hypot lowers to a libm software call on wasm32 and the x86-64 baseline; (x * x + y * y).sqrt() is exact enough for PDF geometry
+decimal_literal_representation = "deny"
+non_ascii_literal = "deny"
+single_char_lifetime_names = "deny"
+integer_division_remainder_used = "deny"
+map_with_unused_argument_over_ranges = "deny"
+else_if_without_else = "allow" # forces empty else blocks that needless_else rejects
+modulo_arithmetic = "deny"
+field_scoped_visibility_modifiers = "allow" # pub(crate) fields are the crate-internal contract style
