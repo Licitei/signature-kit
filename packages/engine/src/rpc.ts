@@ -291,6 +291,7 @@ export type PdfReceipt = (typeof PdfReceipt)["Type"];
 
 export const PdfVerifyOptionsSchema = Schema.Struct({
   trust: Schema.optional(Schema.Array(Schema.Uint8Array)),
+  tsaTrust: Schema.optional(Schema.Array(Schema.Uint8Array)),
   at: Schema.optional(Schema.Date),
 });
 export type PdfVerifyOptions = (typeof PdfVerifyOptionsSchema)["Type"];
@@ -305,6 +306,7 @@ const PdfReportedChanges = Schema.Struct({
 
 const PdfSignatureVerification = Schema.Struct({
   fieldName: Schema.optional(Schema.String),
+  kind: Schema.Literals(["signature", "documentTimestamp"]),
   integrity: Schema.Literals(["valid", "invalid", "unsupported"]),
   coverage: Schema.Struct({
     kind: Schema.Literals(["wholeFile", "partial", "invalid"]),
@@ -319,7 +321,18 @@ const PdfSignatureVerification = Schema.Struct({
     }),
   ),
   claimedSigningTime: Schema.optional(Schema.Date),
-  timestampEvidence: Schema.Literals(["present", "absent"]),
+  timestampEvidence: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("absent") }),
+    Schema.Struct({
+      kind: Schema.Literal("unverified"),
+      reason: Schema.Literals(["tsaTrustMissing", "invalidToken"]),
+    }),
+    Schema.Struct({ kind: Schema.Literal("verified"), genTime: Schema.Date }),
+  ]),
+  evaluationTime: Schema.Struct({
+    at: Schema.Date,
+    source: Schema.Literals(["clock", "caller", "signatureTimestamp", "documentTimestamp"]),
+  }),
   changes: Schema.optional(PdfReportedChanges),
   mdp: Schema.optional(
     Schema.Struct({

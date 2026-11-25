@@ -4,6 +4,7 @@
   "signatures": [
     {
       "fieldName": "Contratante",
+      "kind": "signature",
       "integrity": "valid",
       "coverage": {
         "kind": "partial",
@@ -19,7 +20,13 @@
         "holderKind": "e-cpf"
       },
       "claimedSigningTime": "2027-01-01T00:00:00.000Z",
-      "timestampEvidence": "absent",
+      "timestampEvidence": {
+        "kind": "absent"
+      },
+      "evaluationTime": {
+        "at": "2027-01-01T00:00:00.000Z",
+        "source": "caller"
+      },
       "changes": {
         "recognised": [
           {
@@ -96,6 +103,7 @@
     },
     {
       "fieldName": "Contratada",
+      "kind": "signature",
       "integrity": "valid",
       "coverage": {
         "kind": "wholeFile",
@@ -111,7 +119,13 @@
         "holderKind": "e-cnpj"
       },
       "claimedSigningTime": "2027-01-01T00:00:00.000Z",
-      "timestampEvidence": "absent",
+      "timestampEvidence": {
+        "kind": "absent"
+      },
+      "evaluationTime": {
+        "at": "2027-01-01T00:00:00.000Z",
+        "source": "caller"
+      },
       "changes": {
         "recognised": [],
         "unknown": [],

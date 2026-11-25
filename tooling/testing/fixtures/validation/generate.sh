@@ -82,3 +82,26 @@ for response in good expired revoked; do
 done
 openssl crl -inform DER -in "$fixtures/revoked-crl.der" -verify -CAfile ca.pem -noout
 openssl x509 -in timestamp.pem -outform DER -out "$fixtures/tsa.der"
+cp "$fixtures/ca.der" "$fixtures/tsa-root.der"
+openssl pkcs12 -export -inkey timestamp.key -in timestamp.pem -certfile ca.pem \
+  -passout pass:changeit -out "$fixtures/tsa.p12"
+
+cat > tsa.cnf <<'CONF'
+[tsa]
+default_tsa=local
+[local]
+serial=tsa.serial
+signer_cert=timestamp.pem
+certs=ca.pem
+signer_key=timestamp.key
+signer_digest=sha256
+default_policy=1.3.6.1.4.1.12345.1
+digests=sha256,sha384,sha512
+ess_cert_id_alg=sha256
+CONF
+printf '01\n' > tsa.serial
+printf 'SignatureKit timestamp fixture\n' > message
+openssl ts -query -data message -sha256 -cert -out query.der
+openssl ts -reply -config tsa.cnf -queryfile query.der -out timestamp-response.der
+openssl ts -reply -in timestamp-response.der -token_out -out "$fixtures/timestamp-token.der"
+openssl ts -verify -token_in -in "$fixtures/timestamp-token.der" -data message -CAfile ca.pem

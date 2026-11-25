@@ -312,6 +312,192 @@ const downloadTimestamp = (
       }),
   });
 
+const validateTimestampToken = Effect.fn(function* (
+  token: pkijs.ContentInfo,
+  signed: pkijs.SignedData,
+  tstInfo: pkijs.TSTInfo,
+  data: Uint8Array,
+  trustedCerts: pkijs.Certificate[],
+) {
+  if (
+    token.contentType !== pkijs.ContentInfo.SIGNED_DATA ||
+    signed.encapContentInfo.eContentType !== TSA_TST_INFO_CONTENT_TYPE ||
+    signed.signerInfos.length !== 1 ||
+    tstInfo.version !== 1 ||
+    !Number.isFinite(tstInfo.genTime.getTime())
+  ) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "TSA did not return a valid signed RFC 3161 timestamp token.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
+
+  const signingCertificateAttribute = timestampSigningCertificateAttribute(signed);
+  if (signingCertificateAttribute === undefined) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "TSA timestamp token is missing required signed attributes.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
+
+  yield* verifyTimestampImprint(tstInfo, data);
+  const verification = yield* Effect.tryPromise({
+    try: () => {
+      signed.encapContentInfo.eContentType = pkijs.ContentInfo.DATA;
+      delete signed.crls;
+      delete signed.ocsps;
+      return signed.verify({
+        signer: 0,
+        data: new Uint8Array(data).buffer,
+        checkDate: tstInfo.genTime,
+        checkChain: true,
+        trustedCerts,
+        passedWhenNotRevValues: true,
+        extendedMode: true,
+      });
+    },
+    catch: () =>
+      new CmsError({
+        code: CmsErrorCodeValue.timestampError,
+        reason: "TSA timestamp token signature or certificate chain validation failed.",
+        operation: CmsOperationValue.timestamp,
+      }),
+  });
+
+  if (verification.signatureVerified !== true || verification.signerCertificateVerified !== true) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "TSA timestamp token signature or certificate chain is invalid.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
+
+  const signerCertificate = verification.signerCertificate;
+  if (
+    signerCertificate === null ||
+    signerCertificate === undefined ||
+    !isTimestampAuthorityCertificate(signerCertificate)
+  ) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "TSA signer certificate is not a critical timestamping-only certificate.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
+
+  const signerCertificateDer = yield* Effect.try({
+    try: () => new Uint8Array(signerCertificate.toSchema(true).toBER(false)),
+    catch: () =>
+      new CmsError({
+        code: CmsErrorCodeValue.timestampError,
+        reason: "Failed to encode the TSA signer certificate.",
+        operation: CmsOperationValue.timestamp,
+      }),
+  });
+  const signingCertificateBound = yield* signingCertificateMatches(
+    signingCertificateAttribute,
+    signerCertificateDer,
+  );
+  if (!signingCertificateBound) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "TSA signing-certificate attribute does not bind the signer certificate.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
+
+  return tstInfo.genTime;
+});
+
+const verifyTimestampImprint = Effect.fn(function* (tstInfo: pkijs.TSTInfo, data: Uint8Array) {
+  const algorithm = CmsHashAlgorithmSchema.literals.find(
+    (hash) => hashAlgorithmOid(hash) === tstInfo.messageImprint.hashAlgorithm.algorithmId,
+  );
+  if (algorithm === undefined)
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.unsupportedAlgorithm,
+      reason: "The RFC 3161 message imprint algorithm is unsupported.",
+      operation: CmsOperationValue.timestamp,
+    });
+  const imprint = yield* digest(algorithm, data);
+  if (!bytesEqual(imprint, tstInfo.messageImprint.hashedMessage.valueBlock.valueHexView)) {
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "TSA timestamp message imprint does not match the request.",
+      operation: CmsOperationValue.timestamp,
+    });
+  }
+});
+
+const decodeTimestampToken = Effect.fn(function* (der: Uint8Array) {
+  const parsed = yield* Effect.try({
+    try: () => {
+      const decoded = asn1js.fromBER(der, { maxDepth: 64, parseEmbedded: false });
+      if (decoded.offset !== der.length) return undefined;
+      const token = new pkijs.ContentInfo({ schema: decoded.result });
+      if (token.contentType !== pkijs.ContentInfo.SIGNED_DATA) return undefined;
+      const signed = new pkijs.SignedData({ schema: token.content });
+      const content = signed.encapContentInfo.eContent;
+      if (
+        content === undefined ||
+        signed.encapContentInfo.eContentType !== TSA_TST_INFO_CONTENT_TYPE
+      ) {
+        return undefined;
+      }
+      const tstInfoDer = new Uint8Array(content.getValue());
+      const tstInfo = asn1js.fromBER(tstInfoDer, { maxDepth: 64, parseEmbedded: false });
+      if (tstInfo.offset !== tstInfoDer.length) return undefined;
+      return { token, signed, tstInfo: new pkijs.TSTInfo({ schema: tstInfo.result }) };
+    },
+    catch: () =>
+      new CmsError({
+        code: CmsErrorCodeValue.timestampError,
+        reason: "Failed to parse the RFC 3161 timestamp token.",
+        operation: CmsOperationValue.timestamp,
+      }),
+  });
+  if (parsed === undefined)
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason: "Expected a single RFC 3161 timestamp token with TSTInfo.",
+      operation: CmsOperationValue.timestamp,
+    });
+  return parsed;
+});
+
+export const checkTimestampImprint = Effect.fn(function* (der: Uint8Array, data: Uint8Array) {
+  const { tstInfo } = yield* decodeTimestampToken(der);
+  yield* verifyTimestampImprint(tstInfo, data);
+});
+
+export const verifyTimestampToken = Effect.fn(function* (
+  der: Uint8Array,
+  data: Uint8Array,
+  roots: readonly Uint8Array[],
+  at: Date,
+) {
+  const { token, signed, tstInfo } = yield* decodeTimestampToken(der);
+  if (roots.length === 0 || tstInfo.genTime > at)
+    return yield* new CmsError({
+      code: CmsErrorCodeValue.timestampError,
+      reason:
+        "The RFC 3161 token requires explicit TSA roots and a generation time within the evaluation horizon.",
+      operation: CmsOperationValue.timestamp,
+    });
+  const trustedCerts = yield* Effect.try({
+    try: () => roots.map((root) => pkijs.Certificate.fromBER(new Uint8Array(root))),
+    catch: () =>
+      new CmsError({
+        code: CmsErrorCodeValue.timestampError,
+        reason: "Failed to parse a TSA trusted root DER.",
+        operation: CmsOperationValue.timestamp,
+      }),
+  });
+  return yield* validateTimestampToken(token, signed, tstInfo, data, trustedCerts);
+});
+
 export const requestTimestamp = (
   input: RequestTimestampInput,
 ): Effect.Effect<Uint8Array, CmsError> =>
@@ -500,27 +686,6 @@ export const requestTimestamp = (
       });
     }
 
-    if (
-      token.contentType !== pkijs.ContentInfo.SIGNED_DATA ||
-      signed.encapContentInfo.eContentType !== TSA_TST_INFO_CONTENT_TYPE ||
-      signed.signerInfos.length !== 1
-    ) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.timestampError,
-        reason: "TSA did not return a valid signed RFC 3161 timestamp token.",
-        operation: CmsOperationValue.timestamp,
-      });
-    }
-
-    const signingCertificateAttribute = timestampSigningCertificateAttribute(signed);
-    if (signingCertificateAttribute === undefined) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.timestampError,
-        reason: "TSA timestamp token is missing required signed attributes.",
-        operation: CmsOperationValue.timestamp,
-      });
-    }
-
     if (tstInfo.nonce === undefined || !bytesEqual(tstInfo.nonce.valueBlock.valueHexView, nonce)) {
       return yield* new CmsError({
         code: CmsErrorCodeValue.timestampError,
@@ -530,81 +695,14 @@ export const requestTimestamp = (
     }
 
     if (
-      tstInfo.messageImprint.hashAlgorithm.algorithmId !== hashAlgorithmOid(valid.hashAlgorithm) ||
-      !bytesEqual(tstInfo.messageImprint.hashedMessage.valueBlock.valueHexView, imprint)
+      tstInfo.messageImprint.hashAlgorithm.algorithmId !== hashAlgorithmOid(valid.hashAlgorithm)
     ) {
       return yield* new CmsError({
         code: CmsErrorCodeValue.timestampError,
-        reason: "TSA timestamp message imprint does not match the request.",
+        reason: "TSA timestamp message imprint algorithm does not match the request.",
         operation: CmsOperationValue.timestamp,
       });
     }
-
-    const verification = yield* Effect.tryPromise({
-      try: () => {
-        signed.encapContentInfo.eContentType = pkijs.ContentInfo.DATA;
-        return signed.verify({
-          signer: 0,
-          data: new Uint8Array(valid.data).buffer,
-          checkDate: tstInfo.genTime,
-          checkChain: true,
-          trustedCerts,
-          passedWhenNotRevValues: true,
-          extendedMode: true,
-        });
-      },
-      catch: () =>
-        new CmsError({
-          code: CmsErrorCodeValue.timestampError,
-          reason: "TSA timestamp token signature or certificate chain validation failed.",
-          operation: CmsOperationValue.timestamp,
-        }),
-    });
-
-    if (
-      verification.signatureVerified !== true ||
-      verification.signerCertificateVerified !== true
-    ) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.timestampError,
-        reason: "TSA timestamp token signature or certificate chain is invalid.",
-        operation: CmsOperationValue.timestamp,
-      });
-    }
-
-    const signerCertificate = verification.signerCertificate;
-    if (
-      signerCertificate === null ||
-      signerCertificate === undefined ||
-      !isTimestampAuthorityCertificate(signerCertificate)
-    ) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.timestampError,
-        reason: "TSA signer certificate is not a critical timestamping-only certificate.",
-        operation: CmsOperationValue.timestamp,
-      });
-    }
-
-    const signerCertificateDer = yield* Effect.try({
-      try: () => new Uint8Array(signerCertificate.toSchema(true).toBER(false)),
-      catch: () =>
-        new CmsError({
-          code: CmsErrorCodeValue.timestampError,
-          reason: "Failed to encode the TSA signer certificate.",
-          operation: CmsOperationValue.timestamp,
-        }),
-    });
-    const signingCertificateBound = yield* signingCertificateMatches(
-      signingCertificateAttribute,
-      signerCertificateDer,
-    );
-    if (!signingCertificateBound) {
-      return yield* new CmsError({
-        code: CmsErrorCodeValue.timestampError,
-        reason: "TSA signing-certificate attribute does not bind the signer certificate.",
-        operation: CmsOperationValue.timestamp,
-      });
-    }
-
+    yield* validateTimestampToken(token, signed, tstInfo, valid.data, trustedCerts);
     return new Uint8Array(token.toSchema().toBER(false));
   }).pipe(Effect.withSpan(CmsOperationValue.timestamp));

@@ -107,7 +107,8 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
       revocation: { ocsp: [], crls: [] },
       certificatePath: [],
       claimedSigningTime: undefined,
-      timestampPresent: false,
+      timestampTokens: [],
+      signatureValue: undefined,
     };
   }
 
@@ -145,10 +146,9 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
       : undefined;
   const claimedSigningTime =
     date !== undefined && Number.isFinite(date.getTime()) ? date : undefined;
-  const timestampPresent =
-    signer?.unsignedAttrs?.attributes.some(
-      ({ type, values }) => type === CmsOid.timeStampToken && values.length > 0,
-    ) ?? false;
+  const timestampTokens = (signer?.unsignedAttrs?.attributes ?? [])
+    .filter(({ type }) => type === CmsOid.timeStampToken)
+    .flatMap(({ values }) => values.map((value) => new Uint8Array(value.toBER(false))));
   if (!checkRevocation) {
     delete signed.crls;
     delete signed.ocsps;
@@ -198,7 +198,8 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     revocation,
     certificatePath: result.chainValid ? verification.certificatePath : [],
     claimedSigningTime,
-    timestampPresent,
+    timestampTokens,
+    signatureValue: signer?.signature.valueBlock.valueHexView,
   };
 });
 

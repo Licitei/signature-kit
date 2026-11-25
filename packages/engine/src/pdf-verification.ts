@@ -1,3 +1,4 @@
+import { verifyTimestampToken } from "./cms/timestamp.js";
 import { evaluateRevocation } from "./validation/revocation.js";
 import { inspectDetachedSignedData, unpadSignedData } from "./cms/inspect.js";
 import { verifyDetachedSignedDataEvidence } from "./cms/verify.js";
@@ -79,6 +80,23 @@ const reportPolicy = (
   };
 };
 
+const readTimestamp = Effect.fn(function* (
+  tokens: readonly Uint8Array[],
+  data: Uint8Array,
+  roots: readonly Uint8Array[],
+  at: Date,
+): Effect.fn.Return<PdfSignatureVerification["timestampEvidence"]> {
+  if (tokens.length === 0) return { kind: "absent" };
+  if (roots.length === 0) return { kind: "unverified", reason: "tsaTrustMissing" };
+  const times = yield* Effect.forEach(tokens, (token) =>
+    verifyTimestampToken(token, data, roots, at).pipe(Effect.option),
+  );
+  const genTime = times.flatMap(Option.toArray).sort((a, b) => a.getTime() - b.getTime())[0];
+  return genTime === undefined
+    ? { kind: "unverified", reason: "invalidToken" }
+    : { kind: "verified", genTime };
+});
+
 const readVerification = Effect.fn("local.pdf.verify")(function* (
   signing: PdfCoreSigningSession,
   pdf: Uint8Array,
@@ -93,6 +111,11 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
     Effect.mapError(() => new LocalError({ code: "pdfReadFailed" })),
   );
   const at = options.at ?? new Date(yield* Clock.currentTimeMillis);
+  const evaluationTime = {
+    at,
+    source: options.at === undefined ? "clock" : "caller",
+  } satisfies PdfSignatureVerification["evaluationTime"];
+  const tsaTrust = options.tsaTrust ?? [];
   const roots = (options.trust?.length ?? 0) > 0 ? options.trust : undefined;
   yield* Effect.annotateCurrentSpan("byteLength", pdf.byteLength);
   const report = yield* signing
@@ -103,6 +126,33 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
   }
   const fields = yield* signing.fields.pipe(
     Effect.mapError(() => new LocalError({ code: "pdfReadFailed" })),
+  );
+  const documentTimestamps = yield* Effect.forEach(
+    report.dictionaries.filter(({ kind }) => kind === "documentTimestamp"),
+    (dictionary) =>
+      Effect.gen(function* () {
+        const range = dictionary.byteRangeValues;
+        if (range === undefined || range[0] !== 0 || dictionary.subFilter !== "ETSI.RFC3161") {
+          return undefined;
+        }
+        const changes = yield* signing.changes(range[2] + range[3]).pipe(Effect.option);
+        if (Option.isNone(changes)) return undefined;
+        const token = yield* signatureContents(pdf, dictionary).pipe(
+          Effect.flatMap(decodeSignatureContents),
+          Effect.flatMap(unpadSignedData),
+          Effect.option,
+        );
+        if (Option.isNone(token)) return undefined;
+        return {
+          offset: range[1],
+          timestampEvidence: yield* readTimestamp(
+            [token.value],
+            signedBytes(pdf, range),
+            tsaTrust,
+            at,
+          ),
+        };
+      }),
   );
   const signatures = yield* Effect.forEach(
     report.dictionaries,
@@ -117,11 +167,16 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
               );
         const initial = {
           fieldName: field?.name,
-          integrity: dictionary.kind === "signature" ? "invalid" : "unsupported",
+          kind: dictionary.kind,
+          integrity: "invalid",
           coverage: { kind: "invalid" },
           trust: roots === undefined ? "notEvaluated" : "untrusted",
           revocation: { kind: "notChecked" },
-          timestampEvidence: dictionary.kind === "documentTimestamp" ? "present" : "absent",
+          timestampEvidence:
+            dictionary.kind === "documentTimestamp"
+              ? { kind: "unverified", reason: "invalidToken" }
+              : { kind: "absent" },
+          evaluationTime,
         } satisfies PdfSignatureVerification;
         if (range === undefined) return initial;
         const revisionEnd = range[2] + range[3];
@@ -143,7 +198,28 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
           fieldName: policy?.fieldName ?? initial.fieldName,
           mdp: policy === undefined ? undefined : reportPolicy(policy, changes.value),
         } satisfies PdfSignatureVerification;
-        if (dictionary.kind !== "signature") return covered;
+        if (dictionary.kind === "documentTimestamp") {
+          const timestamp = documentTimestamps.find((entry) => entry?.offset === range[1]);
+          const evidence = timestamp?.timestampEvidence;
+          if (evidence === undefined) return covered;
+          if (evidence.kind === "verified")
+            return {
+              ...covered,
+              integrity: "valid",
+              trust: "trusted",
+              timestampEvidence: evidence,
+              evaluationTime: { at: evidence.genTime, source: "documentTimestamp" },
+            };
+          return {
+            ...covered,
+            timestampEvidence: evidence,
+            trust: tsaTrust.length === 0 ? "notEvaluated" : "untrusted",
+            integrity:
+              evidence.kind === "unverified" && evidence.reason === "tsaTrustMissing"
+                ? "unsupported"
+                : "invalid",
+          };
+        }
         if (
           dictionary.subFilter !== "ETSI.CAdES.detached" &&
           dictionary.subFilter !== "adbe.pkcs7.detached"
@@ -160,7 +236,27 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
         const verification = yield* verifyDetachedSignedDataEvidence(cms).pipe(Effect.option);
         if (Option.isNone(verification)) return covered;
 
-        const { result, revocation, timestampPresent, claimedSigningTime } = verification.value;
+        const { result, revocation, timestampTokens, signatureValue, claimedSigningTime } =
+          verification.value;
+        const timestampEvidence =
+          result.valid && signatureValue !== undefined
+            ? yield* readTimestamp(timestampTokens, signatureValue, tsaTrust, at)
+            : covered.timestampEvidence;
+        const documentTime = documentTimestamps
+          .flatMap((entry) =>
+            entry !== undefined &&
+            entry.offset >= revisionEnd &&
+            entry.timestampEvidence.kind === "verified"
+              ? [entry.timestampEvidence.genTime]
+              : [],
+          )
+          .sort((a, b) => a.getTime() - b.getTime())[0];
+        const effectiveTime: PdfSignatureVerification["evaluationTime"] =
+          timestampEvidence.kind === "verified"
+            ? { at: timestampEvidence.genTime, source: "signatureTimestamp" }
+            : documentTime !== undefined
+              ? { at: documentTime, source: "documentTimestamp" }
+              : evaluationTime;
         const inspection = yield* inspectDetachedSignedData({ cms: der.value }).pipe(Effect.option);
         const signerCertificate = Option.getOrUndefined(inspection)?.signerCertificateDer;
         const signer =
@@ -182,7 +278,7 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
             : yield* verifyDetachedSignedDataEvidence({
                 ...cms,
                 trustedRoots: roots,
-                at,
+                at: effectiveTime.at,
               }).pipe(Effect.orElseSucceed(() => undefined));
         const trustedPath =
           trusted?.result.valid && trusted.result.chainValid ? trusted.certificatePath : [];
@@ -193,9 +289,10 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
           integrity: result.valid ? "valid" : "invalid",
           signer,
           claimedSigningTime,
-          timestampEvidence: timestampPresent ? "present" : "absent",
+          timestampEvidence,
+          evaluationTime: effectiveTime,
           trust,
-          revocation: yield* evaluateRevocation(revocation, trustedPath, at),
+          revocation: yield* evaluateRevocation(revocation, trustedPath, effectiveTime.at),
         };
       }),
   );
@@ -246,7 +343,11 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
       )
     : allSignatures;
   const signedEnds = new Set(signatures.map(({ coverage }) => coverage.revisionEnd));
-  const invalid = allSignatures.some(({ integrity }) => integrity !== "valid");
+  const invalid = allSignatures.some(
+    ({ kind, integrity }) =>
+      integrity === "invalid" || (kind === "signature" && integrity !== "valid"),
+  );
+  const hasNewSignature = signatures.some(({ kind }) => kind === "signature");
   const pageContentChanged = changes?.pageContentChanged ?? false;
   const unexpected =
     changes?.recognised.some(
@@ -268,7 +369,7 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
   if (trailingBytes) reasons.push("trailingUnparsedBytes");
   if (unknown) reasons.push("unknownObjects");
   if (untrusted) reasons.push("untrustedSignature");
-  if (signatures.length === 0) reasons.push("noNewSignatures");
+  if (!hasNewSignature) reasons.push("noNewSignatures");
 
   return {
     sentPreserved,
@@ -285,7 +386,7 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
             ? "unknownChanges"
             : untrusted
               ? "untrustedSignatures"
-              : signatures.length === 0
+              : !hasNewSignature
                 ? "noSignatures"
                 : "signedAsExpected",
     reasons,
