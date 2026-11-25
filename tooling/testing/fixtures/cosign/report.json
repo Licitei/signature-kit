@@ -1,0 +1,221 @@
+{
+  "sentPreserved": true,
+  "sentRevisionIndex": 1,
+  "signatures": [
+    {
+      "fieldName": "Contratante",
+      "integrity": "valid",
+      "coverage": {
+        "kind": "partial",
+        "revisionEnd": 8423,
+        "bytesAfter": 7058
+      },
+      "signer": {
+        "commonName": "SignatureKit Test Person",
+        "brazilian": {
+          "cnpj": null,
+          "cpf": "00000000001"
+        },
+        "holderKind": "e-cpf"
+      },
+      "claimedSigningTime": "2027-01-01T00:00:00.000Z",
+      "timestampEvidence": "absent",
+      "changes": {
+        "recognised": [
+          {
+            "ref": {
+              "number": 7,
+              "generation": 0
+            },
+            "kind": "signatureField",
+            "change": "modified",
+            "revisionEnd": 15481
+          },
+          {
+            "ref": {
+              "number": 12,
+              "generation": 0
+            },
+            "kind": "signature",
+            "change": "added",
+            "revisionEnd": 15481
+          },
+          {
+            "ref": {
+              "number": 13,
+              "generation": 0
+            },
+            "kind": "widgetAppearance",
+            "change": "added",
+            "revisionEnd": 15481
+          },
+          {
+            "ref": {
+              "number": 14,
+              "generation": 0
+            },
+            "kind": "widgetAppearance",
+            "change": "added",
+            "revisionEnd": 15481
+          },
+          {
+            "ref": {
+              "number": 15,
+              "generation": 0
+            },
+            "kind": "widgetAppearance",
+            "change": "added",
+            "revisionEnd": 15481
+          }
+        ],
+        "unknown": [],
+        "recognisedObjectCount": 5,
+        "unknownObjectCount": 0,
+        "pageContentChanged": false
+      },
+      "trust": "trusted",
+      "revocation": {
+        "kind": "notChecked"
+      }
+    },
+    {
+      "fieldName": "Contratada",
+      "integrity": "valid",
+      "coverage": {
+        "kind": "wholeFile",
+        "revisionEnd": 15481,
+        "bytesAfter": 0
+      },
+      "signer": {
+        "commonName": "SignatureKit Test Company",
+        "brazilian": {
+          "cnpj": "00000000000002",
+          "cpf": null
+        },
+        "holderKind": "e-cnpj"
+      },
+      "claimedSigningTime": "2027-01-01T00:00:00.000Z",
+      "timestampEvidence": "absent",
+      "changes": {
+        "recognised": [],
+        "unknown": [],
+        "recognisedObjectCount": 0,
+        "unknownObjectCount": 0,
+        "pageContentChanged": false
+      },
+      "trust": "trusted",
+      "revocation": {
+        "kind": "notChecked"
+      }
+    }
+  ],
+  "changes": {
+    "recognised": [
+      {
+        "ref": {
+          "number": 1,
+          "generation": 0
+        },
+        "kind": "acroForm",
+        "change": "modified",
+        "revisionEnd": 8423
+      },
+      {
+        "ref": {
+          "number": 6,
+          "generation": 0
+        },
+        "kind": "signatureField",
+        "change": "modified",
+        "revisionEnd": 8423
+      },
+      {
+        "ref": {
+          "number": 8,
+          "generation": 0
+        },
+        "kind": "signature",
+        "change": "added",
+        "revisionEnd": 8423
+      },
+      {
+        "ref": {
+          "number": 9,
+          "generation": 0
+        },
+        "kind": "widgetAppearance",
+        "change": "added",
+        "revisionEnd": 8423
+      },
+      {
+        "ref": {
+          "number": 10,
+          "generation": 0
+        },
+        "kind": "widgetAppearance",
+        "change": "added",
+        "revisionEnd": 8423
+      },
+      {
+        "ref": {
+          "number": 11,
+          "generation": 0
+        },
+        "kind": "widgetAppearance",
+        "change": "added",
+        "revisionEnd": 8423
+      },
+      {
+        "ref": {
+          "number": 7,
+          "generation": 0
+        },
+        "kind": "signatureField",
+        "change": "modified",
+        "revisionEnd": 15481
+      },
+      {
+        "ref": {
+          "number": 12,
+          "generation": 0
+        },
+        "kind": "signature",
+        "change": "added",
+        "revisionEnd": 15481
+      },
+      {
+        "ref": {
+          "number": 13,
+          "generation": 0
+        },
+        "kind": "widgetAppearance",
+        "change": "added",
+        "revisionEnd": 15481
+      },
+      {
+        "ref": {
+          "number": 14,
+          "generation": 0
+        },
+        "kind": "widgetAppearance",
+        "change": "added",
+        "revisionEnd": 15481
+      },
+      {
+        "ref": {
+          "number": 15,
+          "generation": 0
+        },
+        "kind": "widgetAppearance",
+        "change": "added",
+        "revisionEnd": 15481
+      }
+    ],
+    "unknown": [],
+    "recognisedObjectCount": 11,
+    "unknownObjectCount": 0,
+    "pageContentChanged": false
+  },
+  "verdict": "signedAsExpected",
+  "reasons": []
+}

@@ -78,6 +78,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.openSigningDocument",
   "pdfCore.signatureFields",
   "pdfCore.prepareSignature",
+  "pdfCore.addSignatureFields",
   "pdfCore.revisionChanges",
   "pdfCore.revision",
   "pdfCore.document",
@@ -103,6 +104,7 @@ export const PdfCoreOperationValue = {
   openSigningDocument: "pdfCore.openSigningDocument",
   signatureFields: "pdfCore.signatureFields",
   prepareSignature: "pdfCore.prepareSignature",
+  addSignatureFields: "pdfCore.addSignatureFields",
   revisionChanges: "pdfCore.revisionChanges",
   revision: "pdfCore.revision",
   document: "pdfCore.document",
@@ -433,6 +435,9 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_signature_fields: Schema.optional(
     Schema.declare(isBufferFunction, { identifier: "pdf_core_signature_fields" }),
   ),
+  pdf_core_add_signature_fields: Schema.optional(
+    Schema.declare(isEditFunction, { identifier: "pdf_core_add_signature_fields" }),
+  ),
   pdf_core_prepare_signature_update: Schema.optional(
     Schema.declare(isEditFunction, { identifier: "pdf_core_prepare_signature_update" }),
   ),
@@ -739,6 +744,19 @@ const pdfSignatureAppearanceSchema = Schema.Union([
   }),
 ]);
 
+const pdfSignaturePlacement = {
+  name: pdfSignatureNameSchema,
+  page: pageIndexSchema,
+  rect: PdfCoreBoxSchema,
+};
+export const PdfCoreNewSignatureFieldsSchema = Schema.NonEmptyArray(
+  Schema.Struct({
+    ...pdfSignaturePlacement,
+    lock: Schema.optional(pdfSignatureLockSchema),
+  }),
+).check(Schema.isMaxLength(10_000));
+export type PdfCoreNewSignatureFields = (typeof PdfCoreNewSignatureFieldsSchema)["Type"];
+
 export const PdfCorePrepareSignatureRequestSchema = Schema.Struct({
   field: Schema.Union([
     Schema.Struct({
@@ -747,9 +765,7 @@ export const PdfCorePrepareSignatureRequestSchema = Schema.Struct({
     }),
     Schema.Struct({
       kind: Schema.Literal("create"),
-      name: pdfSignatureNameSchema,
-      page: pageIndexSchema,
-      rect: PdfCoreBoxSchema,
+      ...pdfSignaturePlacement,
     }),
   ]),
   appearance: pdfSignatureAppearanceSchema,
@@ -839,6 +855,7 @@ export const PdfCoreRevisionChangeKindSchema = Schema.Literals([
 ]);
 export const PdfCoreRevisionEndSchema = byteOffsetSchema;
 export const PdfCoreRevisionChangesSchema = Schema.Struct({
+  fromRevisionIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   changes: Schema.Array(
     Schema.Struct({
       ref: PdfCoreObjectRefSchema,

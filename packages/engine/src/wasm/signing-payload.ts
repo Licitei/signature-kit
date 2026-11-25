@@ -1,5 +1,5 @@
 import { PdfCoreRevisionChangeKindSchema } from "./config.js";
-import type { PdfCorePrepareSignatureRequest } from "./config.js";
+import type { PdfCoreNewSignatureFields, PdfCorePrepareSignatureRequest } from "./config.js";
 
 const utf8Encoder = new TextEncoder();
 const utf8 = new TextDecoder();
@@ -58,6 +58,28 @@ const preparedMagic = 0x4f505350;
 const changesMagic = 0x48435350;
 const absentPage = 0xffffffff;
 
+const writeLock = (writer: PayloadWriter, lock: PdfCorePrepareSignatureRequest["lock"]) => {
+  const lockActions = { All: 1, Include: 2, Exclude: 3 };
+  writer.u32(lock === undefined ? 0 : lockActions[lock.action]);
+  if (lock !== undefined) {
+    const fields = lock.action === "All" ? [] : lock.fields;
+    writer.u32(fields.length);
+    fields.forEach(writer.text);
+  }
+};
+
+export const encodeNewSignatureFields = (fields: PdfCoreNewSignatureFields) => {
+  const writer = payloadWriter();
+  writer.u32(fields.length);
+  for (const { name, page, rect, lock } of fields) {
+    writer.text(name);
+    writer.u32(page);
+    rect.forEach(writer.f64);
+    writeLock(writer, lock);
+  }
+  return writer.finish();
+};
+
 export const encodePrepareSignature = (request: PdfCorePrepareSignatureRequest): Uint8Array => {
   const writer = payloadWriter();
   writer.u32(prepareMagic);
@@ -78,13 +100,7 @@ export const encodePrepareSignature = (request: PdfCorePrepareSignatureRequest):
     writer.u32(value === undefined ? 0 : 1);
     if (value !== undefined) writer.text(value);
   }
-  const lockActions = { All: 1, Include: 2, Exclude: 3 };
-  writer.u32(lock === undefined ? 0 : lockActions[lock.action]);
-  if (lock !== undefined) {
-    const fields = lock.action === "All" ? [] : lock.fields;
-    writer.u32(fields.length);
-    fields.forEach(writer.text);
-  }
+  writeLock(writer, lock);
   writer.u32(appearance.kind === "visible" ? 1 : 0);
   if (appearance.kind === "visible") {
     writer.u32(appearance.lines.length);
@@ -252,6 +268,7 @@ export const decodeRevisionChanges = (bytes: Uint8Array) => {
   const reader = new PayloadReader(bytes);
   if (!reader.header(changesMagic)) return undefined;
   const pageContentChanged = reader.u32() === 1;
+  const fromRevisionIndex = reader.u32();
   const changes = reader.list(20, () => {
     const ref = reader.ref();
     const kind = PdfCoreRevisionChangeKindSchema.literals[reader.u32()];
@@ -259,5 +276,5 @@ export const decodeRevisionChanges = (bytes: Uint8Array) => {
     const change = status === 1 ? "added" : status === 2 ? "removed" : "modified";
     return { ref, kind, change, revisionEnd: reader.u32() };
   });
-  return reader.done() ? { changes, pageContentChanged } : undefined;
+  return reader.done() ? { changes, pageContentChanged, fromRevisionIndex } : undefined;
 };

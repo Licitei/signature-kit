@@ -17,11 +17,13 @@ import type { RpcClientError } from "effect/rpc/RpcClientError";
 import { LocalTelemetry, LocalError, LocalRpcs, PROTOCOL_VERSION } from "@signature-kit/engine/rpc";
 import type {
   A1OpenInput,
+  ComparisonReport,
   A1SessionInfo,
   Handle,
   InstanceId,
   PdfComposeInput,
   PdfInspection,
+  PdfNewSignatureFields,
   PdfPagePixels,
   PdfRenderInput,
   PdfPreparation,
@@ -50,6 +52,15 @@ export class LocalClient extends Context.Service<
     readonly pdfSignatureFields: (
       revision: RevisionRef,
     ) => Effect.Effect<PdfSignatureFields, LocalError>;
+    readonly addPdfSignatureFields: (
+      revision: RevisionRef,
+      fields: PdfNewSignatureFields,
+    ) => Effect.Effect<RevisionRef, LocalError>;
+    readonly comparePdf: (
+      sent: RevisionRef,
+      returned: RevisionRef,
+      options?: PdfVerifyOptions,
+    ) => Effect.Effect<ComparisonReport, LocalError>;
     readonly preparePdf: (
       revision: RevisionRef,
       options: PdfPrepareOptions,
@@ -169,6 +180,10 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
                       rpc.TelemetryDrain(undefined).pipe(Effect.withTracerEnabled(false)),
                     ).pipe(Effect.flatMap(telemetry.receive)),
             pdfSignatureFields: (revision) => call(() => rpc.PdfSignatureFields({ revision })),
+            addPdfSignatureFields: (revision, fields) =>
+              call(() => rpc.PdfAddSignatureFields({ revision, fields })),
+            comparePdf: (sent, returned, options = {}) =>
+              call(() => rpc.PdfCompare({ sent, returned, options })),
             preparePdf: (revision, options) => call(() => rpc.PdfPrepare({ revision, options })),
             confirmPdf: (preparationId) => call(() => rpc.PdfConfirm({ preparationId })),
             releasePdf: (preparationId) => call(() => rpc.PdfRelease({ preparationId })),

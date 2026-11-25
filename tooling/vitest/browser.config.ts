@@ -1,11 +1,16 @@
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-runtime-network.ts";
+import { runCosignMilestone } from "./cosign-command.ts";
 
 export default defineConfig({
   assetsInclude: ["**/*.p12"],
   optimizeDeps: {
-    entries: ["packages/**/*.browser.test.ts", "packages/browser/src/worker{,-telemetry}.ts"],
+    entries: [
+      "packages/**/*.browser.test.ts",
+      "packages/browser/src/worker{,-telemetry}.ts",
+      "packages/browser/__tests__/cosign-page.ts",
+    ],
     include: [
       "@effect/opentelemetry",
       "@effect/platform-browser/BrowserRuntime",
@@ -28,7 +33,7 @@ export default defineConfig({
     },
     browser: {
       enabled: true,
-      commands: { blockLocalRuntimeNetwork, trackLocalRuntimeRequests },
+      commands: { blockLocalRuntimeNetwork, trackLocalRuntimeRequests, runCosignMilestone },
       headless: true,
       provider: playwright(),
       instances: [{ browser: "chromium" }],

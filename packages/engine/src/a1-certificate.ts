@@ -21,17 +21,18 @@ const isSequence = (
 ): node is Extract<Asn1Node, { kind: "constructed" }> =>
   node?.kind === "constructed" && node.class === "universal" && node.tag === 16;
 
-const holderKind = Effect.fn(function* (der: Uint8Array) {
+export const icpBrasilIdentity = Effect.fn(function* (der: Uint8Array) {
   const certificate = yield* decode(der);
   const tbs = isSequence(certificate) ? certificate.children[0] : undefined;
   const wrapper = isSequence(tbs)
     ? tbs.children.find((node) => node.class === "context" && node.tag === 3)
     : undefined;
   const extensions = wrapper?.kind === "constructed" ? wrapper.children[0] : undefined;
-  if (!isSequence(extensions)) return "other";
-
-  let cpf = false;
-  for (const extension of extensions.children) {
+  let cpf: string | null = null;
+  let cnpj: string | null = null;
+  let person = false;
+  let company = false;
+  for (const extension of isSequence(extensions) ? extensions.children : []) {
     if (!isSequence(extension)) continue;
     const oid = extension.children[0];
     const value = extension.children.at(-1);
@@ -54,21 +55,37 @@ const holderKind = Effect.fn(function* (der: Uint8Array) {
       }
 
       const id = yield* oidString(type);
-      if (id === "2.16.76.1.3.3") return "e-cnpj";
-      if (id === "2.16.76.1.3.1") cpf = true;
+      const value = otherName.children[0];
+      if (value?.kind !== "primitive" || value.class !== "universal") continue;
+      const text = new TextDecoder().decode(value.bytes);
+      if (id === "2.16.76.1.3.3") {
+        company = true;
+        cnpj = /^(\d{14})$/.exec(text)?.[1] ?? null;
+      }
+      if (id === "2.16.76.1.3.1") {
+        person = true;
+        cpf =
+          /^(?:\d{8})?(\d{11})$/.exec(text)?.[1] ?? /^\d{8}(\d{11})\d+$/.exec(text)?.[1] ?? null;
+      }
     }
   }
-  return cpf ? "e-cpf" : "other";
+  return {
+    holderKind: company ? "e-cnpj" : person ? "e-cpf" : "other",
+    brazilian: { cpf, cnpj },
+  } satisfies {
+    holderKind: A1Profile["holderKind"];
+    brazilian: { cpf: string | null; cnpj: string | null };
+  };
 });
 
 export const a1Profile = Effect.fn(function* (der: Uint8Array) {
-  const [certificate, kind, fingerprintSha256] = yield* Effect.all([
+  const [certificate, identity, fingerprintSha256] = yield* Effect.all([
     parseX509(der).pipe(Effect.mapError(() => new LocalError({ code: "invalidPkcs12" }))),
-    holderKind(der).pipe(Effect.mapError(() => new LocalError({ code: "invalidPkcs12" }))),
+    icpBrasilIdentity(der).pipe(Effect.mapError(() => new LocalError({ code: "invalidPkcs12" }))),
     sha256Hex(new Uint8Array(der)),
   ]);
   return {
-    holderKind: kind,
+    holderKind: identity.holderKind,
     subjectName: certificate.subject.commonName ?? certificate.subject.raw,
     notBefore: certificate.validity.notBefore,
     notAfter: certificate.validity.notAfter,

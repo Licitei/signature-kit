@@ -126,6 +126,10 @@ allow requests from the page's origin.
 
 ## PDF signatures
 
+Use `addPdfSignatureFields(source, fields)` to place named empty signature widgets before
+sending a PDF for signature. It returns a new revision with all supplied fields. Each placement
+takes a name, zero-based page index, and rectangle in PDF points.
+
 Call `preparePdf(source, options)` with an A1 session id and generation. Choose an existing
 unsigned signature field by name, or supply a new name, zero-based page index, and
 `[left, bottom, right, top]` rectangle in PDF points. A visible appearance uses the certificate
@@ -142,8 +146,14 @@ revision with `exportDocument(receipt.signedRevision.handle)`.
 Use `releasePdf(preparationId)` to discard the preparation or its retained receipt. Release the
 source, preview, and signed document handles independently with `releaseDocument`. An open PDF
 can be inspected with `pdfSignatureFields` and verified with `verifyPdf`. Trust evaluation
-requires explicit DER roots and accepts an optional evaluation date. Embedded CMS revocation
-evidence is reported as present.
+requires explicit DER roots and accepts an optional evaluation date.
+
+Open both the sent and returned PDFs and call `comparePdf(sent, returned, { trust, at })`.
+The report identifies the preserved revision, new signatures, their coverage and trust, and
+changes across the returned revisions. Embedded CMS revocation evidence carries OCSP and CRL
+counts. Its status is `embeddedEvidence`. Use `exportComparisonReport` from
+`@signature-kit/engine/rpc` to archive the report as JSON in stable key order. The report can
+contain signer CPF and CNPJ values.
 
 For a Node runtime, assemble `pdfSignaturesLayer` from `@signature-kit/engine/pdf-signatures`
 with `pdfEngineLayer`, `localRuntimeLayer()` and a `PdfCore` layer. The worker supplies its own browser WASM layer.
