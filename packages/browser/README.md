@@ -123,3 +123,30 @@ the page assembly boundary. Its scoped background worker pulls and exports
 allowlisted span records periodically. Failed transient exports return their
 batch to the bounded page buffer after a limited retry. The collector must
 allow requests from the page's origin.
+
+## PDF signatures
+
+Call `preparePdf(source, options)` with an A1 session id and generation. Choose an existing
+unsigned signature field by name, or supply a new name, zero-based page index, and
+`[left, bottom, right, top]` rectangle in PDF points. A visible appearance uses the certificate
+holder name, holder kind, and preparation date unless you supply `appearance.lines`. Choose
+`cades` or `icpBrasilAdRbV11` for the signing policy.
+
+Pass `previewRevision.handle` to `renderPage` or `paintPage`, then use `pdfToCanvasRect`
+with the returned widget rectangle to place a highlight on the preview.
+Call `confirmPdf(preparationId)` after approval. It checks the session and certificate at
+confirmation time, embeds the detached CMS, and verifies the incremental revision before
+returning a receipt. Repeated confirmation returns the retained receipt. Export the signed
+revision with `exportDocument(receipt.signedRevision.handle)`.
+
+Use `releasePdf(preparationId)` to discard the preparation or its retained receipt. Release the
+source, preview, and signed document handles independently with `releaseDocument`. An open PDF
+can be inspected with `pdfSignatureFields` and verified with `verifyPdf`. Trust evaluation
+requires explicit DER roots and accepts an optional evaluation date. Embedded CMS revocation
+evidence is reported as present.
+
+For a Node runtime, assemble `pdfSignaturesLayer` from `@signature-kit/engine/pdf-signatures`
+with `pdfEngineLayer`, `localRuntimeLayer()` and a `PdfCore` layer. The worker supplies its own browser WASM layer.
+
+See [warm A1 signing benchmarks](../engine/docs/signing-performance.md) for the Node and
+Chromium worker measurements and WASM copy breakdown.

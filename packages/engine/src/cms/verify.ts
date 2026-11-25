@@ -1,13 +1,17 @@
 import { Effect, Schema } from "effect";
 import * as pkijs from "pkijs";
 import {
-  VerifyDetachedSignedDataInputSchema,
+  VerifyDetachedSignedDataEvidenceInputSchema,
   CmsError,
   CmsErrorCodeValue,
   CmsOid,
   CmsOperationValue,
 } from "./config.js";
-import type { CmsVerifyResult, VerifyDetachedSignedDataInput } from "./config.js";
+import type {
+  CmsVerifyResult,
+  VerifyDetachedSignedDataEvidenceInput,
+  VerifyDetachedSignedDataInput,
+} from "./config.js";
 
 const isUint8Array = (value: unknown): value is Uint8Array =>
   Object.prototype.toString.call(value) === "[object Uint8Array]";
@@ -43,10 +47,13 @@ const signerSerialHex = (signed: pkijs.SignedData): string | null => {
   return output;
 };
 
-export const verifyDetachedSignedData = Effect.fn(CmsOperationValue.verify)(function* (
-  input: VerifyDetachedSignedDataInput,
-): Effect.fn.Return<CmsVerifyResult, CmsError> {
-  const valid = yield* Schema.decodeUnknownEffect(VerifyDetachedSignedDataInputSchema)(input).pipe(
+const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
+  input: VerifyDetachedSignedDataEvidenceInput,
+  checkRevocation: boolean,
+) {
+  const valid = yield* Schema.decodeUnknownEffect(VerifyDetachedSignedDataEvidenceInputSchema)(
+    input,
+  ).pipe(
     Effect.mapError(
       (issue) =>
         new CmsError({
@@ -100,10 +107,13 @@ export const verifyDetachedSignedData = Effect.fn(CmsOperationValue.verify)(func
   }
   if (signed.encapContentInfo.eContent !== undefined) {
     return {
-      valid: false,
-      chainValid: false,
-      revocationStatus: "not_checked",
-      signerSerialNumber: signerSerialHex(signed),
+      result: {
+        valid: false,
+        chainValid: false,
+        revocationStatus: "not_checked",
+        signerSerialNumber: signerSerialHex(signed),
+      } satisfies CmsVerifyResult,
+      embeddedRevocation: false,
     };
   }
 
@@ -130,11 +140,17 @@ export const verifyDetachedSignedData = Effect.fn(CmsOperationValue.verify)(func
     "signature_kit.cms.chain_checked": checkChain,
   });
 
+  const embeddedRevocation = hasRecognizedRevocation(signed);
+  if (!checkRevocation) {
+    delete signed.crls;
+    delete signed.ocsps;
+  }
   const verification = yield* Effect.promise(() =>
     signed.verify({
       signer: 0,
       data: new Uint8Array(valid.content).buffer,
       checkChain,
+      ...(valid.at === undefined ? {} : { checkDate: valid.at }),
       trustedCerts,
       passedWhenNotRevValues: false,
       extendedMode: true,
@@ -157,7 +173,8 @@ export const verifyDetachedSignedData = Effect.fn(CmsOperationValue.verify)(func
   const result: CmsVerifyResult = {
     valid: verification.signatureVerified === true,
     chainValid: checkChain ? verification.signerCertificateVerified === true : false,
-    revocationStatus: checkChain && hasRecognizedRevocation(signed) ? "checked" : "not_checked",
+    revocationStatus:
+      checkChain && checkRevocation && embeddedRevocation ? "checked" : "not_checked",
     signerSerialNumber: serial,
   };
   yield* Effect.annotateCurrentSpan({
@@ -165,5 +182,13 @@ export const verifyDetachedSignedData = Effect.fn(CmsOperationValue.verify)(func
     "signature_kit.cms.chain_valid": result.chainValid,
     "signature_kit.cms.revocation_status": result.revocationStatus,
   });
-  return result;
+  return { result, embeddedRevocation };
 });
+
+export const verifyDetachedSignedDataEvidence = (input: VerifyDetachedSignedDataEvidenceInput) =>
+  verifySignedData(input, false);
+
+export const verifyDetachedSignedData = (
+  input: VerifyDetachedSignedDataInput,
+): Effect.Effect<CmsVerifyResult, CmsError> =>
+  verifySignedData(input, true).pipe(Effect.map(({ result }) => result));

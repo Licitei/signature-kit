@@ -26,6 +26,7 @@
     "paths": {
       "@signature-kit/engine/rpc": ["../../packages/engine/src/rpc.ts"],
       "@signature-kit/engine/engine": ["../../packages/engine/src/engine.ts"],
+      "@signature-kit/engine/pdf-signatures": ["../../packages/engine/src/pdf-signatures.ts"],
       "@signature-kit/engine/telemetry": ["../../packages/engine/src/telemetry.ts"],
       "@signature-kit/engine/wasm/config": ["../../packages/engine/src/wasm/config.ts"],
       "@signature-kit/engine/wasm/pdf-core": ["../../packages/engine/src/wasm/pdf-core.ts"],

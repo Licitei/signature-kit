@@ -23,6 +23,13 @@ import type {
   PdfInspection,
   PdfPagePixels,
   PdfRenderInput,
+  PdfPreparation,
+  PdfPrepareOptions,
+  PdfReceipt,
+  PdfSignatureFields,
+  PdfVerificationReport,
+  PdfVerifyOptions,
+  PreparationId,
   RevisionRef,
 } from "@signature-kit/engine/rpc";
 
@@ -38,6 +45,19 @@ export class LocalClient extends Context.Service<
     readonly openA1: (input: A1OpenInput) => Effect.Effect<A1SessionInfo, LocalError>;
     readonly collectTelemetry: () => Effect.Effect<void, LocalError>;
     readonly closeA1: () => Effect.Effect<void, LocalError>;
+    readonly pdfSignatureFields: (
+      revision: RevisionRef,
+    ) => Effect.Effect<PdfSignatureFields, LocalError>;
+    readonly preparePdf: (
+      revision: RevisionRef,
+      options: PdfPrepareOptions,
+    ) => Effect.Effect<PdfPreparation, LocalError>;
+    readonly confirmPdf: (preparationId: PreparationId) => Effect.Effect<PdfReceipt, LocalError>;
+    readonly releasePdf: (preparationId: PreparationId) => Effect.Effect<void, LocalError>;
+    readonly verifyPdf: (
+      revision: RevisionRef,
+      options?: PdfVerifyOptions,
+    ) => Effect.Effect<PdfVerificationReport, LocalError>;
   }
 >()("@signature-kit/browser/LocalClient") {}
 
@@ -145,6 +165,11 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
                     call(() =>
                       rpc.TelemetryDrain(undefined).pipe(Effect.withTracerEnabled(false)),
                     ).pipe(Effect.flatMap(telemetry.receive)),
+            pdfSignatureFields: (revision) => call(() => rpc.PdfSignatureFields({ revision })),
+            preparePdf: (revision, options) => call(() => rpc.PdfPrepare({ revision, options })),
+            confirmPdf: (preparationId) => call(() => rpc.PdfConfirm({ preparationId })),
+            releasePdf: (preparationId) => call(() => rpc.PdfRelease({ preparationId })),
+            verifyPdf: (revision, options = {}) => call(() => rpc.PdfVerify({ revision, options })),
           });
         }),
       ).pipe(

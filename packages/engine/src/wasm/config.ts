@@ -75,6 +75,7 @@ export const PdfCoreOperationSchema = Schema.Literals([
   "pdfCore.render",
   "pdfCore.paint",
   "pdfCore.signatures",
+  "pdfCore.openSigningDocument",
   "pdfCore.signatureFields",
   "pdfCore.prepareSignature",
   "pdfCore.revisionChanges",
@@ -99,6 +100,7 @@ export const PdfCoreOperationValue = {
   render: "pdfCore.render",
   paint: "pdfCore.paint",
   signatures: "pdfCore.signatures",
+  openSigningDocument: "pdfCore.openSigningDocument",
   signatureFields: "pdfCore.signatureFields",
   prepareSignature: "pdfCore.prepareSignature",
   revisionChanges: "pdfCore.revisionChanges",
@@ -430,6 +432,9 @@ export const PdfCoreExportsSchema = Schema.Struct({
   pdf_core_signatures: Schema.declare(isSignaturesFunction, { identifier: "pdf_core_signatures" }),
   pdf_core_signature_fields: Schema.optional(
     Schema.declare(isBufferFunction, { identifier: "pdf_core_signature_fields" }),
+  ),
+  pdf_core_prepare_signature_update: Schema.optional(
+    Schema.declare(isEditFunction, { identifier: "pdf_core_prepare_signature_update" }),
   ),
   pdf_core_prepare_signature: Schema.optional(
     Schema.declare(isEditFunction, { identifier: "pdf_core_prepare_signature" }),
@@ -778,6 +783,14 @@ export const PdfCorePreparedSignatureSchema = Schema.Struct({
   sha512: Schema.optional(Schema.Uint8Array),
 });
 export type PdfCorePreparedSignature = (typeof PdfCorePreparedSignatureSchema)["Type"];
+
+export const PdfCorePreparedUpdateSchema = Schema.Struct({
+  appendix: Schema.Uint8Array,
+  byteRange: pdfSignatureByteRangeSchema,
+  contentsStart: byteOffsetSchema,
+  contentsEnd: byteOffsetSchema,
+});
+export type PdfCorePreparedUpdate = (typeof PdfCorePreparedUpdateSchema)["Type"];
 
 export const PdfCoreSignatureFieldsSchema = Schema.Struct({
   fields: Schema.Array(

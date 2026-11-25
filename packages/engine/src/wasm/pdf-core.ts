@@ -27,6 +27,7 @@ import {
   PdfCoreRevisionEndSchema,
   PdfCoreRevisionChangesSchema,
   PdfCorePreparedSignatureSchema,
+  PdfCorePreparedUpdateSchema,
   PdfCorePrepareSignatureRequestSchema,
   PdfCoreRenderOptionsSchema,
   PdfCoreSchemaNameValue,
@@ -65,6 +66,7 @@ import type {
   PdfCoreSignatureFields,
   PdfCoreRevisionChanges,
   PdfCorePreparedSignature,
+  PdfCorePreparedUpdate,
   PdfCorePrepareSignatureRequest,
   PdfCoreRenderOptions,
   PdfCoreSchemaName,
@@ -80,6 +82,7 @@ import type {
 import type { PayloadWriter } from "./signing-payload.js";
 import {
   decodePreparedSignature,
+  decodePreparedUpdate,
   decodeRevisionChanges,
   decodeSignatureFields,
   encodePrepareSignature,
@@ -122,6 +125,17 @@ export const pdfCoreBlobSource = (blob: Blob): PdfCoreRangeSource => ({
     }),
 });
 
+export type PdfCoreSigningSession = {
+  readonly fields: Effect.Effect<PdfCoreSignatureFields, PdfCoreError>;
+  readonly prepare: (
+    request: PdfCorePrepareSignatureRequest,
+  ) => Effect.Effect<PdfCorePreparedUpdate, PdfCoreError>;
+  readonly signatures: (
+    analysis: PdfCoreSignatureAnalysis,
+  ) => Effect.Effect<PdfCoreSignatureReport, PdfCoreError>;
+  readonly changes: (from: number) => Effect.Effect<PdfCoreRevisionChanges, PdfCoreError>;
+};
+
 export type PdfCoreService = {
   readonly openLazy: (
     source: PdfCoreRangeSource,
@@ -155,6 +169,9 @@ export type PdfCoreService = {
     pdf: Uint8Array,
     request: PdfCorePrepareSignatureRequest,
   ) => Effect.Effect<PdfCorePreparedSignature, PdfCoreError>;
+  readonly openSigningDocument: (
+    pdf: Uint8Array,
+  ) => Effect.Effect<PdfCoreSigningSession, PdfCoreError, Scope.Scope>;
   readonly revisionChanges: (
     pdf: Uint8Array,
     fromRevisionEnd: number,
@@ -388,6 +405,9 @@ const writeOperation = (writer: PayloadWriter, operation: PdfCoreEditOperation):
 const align8 = (value: number): number => (value + 7) & ~7;
 
 type Allocation = { readonly pointer: number; readonly length: number };
+type SigningInput = (
+  operation: PdfCoreOperation,
+) => Effect.Effect<Allocation, PdfCoreError, Scope.Scope>;
 type ResultBlock = {
   readonly memory: ArrayBuffer;
   readonly pointer: number;
@@ -526,7 +546,12 @@ export const makePdfCore = (
         ),
         Effect.withSpan(
           "pdfCore.wasm.copyIn",
-          { attributes: { "signature_kit.wasm.input_bytes": bytes.byteLength } },
+          {
+            attributes: {
+              "signature_kit.wasm.input_bytes": bytes.byteLength,
+              "signature_kit.pdf_core.operation": operation,
+            },
+          },
           { captureStackTrace: false },
         ),
       );
@@ -587,12 +612,23 @@ export const makePdfCore = (
       block: ResultBlock,
     ): Effect.Effect<Uint8Array, PdfCoreError> =>
       new DataView(block.memory, block.pointer, block.length).getUint32(4, true) === STATUS_OK
-        ? Effect.succeed(
+        ? Effect.sync(() =>
             new Uint8Array(
               block.memory,
               block.pointer + RESULT_HEADER_BYTES,
               block.length - RESULT_HEADER_BYTES,
             ).slice(),
+          ).pipe(
+            Effect.withSpan(
+              "pdfCore.wasm.copyOut",
+              {
+                attributes: {
+                  "signature_kit.wasm.output_bytes": block.length - RESULT_HEADER_BYTES,
+                  "signature_kit.pdf_core.operation": operation,
+                },
+              },
+              { captureStackTrace: false },
+            ),
           )
         : failStatus(operation, block);
 
@@ -947,7 +983,7 @@ export const makePdfCore = (
               bbox: box(cellAt + 16),
               text: utf8.decode(
                 new Uint8Array(
-                  block.memory,
+                  core.memory.buffer,
                   block.pointer + blobAt + view.getUint32(cellAt + 48, true),
                   view.getUint32(cellAt + 52, true),
                 ),
@@ -1127,23 +1163,28 @@ export const makePdfCore = (
         );
       });
 
+    const signingInput =
+      (pdf: Uint8Array): SigningInput =>
+      (operation) =>
+        copyIn(operation, pdf);
+
     const signatures = Effect.fn(PdfCoreOperationValue.signatures)(function* (
-      pdf: Uint8Array,
+      pdf: SigningInput,
       rawAnalysis: PdfCoreSignatureAnalysis,
     ) {
       const operation = PdfCoreOperationValue.signatures;
       const analysis = yield* Schema.decodeUnknownEffect(PdfCoreSignatureAnalysisSchema)(
         rawAnalysis,
       ).pipe(Effect.mapError(invalidOptions(operation)));
-      yield* Effect.annotateCurrentSpan({
-        "signature_kit.pdf.bytes": pdf.byteLength,
-        "signature_kit.pdf.signature_analysis": analysis,
-      });
       const report = yield* Effect.scoped(
         Effect.gen(function* () {
-          const input = yield* copyIn(operation, pdf);
+          const input = yield* pdf(operation);
+          yield* Effect.annotateCurrentSpan({
+            "signature_kit.pdf.bytes": input.length,
+            "signature_kit.pdf.signature_analysis": analysis,
+          });
           const block = yield* resultBlock(operation, () =>
-            core.pdf_core_signatures(input.pointer, pdf.byteLength, SIGNATURE_MODES[analysis]),
+            core.pdf_core_signatures(input.pointer, input.length, SIGNATURE_MODES[analysis]),
           );
           return yield* decodeResult(block, decodeSignatures);
         }),
@@ -1156,7 +1197,7 @@ export const makePdfCore = (
     });
 
     const signingCall = (
-      pdf: Uint8Array,
+      pdf: SigningInput,
       operation: PdfCoreOperation,
       call:
         | ((input: Allocation) => Effect.Effect<() => number, PdfCoreError, Scope.Scope>)
@@ -1172,7 +1213,7 @@ export const makePdfCore = (
           )
         : Effect.scoped(
             Effect.gen(function* () {
-              const input = yield* copyIn(operation, pdf);
+              const input = yield* pdf(operation);
               const invoke = yield* call(input);
               const result = yield* resultBlock(operation, invoke);
               return yield* decodeResult(result, (block) => payloadBytes(operation, block));
@@ -1180,7 +1221,7 @@ export const makePdfCore = (
           );
 
     const signatureFields = Effect.fn(PdfCoreOperationValue.signatureFields)(function* (
-      pdf: Uint8Array,
+      pdf: SigningInput,
     ) {
       const operation = PdfCoreOperationValue.signatureFields;
       const entry = core.pdf_core_signature_fields;
@@ -1204,9 +1245,10 @@ export const makePdfCore = (
       );
     });
 
-    const prepareSignature = Effect.fn(PdfCoreOperationValue.prepareSignature)(function* (
-      pdf: Uint8Array,
+    const runPreparation = Effect.fn(PdfCoreOperationValue.prepareSignature)(function* (
+      pdf: SigningInput,
       inputRequest: PdfCorePrepareSignatureRequest,
+      entry: typeof core.pdf_core_prepare_signature,
     ) {
       const operation = PdfCoreOperationValue.prepareSignature;
       const request = yield* Schema.decodeUnknownEffect(PdfCorePrepareSignatureRequestSchema)(
@@ -1214,8 +1256,7 @@ export const makePdfCore = (
       ).pipe(
         Effect.mapError(invalidOptions(operation, PdfCoreSchemaNameValue.prepareSignatureRequest)),
       );
-      const entry = core.pdf_core_prepare_signature;
-      const bytes = yield* signingCall(
+      return yield* signingCall(
         pdf,
         operation,
         entry === undefined
@@ -1228,21 +1269,42 @@ export const makePdfCore = (
                 ),
               ),
       );
-      return yield* Schema.decodeUnknownEffect(PdfCorePreparedSignatureSchema)(
-        decodePreparedSignature(bytes),
-      ).pipe(
-        Effect.mapError(
-          malformedResult(
-            operation,
-            PdfCoreSchemaNameValue.preparedSignature,
-            "The PDF core returned an invalid prepared signature.",
+    });
+
+    const prepareSignature = (pdf: Uint8Array, request: PdfCorePrepareSignatureRequest) =>
+      runPreparation(signingInput(pdf), request, core.pdf_core_prepare_signature).pipe(
+        Effect.flatMap((bytes) =>
+          Schema.decodeUnknownEffect(PdfCorePreparedSignatureSchema)(
+            decodePreparedSignature(bytes),
+          ).pipe(
+            Effect.mapError(
+              malformedResult(
+                PdfCoreOperationValue.prepareSignature,
+                PdfCoreSchemaNameValue.preparedSignature,
+                "The PDF core returned an invalid prepared signature.",
+              ),
+            ),
           ),
         ),
       );
-    });
+
+    const prepareSignatureUpdate = (pdf: SigningInput, request: PdfCorePrepareSignatureRequest) =>
+      runPreparation(pdf, request, core.pdf_core_prepare_signature_update).pipe(
+        Effect.flatMap((bytes) =>
+          Schema.decodeUnknownEffect(PdfCorePreparedUpdateSchema)(decodePreparedUpdate(bytes)).pipe(
+            Effect.mapError(
+              malformedResult(
+                PdfCoreOperationValue.prepareSignature,
+                PdfCoreSchemaNameValue.preparedSignature,
+                "The PDF core returned an invalid prepared signature update.",
+              ),
+            ),
+          ),
+        ),
+      );
 
     const revisionChanges = Effect.fn(PdfCoreOperationValue.revisionChanges)(function* (
-      pdf: Uint8Array,
+      pdf: SigningInput,
       fromRevisionEnd: number,
     ) {
       const operation = PdfCoreOperationValue.revisionChanges;
@@ -1268,6 +1330,34 @@ export const makePdfCore = (
           ),
         ),
       );
+    });
+
+    const openSigningDocument = Effect.fn(PdfCoreOperationValue.openSigningDocument)(function* (
+      pdf: Uint8Array,
+    ) {
+      const operation = PdfCoreOperationValue.openSigningDocument;
+      const input = yield* copyIn(operation, pdf);
+      const lock = yield* Semaphore.make(1);
+      const closed = yield* Ref.make(false);
+      yield* Effect.addFinalizer(() => lock.withPermit(Ref.set(closed, true)));
+      const live = <A>(effect: Effect.Effect<A, PdfCoreError>) =>
+        lock.withPermit(
+          Effect.suspend(() =>
+            Ref.getUnsafe(closed)
+              ? Effect.fail(
+                  new PdfCoreError({ code: PdfCoreErrorCodeValue.documentClosed, operation }),
+                )
+              : effect,
+          ),
+        );
+
+      const resident: SigningInput = () => Effect.succeed(input);
+      return {
+        fields: live(signatureFields(resident)),
+        prepare: (request) => live(prepareSignatureUpdate(resident, request)),
+        signatures: (analysis) => live(signatures(resident, analysis)),
+        changes: (from) => live(revisionChanges(resident, from)),
+      } satisfies PdfCoreSigningSession;
     });
 
     const revisionComplete = Effect.fn(PdfCoreOperationValue.revision)(function* (
@@ -2117,10 +2207,11 @@ export const makePdfCore = (
       tables: (pdf, options) => runTables(full(pdf), options),
       pageDiagnostics: (pdf, options) => runPageDiagnostics(full(pdf), options),
       renderPages: (pdf, options) => runRenderPages(full(pdf), options),
-      signatures,
-      signatureFields,
+      signatures: (pdf, analysis) => signatures(signingInput(pdf), analysis),
+      signatureFields: (pdf) => signatureFields(signingInput(pdf)),
       prepareSignature,
-      revisionChanges,
+      openSigningDocument,
+      revisionChanges: (pdf, from) => revisionChanges(signingInput(pdf), from),
       revisionComplete,
       document,
       edit,

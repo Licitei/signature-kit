@@ -72,7 +72,7 @@ const signaturePolicyAttribute = (policy: IcpBrasilPolicy): pkijs.Attribute => {
   });
 };
 
-const compareDer = (a: Uint8Array, b: Uint8Array): number => {
+export const compareDer = (a: Uint8Array, b: Uint8Array): number => {
   const length = Math.max(a.length, b.length);
   for (let index = 0; index < length; index += 1) {
     const left = index < a.length ? a[index]! : 0;
@@ -91,6 +91,7 @@ const BuildSignedAttributesParamsSchema = Schema.Struct({
   messageDigest: Schema.Uint8Array,
   certificateSha256: Schema.Uint8Array,
   icpBrasil: Schema.optional(IcpBrasilPolicySchema),
+  signingTime: Schema.optional(Schema.Date),
 });
 type BuildSignedAttributesParams = (typeof BuildSignedAttributesParamsSchema)["Type"];
 
@@ -104,6 +105,19 @@ export const buildSignedAttributes = (
   ];
   if (params.icpBrasil !== undefined) {
     attributes.push(signaturePolicyAttribute(params.icpBrasil));
+  }
+  if (params.signingTime !== undefined) {
+    const year = params.signingTime.getUTCFullYear();
+    attributes.push(
+      new pkijs.Attribute({
+        type: CmsOid.signingTime,
+        values: [
+          year >= 1950 && year < 2050
+            ? new asn1js.UTCTime({ valueDate: params.signingTime })
+            : new asn1js.GeneralizedTime({ valueDate: params.signingTime }),
+        ],
+      }),
+    );
   }
   return sortAttributesDer(attributes);
 };

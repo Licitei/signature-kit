@@ -25,7 +25,9 @@ export type PdfCorePromiseDocument = PromiseMethods<Omit<PdfCoreLazyDocument, "s
   readonly [Symbol.asyncDispose]: () => Promise<void>;
 };
 
-export type PdfCoreClient = PromiseMethods<Omit<PdfCoreService, "openLazy">> & {
+export type PdfCoreClient = PromiseMethods<
+  Omit<PdfCoreService, "openLazy" | "openSigningDocument">
+> & {
   readonly openLazy: (
     source: PdfCorePromiseRangeSource,
     options?: PdfCoreLazyOptions,
