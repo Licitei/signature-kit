@@ -31,6 +31,14 @@ export const RpcMethod = Schema.Literals([
   "PdfVerify",
   "PdfAddSignatureFields",
   "PdfCompare",
+  "BatchPrepare",
+  "BatchConfirm",
+  "BatchCancel",
+  "BatchRetry",
+  "BatchSnapshot",
+  "BatchEvents",
+  "BatchRelease",
+  "BatchDelete",
 ]);
 const SpanName = Schema.Union([
   Schema.TemplateLiteral([Schema.Literals(["local.client.", "local.worker."]), RpcMethod]),
@@ -54,6 +62,8 @@ const SpanName = Schema.Union([
     "local.pdf.compare",
     "local.viewer.paintPage",
     "local.queue.pdf",
+    "local.batch.item.prepare",
+    "local.batch.item.confirm",
     "local.queue.raster",
     "local.a1.open",
     "local.a1.close",
@@ -77,6 +87,7 @@ export const Attribute = Schema.Union([
     Schema.Literals([
       "byteLength",
       "certificateCount",
+      "queueWaitMs",
       "signature_kit.wasm.input_bytes",
       "signature_kit.wasm.output_bytes",
       "signature_kit.wasm.result_bytes",
@@ -128,7 +139,7 @@ export class LocalTelemetry extends Context.Service<
   }
 >()("@signature-kit/engine/LocalTelemetry") {}
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
@@ -386,6 +397,18 @@ export const LocalErrorCode = Schema.Literals([
   "certificateExpired",
   "certificateNotYetValid",
   "signatureTooLarge",
+  "batchUnknown",
+  "batchTransition",
+  "batchSelection",
+  "itemExceedsBudget",
+  "batchBudgetFull",
+  "batchResumeUnavailable",
+  "batchLocked",
+  "batchStorageFailed",
+  "batchStorageQuota",
+  "batchStorageCorrupt",
+  "batchExecutionFailed",
+  "batchResumeMismatch",
   "selfVerificationFailed",
 ]);
 export type LocalErrorCode = (typeof LocalErrorCode)["Type"];
@@ -420,6 +443,18 @@ export const localErrorMessages = {
   certificateExpired: "The signing certificate has expired.",
   certificateNotYetValid: "The signing certificate is not yet valid.",
   signatureTooLarge: "The CMS signature exceeds the reserved PDF contents capacity.",
+  batchUnknown: "The batch is no longer available.",
+  batchTransition: "The requested transition is unavailable in the current batch state.",
+  batchSelection: "The selection does not match the eligible batch items.",
+  itemExceedsBudget: "The item exceeds the total batch byte budget.",
+  batchBudgetFull: "The remaining batch byte budget cannot hold this item for review.",
+  batchResumeUnavailable: "This worker does not have batch persistence enabled.",
+  batchLocked: "Another runtime owns the batch resume record.",
+  batchStorageFailed: "The batch resume record could not be read or written.",
+  batchStorageQuota: "The browser storage quota was exceeded.",
+  batchExecutionFailed: "The batch stopped after an unexpected execution fault.",
+  batchStorageCorrupt: "The batch resume record failed integrity validation.",
+  batchResumeMismatch: "The supplied documents or template do not match the saved batch.",
   selfVerificationFailed: "The signed PDF failed verification before export.",
 } satisfies Record<LocalErrorCode, string>;
 
@@ -437,6 +472,106 @@ export const PdfComposeInputSchema = Schema.Struct({
   options: Schema.optional(ComposeOptionsSchema),
 });
 export type PdfComposeInput = typeof PdfComposeInputSchema.Type;
+
+const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
+const PositiveCount = Schema.Int.check(Schema.isGreaterThan(0));
+export const BatchId = Schema.String.check(Schema.isUUID());
+export const BatchConfigSchema = Schema.Struct({
+  concurrency: PositiveCount.check(Schema.isLessThanOrEqualTo(16)),
+  queueCapacity: PositiveCount,
+  byteBudget: PositiveCount,
+  eventCapacity: PositiveCount,
+});
+export type BatchConfig = typeof BatchConfigSchema.Type;
+
+export const BatchTemplate = Schema.Struct({
+  ...PdfPrepareOptionsSchema.fields,
+  field: Schema.Union([
+    ...PdfPrepareOptionsSchema.fields.field.members,
+    Schema.Struct({ kind: Schema.Literal("anchor"), name: NonEmptyText, anchor: NonEmptyText }),
+  ]),
+}).mapFields(({ session: _session, ...fields }) => fields);
+export const BatchDocument = Schema.Struct({
+  itemId: NonEmptyText,
+  revision: RevisionRef,
+  anchors: Schema.optional(
+    Schema.Record(Schema.String, Schema.Struct({ page: PageIndex, rect: PdfCoreBoxSchema })),
+  ),
+});
+export const BatchPrepareInputSchema = Schema.Struct({
+  documents: Schema.NonEmptyArray(BatchDocument),
+  template: BatchTemplate,
+  session: A1SessionBinding,
+  resumeId: Schema.optional(BatchId),
+});
+export type BatchPrepareInput = typeof BatchPrepareInputSchema.Type;
+
+export const BatchSelection = Schema.NonEmptyArray(
+  Schema.Struct({ itemId: NonEmptyText, preparationId: PreparationId }),
+);
+export type BatchSelection = typeof BatchSelection.Type;
+export const BatchItemIds = Schema.NonEmptyArray(NonEmptyText);
+export type BatchItemIds = typeof BatchItemIds.Type;
+
+export const BatchState = Schema.Literals([
+  "preparing",
+  "reviewing",
+  "confirming",
+  "draining",
+  "completed",
+  "cancelled",
+  "failed",
+]);
+export type BatchState = typeof BatchState.Type;
+const BatchItemState = Schema.Literals([
+  "pending",
+  "ready",
+  "needsAttention",
+  "queued",
+  "signing",
+  "signed",
+  "failed",
+  "cancelled",
+  "skipped",
+]);
+export const BatchItem = Schema.Struct({
+  itemId: NonEmptyText,
+  state: BatchItemState,
+  attemptId: Schema.optional(Schema.String.check(Schema.isUUID())),
+  preparation: Schema.optional(PdfPreparation),
+  receipt: Schema.optional(PdfReceipt),
+  reason: Schema.optional(LocalErrorCode),
+});
+export type BatchItem = typeof BatchItem.Type;
+const BatchProgress = Schema.Struct({
+  signed: Count,
+  failed: Count,
+  cancelled: Count,
+  total: Count,
+  retainedBytes: Count,
+  peakBytes: Count,
+});
+export type BatchProgress = typeof BatchProgress.Type;
+export const BatchSnapshot = Schema.Struct({
+  batchId: BatchId,
+  seq: Count,
+  state: BatchState,
+  items: Schema.Array(BatchItem),
+  progress: BatchProgress,
+  reason: Schema.optional(LocalErrorCode),
+});
+export type BatchSnapshot = typeof BatchSnapshot.Type;
+export const BatchEventSchema = Schema.Union([
+  Schema.TaggedStruct("snapshot", { seq: Count, snapshot: BatchSnapshot }),
+  Schema.TaggedStruct("itemStateChanged", { seq: Count, item: BatchItem }),
+  Schema.TaggedStruct("progress", { seq: Count, progress: BatchProgress }),
+  Schema.TaggedStruct("batchStateChanged", {
+    seq: Count,
+    state: BatchState,
+    reason: Schema.optional(LocalErrorCode),
+  }),
+]);
+export type BatchEvent = typeof BatchEventSchema.Type;
 
 const Version = Schema.Int.check(Schema.isGreaterThan(0));
 
@@ -481,6 +616,43 @@ export const LocalRpcs = RpcGroup.make(
     error: LocalError,
   }),
   Rpc.make("A1Close", { error: LocalError }),
+  Rpc.make("BatchPrepare", {
+    payload: BatchPrepareInputSchema,
+    success: BatchSnapshot,
+    error: LocalError,
+  }),
+  Rpc.make("BatchConfirm", {
+    payload: { batchId: BatchId, selection: BatchSelection },
+    success: BatchSnapshot,
+    error: LocalError,
+  }),
+  Rpc.make("BatchCancel", {
+    payload: { batchId: BatchId },
+    success: BatchSnapshot,
+    error: LocalError,
+  }),
+  Rpc.make("BatchRetry", {
+    payload: { batchId: BatchId, itemIds: BatchItemIds },
+    success: BatchSnapshot,
+    error: LocalError,
+  }),
+  Rpc.make("BatchSnapshot", {
+    payload: { batchId: BatchId },
+    success: BatchSnapshot,
+    error: LocalError,
+  }),
+  Rpc.make("BatchEvents", {
+    payload: { batchId: BatchId },
+    stream: true,
+    success: BatchEventSchema,
+    error: LocalError,
+  }),
+  Rpc.make("BatchRelease", {
+    payload: { batchId: BatchId },
+    success: BatchSnapshot,
+    error: LocalError,
+  }),
+  Rpc.make("BatchDelete", { payload: { batchId: BatchId }, error: LocalError }),
   Rpc.make("TelemetryDrain", { success: TelemetryBatch }),
   Rpc.make("PdfSignatureFields", {
     payload: { revision: RevisionRef },

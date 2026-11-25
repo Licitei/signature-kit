@@ -30,6 +30,8 @@
       "@signature-kit/engine/rpc": ["../../packages/engine/src/rpc.ts"],
       "@signature-kit/engine/engine": ["../../packages/engine/src/engine.ts"],
       "@signature-kit/engine/pdf-signatures": ["../../packages/engine/src/pdf-signatures.ts"],
+      "@signature-kit/engine/batches": ["../../packages/engine/src/batches.ts"],
+      "@signature-kit/engine/batch-storage": ["../../packages/engine/src/batch-storage.ts"],
       "@signature-kit/engine/telemetry": ["../../packages/engine/src/telemetry.ts"],
       "@signature-kit/engine/wasm/config": ["../../packages/engine/src/wasm/config.ts"],
       "@signature-kit/engine/wasm/pdf-core": ["../../packages/engine/src/wasm/pdf-core.ts"],
@@ -40,6 +42,7 @@
       "@signature-kit/engine/wasm/canvas": ["../../packages/engine/src/wasm/canvas.ts"],
       "@signature-kit/browser/client": ["../../packages/browser/src/client.ts"],
       "@signature-kit/browser/viewer": ["../../packages/browser/src/viewer.ts"],
+      "@signature-kit/browser/worker-runtime": ["../../packages/browser/src/worker-server.ts"],
       "@signature-kit/browser/worker": ["../../packages/browser/src/worker.ts"],
       "@signature-kit/browser/worker-telemetry": ["../../packages/browser/src/worker-telemetry.ts"],
       "@signature-kit/browser/telemetry-otlp": ["../../packages/browser/src/telemetry-otlp.ts"]

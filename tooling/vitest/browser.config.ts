@@ -1,6 +1,7 @@
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-runtime-network.ts";
+import { runBatchResume, sampleBatchPageHeap } from "./batch-command.ts";
 import { runCosignMilestone } from "./cosign-command.ts";
 
 export default defineConfig({
@@ -10,10 +11,13 @@ export default defineConfig({
       "packages/**/*.browser.test.ts",
       "packages/browser/src/worker{,-telemetry}.ts",
       "packages/browser/__tests__/cosign-page.ts",
+      "packages/browser/__tests__/batch-page.ts",
     ],
     include: [
       "@effect/opentelemetry",
+      "@effect/platform-browser",
       "@effect/platform-browser/BrowserRuntime",
+      "effect/persistence/KeyValueStore",
       "@effect/platform-browser/BrowserWorkerRunner",
       "@opentelemetry/exporter-trace-otlp-http",
       "effect/rpc/RpcServer",
@@ -33,7 +37,13 @@ export default defineConfig({
     },
     browser: {
       enabled: true,
-      commands: { blockLocalRuntimeNetwork, trackLocalRuntimeRequests, runCosignMilestone },
+      commands: {
+        blockLocalRuntimeNetwork,
+        trackLocalRuntimeRequests,
+        runCosignMilestone,
+        runBatchResume,
+        sampleBatchPageHeap,
+      },
       headless: true,
       provider: playwright(),
       instances: [{ browser: "chromium" }],

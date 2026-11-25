@@ -37,6 +37,10 @@
     "./telemetry-otlp": {
       "types": "./dist/telemetry-otlp.d.ts",
       "import": "./dist/telemetry-otlp.js"
+    },
+    "./worker-runtime": {
+      "types": "./dist/worker-server.d.ts",
+      "import": "./dist/worker-server.js"
     }
   },
   "publishConfig": {

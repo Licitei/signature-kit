@@ -39,6 +39,8 @@ export const allowedEffectProvideSites: Record<string, readonly string[]> = {
   "packages/browser/src/worker-server.ts": [
     "localHandlersLayer",
     "composeBrowserLayer",
+    "BrowserKeyValueStore.layerIndexedDb",
+    "indexedDbWorkerLayer",
     "localTelemetryLayer",
     "Layer.succeed",
     "RpcServer.layerProtocolWorkerRunner",

@@ -59,6 +59,7 @@ export class Documents extends Context.Service<
       prefix: RevisionBytes["prefix"],
     ) => Effect.Effect<RevisionRef, LocalError>;
     readonly [loadRevision]: (handle: Handle) => Effect.Effect<RevisionBytes, LocalError>;
+    readonly retain: (revision: RevisionRef) => Effect.Effect<RevisionRef, LocalError>;
     readonly read: (revision: RevisionRef) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly validate: (revision: RevisionRef) => Effect.Effect<void, LocalError>;
     readonly export: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
@@ -157,6 +158,13 @@ const documentsLayer = (instanceId: InstanceId) =>
               }),
             ),
         ),
+        retain: Effect.fn(function* (revision) {
+          const { bytes, prefix, digest } = yield* load(revision.handle);
+          if (digest !== revision.digest || bytes.byteLength !== revision.byteLength) {
+            return yield* new LocalError({ code: "preparationStale" });
+          }
+          return yield* store(bytes, prefix);
+        }),
         read: (revision) =>
           readRevision(revision).pipe(Effect.map((bytes) => new Uint8Array(bytes))),
         validate: (revision) => readRevision(revision).pipe(Effect.asVoid),

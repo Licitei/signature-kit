@@ -1,9 +1,12 @@
+import { BrowserKeyValueStore, IndexedDb } from "@effect/platform-browser";
+import { batchDatabase, indexedDbBatchStorageLayer } from "./batch-storage.js";
+import { Batches, batchesLayer } from "@signature-kit/engine/batches";
 import * as BrowserWorkerRunner from "@effect/platform-browser/BrowserWorkerRunner";
 import { compose } from "@signature-kit/engine/compose";
 import { composeBrowserLayer } from "@signature-kit/engine/wasm/compose";
 import { pdfCoreBrowserLayer } from "@signature-kit/engine/wasm/browser";
 import { paintDisplayList, prepareDisplayListImages } from "@signature-kit/engine/wasm/canvas";
-import { Effect, Layer, Option, References, Semaphore } from "effect";
+import { Effect, Layer, Option, References, Schema, Semaphore } from "effect";
 import * as RpcServer from "effect/rpc/RpcServer";
 import {
   A1Sessions,
@@ -13,8 +16,18 @@ import {
   localRuntimeLayer,
   pdfEngineLayer,
 } from "@signature-kit/engine/engine";
-import { LocalTelemetry, LocalError, LocalRpcs, PROTOCOL_VERSION } from "@signature-kit/engine/rpc";
-import { localTelemetryLayer, withQueueTiming } from "@signature-kit/engine/telemetry";
+import {
+  BatchConfigSchema,
+  LocalTelemetry,
+  LocalError,
+  LocalRpcs,
+  PROTOCOL_VERSION,
+} from "@signature-kit/engine/rpc";
+import {
+  localTelemetryLayer,
+  TelemetryOptionsSchema,
+  withQueueTiming,
+} from "@signature-kit/engine/telemetry";
 import { PdfSignatures, pdfSignaturesLayer } from "@signature-kit/engine/pdf-signatures";
 
 const localHandlersLayer = LocalRpcs.toLayer(
@@ -24,6 +37,7 @@ const localHandlersLayer = LocalRpcs.toLayer(
     const a1 = yield* A1Sessions;
     const pdf = yield* PdfEngine;
     const signatures = yield* PdfSignatures;
+    const batches = yield* Batches;
     const telemetry = Option.getOrUndefined(yield* Effect.serviceOption(LocalTelemetry));
     const raster = withQueueTiming(
       yield* Semaphore.make(1),
@@ -94,6 +108,14 @@ const localHandlersLayer = LocalRpcs.toLayer(
       PdfConfirm: ({ preparationId }) => signatures.confirm(preparationId),
       PdfRelease: ({ preparationId }) => signatures.release(preparationId),
       PdfVerify: ({ revision, options }) => signatures.verify(revision, options),
+      BatchPrepare: batches.prepare,
+      BatchConfirm: ({ batchId, selection }) => batches.confirm(batchId, selection),
+      BatchCancel: ({ batchId }) => batches.cancel(batchId),
+      BatchRetry: ({ batchId, itemIds }) => batches.retry(batchId, itemIds),
+      BatchSnapshot: ({ batchId }) => batches.snapshot(batchId),
+      BatchEvents: ({ batchId }) => batches.events(batchId),
+      BatchRelease: ({ batchId }) => batches.release(batchId),
+      BatchDelete: ({ batchId }) => batches.delete(batchId),
       TelemetryDrain: () =>
         telemetry?.drain ??
         Effect.succeed({ spans: [], bytes: 0, droppedSpans: 0, droppedAttributes: 0 }),
@@ -101,7 +123,26 @@ const localHandlersLayer = LocalRpcs.toLayer(
   }),
 );
 
-export const localWorker = (telemetry: boolean) =>
+const indexedDbWorkerLayer = Layer.effect(
+  IndexedDb.IndexedDb,
+  Effect.sync(() => IndexedDb.make({ indexedDB, IDBKeyRange })),
+);
+
+const resumeLayer = indexedDbBatchStorageLayer.pipe(
+  Layer.provide(BrowserKeyValueStore.layerIndexedDb({ database: batchDatabase })),
+  Layer.provide(indexedDbWorkerLayer),
+);
+
+const LocalWorkerOptionsSchema = Schema.Struct({
+  batchConfig: Schema.optional(BatchConfigSchema),
+  resumeBatches: Schema.optional(Schema.Boolean),
+  telemetry: Schema.optional(TelemetryOptionsSchema),
+});
+
+export const localWorker = (
+  telemetry: boolean,
+  options: typeof LocalWorkerOptionsSchema.Type = {},
+) =>
   Layer.launch(
     RpcServer.layer(LocalRpcs, {
       spanPrefix: "local.worker",
@@ -109,6 +150,8 @@ export const localWorker = (telemetry: boolean) =>
     }).pipe(
       Layer.provide(
         localHandlersLayer.pipe(
+          Layer.provide(batchesLayer(options.batchConfig)),
+          Layer.provide(options.resumeBatches === true ? resumeLayer : Layer.empty),
           Layer.provide(pdfSignaturesLayer),
           Layer.provide(pdfEngineLayer),
           Layer.provide(localRuntimeLayer()),
@@ -120,7 +163,9 @@ export const localWorker = (telemetry: boolean) =>
         RpcServer.layerProtocolWorkerRunner.pipe(Layer.provide(BrowserWorkerRunner.layer)),
       ),
       Layer.provide(
-        telemetry ? localTelemetryLayer() : Layer.succeed(References.TracerEnabled, false),
+        telemetry
+          ? localTelemetryLayer(options.telemetry)
+          : Layer.succeed(References.TracerEnabled, false),
       ),
     ),
   );
