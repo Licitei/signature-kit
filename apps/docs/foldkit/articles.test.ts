@@ -202,9 +202,12 @@ describe("Foldkit articles", () => {
               expect(imageResponse.headers.get("content-type")).toBe("image/webp");
               const bytes = new Uint8Array(await imageResponse.arrayBuffer());
               expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("RIFF");
-              expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8L");
-              const size = new DataView(bytes.buffer).getUint32(21, true);
-              expect([(size & 0x3fff) + 1, ((size >>> 14) & 0x3fff) + 1]).toEqual([1200, 630]);
+              expect(new TextDecoder().decode(bytes.subarray(8, 16))).toBe("WEBPVP8 ");
+              const size = new DataView(bytes.buffer);
+              expect([
+                size.getUint16(26, true) & 0x3fff,
+                size.getUint16(28, true) & 0x3fff,
+              ]).toEqual([1200, 630]);
             }
           });
         }),

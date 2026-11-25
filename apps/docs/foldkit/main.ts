@@ -40,7 +40,9 @@ import {
   githubLink,
   homeView,
   installPill,
+  signFreeCta,
   signFreeLanding,
+  SignFreeFaqIndex,
   signFreePath,
 } from "./home";
 import { OverlayKind, overlayView } from "./overlay";
@@ -123,7 +125,7 @@ export const Model = Schema.Struct({
   navDocs: Popover.Model,
   navResources: Popover.Model,
   homeCopyRequest: HomeCopyRequest,
-  openFaq: Schema.Option(Schema.Literals([0, 1, 2])),
+  openFaq: Schema.Option(SignFreeFaqIndex),
   copyToast: CopyToast.Model,
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
@@ -146,7 +148,7 @@ export const Message = defineMessageUnion({
   TextFeedbackSubmitted: {},
   FeedbackSubmitted: { opinion: Schema.Literals(["good", "bad"]) },
   FeedbackFinished: { ok: Schema.Boolean },
-  FaqToggled: { index: Schema.Literals([0, 1, 2]), open: Schema.Boolean },
+  FaqToggled: { index: SignFreeFaqIndex, open: Schema.Boolean },
   GotCopyToastMessage: { message: CopyToast.Message },
   OverlayRequested: { kind: OverlayKind },
   OverlayCloseRequested: {},
@@ -418,7 +420,7 @@ export const createView = (source: {
         : undefined;
     const canonical = `${siteOrigin}${currentRoute}`;
     const heading = section === "blog" ? "Blog" : "Changelog";
-    const overlayHeader = home || (!signing && (docs ? content !== undefined : true));
+    const overlayHeader = home || signing || (docs ? content !== undefined : true);
     const docsGroup = docs
       ? docsNavigation().find((group) => group.links.some((link) => link.href === currentRoute))
           ?.title
@@ -611,15 +613,14 @@ export const createView = (source: {
         ],
       },
     ];
-    const signer = (embedded: boolean) =>
+    const signer = () =>
       h.submodel({
         slotId: "signing-form",
         model: model.signingForm,
         view: signingFormView,
-        viewInputs: { embedded },
         toParentMessage: (message) => Message.GotSigningFormMessage({ message }),
       });
-    const signerPanel = (): readonly [OverlayKind, Html] => ["signer", signer(true)];
+    const signerPanel = (): readonly [OverlayKind, Html] => ["signer", signer()];
     const toast = copyToastView(h, {
       model: model.copyToast,
       toParentMessage: (message) => Message.GotCopyToastMessage({ message }),
@@ -628,7 +629,7 @@ export const createView = (source: {
       title: tagRoute
         ? `${tag?.tag ?? "Tags do blog"} | SignatureKit`
         : signing
-          ? "Assine documentos grátis com certificado A1 | SignatureKit"
+          ? "Assinar PDF com certificado digital A1 grátis | SignatureKit"
           : article !== undefined
             ? `${article.title} — SignatureKit`
             : section !== undefined
@@ -873,7 +874,7 @@ export const createView = (source: {
                       h.div(
                         [h.Class("ph-no-capture"), h.Attribute("data-analytics-sensitive", "true")],
                         [
-                          ...signFreeLanding(h, signer(false), {
+                          ...signFreeLanding(h, signer(), {
                             open: model.openFaq,
                             toggle: (index, open) => Message.FaqToggled({ index, open }),
                           }),
@@ -886,6 +887,7 @@ export const createView = (source: {
                               toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
                             }),
                           ),
+                          signFreeCta(h),
                         ],
                       ),
                     ]

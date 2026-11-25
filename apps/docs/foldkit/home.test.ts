@@ -53,10 +53,10 @@ describe("Foldkit home", () => {
       modulePreloads: [],
     });
     for (const text of [
-      "Quatro passos, tudo no navegador.",
-      "Sem upload do PDF",
+      "Como assinar um PDF com certificado A1",
+      "Validade jurídica",
       "Precisa de cadastro?",
-      "Funciona com A3?",
+      "Funciona com certificado A3 (token ou cartão)?",
       "/docs/a1-signing/browser-pdf-flow",
       'id="assinar"',
       'name="pfx"',
@@ -82,7 +82,7 @@ describe("Foldkit home", () => {
         {
           "@type": "FAQPage",
           mainEntity: expect.arrayContaining([
-            expect.objectContaining({ name: "Funciona com A3?" }),
+            expect.objectContaining({ name: "Funciona com certificado A3 (token ou cartão)?" }),
           ]),
         },
       ],

@@ -137,11 +137,7 @@ export const signingFormUpdate = (model: SigningFormModel, message: Message) =>
     }),
   });
 
-export const signingFormView = defineView<
-  SigningFormModel,
-  Message,
-  { readonly embedded: boolean }
->((model, { embedded }, h) => {
+export const signingFormView = defineView<SigningFormModel, Message>((model, h) => {
   const input = (
     id: string,
     label: string,
@@ -311,10 +307,6 @@ export const signingFormView = defineView<
       h.Attribute("data-signing-mode", model.mode),
     ],
     [
-      embedded ? null : h.h1([...sx(h, signing.title)], ["Assine documentos grátis"]),
-      embedded
-        ? null
-        : h.p([...sx(h, signing.intro)], ["Assine PDFs no seu navegador com certificado A1."]),
       h.submodel({
         slotId: "signing-mode",
         model: model.modeTabs,
@@ -565,6 +557,7 @@ export const signingFormView = defineView<
                             [
                               ...attributes.button,
                               h.Attribute("data-cancel", ""),
+                              h.Hidden(true),
                               ...sx(h, signing.cancel),
                             ],
                             ["Cancelar"],

@@ -144,7 +144,7 @@ export const createServerComposition = (
               },
               {
                 "@type": "HowTo",
-                name: "Como assinar um documento PDF grátis com certificado A1",
+                name: "Como assinar um PDF com certificado digital A1",
                 description: signFreeDescription,
                 totalTime: "PT2M",
                 step: signFreeSteps.map((step, index) => ({
