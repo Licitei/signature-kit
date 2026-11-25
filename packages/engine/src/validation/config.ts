@@ -40,3 +40,22 @@ export class RevocationError extends Schema.TaggedError<
 >()("RevocationError", {
   code: RevocationReason,
 }) {}
+
+const EvidenceOperation = Schema.Literals(["ocsp", "crl", "timestamp"]);
+export type EvidenceOperation = typeof EvidenceOperation.Type;
+const EvidenceFetchCode = Schema.Literals([
+  "invalidUrl",
+  "invalidRequest",
+  "transport",
+  "status",
+  "response",
+  "timeout",
+]);
+export class EvidenceFetchError extends Schema.TaggedError<
+  EvidenceFetchError,
+  { readonly brand: unique symbol }
+>()("EvidenceFetchError", {
+  code: EvidenceFetchCode,
+  operation: EvidenceOperation,
+  status: Schema.optional(Schema.Int),
+}) {}

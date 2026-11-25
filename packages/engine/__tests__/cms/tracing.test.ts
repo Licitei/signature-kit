@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as asn1js from "asn1js";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Layer } from "effect";
 import * as pkijs from "pkijs";
+import { FetchHttpClient } from "effect/http";
+import { evidenceFetcherHttpLayer } from "../../src/evidence-fetcher.js";
 
 import { CmsOperationValue } from "../../src/cms/config";
 import { inspectDetachedSignedData } from "../../src/cms/inspect";
@@ -85,7 +87,7 @@ describe("CMS tracing", () => {
     }),
   );
 
-  it.effect("records the TSA client span and marks a failed timestamp as an error", () =>
+  it.live("records the TSA client span and marks a failed timestamp as an error", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const signer = yield* selfSignedCertificate;
@@ -98,7 +100,9 @@ describe("CMS tracing", () => {
               tsaUrl: `${local.baseUrl}/tsa?token=secret-token`,
               trustedRoots: [signer.certificateDer],
             },
-          }),
+          }).pipe(
+            Effect.provide(evidenceFetcherHttpLayer.pipe(Layer.provide(FetchHttpClient.layer))),
+          ),
         );
         expect(Exit.isFailure(exit)).toBe(true);
         const timestamp = spanNamed(spans, CmsOperationValue.timestamp);

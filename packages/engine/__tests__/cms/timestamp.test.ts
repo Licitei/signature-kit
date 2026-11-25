@@ -1,19 +1,18 @@
+import { timestampResponse } from "../fixtures/timestamp-response.js";
+import type { TimestampSigner } from "../fixtures/timestamp-response.js";
 import { describe, expect, it } from "@effect/vitest";
 import * as asn1js from "asn1js";
-import { Effect, Result, Schema } from "effect";
+import { Effect, Fiber, Layer, Result, Schema } from "effect";
 import * as pkijs from "pkijs";
 import { vi } from "vitest";
-import { CmsOid, MAX_NATIVE_TIMEOUT_MILLIS, TimestampOptionsSchema } from "../../src/cms/config";
+import { FetchHttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
+import { localHttpServer } from "../../../../tooling/testing/local-http.js";
+import { evidenceFetcherHttpLayer } from "../../src/evidence-fetcher.js";
+import { MAX_NATIVE_TIMEOUT_MILLIS, TimestampOptionsSchema } from "../../src/cms/config";
 import type { TimestampOptions } from "../../src/cms/config";
 import { requestTimestamp } from "../../src/cms/timestamp";
 
-type TimestampSigner = {
-  readonly certificate: pkijs.Certificate;
-  readonly certificateDer: Uint8Array;
-  readonly privateKey: CryptoKey;
-};
-
-const TSA_TST_INFO_CONTENT_TYPE = "1.2.840.113549.1.9.16.1.4";
 const TSA_TIMESTAMPING_KEY_PURPOSE_OID = "1.3.6.1.5.5.7.3.8";
 
 const invalidTimeoutMillis: ReadonlyArray<number> = [
@@ -134,130 +133,13 @@ const createTsaSigner = async ({
   };
 };
 
-const testTsaSigner = createTsaSigner();
-const unrelatedTsaSigner = createTsaSigner();
-const noEkuTsaSigner = createTsaSigner({ timestampingEku: false });
-const enciphermentTsaSigner = createTsaSigner({ keyUsage: 0x24 });
-
-type TimestampResponseOptions = {
-  readonly includeSignedAttributes?: boolean;
-  readonly signingCertificateDers?: readonly Uint8Array[];
-  readonly tamperSignature?: boolean;
-};
-
-const timestampSignedAttributes = async (
-  tstInfoDer: ArrayBuffer,
-  certificateDers: readonly Uint8Array[],
-): Promise<pkijs.SignedAndUnsignedAttributes> => {
-  const [messageDigest, certificateHashes] = await Promise.all([
-    crypto.subtle.digest("SHA-256", tstInfoDer),
-    Promise.all(
-      certificateDers.map((certificateDer) =>
-        crypto.subtle.digest("SHA-256", new Uint8Array(certificateDer).buffer),
-      ),
-    ),
-  ]);
-  const signingCertificate = new asn1js.Sequence({
-    value: [
-      new asn1js.Sequence({
-        value: certificateHashes.map(
-          (valueHex) => new asn1js.Sequence({ value: [new asn1js.OctetString({ valueHex })] }),
-        ),
-      }),
-    ],
-  });
-  return new pkijs.SignedAndUnsignedAttributes({
-    type: 0,
-    attributes: [
-      new pkijs.Attribute({
-        type: CmsOid.contentType,
-        values: [new asn1js.ObjectIdentifier({ value: TSA_TST_INFO_CONTENT_TYPE })],
-      }),
-      new pkijs.Attribute({
-        type: CmsOid.messageDigest,
-        values: [new asn1js.OctetString({ valueHex: messageDigest })],
-      }),
-      new pkijs.Attribute({
-        type: CmsOid.signingCertificateV2,
-        values: [signingCertificate],
-      }),
-    ],
-  });
-};
-
-const timestampResponse = async (
-  requestDer: Uint8Array,
-  signer: TimestampSigner | undefined,
-  options: TimestampResponseOptions = {},
-): Promise<Uint8Array> => {
-  const requestSchema = asn1js.fromBER(new Uint8Array(requestDer).buffer);
-  const request = new pkijs.TimeStampReq({ schema: requestSchema.result });
-  const serialNumber = pkijs.TSTInfo.defaultValues("serialNumber");
-  serialNumber.valueBlock.valueDec = 1;
-  const tstInfoBase = {
-    version: 1,
-    policy: "1.2.3.4",
-    messageImprint: new pkijs.MessageImprint({
-      hashAlgorithm: request.messageImprint.hashAlgorithm,
-      hashedMessage: request.messageImprint.hashedMessage,
-    }),
-    serialNumber,
-    genTime: new Date(),
-  };
-  const tstInfo = new pkijs.TSTInfo(
-    request.nonce === undefined ? tstInfoBase : { ...tstInfoBase, nonce: request.nonce },
-  );
-  const tstInfoDer = tstInfo.toSchema().toBER(false);
-  const signedAttributes =
-    signer === undefined || options.includeSignedAttributes === false
-      ? undefined
-      : await timestampSignedAttributes(
-          tstInfoDer,
-          options.signingCertificateDers ?? [signer.certificateDer],
-        );
-  const eContent = pkijs.EncapsulatedContentInfo.defaultValues("eContent");
-  eContent.valueBlock.valueHexView = new Uint8Array(tstInfoDer);
-  const signed = new pkijs.SignedData({
-    version: 3,
-    encapContentInfo: new pkijs.EncapsulatedContentInfo({
-      eContentType: TSA_TST_INFO_CONTENT_TYPE,
-      eContent,
-    }),
-    signerInfos:
-      signer === undefined
-        ? []
-        : [
-            new pkijs.SignerInfo({
-              version: 1,
-              sid: new pkijs.IssuerAndSerialNumber({
-                issuer: signer.certificate.issuer,
-                serialNumber: signer.certificate.serialNumber,
-              }),
-              ...(signedAttributes === undefined ? {} : { signedAttrs: signedAttributes }),
-            }),
-          ],
-    ...(signer === undefined ? {} : { certificates: [signer.certificate] }),
-  });
-  if (signer !== undefined) {
-    await signed.sign(signer.privateKey, 0, "SHA-256");
-    const signature = signed.signerInfos[0]?.signature.valueBlock.valueHexView;
-    if (options.tamperSignature === true && signature !== undefined && signature.byteLength > 0) {
-      signature[0] = (signature[0] ?? 0) ^ 0x01;
-    }
-  }
-  const token = new pkijs.ContentInfo({
-    contentType: pkijs.ContentInfo.SIGNED_DATA,
-    content: signed.toSchema(true),
-  });
-  return new Uint8Array(
-    new pkijs.TimeStampResp({
-      status: new pkijs.PKIStatusInfo({ status: pkijs.PKIStatus.granted }),
-      timeStampToken: token,
-    })
-      .toSchema()
-      .toBER(false),
-  );
-};
+const httpEvidence = evidenceFetcherHttpLayer.pipe(Layer.provide(FetchHttpClient.layer));
+const timestampInput = (tsaUrl: string, signer: TimestampSigner) => ({
+  data: new Uint8Array([1, 2, 3]),
+  tsaUrl,
+  trustedRoots: [signer.certificateDer] satisfies readonly [Uint8Array],
+  hashAlgorithm: "sha256" satisfies TimestampOptions["hashAlgorithm"],
+});
 
 describe("RFC 3161 timestamps", () => {
   it.effect("requires explicit TSA trust anchors in the public schema", () =>
@@ -315,42 +197,26 @@ describe("RFC 3161 timestamps", () => {
     }),
   );
 
-  it.effect("rejects invalid timestamp timeouts before scheduling or fetching", () =>
+  it.effect("rejects invalid timestamp timeouts before requesting evidence", () =>
     Effect.gen(function* () {
-      const fetch = vi.fn();
-      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-      vi.stubGlobal("fetch", fetch);
-
+      const local = yield* localHttpServer(async () => ({ status: 500 }));
+      const signer = yield* Effect.promise(() => createTsaSigner());
       for (const timeoutMillis of invalidTimeoutMillis) {
-        const result = yield* Effect.result(
+        const error = yield* Effect.flip(
           requestTimestamp({
-            data: new Uint8Array([1, 2, 3]),
-            tsaUrl: "https://tsa.example.test",
-            trustedRoots: [new Uint8Array([0x01])],
-            hashAlgorithm: "sha256",
+            ...timestampInput(local.baseUrl, signer),
             timeoutMillis,
           }),
         );
-
-        expect(Result.isFailure(result)).toBe(true);
-        if (Result.isFailure(result)) expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
+        expect(error.code).toBe("cms.TIMESTAMP_ERROR");
       }
-
-      expect(setTimeoutSpy).not.toHaveBeenCalled();
-      expect(fetch).not.toHaveBeenCalled();
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          vi.restoreAllMocks();
-          vi.unstubAllGlobals();
-        }),
-      ),
-    ),
+      expect(local.requests).toEqual([]);
+    }).pipe(Effect.provide(httpEvidence)),
   );
 
   it.effect("maps timestamp nonce generation failures to CmsError", () =>
     Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
+      const signer = yield* Effect.promise(() => createTsaSigner());
       vi.spyOn(crypto, "getRandomValues").mockImplementation(() => {
         throw new Error("nonce failure");
       });
@@ -372,464 +238,160 @@ describe("RFC 3161 timestamps", () => {
     }).pipe(Effect.ensuring(Effect.sync(() => vi.restoreAllMocks()))),
   );
 
-  it.effect("redacts timestamp URL credentials, query, and hash from diagnostics", () =>
+  it.live("redacts credentials, query, and fragment from timestamp diagnostics", () =>
     Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      vi.stubGlobal("fetch", () => {
-        throw new Error("timestamp request failure");
-      });
+      const signer = yield* Effect.promise(() => createTsaSigner());
+      const local = yield* localHttpServer(async () => ({ status: 403, body: "denied" }));
+      const transport = new URL("/tsa?token=secret#fragment", local.baseUrl);
+      const denied = yield* Effect.flip(requestTimestamp(timestampInput(transport.href, signer)));
+      expect(denied.reason).toBe(`TSA request to ${local.baseUrl}/tsa failed with HTTP 403.`);
+      transport.username = "alice";
+      transport.password = "secret";
+      const credentials = yield* Effect.flip(
+        requestTimestamp(timestampInput(transport.href, signer)),
+      );
+      expect(credentials.reason).toBe(`TSA request to ${local.baseUrl}/tsa failed.`);
+      expect(local.requests).toHaveLength(1);
+    }).pipe(Effect.provide(httpEvidence)),
+  );
 
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://alice:secret@tsa.example.test/path?token=secret&user=alice#fragment",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-          timeoutMillis: 1000,
+  it.live("accepts an RFC 3161 response from an explicit fetcher", () =>
+    Effect.gen(function* () {
+      const signer = yield* Effect.promise(() => createTsaSigner());
+      const local = yield* localHttpServer(async ({ bodyBytes }) => ({
+        status: 200,
+        body: await timestampResponse(bodyBytes, signer),
+      }));
+      const input = timestampInput(local.baseUrl, signer);
+      const missing = yield* Effect.flip(requestTimestamp(input));
+      expect(missing.reason).toContain("explicit evidence fetcher");
+      expect(local.requests).toEqual([]);
+      const token = yield* requestTimestamp(input).pipe(Effect.provide(httpEvidence));
+      expect(token.byteLength).toBeGreaterThan(0);
+      expect(local.requests[0]).toMatchObject({
+        method: "POST",
+        headers: {
+          "content-type": "application/timestamp-query",
+          accept: "application/timestamp-reply",
+        },
+      });
+    }),
+  );
+
+  it.live.each([
+    "unsigned",
+    "trailing",
+    "noEku",
+    "keyUsage",
+    "noAttributes",
+    "wrongBinding",
+    "untrusted",
+    "forged",
+  ] satisfies Array<
+    | "unsigned"
+    | "trailing"
+    | "noEku"
+    | "keyUsage"
+    | "noAttributes"
+    | "wrongBinding"
+    | "untrusted"
+    | "forged"
+  >)("rejects the %s timestamp response", (variant) =>
+    Effect.gen(function* () {
+      const signer = yield* Effect.promise(() =>
+        createTsaSigner({
+          timestampingEku: variant !== "noEku",
+          ...(variant === "keyUsage" ? { keyUsage: 0x24 } : {}),
         }),
       );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-        expect(result.failure.reason).toBe("TSA request to https://tsa.example.test/path failed.");
-        expect(result.failure.reason).not.toContain("alice");
-        expect(result.failure.reason).not.toContain("secret");
-        expect(result.failure.reason).not.toContain("token");
-        expect(result.failure.reason).not.toContain("fragment");
-      }
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          vi.restoreAllMocks();
-          vi.unstubAllGlobals();
-        }),
-      ),
-    ),
-  );
-
-  it.effect("clears TSA timers when fetch throws synchronously", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      vi.useFakeTimers();
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const removeEventListenerSpy = vi.spyOn(AbortSignal.prototype, "removeEventListener");
-      vi.stubGlobal("fetch", () => {
-        throw new Error("synchronous fetch failure");
+      const decoy =
+        variant === "wrongBinding" || variant === "untrusted"
+          ? yield* Effect.promise(() => createTsaSigner())
+          : undefined;
+      const local = yield* localHttpServer(async ({ bodyBytes }) => {
+        const response = await timestampResponse(
+          bodyBytes,
+          variant === "unsigned" ? undefined : signer,
+          {
+            includeSignedAttributes: variant !== "noAttributes",
+            tamperSignature: variant === "forged",
+            ...(variant === "wrongBinding" && decoy !== undefined
+              ? { signingCertificateDers: [decoy.certificateDer, signer.certificateDer] }
+              : {}),
+          },
+        );
+        if (variant !== "trailing") return { status: 200, body: response };
+        const body = new Uint8Array(response.length + 1);
+        body.set(response);
+        return { status: 200, body };
       });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-          timeoutMillis: 1000,
-        }),
+      const error = yield* Effect.flip(
+        requestTimestamp(
+          timestampInput(
+            local.baseUrl,
+            variant === "untrusted" && decoy !== undefined ? decoy : signer,
+          ),
+        ),
       );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-      expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
-      expect(removeEventListenerSpy.mock.calls.some(([event]) => event === "abort")).toBe(true);
-      expect(vi.getTimerCount()).toBe(0);
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          vi.useRealTimers();
-          vi.restoreAllMocks();
-          vi.unstubAllGlobals();
-        }),
-      ),
-    ),
+      expect(error.code).toBe("cms.TIMESTAMP_ERROR");
+      const reasons = {
+        unsigned: "valid signed RFC 3161",
+        trailing: "trailing bytes",
+        noEku: "critical timestamping-only",
+        keyUsage: "critical timestamping-only",
+        noAttributes: "signed attributes",
+        wrongBinding: "does not bind the signer certificate",
+        untrusted: "certificate chain",
+        forged: "signature",
+      };
+      expect(error.reason).toContain(reasons[variant]);
+    }).pipe(Effect.provide(httpEvidence)),
   );
 
-  it.effect("rejects an unsigned RFC 3161 token", () =>
+  it.live("closes non-success bodies before returning the final classified status", () =>
     Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          return new Response(
-            new Uint8Array(await timestampResponse(new Uint8Array(body), undefined)).buffer,
-            {
-              status: 200,
-              headers: { "content-type": "application/timestamp-reply" },
-            },
-          );
-        }
-        return new Response(new Uint8Array(), { status: 400 });
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+      const signer = yield* Effect.promise(() => createTsaSigner());
+      const closed = Promise.withResolvers<void>();
+      let count = 0;
+      const local = yield* localHttpServer(async () => ({
+        status: 503,
+        body: "busy",
+        keepOpen: true,
+        onClose: () => {
+          count += 1;
+          if (count === 3) closed.resolve();
+        },
+      }));
+      const error = yield* Effect.flip(requestTimestamp(timestampInput(local.baseUrl, signer)));
+      expect(error.reason).toContain("HTTP 503");
+      expect(local.requests).toHaveLength(3);
+      yield* Effect.promise(() => closed.promise);
+    }).pipe(Effect.provide(httpEvidence)),
   );
 
-  it.effect("rejects trailing bytes after a TSA response", () =>
+  it.effect("times out a hanging response body and closes its connection", () =>
     Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          const response = await timestampResponse(new Uint8Array(body), signer);
-          const withTrailing = new Uint8Array(response.byteLength + 1);
-          withTrailing.set(response);
-          return new Response(new Uint8Array(withTrailing).buffer, {
-            status: 200,
-            headers: { "content-type": "application/timestamp-reply" },
-          });
-        }
-        return new Response(new Uint8Array(), { status: 400 });
+      const signer = yield* Effect.promise(() => createTsaSigner());
+      const started = Promise.withResolvers<void>();
+      const closed = Promise.withResolvers<void>();
+      const local = yield* localHttpServer(async () => {
+        started.resolve();
+        return { status: 200, body: "partial", keepOpen: true, onClose: closed.resolve };
       });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-        expect(result.failure.reason).toContain("trailing bytes");
-      }
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect(
-    "accepts a cryptographically signed token chained to an explicit TSA trust anchor",
-    () =>
-      Effect.gen(function* () {
-        const signer = yield* Effect.promise(() => testTsaSigner);
-        vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-          const body = init?.body;
-          if (body instanceof ArrayBuffer) {
-            return new Response(
-              new Uint8Array(await timestampResponse(new Uint8Array(body), signer)).buffer,
-              {
-                status: 200,
-                headers: { "content-type": "application/timestamp-reply" },
-              },
-            );
-          }
-          return new Response(new Uint8Array(), { status: 400 });
-        });
-
-        const token = yield* requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        });
-
-        expect(token.byteLength).toBeGreaterThan(0);
-      }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("rejects a signed token whose TSA certificate has no timestamping EKU", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => noEkuTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          return new Response(
-            new Uint8Array(await timestampResponse(new Uint8Array(body), signer)).buffer,
-            {
-              status: 200,
-              headers: { "content-type": "application/timestamp-reply" },
-            },
-          );
-        }
-        return new Response(new Uint8Array(), { status: 400 });
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.reason).toContain("critical timestamping-only");
-      }
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("rejects a TSA certificate whose KeyUsage cannot sign", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => enciphermentTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          return new Response(
-            new Uint8Array(await timestampResponse(new Uint8Array(body), signer)).buffer,
-            {
-              status: 200,
-              headers: { "content-type": "application/timestamp-reply" },
-            },
-          );
-        }
-        return new Response(new Uint8Array(), { status: 400 });
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.reason).toContain("critical timestamping-only");
-      }
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("rejects a signed token without required RFC 3161 signed attributes", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          return new Response(
-            new Uint8Array(
-              await timestampResponse(new Uint8Array(body), signer, {
-                includeSignedAttributes: false,
-              }),
-            ).buffer,
-            {
-              status: 200,
-              headers: { "content-type": "application/timestamp-reply" },
-            },
-          );
-        }
-        return new Response(new Uint8Array(), { status: 400 });
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.reason).toContain("signed attributes");
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect(
-    "rejects a SigningCertificateV2 whose first ESSCertID names a different certificate",
-    () =>
-      Effect.gen(function* () {
-        const signer = yield* Effect.promise(() => testTsaSigner);
-        const decoySigner = yield* Effect.promise(() => unrelatedTsaSigner);
-        vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-          const body = init?.body;
-          if (body instanceof ArrayBuffer) {
-            return new Response(
-              new Uint8Array(
-                await timestampResponse(new Uint8Array(body), signer, {
-                  signingCertificateDers: [decoySigner.certificateDer, signer.certificateDer],
-                }),
-              ).buffer,
-              {
-                status: 200,
-                headers: { "content-type": "application/timestamp-reply" },
-              },
-            );
-          }
-          return new Response(new Uint8Array(), { status: 400 });
-        });
-
-        const result = yield* Effect.result(
+      const pending = yield* Effect.forkChild(
+        Effect.flip(
           requestTimestamp({
-            data: new Uint8Array([1, 2, 3]),
-            tsaUrl: "https://tsa.example.test",
-            trustedRoots: [signer.certificateDer],
-            hashAlgorithm: "sha256",
+            ...timestampInput(local.baseUrl, signer),
+            timeoutMillis: 1000,
           }),
-        );
-
-        expect(Result.isFailure(result)).toBe(true);
-        if (Result.isFailure(result)) {
-          expect(result.failure.reason).toContain("does not bind the signer certificate");
-        }
-      }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("rejects a signed token that does not chain to the explicit TSA trust anchor", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      const unrelatedSigner = yield* Effect.promise(() => unrelatedTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          return new Response(
-            new Uint8Array(await timestampResponse(new Uint8Array(body), signer)).buffer,
-            {
-              status: 200,
-              headers: { "content-type": "application/timestamp-reply" },
-            },
-          );
-        }
-        return new Response(new Uint8Array(), { status: 400 });
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [unrelatedSigner.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
+        ),
       );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("rejects a forged signature even when its TSA certificate is trusted", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      vi.stubGlobal("fetch", async (_request: RequestInfo | URL, init?: RequestInit) => {
-        const body = init?.body;
-        if (body instanceof ArrayBuffer) {
-          return new Response(
-            new Uint8Array(
-              await timestampResponse(new Uint8Array(body), signer, { tamperSignature: true }),
-            ).buffer,
-            {
-              status: 200,
-              headers: { "content-type": "application/timestamp-reply" },
-            },
-          );
-        }
-        return new Response(new Uint8Array(), { status: 400 });
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("aborts an endless non-success TSA response body before reporting HTTP status", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      let aborted = false;
-      vi.stubGlobal("fetch", (_request: RequestInfo | URL, init?: RequestInit) => {
-        const signal = init?.signal;
-        return Promise.resolve(
-          new Response(
-            new ReadableStream<Uint8Array>({
-              start: (controller) => {
-                const abort = () => {
-                  aborted = true;
-                  controller.error(new Error("aborted"));
-                };
-                if (signal === null || signal === undefined) return;
-                if (signal.aborted) {
-                  abort();
-                  return;
-                }
-                signal.addEventListener("abort", abort, { once: true });
-              },
-            }),
-            { status: 503 },
-          ),
-        );
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.reason).toContain("HTTP 503");
-      expect(aborted).toBe(true);
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
-  );
-
-  it.effect("times out a hanging TSA response body and aborts its fetch lifecycle", () =>
-    Effect.gen(function* () {
-      const signer = yield* Effect.promise(() => testTsaSigner);
-      let aborted = false;
-      vi.stubGlobal("fetch", (_request: RequestInfo | URL, init?: RequestInit) => {
-        const signal = init?.signal;
-        return Promise.resolve(
-          new Response(
-            new ReadableStream<Uint8Array>({
-              start: (controller) => {
-                const abort = () => {
-                  aborted = true;
-                  controller.error(new Error("aborted"));
-                };
-                if (signal === null || signal === undefined) return;
-                if (signal.aborted) {
-                  abort();
-                  return;
-                }
-                signal.addEventListener("abort", abort, { once: true });
-              },
-            }),
-            { status: 200 },
-          ),
-        );
-      });
-
-      const result = yield* Effect.result(
-        requestTimestamp({
-          data: new Uint8Array([1, 2, 3]),
-          tsaUrl: "https://tsa.example.test",
-          trustedRoots: [signer.certificateDer],
-          hashAlgorithm: "sha256",
-          timeoutMillis: 25,
-        }),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.code).toBe("cms.TIMESTAMP_ERROR");
-        expect(result.failure.reason).toContain("timed out");
-      }
-      expect(aborted).toBe(true);
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+      yield* Effect.promise(() => started.promise);
+      yield* TestClock.adjust("1 second");
+      const error = yield* Fiber.join(pending);
+      expect(error.reason).toContain("timed out");
+      yield* Effect.promise(() => closed.promise);
+      expect(local.requests).toHaveLength(1);
+    }).pipe(Effect.provide(httpEvidence)),
   );
 });
