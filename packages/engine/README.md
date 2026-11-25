@@ -15,6 +15,9 @@ Apps that do not use Effect skip `effect` and use the Promise client (see [Witho
 - `@signature-kit/engine/rpc` — wire schemas, typed errors, the RPC group and protocol version.
 - `@signature-kit/engine/engine` — Effect services for documents, sessions and PDF operations.
 - `@signature-kit/engine/telemetry` — bounded tracing and telemetry summaries.
+- `@signature-kit/engine/compose` — typed component functions and the Effect composition API.
+- `@signature-kit/engine/templates` — Portuguese contract, signature evidence report, and receipt examples.
+- `@signature-kit/engine/wasm/compose` — browser and file layers for `compose.wasm`. The runtime loads composition assets on the first compose request.
 
 - `@signature-kit/engine/wasm/config` — `PdfCoreError`, `PdfCoreErrorCodeValue`, `pdfCoreErrorMessages`, and the option and inspection schemas.
 - `@signature-kit/engine/wasm/pdf-core` — the `PdfCore` service, `makePdfCore(module)`, and `pdfCoreLayer(module)`.
@@ -54,6 +57,35 @@ const program = Effect.gen(function* () {
 
 program.pipe(Effect.provide(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))));
 ```
+
+### Compose a PDF
+
+```ts
+import { NodeServices } from "@effect/platform-node";
+import { compose, Document, Heading, Page, Paragraph, Stack } from "@signature-kit/engine/compose";
+import { composeFileLayer } from "@signature-kit/engine/wasm/compose";
+import { Effect, Layer } from "effect";
+
+const report = Document(
+  Page([
+    Stack(
+      [
+        Heading("Relatório"),
+        Paragraph("Gerado localmente com a fonte IBM Plex Sans incluída no pacote."),
+      ],
+      { gap: "md" },
+    ),
+  ]),
+);
+
+const pdf = compose(report, { metadata: { title: "Relatório" } }).pipe(
+  Effect.provide(composeFileLayer.pipe(Layer.provide(NodeServices.layer))),
+);
+```
+
+The browser worker exposes the same operation as `LocalClient.composePdf({ document })`.
+It returns an immutable revision handle for inspection, rendering, export, and signing.
+For Vite production builds, set `worker.format` to `"es"` to keep the bundled fonts in their own lazy-loaded module.
 
 ### Without Effect
 

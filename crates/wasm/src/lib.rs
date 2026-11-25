@@ -12,3 +12,6 @@ mod abi;
 )]
 #[path = "../../pdf/src/test_pdf.rs"]
 mod test_pdf;
+
+#[cfg(feature = "compose")]
+mod compose;

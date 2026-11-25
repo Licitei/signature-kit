@@ -1,6 +1,11 @@
 import * as ts from "typescript";
 import type { Check, CheckContext } from "../model";
-import { allowedEffectProvideSites, nodeBoundaryModules, promiseBoundaryModules } from "../config";
+import {
+  allowedEffectProvideSites,
+  allowedRuntimeImports,
+  nodeBoundaryModules,
+  promiseBoundaryModules,
+} from "../config";
 
 const librarySourcePathPattern =
   /^packages\/[^/]+\/src\/(?!__tests__\/).+\.(?:ts|tsx|js|jsx|mjs|cjs)$/;
@@ -70,7 +75,7 @@ const getForbiddenEffectLines = (sourceFile: ts.SourceFile): ReadonlySet<number>
 const hasForbiddenEffectConstruct = (context: CheckContext): boolean =>
   getForbiddenEffectLines(context.sourceFile).has(context.lineNumber - 1);
 
-const getDynamicImportLines = (sourceFile: ts.SourceFile): ReadonlySet<number> => {
+const getDynamicImportLines = (sourceFile: ts.SourceFile, path: string): ReadonlySet<number> => {
   const cached = dynamicImportLines.get(sourceFile);
   if (cached !== undefined) {
     return cached;
@@ -84,6 +89,7 @@ const getDynamicImportLines = (sourceFile: ts.SourceFile): ReadonlySet<number> =
       node.arguments.length === 1 &&
       argument !== undefined &&
       ts.isStringLiteral(argument) &&
+      !allowedRuntimeImports[path]?.includes(argument.text) &&
       /^(?:\.{1,2}\/|node:|effect(?:\/|$)|@effect\/|@signature-kit\/)/.test(argument.text)
     ) {
       lines.add(lineOf(sourceFile, node));
@@ -97,7 +103,7 @@ const getDynamicImportLines = (sourceFile: ts.SourceFile): ReadonlySet<number> =
 
 const hasKnownDynamicImport = (context: CheckContext): boolean =>
   librarySourcePathPattern.test(context.path) &&
-  getDynamicImportLines(context.sourceFile).has(context.lineNumber - 1);
+  getDynamicImportLines(context.sourceFile, context.path).has(context.lineNumber - 1);
 
 const getDirectNodeImportLines = (sourceFile: ts.SourceFile): ReadonlySet<number> => {
   const cached = directNodeImportLines.get(sourceFile);

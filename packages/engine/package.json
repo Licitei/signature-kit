@@ -59,7 +59,20 @@
       "types": "./dist/wasm/canvas.d.ts",
       "import": "./dist/wasm/canvas.js"
     },
-    "./signature-kit.wasm": "./dist/wasm/signature-kit.wasm"
+    "./signature-kit.wasm": "./dist/wasm/signature-kit.wasm",
+    "./compose": {
+      "types": "./dist/compose.d.ts",
+      "import": "./dist/compose.js"
+    },
+    "./wasm/compose": {
+      "types": "./dist/wasm/compose.d.ts",
+      "import": "./dist/wasm/compose.js"
+    },
+    "./templates": {
+      "types": "./dist/templates.d.ts",
+      "import": "./dist/templates.js"
+    },
+    "./compose.wasm": "./dist/wasm/compose.wasm"
   },
   "publishConfig": {
     "access": "public"
@@ -95,10 +108,17 @@
           "{workspaceRoot}/bun.lock",
           {
             "runtime": "rustc --version"
-          }
+          },
+          "{workspaceRoot}/crates/font/**/*",
+          "{workspaceRoot}/crates/compose/**/*",
+          "{projectRoot}/assets/fonts/**/*",
+          "{projectRoot}/scripts/build-compose-fonts.ts"
         ],
         "outputs": [
-          "{projectRoot}/dist/wasm/signature-kit.wasm"
+          "{projectRoot}/dist/wasm/signature-kit.wasm",
+          "{projectRoot}/dist/wasm/compose.wasm",
+          "{projectRoot}/dist/wasm/compose-fonts.mjs",
+          "{projectRoot}/dist/wasm/IBM-Plex-OFL.txt"
         ],
         "options": {
           "command": "bash crates/wasm/scripts/build-wasm-cached.sh",
@@ -125,7 +145,11 @@
           "{workspaceRoot}/bun.lock",
           {
             "runtime": "rustc --version"
-          }
+          },
+          "{workspaceRoot}/crates/font/**/*",
+          "{workspaceRoot}/crates/compose/**/*",
+          "{projectRoot}/assets/fonts/**/*",
+          "{projectRoot}/scripts/build-compose-fonts.ts"
         ]
       },
       "npm-pack": {

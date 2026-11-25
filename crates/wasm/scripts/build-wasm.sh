@@ -11,6 +11,11 @@ BUILT="$TARGET_DIR/wasm32-unknown-unknown/release/signature_kit_wasm.wasm"
 ENGINE="$ROOT/packages/engine"
 OUT_DIR="$ENGINE/dist/wasm"
 OUT="$OUT_DIR/signature-kit.wasm"
+FEATURES=()
+if [[ "${1:-}" == "--compose" ]]; then
+  OUT="$OUT_DIR/compose.wasm"
+  FEATURES=(--no-default-features --features compose)
+fi
 
 if [[ -x "$ENGINE/node_modules/binaryen/bin/wasm-opt" ]]; then
   WASM_OPT="$ENGINE/node_modules/binaryen/bin/wasm-opt"
@@ -21,7 +26,7 @@ else
   exit 1
 fi
 
-CARGO_TARGET_DIR="$TARGET_DIR" CARGO_PROFILE_RELEASE_OPT_LEVEL=2 cargo build --locked --release --target wasm32-unknown-unknown --package signature-kit-wasm
+CARGO_TARGET_DIR="$TARGET_DIR" CARGO_PROFILE_RELEASE_OPT_LEVEL=2 cargo build --locked --release --target wasm32-unknown-unknown --package signature-kit-wasm "${FEATURES[@]}"
 mkdir -p "$OUT_DIR"
 "$WASM_OPT" -O3 \
   --enable-bulk-memory \

@@ -24,6 +24,9 @@
     "tsBuildInfoFile": "${configDir}/.cache/tsbuildinfo.json",
     "verbatimModuleSyntax": true,
     "paths": {
+      "@signature-kit/engine/compose": ["../../packages/engine/src/compose.ts"],
+      "@signature-kit/engine/wasm/compose": ["../../packages/engine/src/wasm/compose.ts"],
+      "@signature-kit/engine/templates": ["../../packages/engine/src/templates.ts"],
       "@signature-kit/engine/rpc": ["../../packages/engine/src/rpc.ts"],
       "@signature-kit/engine/engine": ["../../packages/engine/src/engine.ts"],
       "@signature-kit/engine/pdf-signatures": ["../../packages/engine/src/pdf-signatures.ts"],

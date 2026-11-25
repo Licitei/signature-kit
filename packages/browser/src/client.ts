@@ -20,6 +20,7 @@ import type {
   A1SessionInfo,
   Handle,
   InstanceId,
+  PdfComposeInput,
   PdfInspection,
   PdfPagePixels,
   PdfRenderInput,
@@ -40,6 +41,7 @@ export class LocalClient extends Context.Service<
     readonly openDocument: (bytes: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
     readonly exportDocument: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly releaseDocument: (handle: Handle) => Effect.Effect<void, LocalError>;
+    readonly composePdf: (input: PdfComposeInput) => Effect.Effect<RevisionRef, LocalError>;
     readonly inspectPdf: (handle: Handle) => Effect.Effect<PdfInspection, LocalError>;
     readonly renderPage: (input: PdfRenderInput) => Effect.Effect<PdfPagePixels, LocalError>;
     readonly openA1: (input: A1OpenInput) => Effect.Effect<A1SessionInfo, LocalError>;
@@ -148,6 +150,7 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
               call(() => rpc.DocumentsOpen({ bytes: new Uint8Array(bytes) })),
             exportDocument: (handle) => call(() => rpc.DocumentsExport({ handle })),
             releaseDocument: (handle) => call(() => rpc.DocumentsRelease({ handle })),
+            composePdf: (input) => call(() => rpc.PdfCompose(input)),
             inspectPdf: (handle) => call(() => rpc.PdfInspect({ handle })),
             renderPage: (input) => call(() => rpc.PdfRenderPage(input)),
             openA1: ({ pfx, password }) =>

@@ -28,6 +28,11 @@ pub(crate) struct Body {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Changes(Vec<(u32, Body)>);
 
+#[derive(Debug, Default)]
+pub struct Composition {
+    objects: Vec<Vec<u8>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     clippy::exhaustive_enums,
@@ -88,6 +93,75 @@ impl Changes {
 
     fn position(&self, number: u32) -> Result<usize, usize> {
         self.0.binary_search_by_key(&number, |(found, _)| *found)
+    }
+}
+
+impl Composition {
+    #[inline]
+    pub fn add(&mut self, body: String) -> u32 {
+        let number = self.reserve();
+        self.set(number, body);
+        number
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn finish(self, root: u32, info: u32) -> Vec<u8> {
+        let mut written = Written {
+            entries: Vec::new(),
+            out: HEADER.to_vec(),
+        };
+        for (index, body) in self.objects.into_iter().enumerate() {
+            let number = u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX);
+            written
+                .entries
+                .push((number, 0, XrefEntry::Offset(written.out.len())));
+            push_unsigned(&mut written.out, u64::from(number));
+            written.out.extend_from_slice(b" 0 obj\n");
+            written.out.extend_from_slice(&body);
+            written.out.extend_from_slice(b"\nendobj\n");
+        }
+        let mut trailer = Dict::default();
+        trailer.insert(
+            b"Root",
+            Object::Ref(ObjRef {
+                number: root,
+                generation: 0,
+            }),
+        );
+        if info != 0 {
+            trailer.insert(
+                b"Info",
+                Object::Ref(ObjRef {
+                    number: info,
+                    generation: 0,
+                }),
+            );
+        }
+        written.xref(&trailer, None, false, 0);
+        written.out
+    }
+
+    #[inline]
+    pub fn reserve(&mut self) -> u32 {
+        self.objects.push(Vec::new());
+        u32::try_from(self.objects.len()).unwrap_or(u32::MAX)
+    }
+
+    #[inline]
+    pub fn set(&mut self, number: u32, body: String) {
+        if let Some(slot) = self.objects.get_mut(widen(number).saturating_sub(1)) {
+            *slot = body.into_bytes();
+        }
+    }
+
+    #[inline]
+    pub fn stream(&mut self, entries: &str, bytes: &[u8]) -> u32 {
+        let mut body = format!("<< /Length {} {entries} >>\nstream\n", bytes.len()).into_bytes();
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\nendstream");
+        self.objects.push(body);
+        u32::try_from(self.objects.len()).unwrap_or(u32::MAX)
     }
 }
 
