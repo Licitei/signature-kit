@@ -17,3 +17,6 @@
     navigation: none;
   }
 }
+[data-copy-code][data-copied] {
+  color: #0b5275;
+}

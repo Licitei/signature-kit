@@ -109,6 +109,18 @@ const headingAnchor = (slugger: GithubSlugger, node: Extract<ContentNode, { type
   return { id, children };
 };
 
+export const readingMinutes = (nodes: ReadonlyArray<ContentNode>) =>
+  Math.max(
+    1,
+    Math.round(
+      nodes
+        .map((node) => toString(node))
+        .join(" ")
+        .split(/\s+/)
+        .filter((word) => word.length > 0).length / 200,
+    ),
+  );
+
 export const tableOfContents = (nodes: ContentNode[]) => {
   const slugger = new GithubSlugger();
   const entries: { id: string; title: string }[] = [];
@@ -209,6 +221,22 @@ export const renderContent = <Message>(
       }
       return [renderNode(node)];
     });
+  const codeHead = (label: string) =>
+    h.div(
+      [...sx(h, prose.codeHead)],
+      [
+        h.span([], [label]),
+        h.button(
+          [
+            ...sx(h, prose.codeCopy),
+            h.Type("button"),
+            h.Attribute("data-copy-code", ""),
+            h.AriaLabel("Copiar código"),
+          ],
+          [icon(h, "copy")],
+        ),
+      ],
+    );
   const renderNode = (node: ContentNode): Html | string => {
     const children =
       node.type === "table" ||
@@ -257,7 +285,7 @@ export const renderContent = <Message>(
           return h.div(
             [...sx(h, prose.codeBlock)],
             [
-              h.p([...sx(h, prose.codeHead)], ["terminal"]),
+              codeHead("terminal"),
               h.pre(
                 [...sx(h, prose.pre), h.Attribute("tabindex", "0")],
                 [
@@ -274,7 +302,7 @@ export const renderContent = <Message>(
           : h.div(
               [...sx(h, prose.codeBlock)],
               [
-                h.p([...sx(h, prose.codeHead)], [codeLabel(node.meta, node.lang)]),
+                codeHead(codeLabel(node.meta, node.lang)),
                 h.pre(
                   [...sx(h, prose.pre), h.Attribute("tabindex", "0")],
                   [
@@ -386,7 +414,7 @@ export const renderContent = <Message>(
                   ...(description !== undefined && description.length > 0
                     ? [h.span([], [description])]
                     : []),
-                  ...children,
+                  ...(children.length > 0 ? [h.span([], children)] : []),
                 ]
               : [
                   title,

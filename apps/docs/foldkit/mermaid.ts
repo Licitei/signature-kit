@@ -52,7 +52,10 @@ const MermaidMount = Mount.define("MermaidMount", {
               if (resource.active) {
                 element.setAttribute("data-mermaid-state", "error");
                 element.setAttribute("aria-busy", "false");
-                element.setAttribute("aria-label", "Diagram could not be rendered; source follows");
+                element.setAttribute(
+                  "aria-label",
+                  "Não foi possível desenhar o diagrama; o código-fonte vem a seguir",
+                );
               }
             },
           ),

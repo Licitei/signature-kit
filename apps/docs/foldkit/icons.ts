@@ -52,6 +52,8 @@ const paths = {
   upload: ["M12 15V4", "M7 9l5-5 5 5", "M5 20h14"],
   lock: ["M6 11h12v9H6z", "M8.5 11V8a3.5 3.5 0 0 1 7 0v3"],
   terminal: ["M4 17l6-5-6-5", "M12 19h8"],
+  menu: ["M4 7h16", "M4 12h16", "M4 17h16"],
+  search: ["M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z", "M20 20l-4-4"],
   thumbsUp: [
     "M7 10v11H3V10z",
     "M7 10l4-8a3 3 0 0 1 3 3v4h5.5a2 2 0 0 1 2 2.3l-1.4 8A2 2 0 0 1 18.1 21H7",
@@ -120,6 +122,6 @@ export const groupIcon = (title: string): IconName =>
           ? "bulb"
           : title === "APIs de provedores"
             ? "plug"
-            : title === "Signers"
+            : title === "Referência"
               ? "signature"
               : "book";

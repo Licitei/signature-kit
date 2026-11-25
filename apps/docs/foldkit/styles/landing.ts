@@ -680,6 +680,10 @@ export const landing = stylex.create({
     overflowX: "auto",
     whiteSpace: "nowrap",
     scrollbarWidth: "none",
+    maskImage: {
+      default: "linear-gradient(90deg, #000 82%, transparent)",
+      [desktop]: "none",
+    },
     fontFamily: tokens.mono,
     fontSize: "0.8125rem",
   },

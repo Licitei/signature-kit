@@ -178,7 +178,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
             [
               ...attributes.button,
               h.Attribute(attribute, ""),
-              ...sx(h, tone === "primary" ? shell.primary : shell.ghost),
+              ...sx(h, tone === "primary" ? shell.primary : signing.smallButton),
             ],
             [label],
           ),
@@ -443,7 +443,16 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                               [...trigger, ...sx(h, signing.appearanceButton)],
                               [
                                 "Aparência do carimbo",
-                                h.span([h.AriaHidden(true)], [model.appearance ? "−" : "+"]),
+                                h.span(
+                                  [
+                                    ...sx(
+                                      h,
+                                      signing.chevron,
+                                      model.appearance && signing.chevronOpen,
+                                    ),
+                                  ],
+                                  [icon(h, "chevron")],
+                                ),
                               ],
                             ),
                             animatePanel(

@@ -23,6 +23,7 @@ import {
 import {
   contentPaths,
   docsNavigation,
+  readingMinutes,
   renderContent,
   resolveContent,
   tableOfContents,
@@ -630,19 +631,22 @@ export const createView = (source: {
         ? `${tag?.tag ?? "Tags do blog"} | SignatureKit`
         : signing
           ? "Assinar PDF com certificado digital A1 grátis | SignatureKit"
-          : article !== undefined
-            ? `${article.title} — SignatureKit`
-            : section !== undefined
-              ? `${heading} — SignatureKit`
-              : content !== undefined
-                ? `${content.title} — SignatureKit`
-                : "SignatureKit — Assinatura digital com certificado A1 em TypeScript",
+          : model.path === "/search"
+            ? "Buscar na documentação — SignatureKit"
+            : article !== undefined
+              ? `${article.title} — SignatureKit`
+              : section !== undefined
+                ? `${heading} — SignatureKit`
+                : content !== undefined
+                  ? `${content.title} — SignatureKit`
+                  : "SignatureKit — Assinatura digital com certificado A1 em TypeScript",
       lang: "pt-BR",
       canonical,
       ogUrl: canonical,
       body: h.div(
         [...sx(h, "site", shell.site)],
         [
+          h.a([...sx(h, shell.skipLink), h.Href("#conteudo")], ["Pular para o conteúdo"]),
           h.header(
             [
               ...sx(
@@ -724,6 +728,23 @@ export const createView = (source: {
                         shell.compactOnly,
                         overlayHeader && shell.iconLinkLight,
                       ),
+                      h.Href(pageRoute({ path: "search" })),
+                      h.Attribute("data-overlay", "search"),
+                      h.AriaLabel("Buscar"),
+                      h.OnClick(Message.OverlayRequested({ kind: "search" }), {
+                        defaultAction: "Prevent",
+                      }),
+                    ],
+                    [icon(h, "search")],
+                  ),
+                  h.a(
+                    [
+                      ...sx(
+                        h,
+                        shell.iconButton,
+                        shell.compactOnly,
+                        overlayHeader && shell.iconLinkLight,
+                      ),
                       h.Href("#site-footer"),
                       h.Attribute("data-overlay", "menu"),
                       h.AriaLabel("Menu"),
@@ -731,14 +752,14 @@ export const createView = (source: {
                         defaultAction: "Prevent",
                       }),
                     ],
-                    ["☰"],
+                    [icon(h, "menu")],
                   ),
                 ],
               ),
             ],
           ),
           h.main(
-            [],
+            [h.Id("conteudo"), h.Attribute("tabindex", "-1")],
             model.path === "/search"
               ? [
                   banner({
@@ -756,7 +777,7 @@ export const createView = (source: {
                           h.Attribute("action", pageRoute({ path: "search" })),
                           h.Attribute("role", "search"),
                           h.OnSubmit(Message.SearchSubmitted()),
-                          ...sx(h, prose.feedbackActions),
+                          ...sx(h, prose.searchForm),
                         ],
                         [
                           Input.view(
@@ -767,15 +788,19 @@ export const createView = (source: {
                               value: model.query,
                               onInput: (value) => Message.QueryChanged({ value }),
                               toView: (attributes) =>
-                                h.label(attributes.label, [
-                                  "Termos de busca",
-                                  h.input([
-                                    ...attributes.input,
-                                    ...sx(h, prose.feedbackInput),
-                                    h.Attribute("maxlength", "200"),
-                                    h.Class("ph-no-capture"),
-                                  ]),
-                                ]),
+                                h.label(
+                                  [...attributes.label, h.Class(className(prose.searchField))],
+                                  [
+                                    h.span([...sx(h, prose.srOnly)], ["Termos de busca"]),
+                                    h.span([...sx(h, prose.searchIcon)], [icon(h, "search")]),
+                                    h.input([
+                                      ...attributes.input,
+                                      h.Class(`ph-no-capture ${className(prose.searchInput)}`),
+                                      h.Attribute("placeholder", "Ex.: PAdES, certificado, XML"),
+                                      h.Attribute("maxlength", "200"),
+                                    ]),
+                                  ],
+                                ),
                             },
                             h,
                           ),
@@ -793,9 +818,12 @@ export const createView = (source: {
                         ],
                       ),
                       model.query.trim() === ""
-                        ? h.p([...sx(h, prose.p)], ["Digite um termo para buscar."])
+                        ? h.p([...sx(h, prose.searchEmpty)], ["Digite um termo para buscar."])
                         : model.results.length === 0
-                          ? h.p([...sx(h, prose.p)], ["Nenhum resultado encontrado."])
+                          ? h.p(
+                              [...sx(h, prose.searchEmpty)],
+                              [`Nenhum resultado para “${model.query.trim()}”. Tente outro termo.`],
+                            )
                           : h.ul(
                               [...sx(h, prose.articleList)],
                               model.results.map((result) =>
@@ -929,53 +957,88 @@ export const createView = (source: {
                               title: article.title,
                               lead: article.description ?? "",
                               crumbs: [{ label: "Blog", href: pageRoute({ path: "blog" }) }],
-                              meta: article.date !== "" ? formatDate(article.date) : undefined,
+                              meta: [
+                                article.author ?? "",
+                                article.date !== "" ? formatDate(article.date) : "",
+                                `${readingMinutes(article.nodes)} min de leitura`,
+                              ]
+                                .filter((part) => part !== "")
+                                .join(" · "),
                               narrow: true,
                             }),
                             h.article(
-                              [...sx(h, "docs-content", prose.plain)],
-                              renderContent(article.nodes, h),
+                              [...sx(h, prose.post)],
+                              [
+                                h.div(
+                                  [...sx(h, "docs-content", prose.postBody)],
+                                  renderContent(article.nodes, h),
+                                ),
+                              ],
                             ),
                           ]
                         : [
                             banner({
                               title: "Blog",
-                              lead: "Artigos sobre assinaturas digitais e SignatureKit.",
-                              crumbs: [
-                                { label: "Tags do blog", href: pageRoute({ path: "blog/tags" }) },
-                              ],
+                              lead: "Histórias e decisões de engenharia sobre assinatura digital no Brasil.",
+                              crumbs: [],
                               narrow: true,
                             }),
                             h.section(
-                              [...sx(h, "docs-content", prose.plain)],
+                              [...sx(h, prose.post)],
                               [
                                 h.ul(
-                                  [...sx(h, prose.articleList)],
+                                  [
+                                    ...sx(h, prose.postList),
+                                    h.Attribute("data-reveal", ""),
+                                    h.Attribute("data-reveal-stagger", ""),
+                                  ],
                                   articles("blog").map((entry) =>
-                                    h.li(
-                                      [...sx(h, prose.articleItem)],
+                                    h.keyed("li")(
+                                      entry.href,
+                                      [],
                                       [
                                         h.a(
-                                          [...sx(h, prose.articleLink), h.Href(entry.href)],
-                                          [entry.title],
+                                          [...sx(h, prose.postRow), h.Href(entry.href)],
+                                          [
+                                            h.img([
+                                              h.Src(`${entry.href}.webp`),
+                                              h.Alt(""),
+                                              h.Width("1200"),
+                                              h.Height("630"),
+                                              h.Loading("lazy"),
+                                              h.Decoding("async"),
+                                              ...sx(h, prose.postThumb),
+                                            ]),
+                                            h.div(
+                                              [...sx(h, prose.postRowText)],
+                                              [
+                                                h.p(
+                                                  [...sx(h, prose.postMeta)],
+                                                  [
+                                                    [
+                                                      entry.date !== ""
+                                                        ? formatDate(entry.date)
+                                                        : "",
+                                                      `${readingMinutes(entry.nodes)} min de leitura`,
+                                                    ]
+                                                      .filter((part) => part !== "")
+                                                      .join(" · "),
+                                                  ],
+                                                ),
+                                                h.h2([...sx(h, prose.postRowTitle)], [entry.title]),
+                                                ...(entry.description !== undefined &&
+                                                entry.description !== ""
+                                                  ? [
+                                                      h.p(
+                                                        [...sx(h, prose.postRowDescription)],
+                                                        [entry.description],
+                                                      ),
+                                                    ]
+                                                  : []),
+                                              ],
+                                            ),
+                                          ],
                                         ),
-                                        ...(entry.date !== ""
-                                          ? [
-                                              h.p(
-                                                [...sx(h, prose.articleMeta)],
-                                                [formatDate(entry.date)],
-                                              ),
-                                            ]
-                                          : []),
-                                        ...(entry.description !== undefined &&
-                                        entry.description !== ""
-                                          ? [
-                                              h.p(
-                                                [...sx(h, prose.articleDescription)],
-                                                [entry.description],
-                                              ),
-                                            ]
-                                          : []),
                                       ],
                                     ),
                                   ),

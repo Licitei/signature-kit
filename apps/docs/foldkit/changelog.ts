@@ -647,7 +647,7 @@ export const releaseView = <Message>(
 ): Html =>
   h.keyed("article")(
     input.release.id,
-    [...sx(h, prose.release), h.Id(input.release.id)],
+    [...sx(h, prose.release), h.Id(input.release.id), h.Attribute("data-reveal", "")],
     [
       h.div(
         [...sx(h, prose.releaseMeta)],

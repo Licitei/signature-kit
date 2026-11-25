@@ -200,7 +200,7 @@ export const signFreeLanding = <Message>(
     [...sx(h, landing.section)],
     [
       h.div(
-        [...sx(h, landing.head)],
+        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
         [
           h.h2([...sx(h, landing.sectionTitle)], ["Como assinar um PDF com certificado A1"]),
           h.p(
@@ -210,7 +210,11 @@ export const signFreeLanding = <Message>(
         ],
       ),
       h.ol(
-        [...sx(h, landing.steps)],
+        [
+          ...sx(h, landing.steps),
+          h.Attribute("data-reveal", ""),
+          h.Attribute("data-reveal-stagger", ""),
+        ],
         signFreeSteps.map((step, index) =>
           h.keyed("li")(
             step.title,
@@ -229,11 +233,15 @@ export const signFreeLanding = <Message>(
     [...sx(h, landing.section)],
     [
       h.div(
-        [...sx(h, landing.head)],
+        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
         [h.h2([...sx(h, landing.sectionTitle)], ["O que você recebe"])],
       ),
       h.ul(
-        [...sx(h, landing.outcomes)],
+        [
+          ...sx(h, landing.outcomes),
+          h.Attribute("data-reveal", ""),
+          h.Attribute("data-reveal-stagger", ""),
+        ],
         signFreeOutcomes.map((item) =>
           h.keyed("li")(
             item.title,
@@ -252,7 +260,7 @@ export const signFreeLanding = <Message>(
     [...sx(h, landing.section, landing.split)],
     [
       h.div(
-        [...sx(h, landing.head)],
+        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
         [
           h.h2([...sx(h, landing.sectionTitle)], ["Validade jurídica"]),
           h.p(
@@ -273,7 +281,11 @@ export const signFreeLanding = <Message>(
         ],
       ),
       h.ol(
-        [...sx(h, landing.levels)],
+        [
+          ...sx(h, landing.levels),
+          h.Attribute("data-reveal", ""),
+          h.Attribute("data-reveal-stagger", ""),
+        ],
         signFreeLevels.map((item) =>
           h.keyed("li")(
             item.level,
@@ -299,7 +311,7 @@ export const signFreeLanding = <Message>(
     [...sx(h, landing.section, landing.split)],
     [
       h.div(
-        [...sx(h, landing.head)],
+        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
         [
           h.h2([...sx(h, landing.sectionTitle)], ["Perguntas frequentes"]),
           h.p(
@@ -371,7 +383,7 @@ export const signFreeCta = <Message>(h: HtmlBuilder<Message>) =>
     [...sx(h, landing.section)],
     [
       h.div(
-        [...sx(h, landing.devCta)],
+        [...sx(h, landing.devCta), h.Attribute("data-reveal", "")],
         [
           h.div(
             [...sx(h, landing.devCopy)],
@@ -399,7 +411,7 @@ export const autoSignSection = <Message>(h: HtmlBuilder<Message>, demo: Html) =>
     [...sx(h, landing.section), h.Id("auto-sign")],
     [
       h.div(
-        [...sx(h, landing.head)],
+        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
         [
           h.h2(
             [...sx(h, landing.sectionTitle), h.Id("auto-sign-heading")],
@@ -534,7 +546,7 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
     [...sx(h, landing.block), h.Id("assinar")],
     [
       h.div(
-        [...sx(h, landing.blockHead)],
+        [...sx(h, landing.blockHead), h.Attribute("data-reveal", "")],
         [
           h.h2([...sx(h, landing.blockTitle)], ["Assine um PDF agora, com o seu A1."]),
           h.p(
@@ -546,6 +558,7 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
       h.a(
         [
           ...sx(h, landing.drop),
+          h.Attribute("data-reveal", ""),
           h.Href(signFreePath),
           h.Attribute("data-overlay", "signer"),
           h.OnClick(messages.open("signer"), { defaultAction: "Prevent" }),

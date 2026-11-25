@@ -21,8 +21,7 @@ const groupBlurb: Record<string, string> = {
   "Assinatura A1": "PDF no navegador com certificado A1.",
   Receitas: "React, Promise, âncoras e tracing.",
   Conceitos: "O modelo mental e a fronteira do signer.",
-  "APIs de provedores": "Clicksign, Assinafy, ZapSign e outros.",
-  Signers: "Certificados, PDF/PAdES, XML-DSig e erros.",
+  Referência: "Certificados, PDF/PAdES, XML-DSig e erros.",
 };
 
 const resources: ReadonlyArray<{ title: string; hint: string; href: string; glyph: IconName }> = [

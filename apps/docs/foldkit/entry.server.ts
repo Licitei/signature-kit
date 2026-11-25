@@ -17,6 +17,7 @@ import { feedbackResponse } from "./feedback-server";
 import { agentMeta, agentResponse } from "./agents";
 import { signFreeDescription, signFreeFaqs, signFreeSteps } from "./home";
 import { siteOrigin } from "./site-origin";
+import { notFoundPage } from "./not-found";
 import geistFont from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
 import geistMonoFont from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?url";
 
@@ -184,6 +185,11 @@ export const createServerComposition = (
     const agentHead = `<link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preload" as="image" href="/landing/hero-chapada.webp" fetchpriority="high"><link rel="preload" as="font" type="font/woff2" href="${geistFont}" crossorigin><link rel="preload" as="font" type="font/woff2" href="${geistMonoFont}" crossorigin>${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
     return Server.renderDocument(application, assets, { head: head + jsonLd + agentHead });
   };
+  const notFound = () =>
+    new Response(notFoundPage(geistFont), {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
   const renderPage = async (request: Request, buildId?: string): Promise<Server.EntryResult> => {
     const agent = await Effect.runPromise(agentResponse(request));
     if (agent !== undefined) return Server.Responded(agent);
@@ -251,8 +257,7 @@ export const createServerComposition = (
       return Server.Responded(Response.redirect(target, 301));
     }
     const parsedRoute = parsePublicUrl(request.url);
-    if (parsedRoute === undefined)
-      return Server.Responded(new Response("Not found", { status: 404 }));
+    if (parsedRoute === undefined) return Server.Responded(notFound());
     const route = parsedRoute._tag === "Page" ? `/${parsedRoute.path}` : "";
     const docs = route === "/docs" || route.startsWith("/docs/");
     const section =
@@ -263,23 +268,23 @@ export const createServerComposition = (
           : undefined;
     const signing = route === "/assine-documentos-gratis";
     if (route !== "" && route !== "/search" && !docs && section === undefined && !signing)
-      return Server.Responded(new Response("Not found", { status: 404 }));
+      return Server.Responded(notFound());
     if (docs && source.resolve("docs", route.slice(6)) === undefined)
-      return Server.Responded(new Response("Not found", { status: 404 }));
+      return Server.Responded(notFound());
     const tagRoute = route === "/blog/tags" || route.startsWith("/blog/tags/");
     if (
       tagRoute &&
       route !== "/blog/tags" &&
       !blogTags().some((tag) => encodeURIComponent(tag.slug) === route.slice(11))
     )
-      return Server.Responded(new Response("Not found", { status: 404 }));
+      return Server.Responded(notFound());
     if (
       section !== undefined &&
       !tagRoute &&
       route !== `/${section}` &&
       !articles(section).some((entry) => entry.href === pageRoute({ path: route.slice(1) }))
     )
-      return Server.Responded(new Response("Not found", { status: 404 }));
+      return Server.Responded(notFound());
     const rawQuery = route === "/search" ? (new URL(request.url).searchParams.get("q") ?? "") : "";
     if (route === "/search" && request.method === "GET" && analytics !== undefined)
       await Effect.runPromise(
