@@ -1,4 +1,4 @@
-const INIT_H = new Int32Array([
+export const SHA256_INITIAL_STATE = new Int32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ]);
 
@@ -79,7 +79,7 @@ export function sha256(data: Uint8Array): Uint8Array {
   view.setUint32(totalLen - 8, bitLenHi, false);
   view.setUint32(totalLen - 4, bitLenLo, false);
 
-  const h = new Int32Array(INIT_H);
+  const h = new Int32Array(SHA256_INITIAL_STATE);
 
   const schedule = new Int32Array(64);
   for (let i = 0; i < totalLen; i += 64) {
@@ -130,7 +130,7 @@ export function sha256WithState(
 }
 
 export function sha256ProcessBlock(blockBytes: Uint8Array): Int32Array {
-  const h = new Int32Array(INIT_H);
+  const h = new Int32Array(SHA256_INITIAL_STATE);
   const view = new DataView(blockBytes.buffer, blockBytes.byteOffset, blockBytes.byteLength);
   processBlock(h, view, 0, new Int32Array(64));
   return h;
@@ -138,7 +138,7 @@ export function sha256ProcessBlock(blockBytes: Uint8Array): Int32Array {
 
 export function sha256Prefix(
   prefix: Uint8Array,
-  initialState = INIT_H,
+  initialState = SHA256_INITIAL_STATE,
   initialLength = 0,
 ): {
   readonly digest: (parts?: readonly Uint8Array[]) => Uint8Array<ArrayBuffer>;

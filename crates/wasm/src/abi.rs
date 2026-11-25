@@ -27,6 +27,7 @@ use signature_kit_pdf_core::layout::{self, TextOptions};
 use signature_kit_pdf_core::lazy::{Lazy, Plan, Tuning};
 use signature_kit_pdf_core::num::{u64_to_f64, widen};
 use signature_kit_pdf_core::object::ObjRef;
+use signature_kit_pdf_core::pdf_hash::sha256_blocks;
 use signature_kit_pdf_core::png;
 use signature_kit_pdf_core::render::{self, RenderedPage};
 use signature_kit_pdf_core::revision::changes::{RevisionChanges, revision_changes};
@@ -1346,6 +1347,32 @@ pub(crate) unsafe extern "C" fn pdf_core_merge(
         )?;
         bytes_result(&output)
     }))
+}
+
+/// # Safety
+///
+/// `state_ptr` must point to eight aligned, writable `u32` words and `data_ptr`
+/// must satisfy [`view`] for `data_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_sha256_blocks(
+    state_ptr: *mut u32,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> u32 {
+    // SAFETY: forwarded from this function's contract.
+    let input = unsafe { view(data_ptr, data_len) };
+    // SAFETY: forwarded from this function's contract.
+    let state = unsafe { view(state_ptr.cast_const(), 8) };
+    let (Ok(data), Ok(words)) = (input, state) else {
+        return 0;
+    };
+    let Ok(initial) = <[u32; 8]>::try_from(words) else {
+        return 0;
+    };
+    let next = sha256_blocks(initial, data);
+    // SAFETY: `view` accepted eight aligned words, and the caller grants write access.
+    unsafe { slice::from_raw_parts_mut(state_ptr, 8) }.copy_from_slice(&next);
+    1
 }
 
 /// # Safety

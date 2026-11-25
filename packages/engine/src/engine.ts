@@ -1,7 +1,7 @@
 import { makeDetachedSigner } from "./cms/detached.js";
 import { CryptoErrorCodeValue } from "./crypto/config.js";
 import { parsePkcs12 } from "./crypto/pkcs12.js";
-import { sha256Prefix } from "./crypto/primitives/sha256.js";
+import { SHA256_INITIAL_STATE, sha256Prefix } from "./crypto/primitives/sha256.js";
 import { displayListViewport } from "./wasm/canvas.js";
 import type { PdfCoreDisplayList, PdfCoreSignatureFields } from "./wasm/config.js";
 import { PdfCore, pdfCoreBytesSource } from "./wasm/pdf-core.js";
@@ -42,6 +42,7 @@ const cmsHash = {
 } satisfies Record<A1Hash, "sha256" | "sha384" | "sha512">;
 
 type DetachedSigner = Effect.Success<ReturnType<typeof makeDetachedSigner>>;
+const WASM_DIGEST_THRESHOLD = 64 * 1024;
 const storeRevision = Symbol();
 const loadRevision = Symbol();
 type RevisionBytes = {
@@ -501,6 +502,34 @@ export const pdfEngineLayer = Layer.effectContext(
         Documents,
         Documents.of({
           ...documents,
+          open: Effect.fn(
+            function* (bytes) {
+              const owned = new Uint8Array(bytes);
+              const checkpoint =
+                owned.byteLength < WASM_DIGEST_THRESHOLD
+                  ? Effect.sync(() => sha256Prefix(owned))
+                  : core.sha256Blocks(owned, SHA256_INITIAL_STATE).pipe(
+                      Effect.map(({ state, length }) =>
+                        sha256Prefix(owned.subarray(length), state, length),
+                      ),
+                      Effect.mapError(() => new LocalError({ code: "digestFailed" })),
+                    );
+              return yield* documents[storeRevision](
+                owned,
+                yield* checkpoint.pipe(
+                  Effect.withSpan("local.crypto.digestPrefix", undefined, {
+                    captureStackTrace: false,
+                  }),
+                ),
+              );
+            },
+            (effect, bytes) =>
+              effect.pipe(
+                Effect.withSpan("local.documents.open", {
+                  attributes: { byteLength: bytes.byteLength },
+                }),
+              ),
+          ),
           release: (handle) =>
             lock(
               documents

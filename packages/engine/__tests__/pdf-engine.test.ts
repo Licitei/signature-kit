@@ -139,3 +139,22 @@ it.effect("measures reopening versus keeping the parsed document between renders
     }
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("hashes opened revisions in WASM across block and chunk boundaries", () =>
+  Effect.gen(function* () {
+    const documents = yield* Documents;
+    for (const length of [0, 1, 63, 64, 65, 1024 * 1024 - 1, 1024 * 1024 + 129, 3 * 1024 * 1024]) {
+      const bytes = Uint8Array.from({ length }, (_, index) => (index * 131 + 7) % 251);
+      const expected = Array.from(
+        new Uint8Array(yield* Effect.promise(() => crypto.subtle.digest("SHA-256", bytes))),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
+      const revision = yield* documents.open(bytes);
+      expect(revision.digest).toBe(expected);
+      const retained = yield* documents.retain(revision);
+      expect(retained.digest).toBe(expected);
+      yield* documents.release(retained.handle);
+      yield* documents.release(revision.handle);
+    }
+  }).pipe(Effect.provide(layer)),
+);
