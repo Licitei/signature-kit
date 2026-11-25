@@ -1,6 +1,6 @@
 import { Context, Duration, Effect, Fiber, Layer, Redacted, Schedule, Stream } from "effect";
 import { commands } from "vitest/browser";
-import { expect, it } from "vitest";
+import { expect, inject, it } from "vitest";
 import { LocalTelemetry } from "@signature-kit/engine/rpc";
 import type {
   A1SessionBinding,
@@ -18,6 +18,7 @@ import { batchTelemetry } from "./batch-page.js";
 
 const plainWorker = () =>
   new Worker(new URL("./signing-benchmark.worker.ts", import.meta.url), { type: "module" });
+const bundledWorker = () => new Worker(inject("bundledWorkerUrl"), { type: "module" });
 const tracedWorker = () =>
   new Worker(new URL("./batch-benchmark.worker.ts", import.meta.url), { type: "module" });
 
@@ -235,11 +236,11 @@ const collectSpans = Effect.gen(function* () {
 const buildClient = <E>(layer: Layer.Layer<LocalClient, E>) =>
   Layer.build(layer).pipe(Effect.map((context) => Context.get(context, LocalClient)));
 
-const coldPlain = (fixture: Fixture) =>
+const coldPlain = (fixture: Fixture, createWorker: () => Worker) =>
   Effect.scoped(
     Effect.gen(function* () {
       const { value: client, ms: bootMs } = yield* timed(
-        buildClient(localClientLayer(plainWorker)),
+        buildClient(localClientLayer(createWorker)),
       );
       return yield* Effect.gen(function* () {
         yield* blockNetwork;
@@ -341,7 +342,12 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
     const [contract] = corpus;
     if (contract === undefined) return yield* Effect.die("Expected the contract fixture.");
 
-    const cold = yield* Effect.forEach(Array.from({ length: 7 }), () => coldPlain(contract));
+    const cold = yield* Effect.forEach(Array.from({ length: 7 }), () =>
+      coldPlain(contract, plainWorker),
+    );
+    const coldBundled = yield* Effect.forEach(Array.from({ length: 7 }), () =>
+      coldPlain(contract, bundledWorker),
+    );
     const coldStages = yield* Effect.forEach(Array.from({ length: 3 }), () => coldTraced(contract));
 
     yield* blockNetwork;
@@ -381,7 +387,13 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
       });
     }
     yield* client.closeA1();
-    return { cold: summarize(cold), coldStages: summarize(coldStages), warm, batches };
+    return {
+      cold: summarize(cold),
+      coldBundled: summarize(coldBundled),
+      coldStages: summarize(coldStages),
+      warm,
+      batches,
+    };
   });
 
   const traced = Effect.gen(function* () {

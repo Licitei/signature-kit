@@ -8,6 +8,10 @@ export default defineConfig({
     ...browser.test,
     include: ["packages/**/*.performance.browser.test.*"],
     exclude: configDefaults.exclude,
+    globalSetup: [
+      ...[browser.test?.globalSetup ?? []].flat(),
+      "tooling/vitest/benchmark-worker-bundle.ts",
+    ],
     browser: {
       ...browser.test?.browser,
       commands: { ...browser.test?.browser?.commands, sampleRuntimeMemory, writeBenchmark },

@@ -7,6 +7,7 @@ const Summaries = Schema.Record(Schema.String, Summary);
 const Result = Schema.Struct({
   hardwareConcurrency: Schema.Finite,
   cold: Summaries,
+  coldBundled: Schema.optional(Summaries),
   coldStages: Summaries,
   warm: Schema.Array(
     Schema.Record(Schema.String, Schema.Union([Summary, Schema.Finite, Schema.String])),
@@ -82,6 +83,12 @@ await Effect.runPromise(
     console.info(
       [
         table("Cold first signature (fresh worker)", "case", [cold(before)], [cold(after)]),
+        table(
+          "Cold first signature (fresh production-bundled worker)",
+          "case",
+          [{ case: "contract-1p", ...before.coldBundled }],
+          [{ case: "contract-1p", ...after.coldBundled }],
+        ),
         table("Warm single signature (page-observed)", "fixture", before.warm, after.warm),
         table(
           "Warm single signature stages (worker spans)",
