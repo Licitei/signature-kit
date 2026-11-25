@@ -7,7 +7,7 @@ import { tokens } from "./styles/tokens.stylex";
 import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
-import { contentPaths, expressionText, resolveContent } from "./content";
+import { contentPaths, contentRevision, expressionText, resolveContent } from "./content";
 import type { ContentNode } from "./content-parse";
 
 export const SearchQuery = Schema.String.check(Schema.isMaxLength(200));
@@ -233,9 +233,9 @@ const indexPages = (pages: ReadonlyArray<SearchPage>) => {
   return index;
 };
 
-const indexCache = new Map<"docs", ReadonlyArray<SearchSection>>();
+const indexCache = new Map<number, ReadonlyArray<SearchSection>>();
 const defaultIndex = () => {
-  const cached = indexCache.get("docs");
+  const cached = indexCache.get(contentRevision());
   if (cached !== undefined) return cached;
   const built = indexPages(
     contentPaths().flatMap((path) => {
@@ -245,7 +245,8 @@ const defaultIndex = () => {
       return page === undefined ? [] : [{ slug, page }];
     }),
   );
-  indexCache.set("docs", built);
+  indexCache.clear();
+  indexCache.set(contentRevision(), built);
   return built;
 };
 

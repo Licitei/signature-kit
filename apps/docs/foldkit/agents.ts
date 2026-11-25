@@ -1,3 +1,4 @@
+import { toolPages } from "./tool-pages";
 import { Effect } from "effect";
 import { pageRoute } from "./routes";
 import { contentPaths, contentSource, docsNavigation, resolveContent } from "./content";
@@ -138,8 +139,15 @@ export const llmsTxt = () =>
       ].join("\n"),
     ),
     [
+      "## Ferramentas no navegador",
+      ...toolPages.map(
+        (page) => `- [${page.nav.label}](${siteOrigin}/${page.path}): ${page.description}`,
+      ),
+      `- [pdf-core](${siteOrigin}/pdf-core): motor de PDF em Rust e WebAssembly, com benchmarks e demonstração no navegador`,
+    ].join("\n"),
+    [
       "## Outros",
-      `- [Assinar PDF grátis](${siteOrigin}/assine-documentos-gratis): assinador A1 no navegador, sem upload`,
+      `- [Blog](${siteOrigin}/blog)`,
       `- [Changelog](${siteOrigin}/changelog)`,
       `- [Código-fonte](https://github.com/Licitei/signature-kit)`,
     ].join("\n"),

@@ -4,13 +4,14 @@ import { Schema } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { docsNavigation } from "./content";
 import { signFreePath } from "./home";
+import { toolPages } from "./tool-pages";
 import { groupIcon, icon } from "./icons";
 import type { IconName } from "./icons";
 import { pageRoute } from "./routes";
 import { sx } from "./styles/sx";
 import { tokens } from "./styles/tokens.stylex";
 
-export const NavMenuKind = Schema.Literals(["docs", "resources"]);
+export const NavMenuKind = Schema.Literals(["docs", "tools", "resources"]);
 export type NavMenuKind = typeof NavMenuKind.Type;
 
 export const navMenuInit = (kind: NavMenuKind) =>
@@ -25,6 +26,12 @@ const groupBlurb: Record<string, string> = {
 };
 
 const resources: ReadonlyArray<{ title: string; hint: string; href: string; glyph: IconName }> = [
+  {
+    title: "pdf-core",
+    hint: "Nosso motor de PDF em Rust e WebAssembly.",
+    href: "/pdf-core",
+    glyph: "zap",
+  },
   { title: "Blog", hint: "Artigos e decisões de engenharia.", href: "/blog", glyph: "book" },
   { title: "Changelog", hint: "O que mudou em cada versão.", href: "/changelog", glyph: "list" },
   {
@@ -150,6 +157,9 @@ const styles = stylex.create({
     display: "grid",
     gap: "2px",
     minWidth: "300px",
+  },
+  toolsPanel: {
+    width: "560px",
   },
   link: {
     display: "flex",
@@ -334,6 +344,24 @@ const content = <Message>(h: HtmlBuilder<Message>, kind: NavMenuKind): Html => {
         ),
       ],
     );
+  if (kind === "tools")
+    return h.div(
+      [...sx(h, styles.grid, styles.toolsPanel)],
+      toolPages.map((page) =>
+        h.keyed("div")(
+          page.path,
+          [],
+          [
+            row(h, {
+              href: `/${page.path}`,
+              title: page.nav.label,
+              hint: page.nav.hint,
+              glyph: icon(h, page.nav.glyph),
+            }),
+          ],
+        ),
+      ),
+    );
   return h.div(
     [...sx(h, styles.list)],
     resources.map((resource) =>
@@ -447,6 +475,31 @@ export const mobileMenuView = <Message>(
       h.div(
         [],
         [
+          h.p([...sx(h, styles.sheetLabel)], ["Ferramentas"]),
+          h.div(
+            [...sx(h, styles.sheetRows)],
+            toolPages
+              .filter((page) => `/${page.path}` !== signFreePath)
+              .map((page) =>
+                h.keyed("div")(
+                  page.path,
+                  [],
+                  [
+                    row(h, {
+                      href: `/${page.path}`,
+                      title: page.nav.label,
+                      hint: page.nav.hint,
+                      glyph: icon(h, page.nav.glyph),
+                    }),
+                  ],
+                ),
+              ),
+          ),
+        ],
+      ),
+      h.div(
+        [],
+        [
           h.p([...sx(h, styles.sheetLabel)], ["Recursos"]),
           h.div(
             [...sx(h, styles.sheetRows)],
@@ -472,6 +525,7 @@ export const mobileMenuView = <Message>(
 
 const labels: Record<NavMenuKind, string> = {
   docs: "Docs",
+  tools: "Ferramentas",
   resources: "Recursos",
 };
 

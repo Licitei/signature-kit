@@ -263,7 +263,11 @@ describe("Foldkit articles", () => {
   });
 
   it("indexes Portuguese articles in reverse chronological order", () => {
-    expect(articles("blog")[0]?.title).toContain("assinatura A1 no navegador");
+    const blog = articles("blog");
+    expect(blog.map((entry) => entry.slug)).toContain("signature-kit-x-licitei");
+    expect(blog.map((entry) => entry.timestamp)).toEqual(
+      blog.map((entry) => entry.timestamp).sort((a, b) => b - a),
+    );
     const changelog = articles("changelog");
     expect(changelog.length).toBeGreaterThan(1);
     expect(changelog.map((entry) => entry.timestamp)).toEqual(

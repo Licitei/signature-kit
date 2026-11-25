@@ -1,3 +1,4 @@
+import { toolPages } from "./tool-pages";
 import { homeRoute, pageRoute, parsePublicUrl } from "./routes";
 import { Effect } from "effect";
 import { createArticleCatalog } from "./articles";
@@ -41,7 +42,8 @@ export const createFeeds = (source: {
       "/blog",
       "/blog/tags",
       "/changelog",
-      "/assine-documentos-gratis",
+      ...toolPages.map((page) => `/${page.path}`),
+      "/pdf-core",
       ...blogTags().map(({ slug }) => `/blog/tags/${slug}`),
     ];
     const docs = source

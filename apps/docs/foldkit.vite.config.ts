@@ -17,11 +17,13 @@ const contentFiles = (pattern: RegExp) =>
     .filter((file) => pattern.test(file))
     .map((file) => `../content/${file.split(path.sep).join("/")}`)
     .sort();
+const contentChunkPrefix = "\0signaturekit-content-chunk:";
 const prebuiltContent: Plugin = {
   name: "signaturekit-prebuilt-content",
   apply: "build",
   enforce: "pre",
   resolveId(source, importer) {
+    if (source.startsWith(contentChunkPrefix)) return source;
     if (
       this.environment.name !== "client" ||
       source !== "./content-data" ||
@@ -32,20 +34,43 @@ const prebuiltContent: Plugin = {
     return contentDataId;
   },
   load(id) {
-    if (id !== contentDataId) return null;
     const read = (file: string) => readFileSync(path.join(docsRoot, "foldkit", file), "utf8");
     const pages = contentFiles(/^(docs|blog|changelog)\/.*\.mdx$/);
+    const serialize = (value: unknown) =>
+      JSON.stringify(
+        JSON.stringify(value, (key, entry) =>
+          key === "position" || key === "loc" || key === "range" ? undefined : entry,
+        ),
+      );
+    if (id.startsWith(contentChunkPrefix)) {
+      const target = id.slice(contentChunkPrefix.length);
+      const files = pages.includes(target)
+        ? [target]
+        : pages.filter((file) => file.startsWith(`../content/${target}/`));
+      return `export default JSON.parse(${serialize(
+        Object.fromEntries(files.map((file) => [file, parseContent(read(file))])),
+      )});`;
+    }
+    if (id !== contentDataId) return null;
     const metadata = contentFiles(/^docs\/(.*\/)?meta[^/]*\.json$/);
-    const parsed = JSON.stringify(
-      Object.fromEntries(pages.map((file) => [file, parseContent(read(file))])),
-      (key, value) => (key === "position" || key === "loc" || key === "range" ? undefined : value),
+    const light = Object.fromEntries(
+      pages.map((file) => {
+        const { title, description, date, author, tags } = parseContent(read(file));
+        return [file, { title, description, date, author, tags, nodes: [] }];
+      }),
     );
+    const loader = (target: string) =>
+      `${JSON.stringify(target)}: () => import(${JSON.stringify(`${contentChunkPrefix}${target}`)})`;
     return [
       `export const contentSources = {};`,
       `export const contentKeys = ${JSON.stringify(pages)};`,
       `export const contentMetadata = ${JSON.stringify(Object.fromEntries(metadata.map((file) => [file, read(file)])))};`,
-      `const parsed = JSON.parse(${JSON.stringify(parsed)});`,
-      `export const loadContent = (path) => parsed[path];`,
+      `const light = JSON.parse(${serialize(light)});`,
+      `const full = Object.create(null);`,
+      `const loaders = {${[...pages, "docs", "blog", "changelog"].map(loader).join(",")}};`,
+      `export const loadContent = (path) => full[path] ?? light[path];`,
+      `export const loadedContentCount = () => Object.keys(full).length;`,
+      `export const preloadContent = (targets) => Promise.all(targets.filter((target) => loaders[target] !== undefined && full[target] === undefined).map((target) => loaders[target]().then((chunk) => Object.assign(full, chunk.default)))).then(() => undefined);`,
     ].join("\n");
   },
 };

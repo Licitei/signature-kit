@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
 import { DOMImplementation, XMLSerializer } from "@xmldom/xmldom";
 import * as Server from "foldkit/experimental/server";
 import { Flags, init, createView } from "./main";
-import { createArticleCatalog } from "./articles";
+import { articleCrop, articleCrops, createArticleCatalog } from "./articles";
 import { contentPaths, resolveContent } from "./content";
 import { createFeeds } from "./feeds";
 import { SearchQuery } from "./search";
@@ -15,7 +15,8 @@ import {
 } from "../lib/posthog/server";
 import { feedbackResponse } from "./feedback-server";
 import { agentMeta, agentResponse } from "./agents";
-import { signFreeDescription, signFreeFaqs, signFreeSteps } from "./home";
+import { toolPageAt, toolPageStructuredData, toolPages } from "./tool-pages";
+import { pdfCoreDescription, pdfCorePath, pdfCoreStructuredData } from "./pdf-core-page";
 import { siteOrigin } from "./site-origin";
 import { notFoundPage } from "./not-found";
 import geistFont from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
@@ -33,7 +34,8 @@ export const createServerComposition = (
   const view = createView(source);
   const prerenderPaths = [
     homeRoute({}),
-    pageRoute({ path: "assine-documentos-gratis" }),
+    ...toolPages.map((page) => pageRoute({ path: page.path })),
+    pdfCorePath,
     ...articlePaths(),
     ...tagPaths(),
     ...source
@@ -85,11 +87,13 @@ export const createServerComposition = (
           ? "Artigos sobre assinatura digital no Brasil, TypeScript e Effect."
           : path === "/changelog"
             ? "Notas de versão dos pacotes do SignatureKit."
-            : path === "/assine-documentos-gratis"
-              ? signFreeDescription
-              : path === "/search"
-                ? "Busque na documentação do SignatureKit."
-                : "Assine PDF (PAdES) e XML (XML-DSig) com certificado ICP-Brasil, no servidor ou no navegador. Biblioteca open source em TypeScript.");
+            : path === pdfCorePath
+              ? pdfCoreDescription
+              : toolPageAt(path) !== undefined
+                ? (toolPageAt(path)?.description ?? "")
+                : path === "/search"
+                  ? "Busque na documentação do SignatureKit."
+                  : "Assine PDF (PAdES) e XML (XML-DSig) com certificado ICP-Brasil, no servidor ou no navegador. Biblioteca open source em TypeScript.");
     const meta = (key: string, value: string, property = false): Metadata => ({
       kind: "meta",
       key,
@@ -128,45 +132,15 @@ export const createServerComposition = (
         return serializer.serializeToString(element);
       })
       .join("");
-    const signFreeUrl = `${siteOrigin}/assine-documentos-gratis`;
+    const toolPage = toolPages.find(
+      (page) => application.canonical === `${siteOrigin}/${page.path}`,
+    );
     const structuredData =
-      application.canonical === signFreeUrl
-        ? {
-            "@context": "https://schema.org",
-            "@graph": [
-              {
-                "@type": "SoftwareApplication",
-                name: "Assinador de PDF grátis do SignatureKit",
-                applicationCategory: "BusinessApplication",
-                operatingSystem: "Web",
-                url: signFreeUrl,
-                description: signFreeDescription,
-                offers: { "@type": "Offer", price: "0", priceCurrency: "BRL" },
-              },
-              {
-                "@type": "HowTo",
-                name: "Como assinar um PDF com certificado digital A1",
-                description: signFreeDescription,
-                totalTime: "PT2M",
-                step: signFreeSteps.map((step, index) => ({
-                  "@type": "HowToStep",
-                  position: index + 1,
-                  name: step.title,
-                  text: step.body,
-                  url: `${signFreeUrl}#assinar`,
-                })),
-              },
-              {
-                "@type": "FAQPage",
-                mainEntity: signFreeFaqs.map((item) => ({
-                  "@type": "Question",
-                  name: item.question,
-                  acceptedAnswer: { "@type": "Answer", text: item.answer },
-                })),
-              },
-            ],
-          }
-        : undefined;
+      application.canonical === `${siteOrigin}${pdfCorePath}`
+        ? pdfCoreStructuredData(siteOrigin)
+        : toolPage === undefined
+          ? undefined
+          : toolPageStructuredData(toolPage, siteOrigin);
     const jsonLd =
       structuredData === undefined
         ? ""
@@ -182,7 +156,11 @@ export const createServerComposition = (
           `<meta name="agent:${key}" content="${value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;")}">`,
       )
       .join("");
-    const agentHead = `<link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preload" as="image" href="/landing/hero-chapada.webp" fetchpriority="high"><link rel="preload" as="font" type="font/woff2" href="${geistFont}" crossorigin><link rel="preload" as="font" type="font/woff2" href="${geistMonoFont}" crossorigin>${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
+    const lightPage = toolPages.find((page) => `/${page.path}` === pathname)?.tone === "light";
+    const heroPreload = lightPage
+      ? ""
+      : '<link rel="preload" as="image" href="/landing/hero-chapada.webp" fetchpriority="high">';
+    const agentHead = `<link rel="icon" type="image/svg+xml" href="/favicon.svg">${heroPreload}<link rel="preload" as="font" type="font/woff2" href="${geistFont}" crossorigin><link rel="preload" as="font" type="font/woff2" href="${geistMonoFont}" crossorigin>${agentTags}${markdownLink}<link rel="help" type="text/plain" href="/llms.txt"><script type="module" src="/webmcp.js"></script>`;
     return Server.renderDocument(application, assets, { head: head + jsonLd + agentHead });
   };
   const notFound = () =>
@@ -234,10 +212,13 @@ export const createServerComposition = (
                 ? "Blog"
                 : imagePath.startsWith("changelog")
                   ? "Notas de versão"
-                  : imagePath === "assine-documentos-gratis"
-                    ? "Assinar PDF grátis"
-                    : "Open source · TypeScript · ICP-Brasil",
+                  : (toolPageAt(`/${imagePath}`)?.social ??
+                    (`/${imagePath}` === pdfCorePath ? "Motor de PDF em Rust e Wasm" : undefined) ??
+                    "Open source · TypeScript · ICP-Brasil"),
             site: new URL(siteOrigin).host,
+            ...(imagePath.startsWith("blog/")
+              ? { crop: articleCrops[articleCrop(imagePath.slice(5))] ?? "center bottom" }
+              : {}),
           });
         }).pipe(Effect.provide(socialImageLayer)),
         { signal: request.signal },
@@ -264,7 +245,7 @@ export const createServerComposition = (
         : route === "/changelog" || route.startsWith("/changelog/")
           ? "changelog"
           : undefined;
-    const signing = route === "/assine-documentos-gratis";
+    const signing = toolPageAt(route) !== undefined || route === pdfCorePath;
     if (route !== "" && route !== "/search" && !docs && section === undefined && !signing)
       return Server.Responded(notFound());
     if (docs && source.resolve("docs", route.slice(6)) === undefined)

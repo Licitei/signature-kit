@@ -22,6 +22,17 @@ export const ArticleDate = Schema.Struct({
   ).pipe(Schema.decodeTo(Schema.DateFromString)),
 });
 
+export const articleCrops = [
+  "center bottom",
+  "left center",
+  "right top",
+  "center top",
+  "right center",
+] satisfies ReadonlyArray<string>;
+export const articleCrop = (slug: string) =>
+  Array.from(slug).reduce((sum, character) => sum + (character.codePointAt(0) ?? 0), 0) %
+  articleCrops.length;
+
 export const tagSlug = (tag: string) => tag.toLowerCase().replace(/\s+/g, "-");
 export const indexTags = (
   entries: ReturnType<typeof indexArticles>,

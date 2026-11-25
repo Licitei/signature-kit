@@ -121,7 +121,9 @@ export const homeBrowserServer = (): Plugin => ({
       const url = new URL(request.url ?? "/", "http://localhost");
       if (url.pathname === "/__signaturekit_home__") url.pathname = "/";
       else if (
-        !/^\/(?:docs|blog|changelog|search|assine-documentos-gratis)(?:\/|$)/.test(url.pathname)
+        !/^\/(?:docs|blog|changelog|search|assine-documentos-gratis|assinar-pdf-em-lote|rubricar-pdf|verificar-assinatura-pdf|ler-certificado-pfx|assinar-xml-com-certificado-a1|pdf-core)(?:\/|$)/.test(
+          url.pathname,
+        )
       )
         return next();
       const abort = new AbortController();

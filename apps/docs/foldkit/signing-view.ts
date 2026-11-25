@@ -64,13 +64,13 @@ export const Message = defineMessageUnion({
   GotRubricSourceMessage: { message: RadioGroup.Message },
 });
 export type Message = typeof Message.Type;
-export const signingFormInit = (): SigningFormModel => ({
-  mode: "rapida",
+export const signingFormInit = (preset?: "lote" | "rubrica"): SigningFormModel => ({
+  mode: preset === "rubrica" ? "completa" : "rapida",
   modeTabs: Tabs.init({ id: "signing-mode" }),
-  appearance: false,
+  appearance: preset === "rubrica",
   identity: true,
   date: true,
-  rubric: false,
+  rubric: preset === "rubrica",
   rubricSource: "certificate",
   rubricGroup: RadioGroup.init({ id: "signing-rubric-source" }),
   pfx: FileDrop.init({ id: "signing-pfx" }),
@@ -192,16 +192,16 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
     checked: boolean,
     onToggle: (checked: boolean) => Message,
   ) =>
-    h.div(
-      [...sx(h, "signing-toggle", signing.switchRow)],
-      [
-        h.span([], [label]),
-        Switch.view(
-          {
-            id,
-            isChecked: checked,
-            onToggle,
-            toView: (attributes) =>
+    Switch.view(
+      {
+        id,
+        isChecked: checked,
+        onToggle,
+        toView: (attributes) =>
+          h.div(
+            [...sx(h, "signing-toggle", signing.switchRow)],
+            [
+              h.span([...attributes.label], [label]),
               h.button(
                 [
                   ...attributes.button,
@@ -210,10 +210,10 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                 ],
                 [h.span([...sx(h, signing.knob, checked && signing.knobOn)])],
               ),
-          },
-          h,
-        ),
-      ],
+            ],
+          ),
+      },
+      h,
     );
   const fileDrop = (
     drop: FileDrop.Model,
@@ -319,17 +319,24 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
           toView: ({ tablist, tabs }) =>
             h.div(
               [...tablist, ...sx(h, signing.modes)],
-              tabs.map((tab) =>
-                h.button(
-                  [
-                    ...tab.tab,
-                    h.DataAttribute("signing-mode-option", tab.value),
-                    ...sx(h, signing.mode, tab.isActive && signing.modeOn),
-                  ],
-                  [
-                    icon(h, tab.value === "rapida" ? "zap" : "sliders"),
-                    tab.value === "rapida" ? "Rápida" : "Completa",
-                  ],
+              [
+                h.span([
+                  ...sx(h, signing.modeThumb, model.mode === "completa" && signing.modeThumbEnd),
+                  h.AriaHidden(true),
+                ]),
+              ].concat(
+                tabs.map((tab) =>
+                  h.button(
+                    [
+                      ...tab.tab,
+                      h.DataAttribute("signing-mode-option", tab.value),
+                      ...sx(h, signing.mode, tab.isActive && signing.modeOn),
+                    ],
+                    [
+                      icon(h, tab.value === "rapida" ? "zap" : "sliders"),
+                      tab.value === "rapida" ? "Rápida" : "Completa",
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -440,7 +447,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                         id: "signing-appearance",
                         isOpen: model.appearance,
                         onToggle: (open) => Message.AppearanceToggled({ open }),
-                        toView: ({ button: trigger, animatePanel }) =>
+                        toView: ({ button: trigger, panel, animatePanel }) =>
                           h.div(
                             [...sx(h, signing.appearance)],
                             [
@@ -462,7 +469,7 @@ export const signingFormView = defineView<SigningFormModel, Message>((model, h) 
                               ),
                               animatePanel(
                                 h.div(
-                                  [...sx(h, signing.fields, signing.appearancePanel)],
+                                  [...panel, ...sx(h, signing.fields, signing.appearancePanel)],
                                   [
                                     input("stampTitle", "Título da assinatura", "text"),
                                     input("stampColor", "Cor", "color", [

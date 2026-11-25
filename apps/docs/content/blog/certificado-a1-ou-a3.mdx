@@ -1,0 +1,72 @@
+---
+title: "Certificado A1 ou A3: qual escolher"
+description: "A1 é um arquivo, A3 fica em token, cartão ou nuvem. Veja o que muda em validade, uso e risco, e qual tipo combina com cada rotina de assinatura."
+date: "2026-11-22"
+author: "SignatureKit"
+tags: ["Certificado A1", "Certificado A3", "ICP-Brasil"]
+---
+
+A1 e A3 são dois tipos de certificado digital da ICP-Brasil. Os dois identificam a mesma pessoa ou empresa e geram a mesma assinatura qualificada. A diferença está em **onde a chave privada fica guardada**, e é isso que define como você assina no dia a dia.
+
+## A diferença em uma tabela
+
+| | A1 | A3 |
+| --- | --- | --- |
+| Onde a chave fica | Em um arquivo `.pfx` ou `.p12`, protegido por senha | Em token USB, cartão inteligente, nuvem ou HSM |
+| Validade | 1 ano | De 1 a 5 anos |
+| Cópia e backup | O arquivo pode ser copiado | A chave não sai da mídia |
+| Onde assina | Em qualquer sistema que leia o arquivo, inclusive no navegador | Onde o token, o cartão ou o serviço de nuvem estiver disponível |
+| Assinatura em lote e automática | Simples: o sistema usa o arquivo e a senha | Depende do dispositivo ou da API do emissor |
+| Nível da assinatura | Qualificada | Qualificada |
+
+A validade e o tipo de mídia de cada certificado estão descritos nas [perguntas frequentes do ITI sobre certificação digital](https://www.gov.br/iti/pt-br/acesso-a-informacao/perguntas-frequentes/certificacao-digital).
+
+<Callout type="info" title="O valor jurídico é o mesmo">
+A Lei 14.063/2020 chama de qualificada a assinatura feita com certificado ICP-Brasil, sem distinguir A1 de A3. A presunção de validade vem da MP 2.200-2/2001 e vale para os dois.
+</Callout>
+
+## Quando o A1 faz sentido
+
+O A1 é um arquivo. Você escolhe o `.pfx`, digita a senha e assina. Isso torna o A1 a opção natural quando:
+
+- você assina muitos documentos de uma vez, como propostas, contratos ou notas;
+- a assinatura precisa acontecer dentro de um sistema, sem alguém plugar um token;
+- mais de um computador ou servidor precisa assinar com o mesmo certificado;
+- você quer assinar no navegador, sem instalar driver nem extensão.
+
+O preço dessa praticidade é a guarda do arquivo. Quem copia o `.pfx` e conhece a senha assina no seu nome. Trate o arquivo como trataria a chave de um cofre: senha forte, poucas cópias e nenhum envio por e-mail ou mensageiro.
+
+## Quando o A3 faz sentido
+
+No A3, a chave privada é gerada dentro da mídia criptográfica e não pode ser exportada. Para assinar, o sistema pede ao token, ao cartão ou ao serviço de nuvem que faça a operação. O A3 costuma ser a escolha quando:
+
+- uma única pessoa assina poucos documentos, com o token em mãos;
+- a política da empresa exige que a chave nunca exista como arquivo;
+- a validade maior compensa a rotina menos prática.
+
+Em contrapartida, o A3 em token ou cartão depende de driver e de acesso físico ao dispositivo. Automatizar assinaturas com ele exige a API do emissor ou um HSM.
+
+## Como decidir
+
+<Steps>
+  <Step title="Conte quantos documentos você assina">
+    Dezenas por dia ou em lote pedem A1. Poucos por mês funcionam bem com A3.
+  </Step>
+  <Step title="Veja onde a assinatura acontece">
+    Dentro de um sistema, em servidor ou no navegador: A1. Sempre na mesma máquina, com a pessoa presente: A3 atende.
+  </Step>
+  <Step title="Avalie quem guarda a chave">
+    Se você consegue proteger um arquivo e a senha dele, o A1 é suficiente. Se a regra é a chave nunca sair do hardware, use A3.
+  </Step>
+</Steps>
+
+## O que o SignatureKit usa
+
+O SignatureKit assina com A1. O arquivo `.pfx` é lido no navegador ou no servidor, e a chave privada fica no ambiente em que você a carregou. A página [Assinar PDF grátis](/assine-documentos-gratis) faz isso sem enviar o certificado a nenhum servidor.
+
+Se você tem um A1 e quer conferir o titular, o CPF ou CNPJ e a data de expiração, use o [leitor de certificado](/ler-certificado-pfx). Para integrar a assinatura ao seu sistema, comece pelo [guia de primeiro uso](/docs/get-started/quickstart).
+
+<Cards>
+  <Card title="Ler certificado A1" href="/ler-certificado-pfx">Veja titular, CPF ou CNPJ, emissor e validade do seu .pfx.</Card>
+  <Card title="Assinar PDF em lote" href="/assinar-pdf-em-lote">Até 100 PDFs com o mesmo certificado.</Card>
+</Cards>

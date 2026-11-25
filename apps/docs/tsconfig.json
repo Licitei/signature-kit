@@ -25,6 +25,9 @@
   "exclude": ["node_modules", "vitest.browser.config.ts"],
   "references": [
     {
+      "path": "../../formats/xml"
+    },
+    {
       "path": "../signing-domain"
     },
     {
@@ -32,6 +35,9 @@
     },
     {
       "path": "../../formats/react"
+    },
+    {
+      "path": "../../shared/pdf-core"
     },
     {
       "path": "../../formats/pdf"
@@ -43,7 +49,7 @@
       "path": "../../shared/cms"
     },
     {
-      "path": "../../shared/pdf-core"
+      "path": "../../core/certificates"
     },
     {
       "path": "../../signers/a1"

@@ -1,0 +1,61 @@
+---
+title: "Por que escrevemos nosso próprio motor de PDF em Rust"
+description: "O pdf-core lê, renderiza e escreve PDF em Rust, sem dependências, compilado para WebAssembly. Os motivos da decisão e os números medidos."
+date: "2026-11-25"
+author: "Licitei"
+tags: ["pdf-core", "Rust", "WebAssembly"]
+---
+
+Assinar um PDF exige mexer no arquivo com precisão de byte. É preciso localizar páginas, acrescentar um campo de assinatura, gravar uma atualização incremental que não invalide assinaturas anteriores e calcular o `ByteRange`. O SignatureKit fazia isso com bibliotecas de terceiros. Desde novembro de 2026, faz com o [`@signature-kit/pdf-core`](/pdf-core), um motor escrito em Rust e compilado para WebAssembly.
+
+## O que nos levou a isso
+
+Três necessidades apareceram ao mesmo tempo.
+
+**Rodar igual no navegador e no servidor.** A assinatura com A1 acontece no navegador do usuário, e a mesma biblioteca roda em Node e Bun. Um único módulo WebAssembly atende os três ambientes com o mesmo comportamento.
+
+**Controlar cada byte escrito.** Uma atualização incremental precisa preservar os bytes originais, encadear a nova tabela de referências com `/Prev` e manter válidas as assinaturas que já existem. Com o motor próprio, o `@signature-kit/pdf` deixou de depender do pdf-lib: carimbos, rubricas, QR codes e imagens passaram a ser desenhados como content streams pelo `PdfCore.edit`, como descrevem as [notas de versão](/changelog/pdf-lib-removal).
+
+**Ler documentos longos de licitação.** A Licitei processa editais com centenas de páginas, e precisa do texto na ordem em que uma pessoa leria: colunas uma de cada vez, tabelas linha a linha, notas de rodapé no fim.
+
+## Como ele é construído
+
+O crate Rust não tem dependências externas. Decodificadores de Flate, LZW, CCITT e PNG, leitura de fontes e CMaps, cifras RC4 e AES para PDFs com senha vazia e o codificador zlib usado na escrita fazem parte do próprio código. O TypeScript conversa com o módulo por uma ABI em C pequena, sem wasm-bindgen.
+
+O trabalho é limitado por regra. A análise de assinaturas, por exemplo, para em 128 revisões, 1.024 dicionários de assinatura e 16 MiB por stream de referências, e devolve uma falha em vez de uma resposta parcial quando um limite é excedido. Parte das propriedades de layout é verificada formalmente com Kani, e a lista de provas está no [README do pacote](https://github.com/Licitei/signature-kit/tree/main/shared/pdf-core#formal-verification).
+
+## Os números
+
+O README publica uma comparação em 30 documentos de licitações públicas com texto selecionável, somando 5.435 páginas. Os tempos são da conversão para Markdown com os bytes já em memória, sem OCR, em Bun 1.4.5 no Linux x64.
+
+| Motor | Primeira página, p50 | Documento inteiro, p50 | ms por página | Evidências encontradas |
+| --- | ---: | ---: | ---: | ---: |
+| SignatureKit pdf-core (Wasm) | 5,07 ms | 71,92 ms | 2,42 | 248/251 |
+| LiteParse 2.20.0 (PDFium nativo) | 22,69 ms | 382,55 ms | 13,41 | 229/251 |
+| PDF Inspector 1.27.0 (nativo) | 379,84 ms | 1,55 s | 34,68 | 211/251 |
+| PDF Inspector 1.27.0 (Wasm) | 208,96 ms | 2,25 s | 49,26 | 211/251 |
+
+As evidências são trechos literais do gabarito do corpus, como data de abertura e valor do contrato, procurados no Markdown gerado. O corpus de licitações fica fora do repositório, e o README não registra o hardware da execução. O [runner do benchmark](https://github.com/Licitei/signature-kit/tree/main/shared/pdf-core/bench/comparison) está publicado e roda as fixtures do repositório com as mesmas versões dos motores.
+
+<Callout type="info" title="O que a comparação não mede">
+A pontuação de evidências não avalia geometria de tabelas, layout visual nem PDFs digitalizados. O pdf-core não faz OCR: ele informa, com `pageDiagnostics`, quais páginas não têm camada de texto utilizável.
+</Callout>
+
+O módulo WebAssembly de release, com leitor, escritor e renderizador, tem 1.087.037 bytes sem compressão e 423 KB com gzip, segundo as [notas de versão](/changelog/pdf-core-wasm-size).
+
+## O que ele ainda não faz
+
+A renderização tem lacunas documentadas. Imagens JPX e JBIG2 aparecem como um marcador cinza, shadings de malha usam a cor de fundo e máscaras suaves de ExtGState são ignoradas. PDFs que exigem senha de abertura não vazia falham com `pdfCore.ENCRYPTED_PDF`. A verificação de assinaturas ainda não cobre carimbo do tempo de documento (DocTimeStamp).
+
+## Para experimentar
+
+A [página do pdf-core](/pdf-core) tem uma demonstração que extrai o texto de um PDF seu no navegador e mostra o tempo medido no seu dispositivo. No código, o caminho mais curto é o cliente com Promises:
+
+```ts
+import { loadPdfCoreBrowser } from "@signature-kit/pdf-core/promise"
+
+const core = await loadPdfCoreBrowser()
+const pages = await core.text(pdf, { format: "markdown" })
+```
+
+O histórico das mudanças está no [changelog](/changelog).

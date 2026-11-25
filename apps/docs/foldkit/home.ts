@@ -1,11 +1,10 @@
 import { pageRoute } from "./routes";
-import { Button, Disclosure, Toast } from "@foldkit/ui";
-import { Effect, Option, Schema } from "effect";
+import { Button, Toast } from "@foldkit/ui";
+import { Effect, Schema } from "effect";
 import { Command } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { codeBlock } from "./highlight";
 import { icon } from "./icons";
-import type { IconName } from "./icons";
 import { landing } from "./styles/landing";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
@@ -45,334 +44,6 @@ export const CopyHome = Command.define("CopyHome", {
 });
 export const CopyToast = Toast.make(Schema.Struct({ text: Schema.String }));
 
-export const signFreeDescription =
-  "Assine PDF grátis com certificado digital A1 ICP-Brasil, no padrão PAdES. Sem cadastro: o PDF, o certificado e a senha não saem do seu navegador.";
-export const signFreeSteps = [
-  {
-    title: "Carregue o certificado A1",
-    body: "Escolha o arquivo .pfx ou .p12 e digite a senha do certificado.",
-  },
-  { title: "Escolha os PDFs", body: "Os arquivos são lidos no próprio navegador, sem upload." },
-  {
-    title: "Posicione a assinatura",
-    body: "Clique onde a assinatura deve aparecer ou use o posicionamento automático.",
-  },
-  { title: "Assine e baixe", body: "Clique em Assinar e baixe os PDFs assinados em PAdES." },
-];
-
-export const SignFreeFaqIndex = Schema.Literals([0, 1, 2, 3, 4, 5, 6]);
-export type SignFreeFaqIndex = typeof SignFreeFaqIndex.Type;
-
-export const signFreeFaqs: ReadonlyArray<{
-  readonly index: SignFreeFaqIndex;
-  readonly question: string;
-  readonly answer: string;
-}> = [
-  {
-    index: 0,
-    question: "A assinatura tem validade jurídica?",
-    answer:
-      "Sim. Com certificado ICP-Brasil, a assinatura é qualificada, o nível mais alto da Lei 14.063/2020, e tem presunção de validade jurídica pela MP 2.200-2/2001.",
-  },
-  {
-    index: 1,
-    question: "Precisa de cadastro?",
-    answer: "Não. Basta o PDF, o arquivo do certificado A1 (.pfx ou .p12) e a senha.",
-  },
-  {
-    index: 2,
-    question: "O documento vai para algum servidor?",
-    answer:
-      "Não. O PDF, o certificado e a senha ficam na memória do seu navegador durante a assinatura e não são enviados a nenhum servidor.",
-  },
-  {
-    index: 3,
-    question: "Como confiro se a assinatura é válida?",
-    answer:
-      "Envie o PDF assinado ao Validar, verificador oficial do ITI (validar.iti.gov.br), ou abra o arquivo no Adobe Acrobat Reader e confira o painel de assinaturas.",
-  },
-  {
-    index: 4,
-    question: "Funciona com certificado A3 (token, cartão ou nuvem)?",
-    answer:
-      "Não. Esta página assina apenas com certificado A1, o arquivo .pfx ou .p12. O A3 fica em token, cartão ou nuvem, e o navegador não tem acesso direto a ele.",
-  },
-  {
-    index: 5,
-    question: "Posso assinar vários PDFs de uma vez?",
-    answer:
-      "Sim. Escolha até 100 PDFs. Todos são assinados com o mesmo certificado, um de cada vez.",
-  },
-  {
-    index: 6,
-    question: "Dá para escolher onde a assinatura aparece?",
-    answer:
-      "Sim. Clique na página para posicionar a assinatura. No modo Completa você também ajusta a aparência do carimbo e pode rubricar as demais páginas.",
-  },
-];
-
-const signFreeFacts: ReadonlyArray<{ glyph: IconName; text: string }> = [
-  { glyph: "lock", text: "O PDF, o certificado e a senha não saem do seu dispositivo" },
-  { glyph: "zap", text: "Sem cadastro, até 100 PDFs por vez" },
-  { glyph: "check", text: "Assinatura qualificada ICP-Brasil, no padrão PAdES" },
-];
-
-const signFreeOutcomes: ReadonlyArray<{ title: string; body: string }> = [
-  {
-    title: "PDF assinado em PAdES",
-    body: "O padrão de assinatura de PDF da ICP-Brasil, com a cadeia do seu certificado incluída no arquivo.",
-  },
-  {
-    title: "Validação independente",
-    body: "Confira a assinatura no Validar do ITI ou no Adobe Acrobat Reader, sem depender do SignatureKit.",
-  },
-  {
-    title: "Carimbo visível e rubricas",
-    body: "No modo Completa, posicione o carimbo na página certa e rubrique as demais.",
-  },
-  {
-    title: "Lote de até 100 PDFs",
-    body: "Assine contratos, aditivos e procurações de uma vez, com o mesmo certificado.",
-  },
-];
-
-const signFreeLevels: ReadonlyArray<{ level: string; body: string; current: boolean }> = [
-  {
-    level: "Simples",
-    body: "Identifica o signatário por meios simples, como e-mail ou código por SMS.",
-    current: false,
-  },
-  {
-    level: "Avançada",
-    body: "Associa a assinatura ao signatário de forma unívoca, como a assinatura gov.br.",
-    current: false,
-  },
-  {
-    level: "Qualificada",
-    body: "Usa certificado digital ICP-Brasil, como o seu A1. É o nível gerado por esta página.",
-    current: true,
-  },
-];
-
-export const signFreeLanding = <Message>(
-  h: HtmlBuilder<Message>,
-  signer: Html,
-  faq: {
-    open: Option.Option<SignFreeFaqIndex>;
-    toggle: (index: SignFreeFaqIndex, open: boolean) => Message;
-  },
-) => [
-  h.section(
-    [...sx(h, landing.signHero), h.Id("assinar")],
-    [
-      h.div(
-        [...sx(h, landing.signHeroInner)],
-        [
-          h.div(
-            [...sx(h, landing.signCopy), h.Attribute("data-enter", "")],
-            [
-              h.p([...sx(h, landing.signEyebrow)], ["Assinador de PDF grátis"]),
-              h.h1([...sx(h, landing.signTitle)], ["Assine PDF com certificado digital A1."]),
-              h.p(
-                [...sx(h, landing.signLead)],
-                [
-                  "Assinatura qualificada ICP-Brasil feita no seu navegador. Escolha o certificado, digite a senha, adicione os PDFs e baixe os arquivos assinados.",
-                ],
-              ),
-              h.ul(
-                [...sx(h, landing.signFacts)],
-                signFreeFacts.map((fact) =>
-                  h.keyed("li")(
-                    fact.glyph,
-                    [...sx(h, landing.signFact)],
-                    [h.span([...sx(h, landing.signFactIcon)], [icon(h, fact.glyph)]), fact.text],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          h.div([...sx(h, landing.signCard)], [signer]),
-        ],
-      ),
-    ],
-  ),
-  h.section(
-    [...sx(h, landing.section)],
-    [
-      h.div(
-        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
-        [
-          h.h2([...sx(h, landing.sectionTitle)], ["Como assinar um PDF com certificado A1"]),
-          h.p([...sx(h, landing.lead)], ["São quatro passos, todos no seu navegador."]),
-        ],
-      ),
-      h.ol(
-        [
-          ...sx(h, landing.rail),
-          h.Attribute("data-reveal", ""),
-          h.Attribute("data-reveal-stagger", ""),
-        ],
-        signFreeSteps.map((step, index) =>
-          h.keyed("li")(
-            step.title,
-            [...sx(h, landing.railItem)],
-            [
-              h.span(
-                [...sx(h, landing.railNumber), h.AriaHidden(true)],
-                [String(index + 1).padStart(2, "0")],
-              ),
-              h.div(
-                [],
-                [
-                  h.h3([...sx(h, landing.cellTitle)], [step.title]),
-                  h.p([...sx(h, landing.cellBody)], [step.body]),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-      h.h3([...sx(h, landing.railHeading), h.Attribute("data-reveal", "")], ["O que você recebe"]),
-      h.ul(
-        [
-          ...sx(h, landing.rail, landing.railPlain),
-          h.Attribute("data-reveal", ""),
-          h.Attribute("data-reveal-stagger", ""),
-        ],
-        signFreeOutcomes.map((item) =>
-          h.keyed("li")(
-            item.title,
-            [...sx(h, landing.railItem, landing.railItemPlain)],
-            [
-              h.div(
-                [],
-                [
-                  h.h4([...sx(h, landing.cellTitle)], [item.title]),
-                  h.p([...sx(h, landing.cellBody)], [item.body]),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    ],
-  ),
-  h.section(
-    [...sx(h, landing.section, landing.split)],
-    [
-      h.div(
-        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
-        [
-          h.h2([...sx(h, landing.sectionTitle)], ["Validade jurídica"]),
-          h.p(
-            [...sx(h, landing.lead)],
-            [
-              "A Lei 14.063/2020 define três níveis de assinatura eletrônica. Com certificado ICP-Brasil, a sua é qualificada, o nível com presunção de validade jurídica dada pela MP 2.200-2/2001.",
-            ],
-          ),
-          h.a(
-            [
-              ...sx(h, landing.textLink),
-              h.Href("https://validar.iti.gov.br"),
-              h.Target("_blank"),
-              h.Rel("noopener"),
-            ],
-            ["Validar a assinatura no ITI →"],
-          ),
-        ],
-      ),
-      h.ol(
-        [
-          ...sx(h, landing.levels),
-          h.Attribute("data-reveal", ""),
-          h.Attribute("data-reveal-stagger", ""),
-        ],
-        signFreeLevels.map((item) =>
-          h.keyed("li")(
-            item.level,
-            [...sx(h, landing.level, item.current && landing.levelCurrent)],
-            [
-              h.strong([...sx(h, landing.levelHead)], [item.level]),
-              h.p([...sx(h, landing.cellBody)], [item.body]),
-            ],
-          ),
-        ),
-      ),
-    ],
-  ),
-  h.section(
-    [...sx(h, landing.section, landing.split)],
-    [
-      h.div(
-        [...sx(h, landing.head), h.Attribute("data-reveal", "")],
-        [
-          h.h2([...sx(h, landing.sectionTitle)], ["Perguntas frequentes"]),
-          h.p(
-            [...sx(h, landing.lead)],
-            [
-              "Não encontrou sua dúvida? A documentação explica como a assinatura funciona no navegador.",
-            ],
-          ),
-          h.a(
-            [
-              ...sx(h, landing.textLink),
-              h.Href(pageRoute({ path: "docs/a1-signing/browser-pdf-flow" })),
-            ],
-            ["Ver a documentação →"],
-          ),
-        ],
-      ),
-      h.div(
-        [],
-        signFreeFaqs.map((item) =>
-          h.keyed("div")(
-            String(item.index),
-            [],
-            [
-              Disclosure.view(
-                {
-                  id: `sign-free-faq-${item.index}`,
-                  isOpen: Option.contains(item.index)(faq.open),
-                  onToggle: (open) => faq.toggle(item.index, open),
-                  toView: ({ button, animatePanel }) =>
-                    h.div(
-                      [...sx(h, landing.faq)],
-                      [
-                        h.h3(
-                          [...sx(h, landing.faqHeading)],
-                          [
-                            h.button(
-                              [...button, ...sx(h, landing.faqButton)],
-                              [
-                                item.question,
-                                h.span(
-                                  [
-                                    ...sx(
-                                      h,
-                                      landing.faqChevron,
-                                      Option.contains(item.index)(faq.open) &&
-                                        landing.faqChevronOpen,
-                                    ),
-                                  ],
-                                  [icon(h, "chevron")],
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        animatePanel(h.p([...sx(h, landing.faqPanel)], [item.answer])),
-                      ],
-                    ),
-                },
-                h,
-              ),
-            ],
-          ),
-        ),
-      ),
-    ],
-  ),
-];
 export const signFreeCta = <Message>(h: HtmlBuilder<Message>) =>
   h.section(
     [...sx(h, landing.section)],
@@ -606,6 +277,47 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
               h.Href(pageRoute({ path: "docs/get-started/quickstart" })),
             ],
             ["Ler o guia de primeiro uso →"],
+          ),
+        ],
+      ),
+    ],
+  ),
+  h.section(
+    [...sx(h, landing.block, landing.blockTight)],
+    [
+      h.a(
+        [
+          ...sx(h, landing.engine),
+          h.Href(pageRoute({ path: "pdf-core" })),
+          h.Attribute("data-reveal", ""),
+        ],
+        [
+          h.span(
+            [...sx(h, landing.engineCopy)],
+            [
+              h.span([...sx(h, landing.engineKicker)], ["@signature-kit/pdf-core"]),
+              h.strong(
+                [...sx(h, landing.engineTitle)],
+                ["Por baixo, um motor de PDF próprio em Rust e WebAssembly."],
+              ),
+              h.span(
+                [...sx(h, landing.engineBody)],
+                [
+                  "Texto em ordem de leitura, renderização e escrita incremental sem biblioteca de PDF de terceiros. Veja os benchmarks e teste com um arquivo seu.",
+                ],
+              ),
+            ],
+          ),
+          h.span(
+            [...sx(h, landing.engineFigure)],
+            [
+              h.span([...sx(h, landing.engineNumber)], ["2,42 ms"]),
+              h.span(
+                [...sx(h, landing.engineUnit)],
+                ["por página para converter editais inteiros em Markdown"],
+              ),
+              h.span([...sx(h, landing.engineLink)], ["Conhecer o pdf-core →"]),
+            ],
           ),
         ],
       ),

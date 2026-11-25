@@ -11,7 +11,7 @@ export const SigningInitializeSchema = Schema.Struct({
   password: Schema.String,
 });
 
-const WorkerSignatureKitErrorSchema = SignatureKitError.mapFields((fields) => ({
+export const WorkerSignatureKitErrorSchema = SignatureKitError.mapFields((fields) => ({
   ...fields,
   operation: Schema.optional(Schema.String),
 })).pipe(

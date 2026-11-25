@@ -5,7 +5,7 @@ import { Command, Dom, File, Html as FoldkitHtml, Subscription, Update } from "f
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
 import type { ContentNode } from "./content-parse";
 import { defineMessageUnion } from "foldkit/message";
-import { createArticleCatalog } from "./articles";
+import { articleCrop, createArticleCatalog, tagSlug } from "./articles";
 import { groupReleases, releaseView } from "./changelog";
 import {
   SigningFormModel,
@@ -24,6 +24,7 @@ import {
 import {
   contentPaths,
   docsNavigation,
+  loadContentTargets,
   readingMinutes,
   renderContent,
   resolveContent,
@@ -43,10 +44,11 @@ import {
   homeView,
   installPill,
   signFreeCta,
-  signFreeLanding,
-  SignFreeFaqIndex,
   signFreePath,
 } from "./home";
+import { FaqIndex, toolLanding, toolPageAt, toolPages } from "./tool-pages";
+import { pdfCorePath, pdfCoreTitle, pdfCoreView } from "./pdf-core-page";
+import { ToolsModel, Message as ToolMessage, toolView, toolsInit, toolsUpdate } from "./tool-view";
 import { OverlayKind, overlayView } from "./overlay";
 import { siteOrigin } from "./site-origin";
 import { brand, groupIcon, icon } from "./icons";
@@ -111,6 +113,14 @@ export const OpenPageTarget = Command.define("OpenPageTarget", {
     }),
 });
 
+export const SearchContentLoaded = Schema.TaggedStruct("SearchContentLoaded", {});
+export const LoadSearchContent = Command.define("LoadSearchContent", {
+  messages: [SearchContentLoaded],
+  execute: Effect.promise(() => loadContentTargets(["docs"])).pipe(
+    Effect.as(SearchContentLoaded.make({})),
+  ),
+});
+
 export const DroppedPdfsDelivered = Schema.TaggedStruct("DroppedPdfsDelivered", {
   ok: Schema.Boolean,
 });
@@ -152,8 +162,10 @@ export const Model = Schema.Struct({
   pageMenu: Menu.Model,
   navDocs: Popover.Model,
   navResources: Popover.Model,
+  navTools: Popover.Model,
+  tools: ToolsModel,
   homeCopyRequest: HomeCopyRequest,
-  openFaq: Schema.Option(SignFreeFaqIndex),
+  openFaq: Schema.Option(FaqIndex),
   copyToast: CopyToast.Model,
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
@@ -167,6 +179,7 @@ export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
   GotSigningFormMessage: { message: SigningFormMessage },
   GotHomeDemoMessage: { message: HomeDemoMessage },
+  GotToolMessage: { message: ToolMessage },
   HomeCopyRequested: {},
   GotPageMenuMessage: { message: Menu.Message },
   GotNavMenuMessage: { menuId: NavMenuKind, message: Popover.Message },
@@ -180,7 +193,7 @@ export const Message = defineMessageUnion({
   TextFeedbackSubmitted: {},
   FeedbackSubmitted: { opinion: Schema.Literals(["good", "bad"]) },
   FeedbackFinished: { ok: Schema.Boolean },
-  FaqToggled: { index: SignFreeFaqIndex, open: Schema.Boolean },
+  FaqToggled: { index: FaqIndex, open: Schema.Boolean },
   GotCopyToastMessage: { message: CopyToast.Message },
   OverlayRequested: { kind: OverlayKind },
   OverlayCloseRequested: {},
@@ -189,13 +202,14 @@ export const Message = defineMessageUnion({
   HomeFilesDropped: { files: Schema.Array(File.File) },
   DroppedPdfsDelivered: { ok: Schema.Boolean },
   TocMoved: { id: Schema.String },
+  SearchContentLoaded: {},
   SignerWarmed: {},
 });
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
   model: {
     path: flags.path,
-    signingForm: signingFormInit(),
+    signingForm: signingFormInit(toolPageAt(flags.path)?.preset),
     homeDemo: homeDemoInit(),
     query: flags.query ?? "",
     results: searchDocs(flags.query ?? ""),
@@ -204,6 +218,8 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
     pageMenu: Menu.init({ id: "page-actions", isAnimated: true }),
     navDocs: navMenuInit("docs"),
     navResources: navMenuInit("resources"),
+    navTools: navMenuInit("tools"),
+    tools: toolsInit(),
     homeCopyRequest: 0,
     openFaq: Option.none(),
     copyToast: CopyToast.init({ id: "home-toast", defaultDuration: "1800 millis" }),
@@ -225,6 +241,12 @@ const foldHomeDemo = Update.foldChild({
   read: (model: Model) => Option.some(model.homeDemo),
   write: (model, homeDemo) => ({ ...model, homeDemo }),
   toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
+});
+const foldTools = Update.foldChild({
+  update: toolsUpdate,
+  read: (model: Model) => Option.some(model.tools),
+  write: (model, tools) => ({ ...model, tools }),
+  toParentMessage: (message) => Message.GotToolMessage({ message }),
 });
 const pagePromptUrl = (target: string, path: string) =>
   `${target}${encodeURIComponent(
@@ -263,7 +285,8 @@ const foldPageMenu = Update.foldChild({
 const navField = {
   docs: "navDocs",
   resources: "navResources",
-} satisfies Record<NavMenuKind, "navDocs" | "navResources">;
+  tools: "navTools",
+} satisfies Record<NavMenuKind, "navDocs" | "navResources" | "navTools">;
 const foldNavMenu = (kind: NavMenuKind) =>
   Update.foldChild({
     update: Popover.update,
@@ -278,6 +301,7 @@ const foldNavMenu = (kind: NavMenuKind) =>
 const navFolds = {
   docs: foldNavMenu("docs"),
   resources: foldNavMenu("resources"),
+  tools: foldNavMenu("tools"),
 };
 const foldCopyToast = Update.foldChild({
   update: CopyToast.update,
@@ -399,6 +423,7 @@ export const update = (model: Model, message: Message) =>
     TocMoved: ({ id }) => ({ model: { ...model, tocActive: id } }),
     SignerWarmed: () => ({ model: { ...model, signerRequested: true } }),
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
+    GotToolMessage: ({ message }) => foldTools(model, message),
     GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
     GotOverlayMessage: ({ message }) => foldOverlay(model, message),
     OverlayRequested: ({ kind }) => {
@@ -407,8 +432,14 @@ export const update = (model: Model, message: Message) =>
         overlayKind: kind,
         signerRequested: model.signerRequested || kind === "signer",
       };
-      return model.overlay.isOpen ? { model: next } : openOverlay(next);
+      const opened: Update.Return<Model, Message> = model.overlay.isOpen
+        ? { model: next }
+        : openOverlay(next);
+      return kind === "search"
+        ? { model: opened.model, commands: [...(opened.commands ?? []), LoadSearchContent()] }
+        : opened;
     },
+    SearchContentLoaded: () => ({ model: { ...model, results: searchDocs(model.query) } }),
     OverlayCloseRequested: () => closeOverlay(model),
     FaqToggled: ({ index, open }) => ({
       model: {
@@ -552,15 +583,14 @@ const renderDocsNav = (h: HtmlBuilder<Message>, currentRoute: string) =>
   );
 const footerColumns = [
   {
-    title: "Produto",
-    links: [
-      { label: "Assinar PDF grátis", href: signFreePath },
-      { label: "Documentação", href: pageRoute({ path: "docs" }) },
-    ],
+    title: "Ferramentas",
+    links: toolPages.map((page) => ({ label: page.nav.label, href: `/${page.path}` })),
   },
   {
     title: "Recursos",
     links: [
+      { label: "Documentação", href: pageRoute({ path: "docs" }) },
+      { label: "pdf-core", href: pdfCorePath },
       { label: "Blog", href: pageRoute({ path: "blog" }) },
       { label: "Changelog", href: pageRoute({ path: "changelog" }) },
       { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
@@ -662,7 +692,9 @@ export const createView = (source: {
 }) => {
   const { articles, blogTags, resolveArticle } = createArticleCatalog(source);
   return (model: Model, h: HtmlBuilder<Message>): Document => {
-    const signing = model.path === "/assine-documentos-gratis";
+    const toolPage = toolPageAt(model.path);
+    const signing = toolPage !== undefined;
+    const engine = model.path === pdfCorePath;
     const docs = model.path === "/docs" || model.path.startsWith("/docs/");
     const home = model.path === "";
     const content = docs ? source.resolve("docs", model.path.slice(6)) : undefined;
@@ -688,7 +720,9 @@ export const createView = (source: {
         : undefined;
     const canonical = `${siteOrigin}${currentRoute}`;
     const heading = section === "blog" ? "Blog" : "Changelog";
-    const overlayHeader = home || signing || (docs ? content !== undefined : true);
+    const overlayHeader =
+      home ||
+      (toolPage !== undefined ? toolPage.tone === "dark" : docs ? content !== undefined : true);
     const docsGroup = docs
       ? docsNavigation().find((group) => group.links.some((link) => link.href === currentRoute))
           ?.title
@@ -803,9 +837,20 @@ export const createView = (source: {
       narrow?: boolean;
       releases?: boolean;
       actions?: boolean;
+      crop?: number;
+      tags?: ReadonlyArray<string>;
     }) =>
       h.section(
-        [...sx(h, prose.banner)],
+        [
+          ...sx(
+            h,
+            prose.banner,
+            input.crop === 1 && prose.bannerCrop1,
+            input.crop === 2 && prose.bannerCrop2,
+            input.crop === 3 && prose.bannerCrop3,
+            input.crop === 4 && prose.bannerCrop4,
+          ),
+        ],
         [
           h.div(
             [
@@ -843,6 +888,32 @@ export const createView = (source: {
               h.h1([...sx(h, prose.bannerTitle)], [input.title]),
               ...(input.lead !== "" ? [h.p([...sx(h, prose.bannerLead)], [input.lead])] : []),
               ...(input.actions === true ? [pageActions] : []),
+              ...(input.tags !== undefined && input.tags.length > 0
+                ? [
+                    h.ul(
+                      [...sx(h, prose.bannerTags), h.AriaLabel("Assuntos")],
+                      input.tags.map((name) =>
+                        h.keyed("li")(
+                          name,
+                          [],
+                          [
+                            h.a(
+                              [
+                                ...sx(h, prose.bannerTag),
+                                h.Href(
+                                  pageRoute({
+                                    path: `blog/tags/${encodeURIComponent(tagSlug(name))}`,
+                                  }),
+                                ),
+                              ],
+                              [`#${name}`],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ]
+                : []),
             ],
           ),
         ],
@@ -856,17 +927,19 @@ export const createView = (source: {
     return {
       title: tagRoute
         ? `${tag?.tag ?? "Tags do blog"} | SignatureKit`
-        : signing
-          ? "Assinar PDF grátis com certificado digital A1 | SignatureKit"
-          : model.path === "/search"
-            ? "Buscar na documentação | SignatureKit"
-            : article !== undefined
-              ? `${article.title} | SignatureKit`
-              : section !== undefined
-                ? `${heading} | SignatureKit`
-                : content !== undefined
-                  ? `${content.title} | SignatureKit`
-                  : "Assinatura digital com certificado A1 em TypeScript | SignatureKit",
+        : toolPage !== undefined
+          ? `${toolPage.title} | SignatureKit`
+          : engine
+            ? `${pdfCoreTitle} | SignatureKit`
+            : model.path === "/search"
+              ? "Buscar na documentação | SignatureKit"
+              : article !== undefined
+                ? `${article.title} | SignatureKit`
+                : section !== undefined
+                  ? `${heading} | SignatureKit`
+                  : content !== undefined
+                    ? `${content.title} | SignatureKit`
+                    : "Assinatura digital com certificado A1 em TypeScript | SignatureKit",
       lang: "pt-BR",
       canonical,
       ogUrl: canonical,
@@ -902,14 +975,13 @@ export const createView = (source: {
                     toParentMessage: (message) =>
                       Message.GotNavMenuMessage({ menuId: "docs", message }),
                   }),
-                  h.a(
-                    [
-                      ...sx(h, shell.navLink, signing && shell.navLinkOn),
-                      h.Href(signFreePath),
-                      ...(signing ? [h.AriaCurrent("page")] : []),
-                    ],
-                    ["Assinar PDF grátis"],
-                  ),
+                  navMenuView(h, {
+                    kind: "tools",
+                    model: model.navTools,
+                    current: signing,
+                    toParentMessage: (message) =>
+                      Message.GotNavMenuMessage({ menuId: "tools", message }),
+                  }),
                   navMenuView(h, {
                     kind: "resources",
                     model: model.navResources,
@@ -1052,7 +1124,7 @@ export const createView = (source: {
                               [`Nenhum resultado para “${model.query.trim()}”. Tente outro termo.`],
                             )
                           : h.ul(
-                              [...sx(h, overlay.links)],
+                              [...sx(h, overlay.links), h.Attribute("data-stagger", "")],
                               model.results.map((result) =>
                                 h.keyed("li")(
                                   `${result.href} ${result.heading}`,
@@ -1116,213 +1188,364 @@ export const createView = (source: {
                       ],
                     ),
                   ]
-                : signing
+                : engine
                   ? [
                       h.div(
                         [h.Class("ph-no-capture"), h.Attribute("data-analytics-sensitive", "true")],
-                        [
-                          ...signFreeLanding(h, signer(), {
-                            open: model.openFaq,
-                            toggle: (index, open) => Message.FaqToggled({ index, open }),
+                        pdfCoreView(
+                          h,
+                          h.submodel({
+                            slotId: "tool",
+                            model: model.tools,
+                            view: toolView,
+                            viewInputs: { tool: "pdfcore" },
+                            toParentMessage: (message) => Message.GotToolMessage({ message }),
                           }),
-                          autoSignSection(
-                            h,
-                            h.submodel({
-                              slotId: "home-demo",
-                              model: model.homeDemo,
-                              view: homeDemoView,
-                              toParentMessage: (message) => Message.GotHomeDemoMessage({ message }),
-                            }),
-                          ),
-                          signFreeCta(h),
-                        ],
+                        ),
                       ),
                     ]
-                  : section === "changelog"
+                  : toolPage !== undefined
                     ? [
-                        banner({
-                          title: article !== undefined ? article.title : "Changelog",
-                          lead:
-                            article !== undefined
-                              ? ""
-                              : "O que mudou em cada versão dos pacotes do SignatureKit.",
-                          crumbs:
-                            article !== undefined
-                              ? [{ label: "Changelog", href: pageRoute({ path: "changelog" }) }]
-                              : [],
-                          releases: true,
-                        }),
                         h.div(
-                          [...sx(h, "docs-content", prose.releases)],
-                          [h.span([...sx(h, prose.releaseRail), h.AriaHidden(true)])].concat(
-                            groupReleases(
-                              article !== undefined
-                                ? [{ ...article, slug: articleSlug ?? "", href: currentRoute }]
-                                : articles("changelog"),
-                            ).map((release) =>
-                              releaseView(h, {
-                                release,
-                                formatDate,
-                                linkTitles: article === undefined,
-                              }),
+                          [
+                            h.Class("ph-no-capture"),
+                            h.Attribute("data-analytics-sensitive", "true"),
+                          ],
+                          [
+                            ...toolLanding(
+                              h,
+                              toolPage,
+                              toolPage.kind === "signer"
+                                ? signer()
+                                : h.submodel({
+                                    slotId: "tool",
+                                    model: model.tools,
+                                    view: toolView,
+                                    viewInputs: { tool: toolPage.kind },
+                                    toParentMessage: (message) =>
+                                      Message.GotToolMessage({ message }),
+                                  }),
+                              {
+                                open: model.openFaq,
+                                toggle: (index, open) => Message.FaqToggled({ index, open }),
+                              },
                             ),
-                          ),
+                            ...(`/${toolPage.path}` === signFreePath
+                              ? [
+                                  autoSignSection(
+                                    h,
+                                    h.submodel({
+                                      slotId: "home-demo",
+                                      model: model.homeDemo,
+                                      view: homeDemoView,
+                                      toParentMessage: (message) =>
+                                        Message.GotHomeDemoMessage({ message }),
+                                    }),
+                                  ),
+                                ]
+                              : []),
+                            signFreeCta(h),
+                          ],
                         ),
                       ]
-                    : section === "blog"
-                      ? article !== undefined
-                        ? [
-                            banner({
-                              title: article.title,
-                              lead: article.description ?? "",
-                              crumbs: [{ label: "Blog", href: pageRoute({ path: "blog" }) }],
-                              meta: [
-                                article.author ?? "",
-                                article.date !== "" ? formatDate(article.date) : "",
-                                `${readingMinutes(article.nodes)} min de leitura`,
-                              ]
-                                .filter((part) => part !== "")
-                                .join(" · "),
-                              narrow: true,
-                            }),
-                            h.article(
-                              [...sx(h, prose.post)],
-                              [articleSlot(renderBody, [h, article.nodes, true])],
+                    : section === "changelog"
+                      ? [
+                          banner({
+                            title: article !== undefined ? article.title : "Changelog",
+                            lead:
+                              article !== undefined
+                                ? ""
+                                : "O que mudou em cada versão dos pacotes do SignatureKit.",
+                            crumbs:
+                              article !== undefined
+                                ? [{ label: "Changelog", href: pageRoute({ path: "changelog" }) }]
+                                : [],
+                            releases: true,
+                          }),
+                          h.div(
+                            [...sx(h, "docs-content", prose.releases)],
+                            [h.span([...sx(h, prose.releaseRail), h.AriaHidden(true)])].concat(
+                              groupReleases(
+                                article !== undefined
+                                  ? [{ ...article, slug: articleSlug ?? "", href: currentRoute }]
+                                  : articles("changelog"),
+                              ).map((release) =>
+                                releaseView(h, {
+                                  release,
+                                  formatDate,
+                                  linkTitles: article === undefined,
+                                }),
+                              ),
                             ),
-                          ]
-                        : [
-                            banner({
-                              title: "Blog",
-                              lead: "Artigos e decisões de engenharia sobre assinatura digital no Brasil.",
-                              crumbs: [],
-                              narrow: true,
-                            }),
-                            h.section(
-                              [...sx(h, prose.post)],
-                              [
-                                h.ul(
-                                  [
-                                    ...sx(h, prose.postList),
-                                    h.Attribute("data-reveal", ""),
-                                    h.Attribute("data-reveal-stagger", ""),
-                                  ],
-                                  articles("blog").map((entry) =>
-                                    h.keyed("li")(
-                                      entry.href,
-                                      [],
-                                      [
-                                        h.a(
-                                          [...sx(h, prose.postRow), h.Href(entry.href)],
-                                          [
-                                            h.img([
-                                              h.Src(`${entry.href}.webp`),
-                                              h.Alt(""),
-                                              h.Width("1200"),
-                                              h.Height("630"),
-                                              h.Loading("lazy"),
-                                              h.Decoding("async"),
-                                              ...sx(h, prose.postThumb),
-                                            ]),
-                                            h.div(
-                                              [...sx(h, prose.postRowText)],
-                                              [
-                                                h.p(
-                                                  [...sx(h, prose.postMeta)],
-                                                  [
+                          ),
+                        ]
+                      : section === "blog"
+                        ? article !== undefined
+                          ? [
+                              banner({
+                                title: article.title,
+                                lead: article.description ?? "",
+                                crumbs: [{ label: "Blog", href: pageRoute({ path: "blog" }) }],
+                                meta: [
+                                  article.author ?? "",
+                                  article.date !== "" ? formatDate(article.date) : "",
+                                  `${readingMinutes(article.nodes)} min de leitura`,
+                                ]
+                                  .filter((part) => part !== "")
+                                  .join(" · "),
+                                narrow: true,
+                                crop: articleCrop(articleSlug ?? ""),
+                                tags: article.tags ?? [],
+                              }),
+                              h.article(
+                                [...sx(h, prose.post)],
+                                [articleSlot(renderBody, [h, article.nodes, true])],
+                              ),
+                            ]
+                          : [
+                              banner({
+                                title: "Blog",
+                                lead: "Artigos e decisões de engenharia sobre assinatura digital no Brasil.",
+                                crumbs: [],
+                                narrow: true,
+                              }),
+                              h.section(
+                                [...sx(h, prose.post)],
+                                [
+                                  h.ul(
+                                    [
+                                      ...sx(h, prose.postList),
+                                      h.Attribute("data-reveal", ""),
+                                      h.Attribute("data-reveal-stagger", ""),
+                                    ],
+                                    articles("blog").map((entry, index) =>
+                                      h.keyed("li")(
+                                        entry.href,
+                                        [],
+                                        [
+                                          h.a(
+                                            [
+                                              ...sx(
+                                                h,
+                                                prose.postRow,
+                                                index === 0 && prose.postRowFeatured,
+                                              ),
+                                              h.Href(entry.href),
+                                            ],
+                                            [
+                                              h.img([
+                                                h.Src(`${entry.href}.webp`),
+                                                h.Alt(""),
+                                                h.Width("1200"),
+                                                h.Height("630"),
+                                                h.Loading(index === 0 ? "eager" : "lazy"),
+                                                h.Decoding("async"),
+                                                ...sx(h, prose.postThumb),
+                                              ]),
+                                              h.div(
+                                                [...sx(h, prose.postRowText)],
+                                                [
+                                                  h.p(
+                                                    [...sx(h, prose.postMeta)],
                                                     [
-                                                      entry.date !== ""
-                                                        ? formatDate(entry.date)
-                                                        : "",
-                                                      `${readingMinutes(entry.nodes)} min de leitura`,
-                                                    ]
-                                                      .filter((part) => part !== "")
-                                                      .join(" · "),
-                                                  ],
-                                                ),
-                                                h.h2([...sx(h, prose.postRowTitle)], [entry.title]),
-                                                ...(entry.description !== undefined &&
-                                                entry.description !== ""
-                                                  ? [
-                                                      h.p(
-                                                        [...sx(h, prose.postRowDescription)],
-                                                        [entry.description],
+                                                      [
+                                                        entry.date !== ""
+                                                          ? formatDate(entry.date)
+                                                          : "",
+                                                        `${readingMinutes(entry.nodes)} min de leitura`,
+                                                      ]
+                                                        .filter((part) => part !== "")
+                                                        .join(" · "),
+                                                    ],
+                                                  ),
+                                                  h.h2(
+                                                    [
+                                                      ...sx(
+                                                        h,
+                                                        prose.postRowTitle,
+                                                        index === 0 && prose.postRowTitleFeatured,
                                                       ),
-                                                    ]
-                                                  : []),
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      ],
+                                                    ],
+                                                    [entry.title],
+                                                  ),
+                                                  ...(entry.description !== undefined &&
+                                                  entry.description !== ""
+                                                    ? [
+                                                        h.p(
+                                                          [...sx(h, prose.postRowDescription)],
+                                                          [entry.description],
+                                                        ),
+                                                      ]
+                                                    : []),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          ]
-                      : docs && content !== undefined
-                        ? [
-                            banner({
-                              title: content.title,
-                              lead: content.description ?? "",
-                              actions: true,
-                              crumbs: [
-                                { label: "Docs", href: pageRoute({ path: "docs" }) },
-                                ...(docsGroup !== undefined && docsGroup !== "Docs"
-                                  ? [{ label: docsGroup, href: undefined }]
-                                  : []),
-                              ],
-                            }),
-                            h.div(
-                              [...sx(h, "docs-layout", prose.layout)],
-                              [
-                                navSlot(renderDocsNav, [h, currentRoute]),
-                                h.article(
-                                  [...sx(h, "docs-content", prose.content)],
-                                  [
-                                    articleSlot(renderBody, [h, content.nodes, false]),
-                                    h.section(
-                                      [
-                                        ...sx(h, "ph-no-capture", prose.feedback),
-                                        h.Attribute("data-analytics-sensitive", "true"),
-                                      ],
-                                      [
-                                        h.div(
-                                          [...sx(h, prose.feedbackHead)],
-                                          [
-                                            h.h2(
-                                              [...sx(h, prose.feedbackTitle)],
-                                              ["Esta página ajudou?"],
-                                            ),
-                                            h.div(
-                                              [...sx(h, prose.feedbackActions)],
-                                              (
+                                ],
+                              ),
+                            ]
+                        : docs && content !== undefined
+                          ? [
+                              banner({
+                                title: content.title,
+                                lead: content.description ?? "",
+                                actions: true,
+                                crumbs: [
+                                  { label: "Docs", href: pageRoute({ path: "docs" }) },
+                                  ...(docsGroup !== undefined && docsGroup !== "Docs"
+                                    ? [{ label: docsGroup, href: undefined }]
+                                    : []),
+                                ],
+                              }),
+                              h.div(
+                                [...sx(h, "docs-layout", prose.layout)],
+                                [
+                                  navSlot(renderDocsNav, [h, currentRoute]),
+                                  h.article(
+                                    [...sx(h, "docs-content", prose.content)],
+                                    [
+                                      articleSlot(renderBody, [h, content.nodes, false]),
+                                      h.section(
+                                        [
+                                          ...sx(h, "ph-no-capture", prose.feedback),
+                                          h.Attribute("data-analytics-sensitive", "true"),
+                                        ],
+                                        [
+                                          h.div(
+                                            [...sx(h, prose.feedbackHead)],
+                                            [
+                                              h.h2(
+                                                [...sx(h, prose.feedbackTitle)],
+                                                ["Esta página ajudou?"],
+                                              ),
+                                              h.div(
+                                                [...sx(h, prose.feedbackActions)],
+                                                (
+                                                  [
+                                                    ["good", "Sim", "thumbsUp"],
+                                                    ["bad", "Não", "thumbsDown"],
+                                                  ] satisfies ReadonlyArray<
+                                                    readonly ["good" | "bad", string, IconName]
+                                                  >
+                                                ).map(([opinion, label, glyph]) =>
+                                                  h.keyed("span")(
+                                                    opinion,
+                                                    [],
+                                                    [
+                                                      Button.view(
+                                                        {
+                                                          onClick: Message.FeedbackSubmitted({
+                                                            opinion,
+                                                          }),
+                                                          toView: (attributes) =>
+                                                            h.button(
+                                                              [
+                                                                ...attributes.button,
+                                                                ...sx(h, prose.feedbackButton),
+                                                              ],
+                                                              [icon(h, glyph), label],
+                                                            ),
+                                                        },
+                                                        h,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          Textarea.view(
+                                            {
+                                              id: "feedback-message",
+                                              toView: (attributes) =>
+                                                h.textarea([
+                                                  ...attributes.textarea,
+                                                  h.Class(className(prose.feedbackInput)),
+                                                  h.Attribute("data-feedback-message", ""),
+                                                  h.Attribute("maxlength", "2000"),
+                                                  h.Attribute("rows", "3"),
+                                                  h.Attribute(
+                                                    "placeholder",
+                                                    "Faltou algo ou encontrou um erro? Conte para nós.",
+                                                  ),
+                                                  h.Attribute("aria-label", "Comentário"),
+                                                ]),
+                                            },
+                                            h,
+                                          ),
+                                          h.div(
+                                            [...sx(h, prose.feedbackFoot)],
+                                            [
+                                              h.p(
                                                 [
-                                                  ["good", "Sim", "thumbsUp"],
-                                                  ["bad", "Não", "thumbsDown"],
-                                                ] satisfies ReadonlyArray<
-                                                  readonly ["good" | "bad", string, IconName]
-                                                >
-                                              ).map(([opinion, label, glyph]) =>
-                                                h.keyed("span")(
-                                                  opinion,
+                                                  ...sx(h, prose.feedbackStatus),
+                                                  h.Attribute("role", "status"),
+                                                ],
+                                                [
+                                                  model.feedbackStatus === "success"
+                                                    ? "Obrigado pelo feedback!"
+                                                    : model.feedbackStatus === "error"
+                                                      ? "Não foi possível enviar. Tente novamente."
+                                                      : model.feedbackStatus === "sending"
+                                                        ? "Enviando…"
+                                                        : "",
+                                                ],
+                                              ),
+                                              Button.view(
+                                                {
+                                                  onClick: Message.TextFeedbackSubmitted(),
+                                                  toView: (attributes) =>
+                                                    h.button(
+                                                      [
+                                                        ...attributes.button,
+                                                        ...sx(h, prose.feedbackSend),
+                                                      ],
+                                                      ["Enviar comentário"],
+                                                    ),
+                                                },
+                                                h,
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                  ...(toc.length > 1
+                                    ? [
+                                        h.nav(
+                                          [
+                                            ...sx(h, prose.toc),
+                                            h.AriaLabel("Nesta página"),
+                                            h.Attribute("data-toc", ""),
+                                          ],
+                                          [
+                                            h.p(
+                                              [...sx(h, prose.tocTitle)],
+                                              [icon(h, "list"), "Nesta página"],
+                                            ),
+                                            h.ul(
+                                              [...sx(h, prose.tocList)],
+                                              toc.map((entry) =>
+                                                h.keyed("li")(
+                                                  entry.id,
                                                   [],
                                                   [
-                                                    Button.view(
-                                                      {
-                                                        onClick: Message.FeedbackSubmitted({
-                                                          opinion,
-                                                        }),
-                                                        toView: (attributes) =>
-                                                          h.button(
-                                                            [
-                                                              ...attributes.button,
-                                                              ...sx(h, prose.feedbackButton),
-                                                            ],
-                                                            [icon(h, glyph), label],
-                                                          ),
-                                                      },
-                                                      h,
+                                                    h.a(
+                                                      [
+                                                        ...sx(
+                                                          h,
+                                                          prose.tocLink,
+                                                          model.tocActive === entry.id &&
+                                                            prose.tocLinkOn,
+                                                        ),
+                                                        h.Href(`#${entry.id}`),
+                                                      ],
+                                                      [entry.title],
                                                     ),
                                                   ],
                                                 ),
@@ -1330,112 +1553,17 @@ export const createView = (source: {
                                             ),
                                           ],
                                         ),
-                                        Textarea.view(
-                                          {
-                                            id: "feedback-message",
-                                            toView: (attributes) =>
-                                              h.textarea([
-                                                ...attributes.textarea,
-                                                h.Class(className(prose.feedbackInput)),
-                                                h.Attribute("data-feedback-message", ""),
-                                                h.Attribute("maxlength", "2000"),
-                                                h.Attribute("rows", "3"),
-                                                h.Attribute(
-                                                  "placeholder",
-                                                  "Faltou algo ou encontrou um erro? Conte para nós.",
-                                                ),
-                                                h.Attribute("aria-label", "Comentário"),
-                                              ]),
-                                          },
-                                          h,
-                                        ),
-                                        h.div(
-                                          [...sx(h, prose.feedbackFoot)],
-                                          [
-                                            h.p(
-                                              [
-                                                ...sx(h, prose.feedbackStatus),
-                                                h.Attribute("role", "status"),
-                                              ],
-                                              [
-                                                model.feedbackStatus === "success"
-                                                  ? "Obrigado pelo feedback!"
-                                                  : model.feedbackStatus === "error"
-                                                    ? "Não foi possível enviar. Tente novamente."
-                                                    : model.feedbackStatus === "sending"
-                                                      ? "Enviando…"
-                                                      : "",
-                                              ],
-                                            ),
-                                            Button.view(
-                                              {
-                                                onClick: Message.TextFeedbackSubmitted(),
-                                                toView: (attributes) =>
-                                                  h.button(
-                                                    [
-                                                      ...attributes.button,
-                                                      ...sx(h, prose.feedbackSend),
-                                                    ],
-                                                    ["Enviar comentário"],
-                                                  ),
-                                              },
-                                              h,
-                                            ),
-                                          ],
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                                ...(toc.length > 1
-                                  ? [
-                                      h.nav(
-                                        [
-                                          ...sx(h, prose.toc),
-                                          h.AriaLabel("Nesta página"),
-                                          h.Attribute("data-toc", ""),
-                                        ],
-                                        [
-                                          h.p(
-                                            [...sx(h, prose.tocTitle)],
-                                            [icon(h, "list"), "Nesta página"],
-                                          ),
-                                          h.ul(
-                                            [...sx(h, prose.tocList)],
-                                            toc.map((entry) =>
-                                              h.keyed("li")(
-                                                entry.id,
-                                                [],
-                                                [
-                                                  h.a(
-                                                    [
-                                                      ...sx(
-                                                        h,
-                                                        prose.tocLink,
-                                                        model.tocActive === entry.id &&
-                                                          prose.tocLinkOn,
-                                                      ),
-                                                      h.Href(`#${entry.id}`),
-                                                    ],
-                                                    [entry.title],
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ]
-                                  : []),
-                              ],
-                            ),
-                          ]
-                        : homeView(h, {
-                            open: (kind) => Message.OverlayRequested({ kind }),
-                            dragOver: model.homeDragOver,
-                            drag: (over) => Message.HomeDragChanged({ over }),
-                            drop: (files) => Message.HomeFilesDropped({ files }),
-                          }),
+                                      ]
+                                    : []),
+                                ],
+                              ),
+                            ]
+                          : homeView(h, {
+                              open: (kind) => Message.OverlayRequested({ kind }),
+                              dragOver: model.homeDragOver,
+                              drag: (over) => Message.HomeDragChanged({ over }),
+                              drop: (files) => Message.HomeFilesDropped({ files }),
+                            }),
           ),
           footerSlot(renderFooter, [h, currentRoute, model.homeCopied]),
           ...(model.overlay.isOpen ? [] : [toast]),
@@ -1503,7 +1631,7 @@ export const createView = (source: {
                             [`Nenhum resultado para “${model.query.trim()}”.`],
                           )
                         : h.ul(
-                            [...sx(h, overlay.links)],
+                            [...sx(h, overlay.links), h.Attribute("data-stagger", "")],
                             model.results
                               .slice(0, 8)
                               .map((result) =>
