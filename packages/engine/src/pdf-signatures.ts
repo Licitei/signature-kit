@@ -374,7 +374,7 @@ export const pdfSignaturesLayer = Layer.effect(
               { session, policy, signedAt, digest, prepared },
             );
             const signedRevision = yield* preparation.source.append(signed);
-            const receiptId = idDigest(preparationId + hex(sha256(signed)));
+            const receiptId = idDigest(preparationId + signedRevision.handle);
             yield* a1
               .validate(session)
               .pipe(
