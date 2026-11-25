@@ -1,5 +1,9 @@
 import { pageRoute } from "./routes";
+import * as stylex from "@stylexjs/stylex";
 import { Schema } from "effect";
+import type { HtmlBuilder } from "foldkit/html";
+import { sx } from "./styles/sx";
+import { tokens } from "./styles/tokens.stylex";
 import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
@@ -19,6 +23,119 @@ const normalize = (value: string) =>
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+
+const excerptAround = (text: string, terms: ReadonlyArray<string>) => {
+  const folded = normalize(text);
+  const hit =
+    folded.length === text.length
+      ? terms.reduce((first, term) => {
+          const index = folded.indexOf(term);
+          return index >= 0 && (first < 0 || index < first) ? index : first;
+        }, -1)
+      : -1;
+  if (hit < 48) return text.slice(0, 200);
+  const start = text.lastIndexOf(" ", hit - 32) + 1;
+  return `…${text.slice(start, start + 200)}`;
+};
+
+const markSegments = (text: string, query: string) => {
+  const folded = normalize(text);
+  const terms = normalize(query)
+    .trim()
+    .split(/\s+/)
+    .filter((term) => term.length > 1);
+  if (folded.length !== text.length || terms.length === 0) return [{ text, hit: false }];
+  const segments: Array<{ text: string; hit: boolean }> = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let next = -1;
+    let length = 0;
+    for (const term of terms) {
+      const index = folded.indexOf(term, cursor);
+      if (index >= 0 && (next < 0 || index < next)) {
+        next = index;
+        length = term.length;
+      }
+    }
+    if (next < 0) break;
+    if (next > cursor) segments.push({ text: text.slice(cursor, next), hit: false });
+    segments.push({ text: text.slice(next, next + length), hit: true });
+    cursor = next + length;
+  }
+  if (cursor < text.length) segments.push({ text: text.slice(cursor), hit: false });
+  return segments;
+};
+
+const styles = stylex.create({
+  row: {
+    display: "grid",
+    gap: "2px",
+    padding: "10px 12px",
+    borderRadius: "10px",
+    color: tokens.fg,
+    textDecoration: "none",
+    backgroundColor: { default: "transparent", ":hover": tokens.bgSubtle },
+    transitionProperty: "background-color",
+    transitionDuration: "120ms",
+    ":focus-visible": {
+      outline: "none",
+      backgroundColor: tokens.bgSubtle,
+      boxShadow: `inset 0 0 0 1px ${tokens.teal}`,
+    },
+  },
+  section: {
+    color: tokens.teal,
+    fontFamily: tokens.mono,
+    fontSize: "0.75rem",
+    lineHeight: 1.5,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  title: {
+    fontSize: "0.9375rem",
+    fontWeight: 500,
+    lineHeight: 1.4,
+    letterSpacing: "-0.01em",
+  },
+  excerpt: {
+    color: tokens.muted,
+    fontSize: "0.875rem",
+    lineHeight: 1.5,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  mark: {
+    borderRadius: "3px",
+    backgroundColor: tokens.accentSoft,
+    color: tokens.fg,
+  },
+});
+
+const marked = <Message>(h: HtmlBuilder<Message>, text: string, query: string) =>
+  markSegments(text, query).map((segment) =>
+    segment.hit ? h.mark([...sx(h, styles.mark)], [segment.text]) : segment.text,
+  );
+
+export const searchResultView = <Message>(
+  h: HtmlBuilder<Message>,
+  result: typeof SearchResult.Type,
+  query: string,
+) =>
+  h.a(
+    [...sx(h, styles.row), h.Href(result.href)],
+    [
+      h.span([...sx(h, styles.section)], [result.heading === "" ? "Página" : result.title]),
+      h.span(
+        [...sx(h, styles.title)],
+        marked(h, result.heading === "" ? result.title : result.heading, query),
+      ),
+      ...(result.excerpt === ""
+        ? []
+        : [h.span([...sx(h, styles.excerpt)], marked(h, result.excerpt, query))]),
+    ],
+  );
 
 export const searchDocs = (
   query: string,
@@ -133,14 +250,21 @@ export const searchDocs = (
       results.push({
         title: page.title,
         heading: section.heading,
-        excerpt: section.text.trim().replace(/\s+/g, " ").slice(0, 200),
+        excerpt: excerptAround(section.text.trim().replace(/\s+/g, " "), terms),
         href: section.href,
         score,
       });
     }
   }
+  const seen = new Set<string>();
   return results
     .sort((a, b) => b.score - a.score || a.href.localeCompare(b.href))
+    .filter((result) => {
+      const key = `${result.title}\n${result.heading}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, 20)
     .map(({ score: _score, ...result }) => result);
 };

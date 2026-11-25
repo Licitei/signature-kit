@@ -1,7 +1,7 @@
 import { homeRoute, pageRoute } from "./routes";
 import { Button, Dialog, Input, Menu, Nav, Popover, Textarea } from "@foldkit/ui";
-import { Effect, Option, Schema } from "effect";
-import { Command, Dom, Subscription, Update } from "foldkit";
+import { Effect, Option, Schedule, Schema, Stream } from "effect";
+import { Command, Dom, File, Subscription, Update } from "foldkit";
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import { createArticleCatalog } from "./articles";
@@ -28,7 +28,7 @@ import {
   resolveContent,
   tableOfContents,
 } from "./content";
-import { SearchQuery, SearchResults, searchDocs } from "./search";
+import { SearchQuery, SearchResults, searchDocs, searchResultView } from "./search";
 import { SubmitFeedback, SubmitTextFeedback } from "./feedback";
 import {
   CopyHome,
@@ -50,7 +50,7 @@ import { OverlayKind, overlayView } from "./overlay";
 import { siteOrigin } from "./site-origin";
 import { brand, groupIcon, icon } from "./icons";
 import type { IconName } from "./icons";
-import { NavMenuKind, navMenuInit, navMenuView } from "./navbar";
+import { NavMenuKind, mobileMenuView, navMenuInit, navMenuView } from "./navbar";
 import { overlay } from "./styles/overlay";
 import { prose } from "./styles/prose";
 import { shell } from "./styles/shell";
@@ -110,6 +110,32 @@ export const OpenPageTarget = Command.define("OpenPageTarget", {
     }),
 });
 
+export const DroppedPdfsDelivered = Schema.TaggedStruct("DroppedPdfsDelivered", {
+  ok: Schema.Boolean,
+});
+export const DeliverDroppedPdfs = Command.define("DeliverDroppedPdfs", {
+  args: { files: Schema.Array(File.File) },
+  messages: [DroppedPdfsDelivered],
+  execute: ({ files }) =>
+    Effect.suspend(() => {
+      const input = document.querySelector<HTMLInputElement>("dialog input[name=pdf]");
+      return input === null ? Effect.fail("missing") : Effect.succeed(input);
+    }).pipe(
+      Effect.retry({ times: 40, schedule: Schedule.spaced("50 millis") }),
+      Effect.map((input) => {
+        const transfer = new DataTransfer();
+        for (const file of files)
+          if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))
+            transfer.items.add(file);
+        if (transfer.files.length === 0) return DroppedPdfsDelivered.make({ ok: false });
+        input.files = transfer.files;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        return DroppedPdfsDelivered.make({ ok: true });
+      }),
+      Effect.orElseSucceed(() => DroppedPdfsDelivered.make({ ok: false })),
+    ),
+});
+
 export const Flags = Schema.Struct({
   path: Schema.String,
   query: Schema.optional(SearchQuery),
@@ -131,6 +157,10 @@ export const Model = Schema.Struct({
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
   signerRequested: Schema.Boolean,
+  signerMounted: Schema.Boolean,
+  homeDragOver: Schema.Boolean,
+  pendingPdfs: Schema.Array(File.File),
+  tocActive: Schema.String,
 });
 export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
@@ -154,6 +184,10 @@ export const Message = defineMessageUnion({
   OverlayRequested: { kind: OverlayKind },
   OverlayCloseRequested: {},
   GotOverlayMessage: { message: Dialog.Message },
+  HomeDragChanged: { over: Schema.Boolean },
+  HomeFilesDropped: { files: Schema.Array(File.File) },
+  DroppedPdfsDelivered: { ok: Schema.Boolean },
+  TocMoved: { id: Schema.String },
 });
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
@@ -178,6 +212,10 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
     }),
     overlayKind: "menu",
     signerRequested: false,
+    signerMounted: false,
+    homeDragOver: false,
+    pendingPdfs: [],
+    tocActive: "",
   },
 });
 const foldHomeDemo = Update.foldChild({
@@ -283,12 +321,66 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
         }),
     },
   ),
+  tocSpy: entry(
+    { docs: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({
+        docs: model.path === "/docs" || model.path.startsWith("/docs/"),
+      }),
+      dependenciesToStream: ({ docs }) =>
+        docs
+          ? Dom.streamFromEventFilterMap({
+              target: () => document,
+              type: "scroll",
+              filterMapEvent: () => {
+                let current = "";
+                for (const link of document.querySelectorAll<HTMLAnchorElement>("[data-toc] a")) {
+                  const id = decodeURIComponent(link.hash.slice(1));
+                  const heading = document.getElementById(id);
+                  if (heading !== null && heading.getBoundingClientRect().top <= 128) current = id;
+                }
+                return Option.some(current);
+              },
+            }).pipe(
+              Stream.changes,
+              Stream.map((id) => Message.TocMoved({ id })),
+            )
+          : Stream.empty,
+    },
+  ),
 }));
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
-    GotSigningFormMessage: ({ message }) => ({
-      model: { ...model, signingForm: signingFormUpdate(model.signingForm, message).model },
-    }),
+    GotSigningFormMessage: ({ message }) => {
+      const next = { ...model, signingForm: signingFormUpdate(model.signingForm, message).model };
+      if (message._tag !== "SigningMounted") return { model: next };
+      return model.pendingPdfs.length === 0
+        ? { model: { ...next, signerMounted: true } }
+        : {
+            model: { ...next, signerMounted: true, pendingPdfs: [] },
+            commands: [DeliverDroppedPdfs({ files: model.pendingPdfs })],
+          };
+    },
+    HomeDragChanged: ({ over }) => ({ model: { ...model, homeDragOver: over } }),
+    HomeFilesDropped: ({ files }) => {
+      const next: Model = {
+        ...model,
+        homeDragOver: false,
+        overlayKind: "signer",
+        signerRequested: true,
+      };
+      const opened: Update.Return<Model, Message> = model.overlay.isOpen
+        ? { model: next }
+        : openOverlay(next);
+      return model.signerMounted
+        ? {
+            model: opened.model,
+            commands: [...(opened.commands ?? []), DeliverDroppedPdfs({ files })],
+          }
+        : { model: { ...opened.model, pendingPdfs: files }, commands: opened.commands ?? [] };
+    },
+    DroppedPdfsDelivered: () => ({ model }),
+    TocMoved: ({ id }) => ({ model: { ...model, tocActive: id } }),
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
     GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
     GotOverlayMessage: ({ message }) => foldOverlay(model, message),
@@ -580,12 +672,6 @@ export const createView = (source: {
           ),
         ],
       );
-    const navItems = [
-      { label: "Docs", href: pageRoute({ path: "docs" }) },
-      { label: "Assinar PDF grátis", href: signFreePath },
-      { label: "Blog", href: pageRoute({ path: "blog" }) },
-      { label: "Changelog", href: pageRoute({ path: "changelog" }) },
-    ];
     const footerColumns = [
       {
         title: "Produto",
@@ -825,20 +911,12 @@ export const createView = (source: {
                               [`Nenhum resultado para “${model.query.trim()}”. Tente outro termo.`],
                             )
                           : h.ul(
-                              [...sx(h, prose.articleList)],
+                              [...sx(h, overlay.links)],
                               model.results.map((result) =>
-                                h.li(
-                                  [...sx(h, prose.articleItem)],
-                                  [
-                                    h.a(
-                                      [...sx(h, prose.articleLink), h.Href(result.href)],
-                                      [
-                                        result.title,
-                                        ...(result.heading !== "" ? [` — ${result.heading}`] : []),
-                                      ],
-                                    ),
-                                    h.p([...sx(h, prose.articleDescription)], [result.excerpt]),
-                                  ],
+                                h.keyed("li")(
+                                  `${result.href} ${result.heading}`,
+                                  [],
+                                  [searchResultView(h, result, model.query)],
                                 ),
                               ),
                             ),
@@ -1226,7 +1304,11 @@ export const createView = (source: {
                                 ...(toc.length > 1
                                   ? [
                                       h.nav(
-                                        [...sx(h, prose.toc), h.AriaLabel("Nesta página")],
+                                        [
+                                          ...sx(h, prose.toc),
+                                          h.AriaLabel("Nesta página"),
+                                          h.Attribute("data-toc", ""),
+                                        ],
                                         [
                                           h.p(
                                             [...sx(h, prose.tocTitle)],
@@ -1241,7 +1323,12 @@ export const createView = (source: {
                                                 [
                                                   h.a(
                                                     [
-                                                      ...sx(h, prose.tocLink),
+                                                      ...sx(
+                                                        h,
+                                                        prose.tocLink,
+                                                        model.tocActive === entry.id &&
+                                                          prose.tocLinkOn,
+                                                      ),
                                                       h.Href(`#${entry.id}`),
                                                     ],
                                                     [entry.title],
@@ -1257,12 +1344,16 @@ export const createView = (source: {
                               ],
                             ),
                           ]
-                        : homeView(h, { open: (kind) => Message.OverlayRequested({ kind }) }),
+                        : homeView(h, {
+                            open: (kind) => Message.OverlayRequested({ kind }),
+                            dragOver: model.homeDragOver,
+                            drag: (over) => Message.HomeDragChanged({ over }),
+                            drop: (files) => Message.HomeFilesDropped({ files }),
+                          }),
           ),
           h.footer(
             [...sx(h, "footer", shell.footer), h.Id("site-footer")],
             [
-              h.div([...sx(h, shell.footerRule)]),
               h.div(
                 [...sx(h, shell.footerGrid)],
                 [
@@ -1357,62 +1448,12 @@ export const createView = (source: {
               ...(home && model.signerRequested ? [signerPanel()] : []),
               [
                 "menu",
-                h.div(
-                  [...sx(h, overlay.stack)],
-                  [
-                    h.ul(
-                      [...sx(h, overlay.links)],
-                      [
-                        ...navItems,
-                        { label: "GitHub", href: "https://github.com/Licitei/signature-kit" },
-                      ].map(({ label, href }) =>
-                        h.li(
-                          [],
-                          [
-                            h.a(
-                              [
-                                ...sx(h, overlay.link),
-                                h.Href(href),
-                                h.OnClick(Message.OverlayCloseRequested()),
-                              ],
-                              [label],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    ...(docs
-                      ? docsNavigation().map((group) =>
-                          h.div(
-                            [],
-                            [
-                              h.p([...sx(h, overlay.group)], [group.title]),
-                              h.ul(
-                                [...sx(h, overlay.links)],
-                                group.links.map((link) =>
-                                  h.li(
-                                    [],
-                                    [
-                                      h.a(
-                                        [
-                                          ...sx(h, overlay.link),
-                                          h.Href(link.href),
-                                          ...(link.href === currentRoute
-                                            ? [h.AriaCurrent("page")]
-                                            : []),
-                                        ],
-                                        [link.title],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                      : []),
-                  ],
-                ),
+                mobileMenuView(h, {
+                  docs,
+                  currentRoute,
+                  search: Message.OverlayRequested({ kind: "search" }),
+                  close: Message.OverlayCloseRequested(),
+                }),
               ],
               [
                 "search",
@@ -1434,7 +1475,7 @@ export const createView = (source: {
                         toView: ({ input }) =>
                           h.input([
                             ...input,
-                            ...sx(h, "ph-no-capture", overlay.search),
+                            h.Class(`ph-no-capture ${className(overlay.search)}`),
                             h.DataAttribute("overlay-focus", ""),
                             h.Attribute("maxlength", "200"),
                             h.AriaLabel("Buscar"),
@@ -1449,33 +1490,23 @@ export const createView = (source: {
                           [...sx(h, overlay.hint)],
                           ["Digite para buscar guias e páginas de API."],
                         )
-                      : h.ul(
-                          [...sx(h, overlay.links)],
-                          model.results
-                            .slice(0, 8)
-                            .map((result) =>
-                              h.li(
-                                [],
-                                [
-                                  h.a(
-                                    [...sx(h, overlay.result), h.Href(result.href)],
-                                    [
-                                      h.span(
-                                        [],
-                                        [
-                                          result.title,
-                                          ...(result.heading !== ""
-                                            ? [` — ${result.heading}`]
-                                            : []),
-                                        ],
-                                      ),
-                                      h.span([...sx(h, overlay.excerpt)], [result.excerpt]),
-                                    ],
-                                  ),
-                                ],
+                      : model.results.length === 0
+                        ? h.p(
+                            [...sx(h, overlay.hint)],
+                            [`Nenhum resultado para “${model.query.trim()}”.`],
+                          )
+                        : h.ul(
+                            [...sx(h, overlay.links)],
+                            model.results
+                              .slice(0, 8)
+                              .map((result) =>
+                                h.keyed("li")(
+                                  `${result.href} ${result.heading}`,
+                                  [],
+                                  [searchResultView(h, result, model.query)],
+                                ),
                               ),
-                            ),
-                        ),
+                          ),
                   ],
                 ),
               ],

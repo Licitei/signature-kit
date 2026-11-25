@@ -6,7 +6,7 @@ source.src = "/landing/hero-chapada.webp";
 const bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((value) => (value + 0.5) / 16);
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
 source.decode().then(() => {
-  const width = 240;
+  const width = Math.max(320, Math.round(innerWidth / 1.8));
   const height = Math.round((width * innerHeight) / innerWidth);
   canvas.width = width;
   canvas.height = height;
@@ -14,7 +14,7 @@ source.decode().then(() => {
   sample.width = width;
   sample.height = height;
   const sampleContext = sample.getContext("2d");
-  sampleContext.filter = "blur(1.2px)";
+  sampleContext.filter = "blur(0.6px)";
   const scale = Math.max(width / source.width, height / source.height);
   sampleContext.drawImage(source, (width - source.width * scale) / 2, height - source.height * scale, source.width * scale, source.height * scale);
   const pixels = sampleContext.getImageData(0, 0, width, height).data;
@@ -28,7 +28,7 @@ source.decode().then(() => {
     for (let y = 0; y < height; y++)
       for (let x = 0; x < width; x++) {
         const index = y * width + x;
-        const shimmer = 0.07 * Math.sin(x / 9 + wave) * Math.cos(y / 11 - wave * 0.7);
+        const shimmer = 0.07 * Math.sin(x / 30 + wave) * Math.cos(y / 36 - wave * 0.7);
         const level = Math.min(0.999, Math.max(0, light[index] + shimmer)) * 3;
         const base = Math.floor(level);
         const color = palette[Math.min(3, base + (level - base > bayer[(y % 4) * 4 + (x % 4)] ? 1 : 0))];

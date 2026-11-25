@@ -96,7 +96,7 @@ export const signing = stylex.create({
     borderColor: tokens.line,
     borderRadius: "12px",
     backgroundColor: tokens.bgElevated,
-    ":focus-within": { borderColor: tokens.accent, boxShadow: `0 0 0 3px ${tokens.accentSoft}` },
+    ":focus-within": { borderColor: tokens.teal, boxShadow: `0 0 0 3px ${tokens.tealSoft}` },
   },
   groupGlyph: {
     display: "grid",

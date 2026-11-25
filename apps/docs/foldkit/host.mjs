@@ -32,7 +32,7 @@ const compressible = /^(?:text\/|application\/(?:javascript|json|xml)|image\/svg
 const intentLoader = (src) =>
   [
     `const entry = ${JSON.stringify(src)};`,
-    `const intents = ["pointermove", "pointerdown", "touchstart", "keydown", "wheel", "scroll", "focusin"];`,
+    `const intents = ["pointermove", "pointerdown", "touchstart", "keydown", "wheel", "scroll", "focusin", "dragenter"];`,
     `let loading;`,
     `let ready = false;`,
     `const hydrate = () => {`,

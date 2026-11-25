@@ -23,5 +23,5 @@ export const tokens = stylex.defineVars({
   header: "rgba(250, 250, 247, 0.86)",
   halo: "#ffffff",
   sealShadow: "rgba(0, 0, 0, 0.18)",
-  focus: "0 0 0 2px #fafaf7, 0 0 0 4px #C9460A",
+  focus: "0 0 0 2px #fafaf7, 0 0 0 4px #0B5275",
 });
