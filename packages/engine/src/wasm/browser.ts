@@ -37,7 +37,7 @@ export const pdfCoreBrowserModule: Effect.Effect<WebAssembly.Module, PdfCoreErro
         }),
     });
   },
-);
+).pipe(Effect.withSpan("pdfCore.wasm.compile", undefined, { captureStackTrace: false }));
 
 export const pdfCoreBrowserLayer: Layer.Layer<PdfCore, PdfCoreError> = Layer.effect(
   PdfCore,

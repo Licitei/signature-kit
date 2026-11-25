@@ -78,6 +78,7 @@ const SpanName = Schema.Union([
     "local.crypto.digestPrefix",
     "local.crypto.importKey",
     "local.crypto.sign",
+    "pdfCore.wasm.compile",
     "pdfCore.wasm.instantiate",
     "pdfCore.wasm.run",
     "pdfCore.wasm.decode",

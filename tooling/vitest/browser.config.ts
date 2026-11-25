@@ -1,5 +1,5 @@
 import { playwright } from "@vitest/browser-playwright";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-runtime-network.ts";
 import { runBatchResume, sampleBatchPageHeap } from "./batch-command.ts";
 import { runCosignMilestone } from "./cosign-command.ts";
@@ -14,6 +14,7 @@ export default defineConfig({
       "packages/browser/__tests__/cosign-page.ts",
       "packages/browser/__tests__/batch-page.ts",
       "packages/browser/__tests__/ltv-page.ts",
+      "packages/browser/__tests__/*.worker.ts",
     ],
     include: [
       "@effect/opentelemetry",
@@ -29,6 +30,7 @@ export default defineConfig({
   },
   test: {
     include: ["packages/**/*.browser.test.*"],
+    exclude: [...configDefaults.exclude, "**/*.performance.browser.test.*"],
     teardownTimeout: 2000,
     globalSetup: ["tooling/testing/__tests__/local-telemetry-collector.ts"],
     deps: {
