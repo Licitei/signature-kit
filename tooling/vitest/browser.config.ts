@@ -1,6 +1,7 @@
 import { playwright } from "@vitest/browser-playwright";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { writeLocalFirstBaseline } from "./local-first-baseline-command.ts";
 
 export default defineConfig({
   assetsInclude: ["**/*.p12"],
@@ -12,6 +13,7 @@ export default defineConfig({
       "effect/rpc/RpcServer",
     ],
     exclude: [
+      "@typeonce/effect-machine",
       "@aws-sdk/credential-provider-web-identity",
       "@aws-sdk/credential-providers",
       "@distilled.cloud/aws",
@@ -39,6 +41,7 @@ export default defineConfig({
     },
     browser: {
       enabled: true,
+      commands: { writeLocalFirstBaseline },
       headless: true,
       provider: playwright(),
       instances: [{ browser: "chromium" }],
