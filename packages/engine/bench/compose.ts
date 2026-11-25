@@ -11,6 +11,8 @@ import {
   sampleEvidence,
 } from "../dist/templates.js";
 import { encodeComposition } from "../dist/composition/encode.js";
+import { PdfCore } from "../dist/wasm/pdf-core.js";
+import { pdfCoreFileLayer } from "../dist/wasm/file.js";
 import { composeFileLayer } from "../dist/wasm/compose.js";
 
 const templates = {
@@ -35,7 +37,9 @@ if (template === undefined || !Number.isInteger(count) || count < 1 || count > 1
   console.table(sizes);
 } else {
   const document = template(count);
-  const runtime = composeFileLayer.pipe(Layer.provide(NodeServices.layer));
+  const runtime = Layer.merge(composeFileLayer, pdfCoreFileLayer).pipe(
+    Layer.provide(NodeServices.layer),
+  );
   const result = await Effect.runPromise(
     Effect.gen(function* () {
       const start = performance.now();
@@ -50,10 +54,14 @@ if (template === undefined || !Number.isInteger(count) || count < 1 || count > 1
       warm.sort((left, right) => left - right);
       const peakRssKiB = process.resourceUsage().maxRSS;
       const { fonts } = yield* ComposeRuntime;
-      const request = yield* encodeComposition(document, yield* fonts, {});
+      const { request } = yield* encodeComposition(document, yield* fonts, {});
+      const core = yield* PdfCore;
+      const { pages } = yield* core.inspect(pdf, { text: false, links: false });
+      if (pages.length !== count)
+        return yield* Effect.fail(`Expected ${count} pages, got ${pages.length}`);
       return {
         template: kind,
-        pages: count,
+        pages: pages.length,
         coldMs: Math.round(cold * 10) / 10,
         warmMs: Math.round((warm[2] ?? 0) * 10) / 10,
         bytes: pdf.length,

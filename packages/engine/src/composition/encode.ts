@@ -13,17 +13,19 @@ import type {
 
 const spacing = { xs: 4, sm: 8, md: 12, lg: 18, xl: 26, xxl: 40 };
 const sizes = { caption: 8, small: 9, body: 11, subtitle: 15, title: 24, display: 37 };
-const palette = {
-  ink: 0x142127,
-  muted: 0x54666a,
-  paper: 0xf6f8f7,
-  line: 0xd4dedb,
-  accent: 0x126759,
-  tint: 0xe8f2ee,
-  white: 0xffffff,
-};
+const palette = new Map(
+  Object.entries({
+    ink: 0x142127,
+    muted: 0x54666a,
+    paper: 0xf6f8f7,
+    line: 0xd4dedb,
+    accent: 0x126759,
+    tint: 0xe8f2ee,
+    white: 0xffffff,
+  }),
+);
 const justify = ["start", "center", "end", "space-between", "space-around"];
-const align = ["stretch", "start", "center", "end"];
+const align = ["stretch", "start", "center", "end", "baseline"];
 const textAlign = ["left", "center", "right", "justify"];
 const controls = ["span", "hardBreak", "softBreak", "pageNumber", "totalPages"];
 const noColor = 0xffffffff;
@@ -83,9 +85,7 @@ class Wire {
 type Space = NonNullable<Style["gap"]>;
 const space = (value: Space): number => (typeof value === "number" ? value : spacing[value]);
 const color = (value: NonNullable<Style["color"]>): number =>
-  value.startsWith("#")
-    ? Number.parseInt(value.slice(1), 16)
-    : (Object.entries(palette).find(([name]) => name === value)?.[1] ?? noColor);
+  value.startsWith("#") ? Number.parseInt(value.slice(1), 16) : (palette.get(value) ?? noColor);
 const dimension = (value: Style["width"]): number =>
   typeof value === "string" ? -Number.parseFloat(value) : (value ?? 0);
 const fontSize = (value: NonNullable<TextStyle["fontSize"]>): number =>
@@ -149,7 +149,7 @@ function pathCommand(wire: Wire, command: PathCommand): void {
 }
 
 function faceKey(font: Pick<ComposeFont, "family" | "style" | "weight">): string {
-  return JSON.stringify([font.family, font.style, font.weight]);
+  return `${font.family}/${font.style}/${font.weight}`;
 }
 
 class Encoder {
@@ -176,7 +176,7 @@ class Encoder {
     return index;
   }
 
-  private run = Effect.fn(function* (this: Encoder, value: Inline, parent: TextStyle) {
+  private *run(value: Inline, parent: TextStyle) {
     const { wire } = this;
     const appearance = typeof value === "string" ? parent : { ...parent, ...value.style };
     const family = appearance.family ?? "Plex Sans";
@@ -196,7 +196,7 @@ class Encoder {
     wire.number(appearance.letterSpacing ?? 0);
     wire.word(color(appearance.color ?? "ink"));
     wire.text(typeof value === "string" ? value : value.kind === "span" ? value.text : "");
-  });
+  }
 
   private image(bytes: Uint8Array): number {
     const prior = this.imageIndexes.get(bytes);
@@ -207,22 +207,12 @@ class Encoder {
     return index;
   }
 
-  private children = Effect.fn(function* (
-    this: Encoder,
-    nodes: readonly ComposeNode[],
-    parent: TextStyle,
-    depth: number,
-  ) {
+  private *children(nodes: readonly ComposeNode[], parent: TextStyle, depth: number) {
     this.wire.word(nodes.length);
     for (const node of nodes) yield* this.node(node, parent, depth);
-  });
+  }
 
-  node = Effect.fn(function* (
-    this: Encoder,
-    node: ComposeNode,
-    parent: TextStyle,
-    depth: number,
-  ): Effect.fn.Return<void, ComposeError> {
+  *node(node: ComposeNode, parent: TextStyle, depth: number): Effect.fn.Return<void, ComposeError> {
     if (depth > 48)
       return yield* new ComposeError({
         code: "invalidDocument",
@@ -277,7 +267,7 @@ class Encoder {
         yield* this.children(node.children, appearance, depth + 1);
         return;
     }
-  });
+  }
 }
 
 export const encodeComposition = Effect.fn(function* (
@@ -311,11 +301,11 @@ export const encodeComposition = Effect.fn(function* (
     return yield* new ComposeError({ code: "invalidDocument", reason: "Too many image assets" });
   }
   const result = new Wire();
-  result.bytes(utf8.encode("SKC1"));
-  for (const assets of [encoder.fonts, encoder.images]) {
-    result.word(assets.length);
-    for (const asset of assets) result.blob(asset);
-  }
+  result.bytes(utf8.encode("SKC2"));
+  const assets = [...encoder.fonts, ...encoder.images];
+  result.word(encoder.fonts.length);
+  result.word(encoder.images.length);
+  for (let index = 0; index < assets.length; index++) result.word(0);
   result.bytes(wire.finish());
-  return result.finish();
+  return { request: result.finish(), assets };
 });

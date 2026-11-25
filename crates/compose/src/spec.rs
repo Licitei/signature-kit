@@ -3,8 +3,8 @@ use signature_kit_pdf_core::failure::{Failure, Outcome};
 
 #[derive(Debug)]
 pub(crate) struct Document<'data> {
-    pub(crate) fonts: Vec<&'data [u8]>,
-    pub(crate) images: Vec<&'data [u8]>,
+    pub(crate) fonts: Vec<u32>,
+    pub(crate) images: Vec<u32>,
     pub(crate) metadata: [&'data str; 3],
     pub(crate) sections: Vec<Section<'data>>,
 }
@@ -130,19 +130,17 @@ impl<'data> Reader<'data> {
     }
 
     fn document(&mut self) -> Option<Document<'data>> {
-        if self.take(4)? != b"SKC1" {
+        if self.take(4)? != b"SKC2" {
             return None;
         }
-        let fonts = {
-            let count = self.count(64)?;
-            repeat_with(|| self.blob()).take(count)
-        }
-        .collect::<Option<_>>()?;
-        let images = {
-            let count = self.count(256)?;
-            repeat_with(|| self.blob()).take(count)
-        }
-        .collect::<Option<_>>()?;
+        let font_count = self.count(64)?;
+        let image_count = self.count(256)?;
+        let fonts = repeat_with(|| self.word())
+            .take(font_count)
+            .collect::<Option<_>>()?;
+        let images = repeat_with(|| self.word())
+            .take(image_count)
+            .collect::<Option<_>>()?;
         let metadata = [self.string()?, self.string()?, self.string()?];
         let sections = {
             let count = self.count(1000)?;

@@ -144,7 +144,9 @@ export class ComposeRuntime extends Context.Service<
   ComposeRuntime,
   {
     readonly fonts: Effect.Effect<readonly ComposeFont[], ComposeError>;
-    readonly render: (input: Uint8Array) => Effect.Effect<Uint8Array, ComposeError>;
+    readonly render: (
+      input: Effect.Success<ReturnType<typeof encodeComposition>>,
+    ) => Effect.Effect<Uint8Array, ComposeError>;
   }
 >()("@signature-kit/engine/ComposeRuntime") {}
 

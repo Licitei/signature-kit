@@ -1,10 +1,9 @@
 use alloc::rc::Rc;
 use core::mem;
-use signature_kit_font::sfnt::Face;
 use signature_kit_pdf_core::failure::{Failure, Outcome};
 
 use crate::spec::{Kind, Node, PathCommand, Section, Style};
-use crate::text::{Line, lines};
+use crate::text::{FontMetrics, Line, lines};
 
 pub(crate) const NO_COLOR: u32 = u32::MAX;
 
@@ -62,7 +61,7 @@ pub(crate) struct Page<'doc> {
 
 #[derive(Debug)]
 pub(crate) struct Layout<'faces, 'data> {
-    pub(crate) faces: &'faces [Face<'data>],
+    pub(crate) fonts: &'faces [FontMetrics<'faces, 'data>],
     pub(crate) images: &'faces [[u32; 2]],
 }
 
@@ -81,6 +80,16 @@ impl<'doc> Block<'doc> {
             item.area.y += y;
             item
         }));
+    }
+
+    fn baseline(&self, fallback: f64) -> f64 {
+        self.items
+            .iter()
+            .find_map(|item| match &item.paint {
+                Paint::Text(line) => Some(item.area.y + line.baseline()),
+                Paint::Anchor(..) | Paint::Image(..) | Paint::Link(_) | Paint::Shape(..) => None,
+            })
+            .unwrap_or(fallback)
     }
 
     fn item(&mut self, paint: Paint<'doc>) {
@@ -258,7 +267,7 @@ impl Layout<'_, '_> {
                     width,
                     ..Block::default()
                 };
-                for line in lines(self.faces, runs, style, width)? {
+                for line in lines(self.fonts, runs, style, width)? {
                     let line_height = line.height;
                     block.items.push(Item {
                         area: Area {
@@ -455,9 +464,31 @@ impl Layout<'_, '_> {
                 )
             })
             .collect::<Outcome<_>>()?;
+        let baselines = if style.align == 4 {
+            boxes
+                .iter()
+                .zip(children)
+                .map(|(block, child)| {
+                    block.baseline(
+                        block.height - child.style.margin.get(2).copied().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let baseline = baselines.iter().copied().fold(0.0_f64, f64::max);
         let row_height = boxes
             .iter()
-            .fold(fixed, |value, block| value.max(block.height));
+            .enumerate()
+            .fold(fixed, |value, (index, block)| {
+                value.max(
+                    block.height
+                        + baselines
+                            .get(index)
+                            .map_or(0.0_f64, |offset| baseline - offset),
+                )
+            });
         let occupied = boxes.iter().map(|block| block.width).sum::<f64>() + gaps;
         let (mut x, gap) = distribute(
             style.justify,
@@ -465,9 +496,13 @@ impl Layout<'_, '_> {
             boxes.len(),
             style.gap,
         );
-        for block in boxes {
+        for (index, block) in boxes.into_iter().enumerate() {
             let next = x + block.width + gap;
-            let y = row.height + cross(style.align, (row_height - block.height).max(0.0));
+            let offset = baselines.get(index).map_or_else(
+                || cross(style.align, (row_height - block.height).max(0.0)),
+                |offset| baseline - offset,
+            );
+            let y = row.height + offset;
             row.add(block, x, y);
             x = next;
         }

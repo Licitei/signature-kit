@@ -55,7 +55,7 @@ export type TextStyle = typeof TextStyleSchema.Type;
 
 export const StyleSchema = Schema.Struct({
   ...TextStyleSchema.fields,
-  align: Schema.optional(Schema.Literals(["stretch", "start", "center", "end"])),
+  align: Schema.optional(Schema.Literals(["stretch", "start", "center", "end", "baseline"])),
   background: Schema.optional(Color),
   basis: Schema.optional(Dimension),
   borderColor: Schema.optional(Color),

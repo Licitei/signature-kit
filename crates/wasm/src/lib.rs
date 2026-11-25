@@ -1,4 +1,4 @@
-#[cfg(feature = "pdf")]
+#[cfg(any(feature = "pdf", feature = "compose"))]
 extern crate alloc;
 
 #[cfg(feature = "pdf")]

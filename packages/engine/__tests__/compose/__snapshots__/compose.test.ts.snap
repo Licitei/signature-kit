@@ -1,0 +1,120 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`extracts every template page exactly with Poppler > contract 1`] = `
+[
+  "AURORA EDITORIAL / INSTRUMENTO PARTICULAR
+ACORDO • CTS–2026–014
+Contrato de
+prestação de serviços
+Desenvolvimento e entrega de um portal de atendimento para a Aurora Editorial.
+CONTRATANTE
+Aurora Editorial Ltda.
+CNPJ 00.000.000/0001-00
+CONTRATADA
+Estúdio Campo Digital Ltda.
+CNPJ 00.000.000/0002-00
+01 Objeto
+A contratada desenvolverá um portal responsivo de atendimento, incluindo pesquisa, prototipação,
+implementação e documentação para a equipe da contratante.
+02 Prazo e entregas
+O trabalho será concluído em 60 dias corridos, contados da reunião inicial. As entregas serão
+apresentadas em três etapas: projeto visual, versão de homologação e publicação.
+03 Preço e pagamento
+O valor total é de R$ 24.800,00. Serão pagos 40% na assinatura, 30% na homologação e 30% após
+a entrega final, mediante emissão de nota fiscal.
+CTS–2026–014 / PRESTAÇÃO DE SERVIÇOS 1 / 2",
+  "AURORA EDITORIAL / INSTRUMENTO PARTICULAR
+CONDIÇÕES GERAIS
+Execução e aceite
+Condições de trabalho, responsabilidades e assinatura das partes.
+04 Aceite e revisões
+A contratante terá cinco dias úteis para avaliar cada entrega. Correções relacionadas ao escopo
+serão registradas por escrito e concluídas no ciclo seguinte.
+05 Confidencialidade
+As partes manterão em sigilo os materiais e dados aos quais tiverem acesso para executar este
+contrato. O dever de confidencialidade continua após o encerramento.
+06 Direitos sobre as entregas
+Após a quitação integral, a contratante poderá utilizar e adaptar as entregas. Ferramentas e
+bibliotecas preexistentes continuam regidas por suas respectivas licenças.
+Assinaturas
+São Paulo, 25 de novembro de 2026
+assinatura-contratante
+CONTRATANTE
+Aurora Editorial Ltda.
+assinatura-contratada
+CONTRATADA
+Estúdio Campo Digital Ltda.
+CTS–2026–014 / PRESTAÇÃO DE SERVIÇOS 2 / 2",
+]
+`;
+
+exports[`extracts every template page exactly with Poppler > receipt 1`] = `
+[
+  "ESTÚDIO CAMPO • FINANCEIRO
+Recibo de serviços
+Referência 2026–014 / Primeira parcela do projeto Aurora
+RECEBEMOS DE
+Aurora Editorial Ltda.
+CNPJ 00.000.000/0001-00
+EMISSÃO
+25 de novembro de 2026
+São Paulo, SP
+Detalhamento
+DESCRIÇÃO QTD. VALOR
+Pesquisa e levantamento de requisitos 1 R$ 3.200,00
+Projeto visual e prototipação 1 R$ 4.800,00
+Configuração inicial do ambiente 1 R$ 1.920,00
+TOTAL RECEBIDO
+Pagamento via transferência R$ 9.920,00
+ESTÚDIO CAMPO DIGITAL LTDA.
+CNPJ 00.000.000/0002-00 · Recibo demonstrativo
+signaturekit.dev
+RECIBO 2026–014 / VIA DO CLIENTE 1 / 1",
+]
+`;
+
+exports[`extracts every template page exactly with Poppler > report 1`] = `
+[
+  "CADERNO DE EVIDÊNCIAS • R01
+Relatório de assinaturas
+Identidade do documento, validação por signatário e histórico de revisões.
+DOCUMENTO ANALISADO
+Contrato de prestação de serviços.pdf
+SHA-256
+1f6a9db5c7e2f498e7402418477cbda43f1cd6ae05dd7c0f495b8c8264917216e2
+Signatários
+SIGNATÁRIO 01
+Marina Ferreira
+Campo: assinatura-contratante
+e-CPF
+25 nov. 2026, 10:42 BRT
+Cobertura
+revisão parcial
+Integridade
+íntegra
+Confiança
+confiável
+Revogação
+evidência embutida
+Após a assinatura: 1 alteração reconhecida 2 alterações desconhecidas
+SIGNATÁRIO 02
+Estúdio Campo Digital Ltda.
+Campo: assinatura-contratada
+e-CNPJ
+25 nov. 2026, 11:08 BRT
+Cobertura
+arquivo inteiro
+Integridade
+íntegra
+Confiança
+não avaliada
+Revogação
+não verificada
+Após a assinatura: 0 alterações reconhecidas 0 alterações desconhecidas
+Linha do tempo
+25 nov. · 10:30 Revisão 0 · documento original criado
+25 nov. · 10:42 Revisão 1 · assinatura da contratante adicionada
+25 nov. · 11:08 Revisão 2 · assinatura da contratada adicionada
+RELATÓRIO DE ASSINATURAS / R01 1 / 1",
+]
+`;
