@@ -7,6 +7,7 @@ import { aesCbcDecrypt } from "../../src/crypto/primitives/aes";
 import { tripleDesCbcDecrypt } from "../../src/crypto/primitives/des";
 import { removePkcs7Padding } from "../../src/crypto/primitives/padding";
 import { rc2CbcDecrypt } from "../../src/crypto/primitives/rc2";
+import { sha256, sha256Iterate } from "../../src/crypto/primitives/sha256";
 
 describe("crypto encoding hardening", () => {
   it.effect("decodes valid padded, unpadded, and whitespace-separated Base64", () =>
@@ -149,6 +150,43 @@ describe("crypto encoding hardening", () => {
           expect(result.failure.code).toBe(CryptoErrorCodeValue.cipherError);
           expect(result.failure.operation).toBe(CryptoOperationValue.cipherRc2);
         }
+      }
+    }),
+  );
+
+  it.effect("iterates SHA-256 over digests like repeated hashing", () =>
+    Effect.sync(() => {
+      let expected = sha256(Uint8Array.from({ length: 77 }, (_, index) => index));
+      const first = expected;
+      for (const count of [0, 1, 2, 1023]) {
+        let repeated = first;
+        for (let index = 0; index < count; index++) repeated = sha256(repeated);
+        expected = repeated;
+        expect(sha256Iterate(first, count)).toEqual(expected);
+      }
+    }),
+  );
+
+  it.effect("decrypts AES-128, AES-192 and AES-256 CBC with WebCrypto and JavaScript", () =>
+    Effect.gen(function* () {
+      for (const length of [16, 24, 32]) {
+        const key = Uint8Array.from({ length }, (_, index) => index + 1);
+        const iv = Uint8Array.from({ length: 16 }, (_, index) => 255 - index);
+        const plaintext = Uint8Array.from({ length: 45 }, (_, index) => index * 3);
+        const encrypted = new Uint8Array(
+          yield* Effect.promise(async () =>
+            crypto.subtle.encrypt(
+              { name: "AES-CBC", iv },
+              await crypto.subtle.importKey("raw", key, "AES-CBC", false, ["encrypt"]),
+              plaintext,
+            ),
+          ),
+        );
+        expect(yield* aesCbcDecrypt(key, iv, encrypted)).toEqual(plaintext);
+        const corrupted = encrypted.slice();
+        corrupted.set([(corrupted.at(-1) ?? 0) ^ 1], corrupted.length - 1);
+        const failure = yield* Effect.flip(aesCbcDecrypt(key, iv, corrupted));
+        expect(failure.code).toBe(CryptoErrorCodeValue.cipherError);
       }
     }),
   );
