@@ -88,6 +88,8 @@ const localHandlersLayer = LocalRpcs.toLayer(
       A1Open: a1.open,
       A1Close: a1.close,
       PdfSignatureFields: ({ revision }) => signatures.fields(revision),
+      PdfAddSignatureFields: ({ revision, fields }) => signatures.addFields(revision, fields),
+      PdfCompare: ({ sent, returned, options }) => signatures.compare(sent, returned, options),
       PdfPrepare: ({ revision, options }) => signatures.prepare(revision, options),
       PdfConfirm: ({ preparationId }) => signatures.confirm(preparationId),
       PdfRelease: ({ preparationId }) => signatures.release(preparationId),

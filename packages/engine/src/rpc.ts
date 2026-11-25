@@ -1,10 +1,12 @@
 import {
   PdfCoreOperationSchema,
   PdfCoreBoxSchema,
+  PdfCoreNewSignatureFieldsSchema,
   PdfCorePrepareSignatureRequestSchema,
   PdfCoreRevisionChangesSchema,
   PdfCoreSignatureFieldsSchema,
 } from "./wasm/config.js";
+import { BrazilianFieldsSchema } from "./certificates/config.js";
 import { Context, Schema } from "effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -27,6 +29,8 @@ export const RpcMethod = Schema.Literals([
   "PdfConfirm",
   "PdfRelease",
   "PdfVerify",
+  "PdfAddSignatureFields",
+  "PdfCompare",
 ]);
 const SpanName = Schema.Union([
   Schema.TemplateLiteral([Schema.Literals(["local.client.", "local.worker."]), RpcMethod]),
@@ -47,6 +51,7 @@ const SpanName = Schema.Union([
     "local.pdf.checkCms",
     "local.pdf.embed",
     "local.pdf.verify",
+    "local.pdf.compare",
     "local.viewer.paintPage",
     "local.queue.pdf",
     "local.queue.raster",
@@ -123,7 +128,7 @@ export class LocalTelemetry extends Context.Service<
   }
 >()("@signature-kit/engine/LocalTelemetry") {}
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
@@ -224,6 +229,7 @@ const PdfAppearance = Schema.Union([
 ]);
 
 export type PdfSignatureFields = (typeof PdfCoreSignatureFieldsSchema)["Type"];
+export type PdfNewSignatureFields = (typeof PdfCoreNewSignatureFieldsSchema)["Type"];
 
 export const PdfPrepareOptionsSchema = Schema.Struct({
   session: A1SessionBinding,
@@ -232,6 +238,7 @@ export const PdfPrepareOptionsSchema = Schema.Struct({
   policy: PdfSigningPolicy,
   reason: Schema.optional(Schema.String),
   location: Schema.optional(Schema.String),
+  docMdp: PdfCorePrepareSignatureRequestSchema.fields.docMdp,
 });
 export type PdfPrepareOptions = (typeof PdfPrepareOptionsSchema)["Type"];
 
@@ -271,39 +278,83 @@ export const PdfReceipt = Schema.Struct({
 export type PdfReceipt = (typeof PdfReceipt)["Type"];
 
 export const PdfVerifyOptionsSchema = Schema.Struct({
-  trust: Schema.optional(Schema.NonEmptyArray(Schema.Uint8Array)),
+  trust: Schema.optional(Schema.Array(Schema.Uint8Array)),
   at: Schema.optional(Schema.Date),
 });
 export type PdfVerifyOptions = (typeof PdfVerifyOptionsSchema)["Type"];
+
+const PdfReportedChanges = Schema.Struct({
+  recognised: PdfCoreRevisionChangesSchema.fields.changes,
+  unknown: PdfCoreRevisionChangesSchema.fields.changes,
+  recognisedObjectCount: Count,
+  unknownObjectCount: Count,
+  pageContentChanged: Schema.Boolean,
+});
 
 const PdfSignatureVerification = Schema.Struct({
   fieldName: Schema.optional(Schema.String),
   integrity: Schema.Literals(["valid", "invalid", "unsupported"]),
   coverage: Schema.Struct({
     kind: Schema.Literals(["wholeFile", "partial", "invalid"]),
-    bytesAfter: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    revisionEnd: Schema.optional(Count),
+    bytesAfter: Schema.optional(Count),
   }),
   signer: Schema.optional(
     Schema.Struct({
-      subject: A1Profile.fields.subjectName,
+      commonName: Schema.NullOr(Schema.String),
+      brazilian: BrazilianFieldsSchema,
       holderKind: A1Profile.fields.holderKind,
     }),
   ),
-  changes: Schema.optional(
-    Schema.Struct({
-      recognised: PdfCoreRevisionChangesSchema.fields.changes,
-      unknown: PdfCoreRevisionChangesSchema.fields.changes,
-      pageContentChanged: Schema.Boolean,
-    }),
-  ),
+  claimedSigningTime: Schema.optional(Schema.Date),
+  timestampEvidence: Schema.Literals(["present", "absent"]),
+  changes: Schema.optional(PdfReportedChanges),
   trust: Schema.Literals(["notEvaluated", "trusted", "untrusted"]),
-  revocation: Schema.Literals(["notChecked", "embeddedEvidence"]),
+  revocation: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("notChecked") }),
+    Schema.Struct({ kind: Schema.Literal("embeddedEvidence"), ocspCount: Count, crlCount: Count }),
+  ]),
 });
 export type PdfSignatureVerification = (typeof PdfSignatureVerification)["Type"];
+const pdfSignatureVerificationCodec: Schema.Codec<PdfSignatureVerification> =
+  PdfSignatureVerification;
 export const PdfVerificationReport = Schema.Struct({
-  signatures: Schema.Array(PdfSignatureVerification),
+  signatures: Schema.Array(pdfSignatureVerificationCodec),
 });
 export type PdfVerificationReport = (typeof PdfVerificationReport)["Type"];
+
+export const ComparisonReport = Schema.Struct({
+  sentPreserved: Schema.Boolean,
+  sentRevisionIndex: Schema.optional(Count),
+  signatures: Schema.Array(pdfSignatureVerificationCodec),
+  changes: Schema.optional(PdfReportedChanges),
+  verdict: Schema.Literals([
+    "signedAsExpected",
+    "differentDocument",
+    "integrityFailure",
+    "modifiedAfterSigning",
+    "unknownChanges",
+    "untrustedSignatures",
+    "noSignatures",
+  ]),
+  reasons: Schema.Array(
+    Schema.Literals([
+      "sentRevisionMissing",
+      "invalidSignature",
+      "pageContentChanged",
+      "unexpectedChange",
+      "trailingUnparsedBytes",
+      "unknownObjects",
+      "untrustedSignature",
+      "noNewSignatures",
+    ]),
+  ),
+});
+export type ComparisonReport = (typeof ComparisonReport)["Type"];
+
+export const exportComparisonReport = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.toCodecJson(ComparisonReport), { space: 2 }),
+);
 
 export const LocalErrorCode = Schema.Literals([
   "staleHandle",
@@ -453,6 +504,16 @@ export const LocalRpcs = RpcGroup.make(
   Rpc.make("PdfVerify", {
     payload: { revision: RevisionRef, options: PdfVerifyOptionsSchema },
     success: PdfVerificationReport,
+    error: LocalError,
+  }),
+  Rpc.make("PdfAddSignatureFields", {
+    payload: { revision: RevisionRef, fields: PdfCoreNewSignatureFieldsSchema },
+    success: RevisionRef,
+    error: LocalError,
+  }),
+  Rpc.make("PdfCompare", {
+    payload: { sent: RevisionRef, returned: RevisionRef, options: PdfVerifyOptionsSchema },
+    success: ComparisonReport,
     error: LocalError,
   }),
 );

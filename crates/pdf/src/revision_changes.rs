@@ -82,6 +82,7 @@ pub struct Change {
 )]
 pub struct RevisionChanges {
     pub changes: Vec<Change>,
+    pub from_revision_index: usize,
     pub page_content_changed: bool,
 }
 
@@ -235,6 +236,11 @@ impl Pair<'_, '_> {
             before.map_or(0, |key| self.old.role(key)) | after.map_or(0, |key| self.new.role(key));
         let older = before.map(|key| self.old.document.load(key)).transpose()?;
         let newer = after.map(|key| self.new.document.load(key)).transpose()?;
+        if older.as_deref().is_some_and(|object| {
+            object.as_stream().is_none() && before == after && newer.as_deref() == Some(object)
+        }) {
+            return Ok(());
+        }
         let kind = match &newer {
             Some(object) => {
                 let signature_field = self.old.signature_fields.contains(&object_ref)
@@ -530,7 +536,13 @@ fn classify_catalog(before: Option<&Dict>, after: &Dict, keys: &[&[u8]]) -> Chan
             return ChangeKind::AcroForm;
         }
     }
-    if recognized(keys, &[b"DSS"]) {
+    if keys.contains(&b"Perms".as_slice())
+        && recognized(keys, &[b"Perms"])
+        && valid_permissions(before, after)
+    {
+        return ChangeKind::Signature;
+    }
+    if keys.contains(&b"DSS".as_slice()) && recognized(keys, &[b"DSS"]) {
         return ChangeKind::Dss;
     }
     ChangeKind::CatalogOther
@@ -608,13 +620,21 @@ fn page_dependencies_changed(old: &[Page], new: &[Page]) -> bool {
 )]
 pub fn revision_changes(pdf: &[u8], from: usize, limits: &Limits) -> Outcome<RevisionChanges> {
     let index = revision_index(pdf)?;
-    if !index.contains_end(from) {
-        return Err(Failure::request(
-            "fromRevisionEnd does not identify a complete PDF revision",
-        ));
-    }
+    let terminal = index
+        .structure
+        .terminal_for_range(pdf, from)
+        .ok_or_else(|| {
+            Failure::request("fromRevisionEnd does not identify a complete PDF revision")
+        })?;
+    let from_revision_index = index
+        .structure
+        .terminals
+        .iter()
+        .position(|candidate| candidate.eof_end == terminal.eof_end)
+        .ok_or_else(|| Failure::invalid("missing PDF revision terminal"))?;
     let mut result = RevisionChanges {
         changes: Vec::new(),
+        from_revision_index,
         page_content_changed: false,
     };
     for pair in index.structure.terminals.windows(2) {

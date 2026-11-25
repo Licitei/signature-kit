@@ -1,3 +1,4 @@
+import * as asn1js from "asn1js";
 import { Effect, Schema } from "effect";
 import * as pkijs from "pkijs";
 import {
@@ -25,13 +26,17 @@ const SignedDataVerifyErrorSchema = Schema.Struct({
 
 const BASIC_OCSP_RESPONSE_OID = "1.3.6.1.5.5.7.48.1.1";
 
-const hasRecognizedRevocation = (signed: pkijs.SignedData): boolean =>
-  signed.crls?.some(
-    (entry) =>
-      entry instanceof pkijs.CertificateRevocationList ||
-      (entry instanceof pkijs.OtherRevocationInfoFormat &&
-        entry.otherRevInfoFormat === BASIC_OCSP_RESPONSE_OID),
-  ) === true || signed.ocsps?.some((entry) => entry instanceof pkijs.BasicOCSPResponse) === true;
+const revocationEvidence = (signed: pkijs.SignedData) => ({
+  ocspCount:
+    (signed.ocsps?.filter((entry) => entry instanceof pkijs.BasicOCSPResponse).length ?? 0) +
+    (signed.crls?.filter(
+      (entry) =>
+        entry instanceof pkijs.OtherRevocationInfoFormat &&
+        entry.otherRevInfoFormat === BASIC_OCSP_RESPONSE_OID,
+    ).length ?? 0),
+  crlCount:
+    signed.crls?.filter((entry) => entry instanceof pkijs.CertificateRevocationList).length ?? 0,
+});
 
 const signerSerialHex = (signed: pkijs.SignedData): string | null => {
   const sid = signed.signerInfos[0]?.sid;
@@ -113,7 +118,9 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
         revocationStatus: "not_checked",
         signerSerialNumber: signerSerialHex(signed),
       } satisfies CmsVerifyResult,
-      embeddedRevocation: false,
+      revocation: { ocspCount: 0, crlCount: 0 },
+      claimedSigningTime: undefined,
+      timestampPresent: false,
     };
   }
 
@@ -140,7 +147,21 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     "signature_kit.cms.chain_checked": checkChain,
   });
 
-  const embeddedRevocation = hasRecognizedRevocation(signed);
+  const revocation = revocationEvidence(signed);
+  const signer = signed.signerInfos[0];
+  const times = signer?.signedAttrs?.attributes.filter(({ type }) => type === CmsOid.signingTime);
+  const time =
+    times?.length === 1 && times[0]?.values.length === 1 ? times[0].values[0] : undefined;
+  const date =
+    time instanceof asn1js.UTCTime || time instanceof asn1js.GeneralizedTime
+      ? time.toDate()
+      : undefined;
+  const claimedSigningTime =
+    date !== undefined && Number.isFinite(date.getTime()) ? date : undefined;
+  const timestampPresent =
+    signer?.unsignedAttrs?.attributes.some(
+      ({ type, values }) => type === CmsOid.timeStampToken && values.length > 0,
+    ) ?? false;
   if (!checkRevocation) {
     delete signed.crls;
     delete signed.ocsps;
@@ -174,7 +195,9 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     valid: verification.signatureVerified === true,
     chainValid: checkChain ? verification.signerCertificateVerified === true : false,
     revocationStatus:
-      checkChain && checkRevocation && embeddedRevocation ? "checked" : "not_checked",
+      checkChain && checkRevocation && revocation.ocspCount + revocation.crlCount > 0
+        ? "checked"
+        : "not_checked",
     signerSerialNumber: serial,
   };
   yield* Effect.annotateCurrentSpan({
@@ -182,7 +205,7 @@ const verifySignedData = Effect.fn(CmsOperationValue.verify)(function* (
     "signature_kit.cms.chain_valid": result.chainValid,
     "signature_kit.cms.revocation_status": result.revocationStatus,
   });
-  return { result, embeddedRevocation };
+  return { result, revocation, claimedSigningTime, timestampPresent };
 });
 
 export const verifyDetachedSignedDataEvidence = (input: VerifyDetachedSignedDataEvidenceInput) =>

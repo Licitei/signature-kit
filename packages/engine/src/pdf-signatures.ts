@@ -3,6 +3,8 @@ import type { CmsError } from "./cms/config.js";
 import { MAX_PDF_CORE_SIGNATURE_CONTENTS } from "./wasm/config.js";
 import type {
   PdfCorePrepareSignatureRequest,
+  PdfCoreNewSignatureFields,
+  PdfCoreError,
   PdfCorePreparedUpdate,
   PdfCoreSignatureFields,
 } from "./wasm/config.js";
@@ -14,6 +16,7 @@ import { decodeSignatureContents, embedPreparedSignature } from "./pdf-contents.
 import { LocalError, PdfPrepareOptionsSchema, PreparationId } from "./rpc.js";
 import type {
   PdfPreparation,
+  ComparisonReport,
   PdfPrepareOptions,
   PdfReceipt,
   PdfVerificationReport,
@@ -21,12 +24,21 @@ import type {
   PdfWidget,
   RevisionRef,
 } from "./rpc.js";
-import { verifyPdfRevision } from "./pdf-verification.js";
+import { comparePdfRevisions, verifyPdfRevision } from "./pdf-verification.js";
 
 export class PdfSignatures extends Context.Service<
   PdfSignatures,
   {
     readonly fields: (revision: RevisionRef) => Effect.Effect<PdfCoreSignatureFields, LocalError>;
+    readonly addFields: (
+      revision: RevisionRef,
+      fields: PdfCoreNewSignatureFields,
+    ) => Effect.Effect<RevisionRef, LocalError>;
+    readonly compare: (
+      sent: RevisionRef,
+      returned: RevisionRef,
+      options?: PdfVerifyOptions,
+    ) => Effect.Effect<ComparisonReport, LocalError>;
     readonly prepare: (
       revision: RevisionRef,
       options: PdfPrepareOptions,
@@ -65,21 +77,7 @@ const resolveWidget = Effect.fnUntraced(function* (
   report: PdfCoreSignatureFields,
   { field, appearance }: PdfPrepareOptions,
 ): Effect.fn.Return<PdfWidget, LocalError> {
-  if (
-    report.docMdp === 1 ||
-    report.fields.some(({ signed, lock }) => {
-      if (!signed || lock === undefined) return false;
-      const listed = lock.fields.some(
-        (name) => field.name === name || field.name.startsWith(name + "."),
-      );
-      return (
-        lock.action === "All" ||
-        (lock.action === "Include" && listed) ||
-        (lock.action === "Exclude" && !listed)
-      );
-    })
-  )
-    return yield* new LocalError({ code: "documentLocked" });
+  if (report.docMdp === 1) return yield* new LocalError({ code: "documentLocked" });
 
   const matching = report.fields.filter(({ name }) => name === field.name);
   const selected = matching[0];
@@ -126,6 +124,26 @@ const appearanceFor = (
       color: [0],
     })),
   };
+};
+
+const prepareErrorCode = (reason: PdfCoreError["reason"]): LocalError["code"] => {
+  switch (reason) {
+    case "DocMDP forbids signing this document":
+    case "DocMDP forbids creating signature fields":
+    case "FieldMDP forbids changing the selected field":
+      return "documentLocked";
+    case "signature field name already exists":
+    case "signature field name is ambiguous":
+      return "fieldAmbiguous";
+    case "signature field is missing":
+    case "selected field is not a terminal signature field":
+      return "fieldNotFound";
+    case "signature field is already signed":
+      return "fieldSigned";
+    case undefined:
+    default:
+      return "pdfPrepareFailed";
+  }
 };
 
 const expectedChanges = new Set(["signature", "signatureField", "widgetAppearance", "acroForm"]);
@@ -204,11 +222,38 @@ export const pdfSignaturesLayer = Layer.effect(
     yield* Effect.addFinalizer(() => Ref.set(entries, undefined));
     return PdfSignatures.of({
       fields: (revision) => engine.withRevision(revision, ({ fields }) => fields),
+      addFields: (revision, fields) =>
+        engine.withRevision(revision, (source) =>
+          source.signing.pipe(
+            Effect.flatMap((signing) =>
+              signing
+                .addFields(fields)
+                .pipe(
+                  Effect.mapError(
+                    ({ reason, code }) =>
+                      new LocalError({ code: prepareErrorCode(reason), pdfCode: code }),
+                  ),
+                ),
+            ),
+            Effect.flatMap((appendix) => source.append(appendix)),
+          ),
+        ),
+      compare: Effect.fn(function* (sent, returned, options) {
+        yield* documents.validate(sent);
+        return yield* engine.withRevision(returned, (target) =>
+          Effect.gen(function* () {
+            const signing = yield* target.signing;
+            const sentBytes = yield* documents.export(sent.handle);
+            const returnedBytes = yield* documents.export(returned.handle);
+            return yield* comparePdfRevisions(signing, sentBytes, returnedBytes, options);
+          }),
+        );
+      }),
       prepare: Effect.fn("local.pdf.prepare")(function* (revision, input) {
         const options = yield* Schema.decodeUnknownEffect(PdfPrepareOptionsSchema)(input).pipe(
           Effect.mapError(() => new LocalError({ code: "pdfPrepareFailed" })),
         );
-        const { session, field, policy, reason, location } = options;
+        const { session, field, policy, reason, location, docMdp } = options;
         const certificate = yield* a1.certificate(session);
         const { profile } = certificate;
         yield* Effect.annotateCurrentSpan({
@@ -256,15 +301,14 @@ export const pdfSignaturesLayer = Layer.effect(
                 contentsCapacity,
                 reason,
                 location,
+                docMdp,
               })
               .pipe(
                 Effect.mapError(
                   (error) =>
                     new LocalError({
-                      code:
-                        error.reason === "DocMDP forbids signing this document"
-                          ? "documentLocked"
-                          : "pdfPrepareFailed",
+                      code: prepareErrorCode(error.reason),
+                      pdfCode: error.code,
                     }),
                 ),
               );

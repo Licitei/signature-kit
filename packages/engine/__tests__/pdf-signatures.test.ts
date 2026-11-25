@@ -4,11 +4,8 @@ import { pdfCoreFileLayer } from "@signature-kit/engine/wasm/file";
 import { PdfCore } from "@signature-kit/engine/wasm/pdf-core";
 import { Clock, Effect, Layer, Redacted } from "effect";
 import { TestClock } from "effect/testing";
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
+import { verifyIndependently } from "../../../tooling/testing/verify-pdf.ts";
 import { recordSpans } from "../../../tooling/testing/tracing.ts";
 import { A1Sessions, Documents, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
 import { embedPreparedSignature } from "../src/pdf-contents.js";
@@ -26,7 +23,6 @@ const signingLayer = (options?: Parameters<typeof localRuntimeLayer>[0]) =>
 const layer = signingLayer();
 const password = Redacted.make("changeit");
 const now = new Date("2027-01-01T00:00:00Z");
-const run = promisify(execFile);
 const fixture = (name: "ecpf" | "ecnpj") =>
   Effect.promise(async () =>
     Redacted.make(
@@ -57,54 +53,6 @@ const fingerprint = (bytes: Uint8Array) =>
       new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))),
       (byte) => byte.toString(16).padStart(2, "0"),
     ).join(""),
-  );
-
-const verifyIndependently = (pdf: Uint8Array, count: number) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const dir = yield* Effect.acquireRelease(
-        Effect.promise(() => mkdtemp(join(tmpdir(), "signature-kit-v2-"))),
-        (path) => Effect.promise(() => rm(path, { force: true, recursive: true })),
-      );
-      const file = join(dir, "signed.pdf");
-      yield* Effect.promise(() => writeFile(file, pdf));
-      yield* Effect.promise(() => run("qpdf", ["--check", file]));
-      const { stdout } = yield* Effect.promise(() => run("pdfsig", ["-nocert", file]));
-      expect(stdout.match(/Signature Validation: Signature is Valid\./g)).toHaveLength(count);
-
-      const ranges = [...stdout.matchAll(/Signed Ranges: \[0 - (\d+)\], \[(\d+) - (\d+)\]/g)];
-      expect(ranges).toHaveLength(count);
-      yield* Effect.promise(() => run("pdfsig", ["-dump", file], { cwd: dir }));
-      for (const [index, [, firstEnd, secondStart, secondEnd]] of ranges.entries()) {
-        const signatureFile = join(dir, `signed.pdf.sig${index}`);
-        const contentsFile = join(dir, "signed-data");
-        yield* Effect.promise(() =>
-          writeFile(
-            contentsFile,
-            Buffer.concat([
-              pdf.subarray(0, Number(firstEnd)),
-              pdf.subarray(Number(secondStart), Number(secondEnd)),
-            ]),
-          ),
-        );
-        yield* Effect.promise(() =>
-          run("openssl", [
-            "cms",
-            "-verify",
-            "-binary",
-            "-inform",
-            "DER",
-            "-in",
-            signatureFile,
-            "-content",
-            contentsFile,
-            "-noverify",
-            "-out",
-            join(dir, "verified-data"),
-          ]),
-        );
-      }
-    }),
   );
 
 describe("local PDF signatures", () => {
@@ -179,7 +127,7 @@ describe("local PDF signatures", () => {
                 coverage: { kind: "wholeFile", bytesAfter: 0 },
                 signer: { holderKind: "e-cpf" },
                 trust: "notEvaluated",
-                revocation: "notChecked",
+                revocation: { kind: "notChecked" },
               },
             ]);
             for (const [at, trust] of [
@@ -193,7 +141,7 @@ describe("local PDF signatures", () => {
               expect(evaluated.signatures[0]).toMatchObject({
                 integrity: "valid",
                 trust,
-                revocation: "notChecked",
+                revocation: { kind: "notChecked" },
               });
             }
             const tampered = signed.slice();

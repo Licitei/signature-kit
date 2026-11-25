@@ -10,6 +10,7 @@ use super::{
     widen,
 };
 use crate::font_tables::win_ansi_unicode;
+use crate::num::f64_to_i64;
 use crate::pdf_hash::{sha256_parts, sha512_parts};
 use crate::png;
 use crate::revision::{Analysis, RevisionIndex, analyze, revision_index};
@@ -60,7 +61,7 @@ pub struct SignatureValue {
     pub sub_filter: Option<Vec<u8>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[expect(
     clippy::exhaustive_structs,
     reason = "the internal ABI shares this struct with the WASM crate"
@@ -138,12 +139,15 @@ struct FieldContext<'field> {
 
 #[derive(Debug)]
 enum Selection<'data> {
-    Create {
-        name: &'data str,
-        page: u32,
-        rect: Box<[f64; 4]>,
-    },
+    Create(NewField<'data>),
     Existing(&'data str),
+}
+
+#[derive(Debug)]
+struct NewField<'data> {
+    name: &'data str,
+    page: u32,
+    rect: [f64; 4],
 }
 
 #[derive(Debug)]
@@ -220,22 +224,9 @@ impl<'data> Request<'data> {
             ));
         }
         let selector = reader.u32()?;
-        let title = reader.text()?;
-        if title.is_empty() || title.encode_utf16().count() > MAX_FIELD_NAME {
-            return Err(Failure::request("signature field name is out of range"));
-        }
         let selection = match selector {
-            0 => Selection::Existing(title),
-            1 if !title.contains('.') => Selection::Create {
-                name: title,
-                page: reader.u32()?,
-                rect: Box::new(reader.coordinates(MAX_COORDINATE)?),
-            },
-            1 => {
-                return Err(Failure::request(
-                    "a new signature field needs a single partial name",
-                ));
-            }
+            0 => Selection::Existing(read_field_name(&mut reader)?),
+            1 => Selection::Create(read_new_field(&mut reader)?),
             _ => return Err(Failure::request("unknown signature field selector")),
         };
         let capacity = reader.u32()?;
@@ -507,6 +498,28 @@ const fn decimal_pair([tens, ones]: [u8; 2]) -> u8 {
         .saturating_add(ones.saturating_sub(b'0'))
 }
 
+fn read_field_name<'data>(reader: &mut Reader<'data>) -> Outcome<&'data str> {
+    let name = reader.text()?;
+    if name.is_empty() || name.encode_utf16().count() > MAX_FIELD_NAME {
+        return Err(Failure::request("signature field name is out of range"));
+    }
+    Ok(name)
+}
+
+fn read_new_field<'data>(reader: &mut Reader<'data>) -> Outcome<NewField<'data>> {
+    let name = read_field_name(reader)?;
+    if name.contains('.') {
+        return Err(Failure::request(
+            "a new signature field needs a single partial name",
+        ));
+    }
+    Ok(NewField {
+        name,
+        page: reader.u32()?,
+        rect: reader.coordinates(MAX_COORDINATE)?,
+    })
+}
+
 fn read_lock(reader: &mut Reader<'_>) -> Outcome<Option<FieldLock>> {
     let action = match reader.u32()? {
         0 => return Ok(None),
@@ -692,6 +705,97 @@ fn read_field_lock(document: &Document<'_>, object: &Object) -> Outcome<FieldLoc
     Ok(FieldLock { action, fields })
 }
 
+#[inline(never)]
+fn field_locked(
+    document: &Document<'_>,
+    tree: &FieldTree<'_, '_>,
+    names: &[&str],
+) -> Outcome<bool> {
+    let applies = |lock: FieldLock| {
+        names.iter().any(|name| {
+            let listed = lock.fields.iter().any(|field| {
+                *name == field
+                    || name
+                        .strip_prefix(field)
+                        .is_some_and(|tail| tail.starts_with('.'))
+            });
+            match lock.action.as_deref() {
+                Some("Include") => lock.fields.is_empty() || listed,
+                Some("Exclude") => !listed,
+                _ => true,
+            }
+        })
+    };
+    for field in tree.fields.iter().filter(|field| field.signature) {
+        let Some(value) = &field.value else { continue };
+        if let Some(lock) = &field.lock
+            && applies(read_field_lock(document, lock)?)
+        {
+            return Ok(true);
+        }
+        let signature = document.follow(value)?;
+        let Some(dict) = signature.as_dict() else {
+            continue;
+        };
+        for entry in array(document, dict, b"Reference")? {
+            let resolved_entry = document.follow(&entry)?;
+            let Some(reference) = resolved_entry.as_dict() else {
+                continue;
+            };
+            if named(document, reference, b"TransformMethod", b"FieldMDP")?
+                && match reference.get(b"TransformParams") {
+                    Some(params) => applies(read_field_lock(document, params)?),
+                    None => true,
+                }
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+#[inline(never)]
+fn check_historical_transforms(
+    pdf: &[u8],
+    names: &[&str],
+    adding_fields: bool,
+    limits: &Limits,
+) -> Outcome<()> {
+    let report = analyze(pdf, Analysis::Verification);
+    if report.failure.is_some() {
+        return Err(Failure::request(
+            "could not verify existing signature revisions",
+        ));
+    }
+    let mut checked = Vec::new();
+    for signature in report.dictionaries {
+        let Some([_, _, offset, length]) = signature.byte_range_values else {
+            continue;
+        };
+        let end = usize::try_from(f64_to_i64(offset + length))
+            .map_err(|_cause| Failure::invalid("invalid signed revision end"))?;
+        if end == pdf.len() || checked.contains(&end) {
+            continue;
+        }
+        checked.push(end);
+        let bytes = pdf
+            .get(..end)
+            .ok_or_else(|| Failure::invalid("invalid signed revision end"))?;
+        let document = Document::open(bytes, limits)?;
+        let (certified, permission) = doc_mdp(&document)?;
+        if certified && (adding_fields || !matches!(permission, Some(2 | 3))) {
+            return Err(Failure::request("DocMDP forbids signing this document"));
+        }
+        if field_locked(&document, &FieldTree::read(&document, false)?, names)? {
+            return Err(Failure::request(
+                "FieldMDP forbids changing the selected field",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn signature_value(
     document: &Document<'_>,
     index: &RevisionIndex<'_>,
@@ -802,7 +906,7 @@ fn dictionary<const COUNT: usize>(entries: [(&[u8], Object); COUNT]) -> Dict {
     dict
 }
 
-fn signature_dictionary(request: &Request<'_>, root: ObjRef) -> Dict {
+fn signature_dictionary(request: &Request<'_>, root: ObjRef, lock: Option<&FieldLock>) -> Dict {
     let mut dict = dictionary([
         (
             b"ByteRange",
@@ -825,6 +929,7 @@ fn signature_dictionary(request: &Request<'_>, root: ObjRef) -> Dict {
             dict.insert(key, pdf_text(text));
         }
     }
+    let mut references = Vec::new();
     if request.certification != 0 {
         let params = dictionary([
             (b"Type", name(b"TransformParams")),
@@ -837,12 +942,26 @@ fn signature_dictionary(request: &Request<'_>, root: ObjRef) -> Dict {
             (b"TransformParams", Object::Dict(params)),
             (b"Data", Object::Ref(root)),
         ]);
-        dict.insert(b"Reference", Object::Array(vec![Object::Dict(reference)]));
+        references.push(Object::Dict(reference));
+    }
+    if let Some(field_lock) = lock {
+        let mut params = lock_dictionary(field_lock);
+        params.insert(b"Type", name(b"TransformParams"));
+        params.insert(b"V", name(b"1.2"));
+        references.push(Object::Dict(dictionary([
+            (b"Type", name(b"SigRef")),
+            (b"TransformMethod", name(b"FieldMDP")),
+            (b"TransformParams", Object::Dict(params)),
+            (b"Data", Object::Ref(root)),
+        ])));
+    }
+    if !references.is_empty() {
+        dict.insert(b"Reference", Object::Array(references));
     }
     dict
 }
 
-fn lock_dictionary(lock: &FieldLock) -> Object {
+fn lock_dictionary(lock: &FieldLock) -> Dict {
     let mut dict = dictionary([(b"Type", name(b"SigFieldLock"))]);
     if let Some(action) = &lock.action {
         dict.insert(b"Action", name(action.as_bytes()));
@@ -853,7 +972,7 @@ fn lock_dictionary(lock: &FieldLock) -> Object {
             Object::Array(lock.fields.iter().map(|value| pdf_text(value)).collect()),
         );
     }
-    Object::Dict(dict)
+    dict
 }
 
 const fn widget_for_page(page: u32, rect: [f64; 4], reference: ObjRef) -> Widget {
@@ -864,30 +983,23 @@ const fn widget_for_page(page: u32, rect: [f64; 4], reference: ObjRef) -> Widget
     }
 }
 
+#[inline(never)]
 fn create_field(
     store: &mut Store<'_, '_>,
-    selection: &Selection<'_>,
+    field: &NewField<'_>,
     lock: Option<&FieldLock>,
     reference: ObjRef,
-) -> Outcome<(ObjRef, Vec<Widget>)> {
-    let Selection::Create {
-        name: title,
-        page,
-        rect,
-    } = selection
-    else {
-        return Err(Failure::request("expected a new signature field selector"));
-    };
-    let _: [f64; 2] = dimensions(**rect)?;
+) -> Outcome<Widget> {
+    let _: [f64; 2] = dimensions(field.rect)?;
     let mut dict = dictionary([
         (b"Type", name(b"Annot")),
         (b"Subtype", name(b"Widget")),
         (b"FT", name(b"Sig")),
-        (b"T", pdf_text(title)),
-        (b"Rect", rect_object(**rect)),
+        (b"T", pdf_text(field.name)),
+        (b"Rect", rect_object(field.rect)),
     ]);
     if let Some(value) = lock {
-        dict.insert(b"Lock", lock_dictionary(value));
+        dict.insert(b"Lock", Object::Dict(lock_dictionary(value)));
     }
     store.set_body(reference, Object::Dict(dict), None);
     let catalog = store
@@ -908,7 +1020,7 @@ fn create_field(
         path: vec![Step::Key(b"AcroForm".to_vec())],
     };
     store.edit_array(&target, b"Fields", Object::Ref(reference), true)?;
-    Ok((reference, vec![widget_for_page(*page, **rect, reference)]))
+    Ok(widget_for_page(field.page, field.rect, reference))
 }
 
 fn select_field(
@@ -918,16 +1030,13 @@ fn select_field(
     request: &Request<'_>,
 ) -> Outcome<(ObjRef, Vec<Widget>)> {
     match &request.selection {
-        Selection::Create { name: title, .. } => {
-            if tree.fields.iter().any(|field| field.name == *title) {
+        Selection::Create(new) => {
+            if tree.fields.iter().any(|field| field.name == new.name) {
                 return Err(Failure::request("signature field name already exists"));
             }
-            create_field(
-                store,
-                &request.selection,
-                request.lock.as_ref(),
-                objects.reserve()?,
-            )
+            let reference = objects.reserve()?;
+            let widget = create_field(store, new, request.lock.as_ref(), reference)?;
+            Ok((reference, vec![widget]))
         }
         Selection::Existing(title) => {
             let mut selected = tree.fields.iter().filter(|field| field.name == *title);
@@ -1248,6 +1357,72 @@ pub fn prepare_signature_update(
     prepare_update(pdf, &Request::decode(payload)?, limits)
 }
 
+#[expect(
+    clippy::missing_errors_doc,
+    reason = "the TypeScript bindings document the public error contract"
+)]
+#[expect(
+    clippy::missing_inline_in_public_items,
+    reason = "release LTO chooses inlining across the internal Rust boundary"
+)]
+pub fn add_signature_fields(pdf: &[u8], payload: &[u8], limits: &Limits) -> Outcome<Vec<u8>> {
+    let mut reader = Reader {
+        data: payload,
+        pos: 0,
+    };
+    let count = read_field_count(&mut reader)?;
+    if count == 0 {
+        return Err(Failure::request("no signature fields supplied"));
+    }
+    let document = appendable(pdf, limits)?;
+    let (certified, _) = doc_mdp(&document)?;
+    if certified {
+        return Err(Failure::request("DocMDP forbids creating signature fields"));
+    }
+    let tree = FieldTree::read(&document, true)?;
+    let mut names = Vec::with_capacity(tree.fields.len().saturating_add(count));
+    for field in &tree.fields {
+        let name = field.name.as_str();
+        if let Err(index) = names.binary_search(&name) {
+            names.insert(index, name);
+        }
+    }
+    let mut objects = Objects(next_object_number(&document));
+    let mut store = Store {
+        changed: Changes::default(),
+        document: &document,
+        pages: None,
+    };
+    let mut selected_names = Vec::with_capacity(count);
+    for _ in 0..count {
+        let field = read_new_field(&mut reader)?;
+        let [left, bottom, right, top] = field.rect;
+        if right <= left || top <= bottom {
+            return Err(Failure::request("signature rectangle is empty"));
+        }
+        let Err(index) = names.binary_search(&field.name) else {
+            return Err(Failure::request("signature field name already exists"));
+        };
+        names.insert(index, field.name);
+        selected_names.push(field.name);
+        let lock = read_lock(&mut reader)?;
+        let widget = create_field(&mut store, &field, lock.as_ref(), objects.reserve()?)?;
+        write_widget(&mut store, &mut objects, &widget, None, &tree)?;
+    }
+    if reader.pos != payload.len() {
+        return Err(Failure::request(
+            "signature fields payload has trailing bytes",
+        ));
+    }
+    if field_locked(&document, &tree, &selected_names)? {
+        return Err(Failure::request(
+            "FieldMDP forbids changing the selected field",
+        ));
+    }
+    check_historical_transforms(pdf, &selected_names, true, limits)?;
+    incremental_update(&document, &store.changed, pdf, None).map(|(appendix, _)| appendix)
+}
+
 fn prepare_update(pdf: &[u8], request: &Request<'_>, limits: &Limits) -> Outcome<PreparedUpdate> {
     let document = appendable(pdf, limits)?;
     let (certified, permission) = doc_mdp(&document)?;
@@ -1261,6 +1436,26 @@ fn prepare_update(pdf: &[u8], request: &Request<'_>, limits: &Limits) -> Outcome
     if request.certification != 0 {
         ensure_first_signature(&document, &tree, certified)?;
     }
+    let title = match &request.selection {
+        Selection::Create(field) => field.name,
+        Selection::Existing(name) => name,
+    };
+    if field_locked(&document, &tree, &[title])? {
+        return Err(Failure::request(
+            "FieldMDP forbids changing the selected field",
+        ));
+    }
+    check_historical_transforms(pdf, &[title], false, limits)?;
+    let lock = match &request.selection {
+        Selection::Create(_) => request.lock.clone(),
+        Selection::Existing(_) => tree
+            .fields
+            .iter()
+            .find(|field| field.name == title)
+            .and_then(|field| field.lock.as_ref())
+            .map(|object| read_field_lock(&document, object))
+            .transpose()?,
+    };
     let mut objects = Objects(next_object_number(&document));
     let mut store = Store {
         changed: Changes::default(),
@@ -1303,7 +1498,7 @@ fn prepare_update(pdf: &[u8], request: &Request<'_>, limits: &Limits) -> Outcome
     }
     store.set_body(
         signature,
-        Object::Dict(signature_dictionary(request, root)),
+        Object::Dict(signature_dictionary(request, root, lock.as_ref())),
         None,
     );
     let (bytes, offset) = incremental_update(&document, &store.changed, pdf, Some(signature))?;

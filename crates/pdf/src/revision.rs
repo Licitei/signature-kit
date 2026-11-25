@@ -1849,9 +1849,9 @@ pub fn analyze(pdf: &[u8], analysis: Analysis) -> Report {
             },
         },
         Analysis::Verification => match verification(pdf) {
-            Ok(dictionaries) => Report {
+            Ok((dictionaries, failure)) => Report {
                 dictionaries,
-                failure: None,
+                failure,
                 flags: ScanFlags::default(),
             },
             Err(reason) => Report {
@@ -2578,7 +2578,7 @@ fn to_object(value: &Value) -> Option<Object> {
     })
 }
 
-fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
+fn verification(pdf: &[u8]) -> Result<(Vec<SignatureDictionary>, Option<Reason>), Reason> {
     let (scan, revisions) = dictionary_scan(pdf)?;
     if scan.flags.stream_failed || scan.flags.stream_uncertain {
         return Err(Reason::StreamEnd);
@@ -2587,7 +2587,7 @@ fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
         return Err(Reason::TraversalBudget);
     }
     if scan.dictionaries.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
     let mut scanner = Scanner::new(pdf, Mode::Revisions, revisions.as_ref());
     scanner.own.clone_from(&scan.numbers);
@@ -2623,6 +2623,7 @@ fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
             }
         }
     }
+    let mut failure = None;
     if let Some(terminal) = final_terminal
         && !invalid.is_empty()
     {
@@ -2635,16 +2636,17 @@ fn verification(pdf: &[u8]) -> Result<Vec<SignatureDictionary>, Reason> {
             &mut budget,
             &mut [],
         )?;
-        if invalid.iter().any(|dictionary| {
-            found.contains(Key {
+        for dictionary in invalid {
+            if found.contains(Key {
                 generation: dictionary.generation,
                 number: dictionary.number,
-            })
-        }) {
-            return Err(Reason::InvalidByteRange);
+            }) {
+                failure = Some(Reason::InvalidByteRange);
+                reachable.push(dictionary);
+            }
         }
     }
-    Ok(reachable)
+    Ok((reachable, failure))
 }
 
 fn reachable_signatures(

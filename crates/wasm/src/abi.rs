@@ -15,7 +15,7 @@ use signature_kit_pdf_core::diagnostics::{self, PageDiagnostics, TextLayer};
 use signature_kit_pdf_core::document::{self, PageRequest};
 use signature_kit_pdf_core::edit::signing::{
     FieldLock, PreparedSignature, PreparedUpdate, SignatureField, SignatureFields,
-    prepare_signature, prepare_signature_update, signature_fields,
+    add_signature_fields, prepare_signature, prepare_signature_update, signature_fields,
 };
 use signature_kit_pdf_core::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
 use signature_kit_pdf_core::failure::{Failure, Outcome};
@@ -945,10 +945,11 @@ fn encode_preparation_update(result: &PreparedUpdate) -> Outcome<Writer> {
 
 fn encode_revision_changes(report: &RevisionChanges) -> Outcome<Writer> {
     let mut out =
-        Writer::with_capacity(16_usize.saturating_add(report.changes.len().saturating_mul(20)));
+        Writer::with_capacity(20_usize.saturating_add(report.changes.len().saturating_mul(20)));
     out.u32(0x4843_5350);
     out.u32(1);
     out.u32(u32::from(report.page_content_changed));
+    out.u32(len32(report.from_revision_index)?);
     out.u32(len32(report.changes.len())?);
     for change in &report.changes {
         object_ref(&mut out, Some(change.reference));
@@ -1163,6 +1164,25 @@ pub(crate) unsafe extern "C" fn pdf_core_prepare_signature_update(
             request?,
             &Limits::default(),
         )?)
+    }))
+}
+
+/// # Safety
+///
+/// Both pointer and length pairs must satisfy the contract of `view`.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_add_signature_fields(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { view(request_ptr, request_len) };
+    finish(pdf.and_then(|bytes| {
+        bytes_result(&add_signature_fields(bytes, request?, &Limits::default())?)
     }))
 }
 

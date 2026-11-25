@@ -24,6 +24,7 @@ import {
   PdfCorePageDiagnosticsSchema,
   PdfCoreRangeSizeSchema,
   PdfCoreSignatureFieldsSchema,
+  PdfCoreNewSignatureFieldsSchema,
   PdfCoreRevisionEndSchema,
   PdfCoreRevisionChangesSchema,
   PdfCorePreparedSignatureSchema,
@@ -64,6 +65,7 @@ import type {
   PdfCorePageDiagnosticsOptions,
   PdfCorePngSize,
   PdfCoreSignatureFields,
+  PdfCoreNewSignatureFields,
   PdfCoreRevisionChanges,
   PdfCorePreparedSignature,
   PdfCorePreparedUpdate,
@@ -86,6 +88,7 @@ import {
   decodeRevisionChanges,
   decodeSignatureFields,
   encodePrepareSignature,
+  encodeNewSignatureFields,
   payloadWriter,
 } from "./signing-payload.js";
 
@@ -127,6 +130,9 @@ export const pdfCoreBlobSource = (blob: Blob): PdfCoreRangeSource => ({
 
 export type PdfCoreSigningSession = {
   readonly fields: Effect.Effect<PdfCoreSignatureFields, PdfCoreError>;
+  readonly addFields: (
+    fields: PdfCoreNewSignatureFields,
+  ) => Effect.Effect<Uint8Array, PdfCoreError>;
   readonly prepare: (
     request: PdfCorePrepareSignatureRequest,
   ) => Effect.Effect<PdfCorePreparedUpdate, PdfCoreError>;
@@ -1303,6 +1309,30 @@ export const makePdfCore = (
         ),
       );
 
+    const addSignatureFields = Effect.fn(PdfCoreOperationValue.addSignatureFields)(function* (
+      pdf: SigningInput,
+      input: PdfCoreNewSignatureFields,
+    ) {
+      const operation = PdfCoreOperationValue.addSignatureFields;
+      const fields = yield* Schema.decodeUnknownEffect(PdfCoreNewSignatureFieldsSchema)(input).pipe(
+        Effect.mapError(invalidOptions(operation)),
+      );
+      const entry = core.pdf_core_add_signature_fields;
+      return yield* signingCall(
+        pdf,
+        operation,
+        entry === undefined
+          ? undefined
+          : (source) =>
+              copyIn(operation, encodeNewSignatureFields(fields)).pipe(
+                Effect.map(
+                  (payload) => () =>
+                    entry(source.pointer, source.length, payload.pointer, payload.length),
+                ),
+              ),
+      );
+    });
+
     const revisionChanges = Effect.fn(PdfCoreOperationValue.revisionChanges)(function* (
       pdf: SigningInput,
       fromRevisionEnd: number,
@@ -1354,6 +1384,7 @@ export const makePdfCore = (
       const resident: SigningInput = () => Effect.succeed(input);
       return {
         fields: live(signatureFields(resident)),
+        addFields: (fields) => live(addSignatureFields(resident, fields)),
         prepare: (request) => live(prepareSignatureUpdate(resident, request)),
         signatures: (analysis) => live(signatures(resident, analysis)),
         changes: (from) => live(revisionChanges(resident, from)),

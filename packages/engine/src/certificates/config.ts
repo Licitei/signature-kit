@@ -1,12 +1,8 @@
 import { Schema } from "effect";
 import type { Redacted } from "effect";
 
-const cnpjDigits: Schema.ConstraintDecoder<string> = Schema.String.check(
-  Schema.isPattern(/^\d{14}$/),
-);
-const cpfDigits: Schema.ConstraintDecoder<string> = Schema.String.check(
-  Schema.isPattern(/^\d{11}$/),
-);
+const cnpjDigits = Schema.String.check(Schema.isPattern(/^\d{14}$/));
+const cpfDigits = Schema.String.check(Schema.isPattern(/^\d{11}$/));
 const sha256Hex: Schema.ConstraintDecoder<string> = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{64}$/),
 );
