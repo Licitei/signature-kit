@@ -44,13 +44,17 @@ runs with page network requests aborted; only worker boot may fetch its modules 
   documents with 0, 1, 2, 4 and 7 helpers. From the pool commit on, worker memory sums every
   worker target (coordinator and helpers) through a browser-level CDP session; earlier runs saw
   only the coordinator.
-- **Production bundle:** global setup builds `packages/browser/dist/worker.js` with Vite; seven
-  fresh bundled workers measure cold boot, and seven more call `LocalClient.prewarm()` first. The
-  shipped entry sizes the pool as `navigator.hardwareConcurrency - 1` (27 on this host).
-- **Gates:** the test fails when a p50 exceeds its limit (1-page prepare 5 ms, 1-page confirm
-  8 ms and 5 ms without the RSA sign span, 100-page total 30 ms, 21 MiB prepare 12 ms, confirm
-  15 ms and total 350 ms, batches of 50 and 200 at 400 and 900 ms, bundled cold first signature
-  700 ms, cold A1 open 80 ms). Results are written before the gates run.
+- **Production bundle:** global setup builds `packages/browser/dist/worker.js` and
+  `packages/browser/dist/signing-worker.js` with Vite and records every emitted file's size.
+  Seven fresh bundled workers measure cold boot, seven more call `LocalClient.prewarm()` first
+  (and sample per-worker memory afterwards), and seven fresh signing-only workers measure cold
+  boot. Round 1 sized the shipped pool as `navigator.hardwareConcurrency - 1` (27 on this host);
+  round 2 uses `min(4, hardwareConcurrency - 1)`.
+- **Gates (round 2):** the test fails when a p50 exceeds its limit: 1-page prepare 5 ms, 1-page
+  confirm 8 ms and 5 ms without the RSA sign span, 100-page total 25 ms, 21 MiB prepare 140 ms,
+  confirm 12 ms and total 210 ms, batches of 50 and 200 at 250 and 800 ms, bundled cold first
+  signature 600 ms, bundled signing-only cold first signature 500 ms, bundled prewarm 500 ms,
+  cold A1 open 70 ms. Results are written before the gates run.
 
 ## Baseline (`v2-12-batch`, before optimization)
 
@@ -273,4 +277,139 @@ Signing helpers sweep, 200 documents (after):
 - Worker memory with 7 helpers is about 330–380 MiB of JavaScript heap in the dev-module harness.
 - Module reuse across workers (posting a compiled `WebAssembly.Module` to helpers) was not
   implemented; each helper compiles its own module (about 14 ms, in parallel).
+
+## Round 2 (`v2-14-fast-signing`, large files, cold start, pool)
+
+Same harness and host; raw results: [fast-signing-round2.json](fast-signing-round2.json), a
+quiet-host run on the commit before `perf(engine): derive receipt ids from the signed revision
+handle` (that change is reported separately below). "Before" is the round-1 result above. The host is shared, so cold boot p95 values are noisy;
+compare p50 values and same-run rows.
+
+### SHA-256 throughput in Chromium (this host)
+
+The Xeon E5-2680 v4 has AVX2 but no SHA extensions. Measured in a Chromium worker:
+
+| Input | WebCrypto `digest` | WASM rounds (round 1) | Unrolled WASM rounds |
+| --- | ---: | ---: | ---: |
+| 1 MiB | 7.4 ms (135 MiB/s) | 14.9 ms | — |
+| 5 MiB | 36.3 ms (138 MiB/s) | 69.1 ms | — |
+| 21 MiB | 83–138 ms (152–253 MiB/s) | 156–178 ms | 118 ms |
+| 100 MiB | 488 ms (205 MiB/s) | 800 ms | — |
+
+Two to eight concurrent WebCrypto digests of 21 MiB split in parts took as long as one, so
+Chromium runs them on one thread. `openssl speed` on the host gives 295 MiB/s. Without SHA
+extensions one pass over 21 MiB costs about 90–105 ms in Chromium, which is above the 60 ms
+target for the whole signature; with SHA extensions the same single pass is expected to take a
+small fraction of that.
+
+### Design changes
+
+- **One hash per signature.** Opening a revision no longer hashes it. `RevisionRef` is
+  `{ handle, byteLength }`; `documents.digest(revision)` (RPC `DocumentsDigest`) computes the
+  content SHA-256 on demand once per revision. The ByteRange digest is one WebCrypto pass over
+  the source revision and the prepared update with the `/Contents` hole excluded. The WASM
+  midstate path and the JavaScript checkpoint were removed; a resumable hash only paid off while
+  every revision needed a content digest.
+- **Signing-only worker entry.** `@signature-kit/browser/signing-worker` omits composition,
+  canvas rendering and verification. Verification moved to a `PdfVerification` service and the
+  CMS signer was rebuilt on the in-house ASN.1 module (byte-identical output), so the signing
+  graph and the helpers no longer include PKI.js.
+- **Pool.** Four helpers by default (`min(4, hardwareConcurrency - 1)`), Schema-checked
+  `signingWorkers` option, started in the background at worker boot from the runtime worker's
+  compiled `WebAssembly.Module`. Helpers that do not start or stop responding are left out and
+  their items run in the runtime worker; batch snapshots report `signingWorkers`.
+
+### Warm single signature (page-observed, p50 / p95 ms)
+
+| Fixture | Metric | Round 1 | Round 2 | Δ p50 |
+| --- | --- | ---: | ---: | ---: |
+| contract-1p | prepare | 2.60 / 3.70 | 3.50 / 4.10 | +35% |
+| contract-1p | confirm | 4.40 / 6.00 | 5.20 / 6.50 | +18% |
+| contract-1p | total | 8.80 / 14.50 | 10.30 / 12.10 | +17% |
+| contract-10p | total | 8.00 / 10.00 | 9.10 / 11.60 | +14% |
+| report-100p | total | 15.30 / 20.30 | 12.50 / 15.30 | −18% |
+| synthetic-21mib | open | 221.40 / 240.90 | 25.40 / 33.00 | −89% |
+| synthetic-21mib | prepare | 5.50 / 10.80 | 115.70 / 129.40 | |
+| synthetic-21mib | confirm | 6.80 / 7.70 | 6.70 / 12.40 | −1% |
+| synthetic-21mib | export | 14.90 / 16.90 | 13.80 / 16.60 | −7% |
+| synthetic-21mib | total | 247.80 / 270.50 | 160.10 / 169.20 | −35% |
+
+The 21 MiB ByteRange digest span is 104.3 ms (WebCrypto plus one contiguous copy); the rest of
+prepare is 6.7 ms. 1.x signs the same file in 151.2 ms in the page, without moving it through a
+worker; the comparable round-2 work, prepare plus confirm, is 122.4 ms (−19%). The round-2
+page-observed total adds 25.4 ms to copy and transfer the 21 MiB in and 13.8 ms to export it.
+Small documents pay about 0.4–2 ms for the asynchronous WebCrypto digest that replaced the
+JavaScript checkpoint (1-page prepare 2.6 → 3.5 ms, still within the 5 ms target).
+
+### Cold first signature (1-page contract, p50 / p95 ms)
+
+| Worker | Boot | A1 open | First signature | After boot |
+| --- | ---: | ---: | ---: | ---: |
+| Dev modules, round 1 | 899.70 / 1002.50 | 46.50 / 62.10 | 992.20 / 1104.80 | 76.60 / 112.30 |
+| Dev modules, round 2 | 909.20 / 1048.10 | 40.20 / 46.10 | 982.60 / 1127.00 | 70.90 / 78.80 |
+| Bundled full worker, round 1 | 297.90 / 1526.90 | 45.60 / 48.70 | 366.80 / 1606.00 | 75.90 / 80.20 |
+| Bundled full worker, round 2 | 331.70 / 1807.20 | 38.80 / 71.90 | 404.60 / 1927.60 | 72.90 / 120.30 |
+| Bundled signing-only worker, round 2 | 230.90 / 671.30 | 44.30 / 69.90 | 306.10 / 784.40 | 75.60 / 113.10 |
+
+Prewarm on the bundled full worker: 861.8 ms with 27 helpers (round 1) → 210.4 ms with 4.
+
+A static-server probe (no Vite dev server) attributes the bundled full worker's boot to about
+60 ms of script parse and compile, 45 ms of module evaluation (mostly Effect Schema and runtime
+construction) and 50 ms of layer construction, with a 10–20 ms wait on the WASM compile; PKI.js
+and asn1js alone evaluate in about 5 ms. Making the handshake wait for helper startup measured
++220–260 ms of boot, so it does not wait; four helpers booting in the background cost about
+15–25 ms on the first signature on 8 reserved CPUs.
+
+### Bundle sizes (Vite production build, minified, before compression)
+
+| File | Full worker | Signing-only worker |
+| --- | ---: | ---: |
+| `worker.js` | 964,339 B | 531,148 B |
+| `signing-helper.js` | 327,940 B (round 1: 759,844 B) | 327,940 B |
+| `signature-kit.wasm` | 1,209,559 B | 1,209,559 B |
+| `compose-fonts.js` (lazy) | 1,030,975 B | — |
+| `compose.wasm` (lazy) | 266,183 B | — |
+
+### Pool
+
+| Helpers (200 documents) | Prepare | Sign | Total | Worker backing-store peak |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 373.0 | 743.3 | 1119.6 | 60.5 MiB |
+| 1 | 402.2 | 622.6 | 1024.8 | 115.1 MiB |
+| 2 | 243.4 | 393.3 | 649.9 | 148.6 MiB |
+| 4 | 280.3 | 255.5 | 535.8 | 233.4 MiB |
+| 7 | 275.3 | 234.9 | 510.2 | 324.3 MiB |
+
+Seven helpers gain 5% over four for 91 MiB more backing store, so the default is four. On the
+production bundle after `prewarm()`, each helper holds 4.6 MB of JavaScript heap and 1.9 MB of
+backing store (round-1 helper bundle: 7.1 MB and 4.2 MB); the runtime worker holds 9.4 MB and
+5.4 MB. Batches with seven helpers: 10 documents 46.8 ms, 50 documents 146.5 ms, 200 documents
+423.3 ms (round 1: 49.5, 158.0, 464.8 ms).
+
+Offline: Chromium tests sign a batch of 50 after the network is blocked on helpers started at
+boot, and on the runtime worker when the helper script cannot load (`signingWorkers: 0`); both
+outputs pass `qpdf --check`, `pdfsig` and `openssl cms -verify`, as does the signed 21 MiB file.
+
+### What changed, per commit
+
+| Commit | Change | Measured delta (p50, local host) |
+| --- | --- | --- |
+| `perf(engine): hash large documents once with WebCrypto` | Lazy content digest, one WebCrypto ByteRange pass, WASM SHA-256 removed | 21 MiB total 247.8 → 171.4 ms, open 221.4 → 29.2 ms |
+| `feat(browser): start four signing helpers at boot from one compiled module` | Pool default 4, Schema option, eager start, shared module, coordinator fallback | Prewarm 836 → 325 ms; per-helper memory measured |
+| `perf(browser): add a signing-only worker entry without PKI.js` | Signing-only entry, `PdfVerification`, in-house CMS signer | Same run: signing-only cold first signature 383 vs 515 ms; helper bundle 760 → 328 KB |
+| `perf(engine): derive receipt ids from the signed revision handle` | Receipt id no longer hashes the signed update in JavaScript | 1-page receipt span 2.7 → 1.7 ms (host load dominated the pair of runs) |
+
+### Pending
+
+- **21 MiB ≤ 60 ms:** not reached on this host. One SHA-256 pass over the ByteRange costs
+  90–105 ms in Chromium without SHA extensions. Remaining avoidable work is the contiguous copy
+  before the digest (about 10 ms; it could reuse spare capacity behind the transferred buffer)
+  and the client-side copy that keeps the caller's buffer intact (about 17 ms).
+- **Cold first signature ≤ 150 ms:** not reached. The signing-only bundle reaches 306 ms in the
+  harness (about 295 ms on a static server). Remaining costs are script parse and Effect
+  module evaluation, layer construction, the WASM compile wait (an A1 open that overlaps it
+  needs a PdfCore that becomes ready after the handshake), and the first, unoptimised run of
+  the signing path.
+- Repeat visits can use V8's code cache for the worker scripts; the harness loads them with
+  caching disabled, so these numbers are first-visit costs.
 
