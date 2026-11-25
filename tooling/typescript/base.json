@@ -30,6 +30,8 @@
       "@signature-kit/engine/rpc": ["../../packages/engine/src/rpc.ts"],
       "@signature-kit/engine/engine": ["../../packages/engine/src/engine.ts"],
       "@signature-kit/engine/pdf-signatures": ["../../packages/engine/src/pdf-signatures.ts"],
+      "@signature-kit/engine/signing-helper": ["../../packages/engine/src/signing-helper.ts"],
+      "@signature-kit/engine/signature-compute": ["../../packages/engine/src/signature-compute.ts"],
       "@signature-kit/engine/batches": ["../../packages/engine/src/batches.ts"],
       "@signature-kit/engine/batch-storage": ["../../packages/engine/src/batch-storage.ts"],
       "@signature-kit/engine/evidence-fetcher": ["../../packages/engine/src/evidence-fetcher.ts"],

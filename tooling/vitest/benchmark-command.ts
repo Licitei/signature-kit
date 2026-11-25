@@ -52,33 +52,38 @@ const workerHeap = (session: CDPSession, sessionId: string, id: number) =>
   });
 
 export const sampleRuntimeMemory = defineBrowserCommand(async ({ page }) => {
-  const session = await page.context().newCDPSession(page);
-  const attached: string[] = [];
-  const attach = (event: { sessionId: string; targetInfo: { type: string } }) => {
-    if (event.targetInfo.type === "worker") attached.push(event.sessionId);
-  };
-  session.on("Target.attachedToTarget", attach);
+  const pageSession = await page.context().newCDPSession(page);
+  const browser = page.context().browser();
+  const session = browser === null ? undefined : await browser.newBrowserCDPSession();
   try {
-    await session.send("Performance.enable");
-    const { metrics } = await session.send("Performance.getMetrics");
+    await pageSession.send("Performance.enable");
+    const { metrics } = await pageSession.send("Performance.getMetrics");
     const pageHeapBytes = metrics.find(({ name }) => name === "JSHeapUsedSize")?.value ?? 0;
-    await session.send("Target.setAutoAttach", {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: false,
-    });
+    if (session === undefined) {
+      return { pageHeapBytes, workerHeapBytes: 0, workerBackingBytes: 0, workers: 0 };
+    }
+    const { targetInfos } = await session.send("Target.getTargets");
+    const workers = targetInfos.filter(({ type }) => type === "worker");
     const usages = await Promise.all(
-      attached.map((sessionId, index) => workerHeap(session, sessionId, index + 1)),
+      workers.map(async ({ targetId }, index) => {
+        const { sessionId } = await session.send("Target.attachToTarget", {
+          targetId,
+          flatten: false,
+        });
+        const usage = await workerHeap(session, sessionId, index + 1);
+        await session.send("Target.detachFromTarget", { sessionId }).catch(() => undefined);
+        return usage;
+      }),
     );
     return {
       pageHeapBytes,
       workerHeapBytes: usages.reduce((sum, { used }) => sum + used, 0),
       workerBackingBytes: usages.reduce((sum, { backing }) => sum + backing, 0),
-      workers: attached.length,
+      workers: workers.length,
     };
   } finally {
-    session.off("Target.attachedToTarget", attach);
-    await session.detach();
+    await pageSession.detach();
+    await session?.detach();
   }
 });
 

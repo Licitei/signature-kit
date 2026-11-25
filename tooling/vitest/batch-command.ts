@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Effect } from "effect";
 import type * as Harness from "../../packages/browser/__tests__/batch-page.js";
 import type { Page } from "playwright";
+import { verifyIndependently } from "../testing/verify-pdf.ts";
 
 declare module "vitest/browser" {
   interface BrowserCommands {
@@ -119,4 +120,15 @@ export const runBatchResume = defineBrowserCommand(({ page }) =>
       }),
     ),
   ),
+);
+
+declare module "vitest/browser" {
+  interface BrowserCommands {
+    verifyPdfIndependently: (base64: string, count: number) => Promise<void>;
+  }
+}
+
+export const verifyPdfIndependently = defineBrowserCommand(
+  (_context, base64: string, count: number) =>
+    Effect.runPromise(verifyIndependently(new Uint8Array(Buffer.from(base64, "base64")), count)),
 );

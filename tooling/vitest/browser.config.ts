@@ -1,7 +1,7 @@
 import { playwright } from "@vitest/browser-playwright";
 import { configDefaults, defineConfig } from "vitest/config";
 import { blockLocalRuntimeNetwork, trackLocalRuntimeRequests } from "./local-runtime-network.ts";
-import { runBatchResume, sampleBatchPageHeap } from "./batch-command.ts";
+import { runBatchResume, sampleBatchPageHeap, verifyPdfIndependently } from "./batch-command.ts";
 import { runCosignMilestone } from "./cosign-command.ts";
 import { runLtvMilestone } from "./ltv-command.ts";
 
@@ -48,6 +48,7 @@ export default defineConfig({
         runLtvMilestone,
         runBatchResume,
         sampleBatchPageHeap,
+        verifyPdfIndependently,
       },
       headless: true,
       provider: playwright(),

@@ -29,6 +29,12 @@ import {
   withQueueTiming,
 } from "@signature-kit/engine/telemetry";
 import { PdfSignatures, pdfSignaturesLayer } from "@signature-kit/engine/pdf-signatures";
+import { SignaturePool } from "@signature-kit/engine/signature-compute";
+import {
+  SigningHelperRpcs,
+  signingHelperHandlersLayer,
+} from "@signature-kit/engine/signing-helper";
+import { signingPoolLayer } from "./signing-pool.js";
 
 const localHandlersLayer = LocalRpcs.toLayer(
   Effect.gen(function* () {
@@ -38,6 +44,7 @@ const localHandlersLayer = LocalRpcs.toLayer(
     const pdf = yield* PdfEngine;
     const signatures = yield* PdfSignatures;
     const batches = yield* Batches;
+    const pool = Option.getOrUndefined(yield* Effect.serviceOption(SignaturePool));
     const telemetry = Option.getOrUndefined(yield* Effect.serviceOption(LocalTelemetry));
     const raster = withQueueTiming(
       yield* Semaphore.make(1),
@@ -50,6 +57,7 @@ const localHandlersLayer = LocalRpcs.toLayer(
           return yield* new LocalError({ code: "protocolMismatch" });
         return { instanceId, version: PROTOCOL_VERSION, telemetry: telemetry !== undefined };
       }),
+      Prewarm: () => signatures.prewarm.pipe(Effect.andThen(pool?.start ?? Effect.void)),
       DocumentsOpen: ({ bytes }) => documents.open(bytes),
       DocumentsExport: ({ handle }) => documents.export(handle),
       DocumentsRelease: ({ handle }) => documents.release(handle),
@@ -144,19 +152,34 @@ const LocalWorkerOptionsSchema = Schema.Struct({
   telemetry: Schema.optional(TelemetryOptionsSchema),
 });
 
+const defaultBatchConfig = (concurrency: number) => ({
+  concurrency,
+  queueCapacity: Math.max(4, concurrency * 2),
+  byteBudget: 64 * 1024 * 1024,
+  eventCapacity: 128,
+});
+
 export const localWorker = (
   telemetry: boolean,
   options: typeof LocalWorkerOptionsSchema.Type = {},
-) =>
-  Layer.launch(
+  signingPool?: { readonly size: number; readonly createWorker: () => Worker },
+) => {
+  const pool =
+    signingPool === undefined
+      ? undefined
+      : signingPoolLayer(signingPool.size, signingPool.createWorker);
+  return Layer.launch(
     RpcServer.layer(LocalRpcs, {
       spanPrefix: "local.worker",
       disableTracing: !telemetry,
     }).pipe(
       Layer.provide(
         localHandlersLayer.pipe(
-          Layer.provide(batchesLayer(options.batchConfig)),
+          Layer.provide(
+            batchesLayer(options.batchConfig ?? defaultBatchConfig(signingPool?.size ?? 2)),
+          ),
           Layer.provide(options.resumeBatches === true ? resumeLayer : Layer.empty),
+          Layer.provide(pool ?? Layer.empty),
           Layer.provide(pdfSignaturesLayer),
           Layer.provide(pdfEngineLayer),
           Layer.provide(localRuntimeLayer()),
@@ -174,3 +197,21 @@ export const localWorker = (
       ),
     ),
   );
+};
+
+export const signingHelperWorker = Layer.launch(
+  RpcServer.layer(SigningHelperRpcs, { disableTracing: true }).pipe(
+    Layer.provide(
+      signingHelperHandlersLayer.pipe(
+        Layer.provide(pdfSignaturesLayer),
+        Layer.provide(pdfEngineLayer),
+        Layer.provide(localRuntimeLayer()),
+        Layer.provide(pdfCoreBrowserLayer),
+      ),
+    ),
+    Layer.provide(
+      RpcServer.layerProtocolWorkerRunner.pipe(Layer.provide(BrowserWorkerRunner.layer)),
+    ),
+    Layer.provide(Layer.succeed(References.TracerEnabled, false)),
+  ),
+);

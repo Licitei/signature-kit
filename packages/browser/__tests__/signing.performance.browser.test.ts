@@ -16,11 +16,18 @@ import { signingCorpus } from "../../../tooling/testing/pdf-signing-benchmark.js
 import { LocalClient, localClientLayer } from "../src/client.js";
 import { batchTelemetry } from "./batch-page.js";
 
-const plainWorker = () =>
-  new Worker(new URL("./signing-benchmark.worker.ts", import.meta.url), { type: "module" });
+const poolSize = inject("benchmarkWorkers");
+const plainWorker = (workers: number) => () =>
+  new Worker(new URL("./signing-benchmark.worker.ts", import.meta.url), {
+    type: "module",
+    name: String(workers),
+  });
 const bundledWorker = () => new Worker(inject("bundledWorkerUrl"), { type: "module" });
 const tracedWorker = () =>
-  new Worker(new URL("./batch-benchmark.worker.ts", import.meta.url), { type: "module" });
+  new Worker(new URL("./batch-benchmark.worker.ts", import.meta.url), {
+    type: "module",
+    name: String(poolSize),
+  });
 
 const nearest = (values: ReadonlyArray<number>, p: number) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -236,21 +243,24 @@ const collectSpans = Effect.gen(function* () {
 const buildClient = <E>(layer: Layer.Layer<LocalClient, E>) =>
   Layer.build(layer).pipe(Effect.map((context) => Context.get(context, LocalClient)));
 
-const coldPlain = (fixture: Fixture, createWorker: () => Worker) =>
+const coldPlain = (fixture: Fixture, createWorker: () => Worker, prewarm = false) =>
   Effect.scoped(
     Effect.gen(function* () {
       const { value: client, ms: bootMs } = yield* timed(
         buildClient(localClientLayer(createWorker)),
       );
       return yield* Effect.gen(function* () {
+        const { ms: prewarmMs } = yield* timed(prewarm ? client.prewarm() : Effect.void);
         yield* blockNetwork;
         const { value: session, ms: a1OpenMs } = yield* timed(openSession);
         const signing = yield* signOnce(fixture, session);
         return {
           bootMs,
+          ...(prewarm ? { prewarmMs } : {}),
           a1OpenMs,
           ...signing,
-          firstSignatureMs: bootMs + a1OpenMs + signing.totalMs,
+          firstSignatureMs: bootMs + prewarmMs + a1OpenMs + signing.totalMs,
+          afterBootMs: a1OpenMs + signing.totalMs,
         };
       }).pipe(Effect.provideService(LocalClient, client));
     }),
@@ -307,7 +317,11 @@ const batchRun = (count: number, session: A1SessionBinding) =>
       const [selectedFirst, ...selectedRest] = reviewed.items.flatMap(({ itemId, preparation }) =>
         preparation === undefined ? [] : [{ itemId, preparationId: preparation.preparationId }],
       );
-      if (selectedFirst === undefined) return yield* Effect.die("Expected reviewed items.");
+      if (selectedFirst === undefined) {
+        return yield* Effect.die(
+          `Expected reviewed items: ${JSON.stringify(reviewed.items.slice(0, 3))}`,
+        );
+      }
       const selection: BatchSelection = [selectedFirst, ...selectedRest];
       const signStarted = yield* now;
       yield* client.confirmBatch(reviewed.batchId, selection);
@@ -315,7 +329,11 @@ const batchRun = (count: number, session: A1SessionBinding) =>
       const completed = yield* client.batchSnapshot(reviewed.batchId);
       const signMs = (yield* now) - signStarted;
       const peaks = yield* memory.stop;
-      expect(completed.progress.signed).toBe(count);
+      if (completed.progress.signed !== count) {
+        return yield* Effect.die(
+          `Expected ${count} signed items: ${JSON.stringify(completed.items.slice(0, 2))}`,
+        );
+      }
       const valid = yield* Effect.forEach(completed.items.slice(0, 3), ({ receipt }) =>
         receipt === undefined
           ? Effect.succeed(false)
@@ -343,13 +361,17 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
     if (contract === undefined) return yield* Effect.die("Expected the contract fixture.");
 
     const cold = yield* Effect.forEach(Array.from({ length: 7 }), () =>
-      coldPlain(contract, plainWorker),
+      coldPlain(contract, plainWorker(poolSize)),
     );
     const coldBundled = yield* Effect.forEach(Array.from({ length: 7 }), () =>
       coldPlain(contract, bundledWorker),
     );
+    const coldPrewarmed = yield* Effect.forEach(Array.from({ length: 7 }), () =>
+      coldPlain(contract, bundledWorker, true),
+    );
     const coldStages = yield* Effect.forEach(Array.from({ length: 3 }), () => coldTraced(contract));
 
+    yield* client.prewarm();
     yield* blockNetwork;
     const session = yield* openSession;
     const warm = yield* Effect.forEach(corpus, (fixture) =>
@@ -390,6 +412,7 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
     return {
       cold: summarize(cold),
       coldBundled: summarize(coldBundled),
+      coldPrewarmed: summarize(coldPrewarmed),
       coldStages: summarize(coldStages),
       warm,
       batches,
@@ -399,6 +422,7 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
   const traced = Effect.gen(function* () {
     const client = yield* LocalClient;
     const corpus = yield* fixtures;
+    yield* client.prewarm();
     yield* blockNetwork;
     const session = yield* openSession;
     yield* collectSpans;
@@ -427,9 +451,36 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
     );
   });
 
+  const scaling = Effect.forEach([0, 1, 2, 4, poolSize], (workers) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const session = yield* openSession;
+        yield* (yield* LocalClient).prewarm();
+        yield* batchRun(10, session);
+        yield* blockNetwork;
+        const runs = yield* Effect.forEach([1, 2], () => batchRun(200, session));
+        return {
+          signingWorkers: workers,
+          documents: 200,
+          prepareMs: summary(runs.map(({ prepareMs }) => prepareMs)),
+          signMs: summary(runs.map(({ signMs }) => signMs)),
+          totalMs: summary(runs.map(({ totalMs }) => totalMs)),
+          workerBackingPeakBytes: Math.max(
+            ...runs.map(({ workerBackingBytes }) => workerBackingBytes),
+          ),
+        };
+      }).pipe(
+        Effect.provide(
+          localClientLayer(plainWorker(workers), { requestTimeout: Duration.seconds(120) }),
+        ),
+      ),
+    ),
+  );
+
   const tracedBatches = Effect.gen(function* () {
     const session = yield* openSession;
     yield* batchRun(10, session);
+    yield* (yield* LocalClient).prewarm();
     yield* blockNetwork;
     yield* collectSpans;
     return yield* Effect.forEach([10, 50, 200], (count) =>
@@ -477,7 +528,9 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
   const result = await Effect.runPromise(
     Effect.gen(function* () {
       const measured = yield* Effect.scoped(program).pipe(
-        Effect.provide(localClientLayer(plainWorker, { requestTimeout: Duration.seconds(120) })),
+        Effect.provide(
+          localClientLayer(plainWorker(poolSize), { requestTimeout: Duration.seconds(120) }),
+        ),
       );
       const stages = yield* Effect.scoped(traced).pipe(
         Effect.provide(
@@ -493,8 +546,11 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
           ),
         ),
       );
+      const poolScaling = yield* scaling;
       return {
         hardwareConcurrency: navigator.hardwareConcurrency,
+        signingWorkers: poolSize,
+        poolScaling,
         ...measured,
         stages,
         batchItems,

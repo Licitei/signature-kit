@@ -193,6 +193,29 @@ describe("local PDF signatures", () => {
     30_000,
   );
 
+  it.effect("fails self-verification when a shared session signs with a foreign key", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const documents = yield* Documents;
+      const pdf = yield* PdfSignatures;
+      const a1 = yield* A1Sessions;
+      const company = yield* a1.open({ pfx: yield* fixture("ecnpj"), password });
+      const { key: foreignKey } = yield* a1.share(company);
+      const person = yield* a1.open({ pfx: yield* fixture("ecpf"), password });
+      const genuine = yield* a1.share(person);
+      yield* a1.adopt({ ...genuine, key: foreignKey });
+      const source = yield* documents.open(yield* readPdfFixture());
+      const preparation = yield* pdf.prepare(source, { ...options(person), policy: "cades" });
+      expect(yield* Effect.flip(pdf.confirm(preparation.preparationId))).toMatchObject({
+        code: "selfVerificationFailed",
+      });
+      yield* a1.adopt(genuine);
+      const retried = yield* pdf.prepare(source, { ...options(person, "Retry"), policy: "cades" });
+      const receipt = yield* pdf.confirm(retried.preparationId);
+      expect((yield* pdf.verify(receipt.signedRevision)).signatures[0]?.integrity).toBe("valid");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("rejects replaced sessions, and checks expiration at confirmation time", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(now.getTime());

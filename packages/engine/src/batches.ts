@@ -20,6 +20,7 @@ import { startBatchMachine } from "./batch-machine.js";
 import { BatchPlan, BatchStorage } from "./batch-storage.js";
 import { A1Sessions, Documents } from "./engine.js";
 import { PdfSignatures } from "./pdf-signatures.js";
+import { SignaturePool } from "./signature-compute.js";
 import { BatchConfigSchema, BatchEventSchema, BatchPrepareInputSchema, LocalError } from "./rpc.js";
 import type {
   BatchConfig,
@@ -80,6 +81,7 @@ export const batchesLayer = (
       const a1 = yield* A1Sessions;
       const signatures = yield* PdfSignatures;
       const storage = Option.getOrUndefined(yield* Effect.serviceOption(BatchStorage));
+      const pool = Option.getOrUndefined(yield* Effect.serviceOption(SignaturePool));
       const runtimeScope = yield* Effect.scope;
       const registryLock = yield* Semaphore.make(1);
 
@@ -91,6 +93,7 @@ export const batchesLayer = (
         const persistence = input.resumeId === undefined ? undefined : storage;
         const lock = yield* Semaphore.make(1);
         const bytes = yield* Semaphore.make(config.byteBudget);
+        const admission = yield* Semaphore.make(1);
         const updates = yield* PubSub.sliding<BatchEvent>(config.eventCapacity);
         yield* Effect.addFinalizer(() => PubSub.shutdown(updates));
         const transition = yield* startBatchMachine;
@@ -186,17 +189,19 @@ export const batchesLayer = (
         yield* Effect.addFinalizer(() => cleanup.pipe(Effect.orDie));
 
         const reserveReview = (owned: number, working: number, much: number) =>
-          Effect.gen(function* () {
-            if (owned + working > config.byteBudget) {
-              return yield* new LocalError({ code: "itemExceedsBudget" });
-            }
-            let largest = working;
-            for (const source of sources.values()) largest = Math.max(largest, source.working);
-            if (retained + much + largest > config.byteBudget) {
-              return yield* new LocalError({ code: "batchBudgetFull" });
-            }
-            yield* account(much);
-          });
+          admission.withPermit(
+            Effect.gen(function* () {
+              if (owned + working > config.byteBudget) {
+                return yield* new LocalError({ code: "itemExceedsBudget" });
+              }
+              let largest = working;
+              for (const source of sources.values()) largest = Math.max(largest, source.working);
+              if (retained + much + largest > config.byteBudget) {
+                return yield* new LocalError({ code: "batchBudgetFull" });
+              }
+              yield* account(much);
+            }),
+          );
 
         const prepareOne = Effect.fn(function* ({
           itemId,
@@ -266,6 +271,7 @@ export const batchesLayer = (
               {
                 identity: owner,
                 nonce: crypto.randomUUID(),
+                compute: pool,
                 reserve: ({
                   appendixBytes,
                   digestBytes,
@@ -337,7 +343,10 @@ export const batchesLayer = (
               if (before !== after) return yield* new LocalError({ code: "batchResumeMismatch" });
             }
           }
-          yield* Effect.forEach(input.documents, prepareOne, { discard: true });
+          yield* Effect.forEach(input.documents, prepareOne, {
+            concurrency: config.concurrency,
+            discard: true,
+          });
           yield* move({ _tag: "Review" });
           if (progress().signed === items.size) {
             yield* move({ _tag: "Drain" });

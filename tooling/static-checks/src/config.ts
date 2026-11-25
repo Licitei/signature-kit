@@ -35,6 +35,7 @@ export const allowedRuntimeImports: Record<string, readonly string[]> = {
 
 export const allowedEffectProvideSites: Record<string, readonly string[]> = {
   "packages/browser/src/client.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
+  "packages/browser/src/signing-pool.ts": ["RpcClient.layerProtocolWorker", "BrowserWorker.layer"],
   "packages/browser/src/telemetry-otlp.ts": ["Resource.layer"],
   "packages/browser/src/worker-server.ts": [
     "localHandlersLayer",

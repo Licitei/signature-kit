@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -24,8 +24,12 @@ export const verifyIndependently = (pdf: Uint8Array, count: number) =>
       const ranges = [...stdout.matchAll(/Signed Ranges: \[0 - (\d+)\], \[(\d+) - (\d+)\]/g)];
       assert.equal(ranges.length, count);
       yield* Effect.promise(() => run("pdfsig", ["-dump", file], { cwd: dir }));
+      const dumped = (yield* Effect.promise(() => readdir(dir)))
+        .filter((name) => /^signed\.pdf\.sig\d+$/.test(name))
+        .sort((left, right) => Number(left.slice(14)) - Number(right.slice(14)));
+      assert.equal(dumped.length, count);
       for (const [index, [, firstEnd, secondStart, secondEnd]] of ranges.entries()) {
-        const signatureFile = join(dir, `signed.pdf.sig${index}`);
+        const signatureFile = join(dir, dumped[index] ?? "");
         const contentsFile = join(dir, "signed-data");
         yield* Effect.promise(() =>
           writeFile(

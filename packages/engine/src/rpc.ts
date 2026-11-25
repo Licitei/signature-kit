@@ -18,6 +18,7 @@ import { ComposeOptionsSchema, DocumentSchema } from "./composition/config.js";
 
 export const RpcMethod = Schema.Literals([
   "Hello",
+  "Prewarm",
   "DocumentsOpen",
   "DocumentsExport",
   "DocumentsRelease",
@@ -57,6 +58,7 @@ const SpanName = Schema.Union([
     "local.pdf.inspect",
     "local.pdf.renderPage",
     "local.pdf.prepare",
+    "local.pdf.prewarm",
     "local.pdf.confirm",
     "local.pdf.cms",
     "local.pdf.selfVerify",
@@ -262,7 +264,7 @@ export const PdfPrepareOptionsSchema = Schema.Struct({
 });
 export type PdfPrepareOptions = (typeof PdfPrepareOptionsSchema)["Type"];
 
-const PdfWidget = Schema.Union([
+export const PdfWidget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("invisible") }),
   Schema.Struct({
     kind: Schema.Literal("visible"),
@@ -516,7 +518,7 @@ const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
 const PositiveCount = Schema.Int.check(Schema.isGreaterThan(0));
 export const BatchId = Schema.String.check(Schema.isUUID());
 export const BatchConfigSchema = Schema.Struct({
-  concurrency: PositiveCount.check(Schema.isLessThanOrEqualTo(16)),
+  concurrency: PositiveCount.check(Schema.isLessThanOrEqualTo(64)),
   queueCapacity: PositiveCount,
   byteBudget: PositiveCount,
   eventCapacity: PositiveCount,
@@ -693,6 +695,7 @@ export const LocalRpcs = RpcGroup.make(
   }),
   Rpc.make("BatchDelete", { payload: { batchId: BatchId }, error: LocalError }),
   Rpc.make("TelemetryDrain", { success: TelemetryBatch }),
+  Rpc.make("Prewarm", { error: LocalError }),
   Rpc.make("PdfSignatureFields", {
     payload: { revision: RevisionRef },
     success: PdfCoreSignatureFieldsSchema,
