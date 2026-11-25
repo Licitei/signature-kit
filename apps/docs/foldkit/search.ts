@@ -4,7 +4,7 @@ import { signatureKitErrorCatalog } from "@signature-kit/signatures";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
 import { contentPaths, expressionText, resolveContent } from "./content";
-import type { ContentNode } from "./content";
+import type { ContentNode } from "./content-parse";
 
 export const SearchQuery = Schema.String.check(Schema.isMaxLength(200));
 export const SearchResult = Schema.Struct({

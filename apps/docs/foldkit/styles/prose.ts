@@ -36,7 +36,7 @@ export const prose = stylex.create({
     alignItems: "center",
     gap: "8px",
     margin: 0,
-    color: "rgba(255, 255, 255, 0.72)",
+    color: "rgba(255, 255, 255, 0.9)",
     fontSize: "0.875rem",
   },
   crumbLink: {
@@ -366,6 +366,7 @@ export const prose = stylex.create({
     fontSize: "0.75rem",
   },
   pre: {
+    ":focus-visible": { outline: "2px solid #C9460A", outlineOffset: "2px", borderRadius: "6px" },
     margin: 0,
     overflow: "auto",
     color: tokens.codeFg,
@@ -591,6 +592,8 @@ export const prose = stylex.create({
     gridTemplateColumns: { default: "180px minmax(0, 1fr)", [compact]: "minmax(0, 1fr)" },
     gap: { default: "56px", [compact]: "16px" },
     paddingBlock: { default: "64px", [compact]: "40px" },
+    contentVisibility: "auto",
+    containIntrinsicSize: "auto 960px",
   },
   releaseMeta: {
     position: { default: "sticky", [compact]: "static" },

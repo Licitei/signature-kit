@@ -7,4 +7,4 @@ As imagens pontilhadas são obras derivadas (recorte, céu substituído, mapa de
 
 - `release-bg-0.webp` a `release-bg-5.webp`: gerados por algoritmo para este projeto, sem fotografia de origem.
 
-As marcas Clicksign, Assinafy, ZapSign, DocuSeal, Documenso e Licitei pertencem aos respectivos titulares e aparecem apenas para identificar as integrações.
+A marca Licitei pertence ao respectivo titular.

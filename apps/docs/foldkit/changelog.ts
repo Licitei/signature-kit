@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex";
 import type { Html, HtmlBuilder } from "foldkit/html";
-import type { ContentNode, ReleaseCover } from "./content";
+import type { ContentNode, ReleaseCover } from "./content-parse";
 import { renderContent } from "./content";
 import { brandMark } from "./home";
 import { prose } from "./styles/prose";
@@ -104,7 +104,7 @@ const styles = stylex.create({
     backgroundColor: "rgba(7, 24, 32, 0.72)",
     fontFamily: tokens.mono,
     fontSize: "1.45cqw",
-    color: "rgba(255, 255, 255, 0.72)",
+    color: "rgba(255, 255, 255, 0.92)",
   },
   stage: {
     position: "absolute",
@@ -166,7 +166,7 @@ const styles = stylex.create({
     gap: "1.6cqw",
     fontFamily: tokens.mono,
     fontSize: "1.55cqw",
-    color: "rgba(255, 255, 255, 0.72)",
+    color: "rgba(255, 255, 255, 0.92)",
   },
   track: {
     position: "relative",
@@ -238,7 +238,7 @@ const styles = stylex.create({
   metricBefore: {
     fontFamily: tokens.mono,
     fontSize: "2.2cqw",
-    color: "rgba(255, 255, 255, 0.45)",
+    color: "rgba(255, 255, 255, 0.74)",
     textDecoration: "line-through",
   },
   metricAfter: {

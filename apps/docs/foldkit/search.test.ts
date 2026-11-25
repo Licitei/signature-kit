@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { searchDocs } from "./search";
-import { parseContent, renderContent } from "./content";
+import { renderContent } from "./content";
+import { parseContent } from "./content-parse";
 import type { HtmlBuilder } from "foldkit/html";
 import { renderPage } from "./entry.server";
 import { signatureKitErrorCatalog } from "@signature-kit/signatures";

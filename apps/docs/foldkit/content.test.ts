@@ -6,11 +6,11 @@ import * as Server from "foldkit/experimental/server";
 import {
   contentPaths,
   docsNavigation,
-  parseContent,
   renderContent,
   resolveContent,
   tableOfContents,
 } from "./content";
+import { parseContent } from "./content-parse";
 import type { HtmlBuilder } from "foldkit/html";
 import { Flags, init, view } from "./main";
 import type { Model, Message } from "./main";
@@ -103,7 +103,7 @@ describe("Foldkit content", () => {
       /<p[^>]*>Before <\/p><ol class="steps[^"]*"><li[^>]*><h2[^>]*>One<\/h2>Body<\/li><\/ol><p[^>]*> after<\/p>/,
     );
     expect(html).toMatch(
-      /<p[^>]*><em>Em before <\/em><\/p><aside class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*><strong[^>]*>Notice<\/strong>Inside <strong>bold<\/strong><\/div><\/aside><p[^>]*><em> em after<\/em><\/p>/,
+      /<p[^>]*><em>Em before <\/em><\/p><div role="note" class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*><strong[^>]*>Notice<\/strong>Inside <strong>bold<\/strong><\/div><\/div><p[^>]*><em> em after<\/em><\/p>/,
     );
     expect(html).toContain('List before </p><div class="cards');
     expect(html).toContain("Card body</span></div><p");
@@ -130,7 +130,7 @@ describe("Foldkit content", () => {
       ),
     );
     expect(result.html).toMatch(
-      /<p[^>]*><a[^>]*href="\/ok"[^>]*>Link before <\/a><\/p><aside class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*>Notice<\/div><\/aside><p[^>]*><a[^>]*href="\/ok"[^>]*> link after<\/a><\/p>/,
+      /<p[^>]*><a[^>]*href="\/ok"[^>]*>Link before <\/a><\/p><div role="note" class="callout info[^"]*"><span aria-hidden="true"[^>]*><svg[^]*?<\/svg><\/span><div[^>]*>Notice<\/div><\/div><p[^>]*><a[^>]*href="\/ok"[^>]*> link after<\/a><\/p>/,
     );
     expect(result.html).toMatch(
       /<p[^>]*>Before <\/p><div class="card[^"]*"><strong>Outer<\/strong><p[^>]*>card before <em>em <\/em><\/p><ol class="steps[^"]*"><li[^>]*><h2[^>]*>One<\/h2>Body<\/li><\/ol><p[^>]*><em> tail<\/em><\/p><\/div><p[^>]*> after<\/p>/,

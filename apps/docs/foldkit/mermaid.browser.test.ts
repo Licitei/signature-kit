@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 import * as Server from "foldkit/experimental/server";
-import { parseContent, renderContent, resolveContent } from "./content";
+import { renderContent, resolveContent } from "./content";
+import { parseContent } from "./content-parse";
 import { Flags, init } from "./main";
 import type { Model } from "./main";
 import { Runtime } from "foldkit";

@@ -199,18 +199,10 @@ it("signs a PDF from the home and exposes a verifiable download", async () => {
   );
 }, 125000);
 
-it("hydrates the server-rendered home and keeps theme controls interactive", async () => {
+it("hydrates the server-rendered home and keeps the search overlay interactive", async () => {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const savedTheme = localStorage.getItem("signaturekit-theme");
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            if (savedTheme === null) localStorage.removeItem("signaturekit-theme");
-            else localStorage.setItem("signaturekit-theme", savedTheme);
-          }),
-        );
-        localStorage.removeItem("signaturekit-theme");
         const rendered = yield* Server.renderToString(
           { Flags, init, view },
           {
@@ -240,117 +232,26 @@ it("hydrates the server-rendered home and keeps theme controls interactive", asy
         yield* Effect.promise(() => loaded);
         const doc = frame.contentDocument;
         if (doc === null) return expect.fail("Missing frame document");
-        const button = doc.querySelector<HTMLButtonElement>('[aria-label="Alternar tema"]');
-        if (button === null) return expect.fail("Missing theme switch");
         yield* Effect.promise(() =>
           expect
             .poll(
               () => {
-                button.click();
-                return doc.querySelector(".site")?.getAttribute("data-theme");
+                doc.querySelector<HTMLAnchorElement>('[data-overlay="search"]')?.click();
+                return doc.querySelector("dialog[open]") !== null;
               },
               { timeout: 10000 },
             )
-            .toBe("dark"),
+            .toBe(true),
         );
       }),
     ).pipe(Effect.timeout("20 seconds")),
   );
 }, 25000);
 
-it("persists theme across hydration and reload", async () => {
+it("keeps documentation code legible", async () => {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const previous = localStorage.getItem("signaturekit-theme");
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            if (previous === null) localStorage.removeItem("signaturekit-theme");
-            else localStorage.setItem("signaturekit-theme", previous);
-          }),
-        );
-        localStorage.removeItem("signaturekit-theme");
-        const frame = yield* Effect.acquireRelease(
-          Effect.sync(() => {
-            const element = document.createElement("iframe");
-            document.body.append(element);
-            return element;
-          }),
-          (element) => Effect.sync(() => element.remove()),
-        );
-        const mainUrl = new URL("./main.ts", import.meta.url).href;
-        const load = (path: string) =>
-          Effect.gen(function* () {
-            const rendered = yield* Server.renderToString(
-              { Flags, init, view },
-              { flags: { path }, buildId: "home-theme-test" },
-            );
-            const loaded = new Promise<void>((resolve) =>
-              frame.addEventListener("load", () => resolve(), { once: true }),
-            );
-            frame.srcdoc = `<!doctype html><html><body>${rendered.html}<script type="module">
-        import { Runtime } from "/@id/foldkit";
-        window.__vitest_browser_runner__ = parent.__vitest_browser_runner__;
-        import { Flags, Model, init, update, view } from ${JSON.stringify(mainUrl)};
-        const container = document.querySelector("[data-foldkit-app]");
-        Runtime.hydrate(Runtime.makeApplication({ Flags, Model, init, update, view, container }), { buildId: "home-theme-test" });
-      </script></body></html>`;
-            yield* Effect.promise(() => loaded);
-          });
-        yield* load("");
-        const home = frame.contentDocument;
-        if (home === null) return expect.fail("Missing home document");
-        const toggle = home.querySelector<HTMLButtonElement>('[aria-label="Alternar tema"]');
-        if (toggle === null) return expect.fail("Missing theme toggle");
-        yield* Effect.promise(() =>
-          expect
-            .poll(
-              () => {
-                if (home.querySelector(".site")?.getAttribute("data-theme") !== "dark")
-                  toggle.click();
-                return localStorage.getItem("signaturekit-theme");
-              },
-              { timeout: 10000 },
-            )
-            .toBe("dark"),
-        );
-        yield* load("/docs");
-        yield* Effect.promise(() =>
-          expect
-            .poll(() => frame.contentDocument?.querySelector(".site")?.getAttribute("data-theme"), {
-              timeout: 10000,
-            })
-            .toBe("dark"),
-        );
-        const reloaded = new Promise<void>((resolve) =>
-          frame.addEventListener("load", () => resolve(), { once: true }),
-        );
-        frame.contentWindow?.location.reload();
-        yield* Effect.promise(() => reloaded);
-        yield* Effect.promise(() =>
-          expect
-            .poll(() => frame.contentDocument?.querySelector(".site")?.getAttribute("data-theme"), {
-              timeout: 10000,
-            })
-            .toBe("dark"),
-        );
-      }),
-    ).pipe(Effect.timeout("35 seconds")),
-  );
-}, 40000);
-
-it("keeps documentation code legible in both themes", async () => {
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const savedTheme = localStorage.getItem("signaturekit-theme");
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            if (savedTheme === null) localStorage.removeItem("signaturekit-theme");
-            else localStorage.setItem("signaturekit-theme", savedTheme);
-          }),
-        );
-        localStorage.removeItem("signaturekit-theme");
         const host = yield* Effect.acquireRelease(
           Effect.sync(() => {
             const element = document.createElement("div");
@@ -403,21 +304,13 @@ it("keeps documentation code legible in both themes", async () => {
           )
             return expect.fail("Missing code block");
           expect(getComputedStyle(code).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-          const surface = getComputedStyle(codeWindow).backgroundColor;
-          const [light, dark] = [luminance(getComputedStyle(code).color), luminance(surface)].sort(
-            (left, right) => right - left,
-          );
+          const [light, dark] = [
+            luminance(getComputedStyle(code).color),
+            luminance(getComputedStyle(codeWindow).backgroundColor),
+          ].sort((left, right) => right - left);
           expect(((light ?? 0) + 0.05) / ((dark ?? 0) + 0.05)).toBeGreaterThanOrEqual(7);
-          return surface;
         };
-        const lightSurface = assertContrast();
-        const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Alternar tema"]');
-        if (toggle === null) return expect.fail("Missing theme toggle");
-        yield* Effect.promise(() => userEvent.click(toggle));
-        yield* Effect.promise(() =>
-          expect.poll(() => host.querySelector(".site")?.getAttribute("data-theme")).toBe("dark"),
-        );
-        expect(assertContrast()).not.toBe(lightSurface);
+        assertContrast();
       }),
     ).pipe(Effect.timeout("20 seconds")),
   );
@@ -739,86 +632,6 @@ it("keeps two real signer instances independent after one is disposed", async ()
         first.runtime.dispose();
         expect((yield* Effect.promise(() => fetch(secondUrl))).ok).toBe(true);
         expect(secondInput.files?.item(0)?.name).toBe("second.pdf");
-      }),
-    ).pipe(Effect.timeout("60 seconds")),
-  );
-}, 65000);
-
-it("keeps the chosen theme through actual HTTP home and docs navigation and reload", async () => {
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const previous = localStorage.getItem("signaturekit-theme");
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            if (previous === null) localStorage.removeItem("signaturekit-theme");
-            else localStorage.setItem("signaturekit-theme", previous);
-          }),
-        );
-        localStorage.removeItem("signaturekit-theme");
-        const frame = yield* Effect.acquireRelease(
-          Effect.sync(() => {
-            const element = document.createElement("iframe");
-            document.body.append(element);
-            return element;
-          }),
-          (element) => Effect.sync(() => element.remove()),
-        );
-        const navigate = (action: () => void) =>
-          Effect.gen(function* () {
-            const loaded = new Promise<void>((resolve) =>
-              frame.addEventListener("load", () => resolve(), { once: true }),
-            );
-            action();
-            yield* Effect.promise(() => loaded);
-            const doc = frame.contentDocument;
-            if (doc === null) return yield* Effect.die("Missing frame document");
-            return doc;
-          });
-        const darkTheme = (doc: Document) =>
-          Effect.promise(() =>
-            expect
-              .poll(() => doc.querySelector(".site")?.getAttribute("data-theme"), {
-                timeout: 15000,
-              })
-              .toBe("dark"),
-          );
-        const home = yield* navigate(() => {
-          frame.src = "/__signaturekit_home__";
-        });
-        expect(new URL(home.URL).pathname).toBe("/__signaturekit_home__");
-        const toggle = home.querySelector<HTMLButtonElement>('[aria-label="Alternar tema"]');
-        if (toggle === null) return expect.fail("Missing theme toggle");
-        yield* Effect.promise(() =>
-          expect
-            .poll(
-              () => {
-                if (home.querySelector(".site")?.getAttribute("data-theme") !== "dark")
-                  toggle.click();
-                return localStorage.getItem("signaturekit-theme");
-              },
-              { timeout: 15000 },
-            )
-            .toBe("dark"),
-        );
-        const docsLink = home.querySelector<HTMLAnchorElement>('nav a[href="/docs"]');
-        if (docsLink === null) return expect.fail("Missing docs link");
-        const docs = yield* navigate(() => docsLink.click());
-        expect(new URL(docs.URL).pathname).toBe("/docs");
-        yield* darkTheme(docs);
-        const quickstartLink = docs.querySelector<HTMLAnchorElement>(
-          'a[href="/docs/get-started/quickstart"]',
-        );
-        if (quickstartLink === null) return expect.fail("Missing quickstart link");
-        const quickstart = yield* navigate(() => quickstartLink.click());
-        expect(new URL(quickstart.URL).pathname).toBe("/docs/get-started/quickstart");
-        expect(
-          quickstart.querySelector('.docs-navigation [aria-current="page"]')?.getAttribute("href"),
-        ).toBe("/docs/get-started/quickstart");
-        yield* darkTheme(quickstart);
-        const reloaded = yield* navigate(() => frame.contentWindow?.location.reload());
-        expect(new URL(reloaded.URL).pathname).toBe("/docs/get-started/quickstart");
-        yield* darkTheme(reloaded);
       }),
     ).pipe(Effect.timeout("60 seconds")),
   );

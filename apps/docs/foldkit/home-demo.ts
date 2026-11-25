@@ -4,7 +4,7 @@ import { Command, Update } from "foldkit";
 import { defineMessageUnion } from "foldkit/message";
 import { defineView } from "foldkit/submodel";
 import * as Mount from "foldkit/mount";
-import { captureDocsEvent } from "../lib/posthog/client";
+import { captureDocsEvent } from "./analytics";
 import { landing } from "./styles/landing";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";

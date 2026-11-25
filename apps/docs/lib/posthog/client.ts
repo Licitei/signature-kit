@@ -5,8 +5,11 @@ import { installFeedbackSelection } from "../../foldkit/feedback";
 
 import { DOCS_ANALYTICS_EVENT_PREFIX, docsAnalyticsProperties, docsEventName } from "./events";
 
-const POSTHOG_PROJECT_TOKEN = import.meta.env.WAKU_PUBLIC_POSTHOG_PROJECT_TOKEN;
-const POSTHOG_HOST = import.meta.env.WAKU_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com";
+const POSTHOG_PROJECT_TOKEN =
+  import.meta.env.WAKU_PUBLIC_POSTHOG_PROJECT_TOKEN ??
+  (import.meta.env.PROD ? "phc_QH0tubrCNfjjLLKw4KS66FGYHRTBCOPKYq2vhIQz15s" : undefined);
+const POSTHOG_HOST =
+  import.meta.env.WAKU_PUBLIC_POSTHOG_HOST ?? "https://futeboldesabao.licitei.com.br";
 
 const sanitizeUrl = (value: string): string => {
   if (value.startsWith("//") && URL.canParse(`https:${value}`)) {
@@ -88,7 +91,9 @@ const enrichEvent = (event: CaptureResult | null): CaptureResult | null => {
 
 export const docsPostHogOptions = {
   api_host: POSTHOG_HOST,
+  ui_host: "https://us.posthog.com",
   defaults: "2026-05-30",
+  person_profiles: "identified_only",
   disable_capture_url_hashes: true,
   mask_personal_data_properties: true,
   custom_personal_data_properties: [

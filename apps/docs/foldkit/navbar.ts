@@ -3,14 +3,14 @@ import { Popover } from "@foldkit/ui";
 import { Schema } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { docsNavigation } from "./content";
-import { homeProviders, signFreePath } from "./home";
+import { signFreePath } from "./home";
 import { groupIcon, icon } from "./icons";
 import type { IconName } from "./icons";
 import { pageRoute } from "./routes";
 import { sx } from "./styles/sx";
 import { tokens } from "./styles/tokens.stylex";
 
-export const NavMenuKind = Schema.Literals(["docs", "providers", "resources"]);
+export const NavMenuKind = Schema.Literals(["docs", "resources"]);
 export type NavMenuKind = typeof NavMenuKind.Type;
 
 export const navMenuInit = (kind: NavMenuKind) =>
@@ -23,14 +23,6 @@ const groupBlurb: Record<string, string> = {
   Conceitos: "O modelo mental e a fronteira do signer.",
   "APIs de provedores": "Clicksign, Assinafy, ZapSign e outros.",
   Signers: "Certificados, PDF/PAdES, XML-DSig e erros.",
-};
-
-const providerBlurb: Record<string, string> = {
-  clicksign: "Documento e signatário, um por request.",
-  assinafy: "Documento, signatário e assignment.",
-  zapsign: "Upload de PDF e URL de assinatura.",
-  docuseal: "Submissões com ordem de signatários.",
-  documenso: "Envelopes com aprovadores e signatários.",
 };
 
 const resources: ReadonlyArray<{ title: string; hint: string; href: string; glyph: IconName }> = [
@@ -185,12 +177,6 @@ const styles = stylex.create({
     color: tokens.teal,
     fontSize: "1rem",
   },
-  logo: {
-    display: "block",
-    maxWidth: "22px",
-    maxHeight: "18px",
-    objectFit: "contain",
-  },
   text: {
     display: "grid",
     gap: "2px",
@@ -205,22 +191,6 @@ const styles = stylex.create({
     color: tokens.faint,
     fontSize: "0.75rem",
     lineHeight: 1.4,
-  },
-  providerHead: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-  },
-  providerName: {
-    fontSize: "0.9375rem",
-    fontWeight: 600,
-    letterSpacing: "-0.02em",
-  },
-  providerLogo: {
-    display: "block",
-    height: "18px",
-    width: "auto",
-    maxWidth: "110px",
   },
 });
 
@@ -279,47 +249,6 @@ const content = <Message>(h: HtmlBuilder<Message>, kind: NavMenuKind): Html => {
         ),
       ],
     );
-  if (kind === "providers")
-    return h.div(
-      [...sx(h, styles.list)],
-      homeProviders.map((provider) =>
-        h.keyed("div")(
-          provider.slug,
-          [],
-          [
-            h.a(
-              [
-                ...sx(h, styles.link),
-                h.Href(pageRoute({ path: `docs/providers/${provider.slug}` })),
-              ],
-              [
-                h.span(
-                  [...sx(h, styles.text)],
-                  [
-                    h.span(
-                      [...sx(h, styles.providerHead)],
-                      [
-                        h.img([
-                          h.Src(provider.logo),
-                          h.Alt(provider.slug === "docuseal" ? "" : provider.name),
-                          h.Height("18"),
-                          h.Width(String(Math.round((18 * provider.width) / provider.height))),
-                          ...sx(h, styles.providerLogo),
-                        ]),
-                        ...(provider.slug === "docuseal"
-                          ? [h.span([...sx(h, styles.providerName)], ["DocuSeal"])]
-                          : []),
-                      ],
-                    ),
-                    h.span([...sx(h, styles.hint)], [providerBlurb[provider.slug] ?? ""]),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
   return h.div(
     [...sx(h, styles.list)],
     resources.map((resource) =>
@@ -341,7 +270,6 @@ const content = <Message>(h: HtmlBuilder<Message>, kind: NavMenuKind): Html => {
 
 const labels: Record<NavMenuKind, string> = {
   docs: "Docs",
-  providers: "Provedores",
   resources: "Recursos",
 };
 

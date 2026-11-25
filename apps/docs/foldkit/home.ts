@@ -2,41 +2,12 @@ import { pageRoute } from "./routes";
 import { Button, Disclosure, Toast } from "@foldkit/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command } from "foldkit";
-import * as Mount from "foldkit/mount";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { landing } from "./styles/landing";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
-import { captureDocsEvent } from "../lib/posthog/client";
+import { captureDocsEvent } from "./analytics";
 import type { OverlayKind } from "./overlay";
-
-export const Theme = Schema.Literals(["light", "dark"]);
-export const ThemeLoaded = Schema.TaggedStruct("ThemeLoaded", { theme: Theme });
-export const ThemeMount = Mount.define("ThemeMount", {
-  messages: [ThemeLoaded],
-  execute: ({ element }) =>
-    Effect.try({
-      try: (): typeof Theme.Type => {
-        const theme = localStorage.getItem("signaturekit-theme") === "dark" ? "dark" : "light";
-        element.setAttribute("data-theme", theme);
-        return theme;
-      },
-      catch: () => "light",
-    }).pipe(
-      Effect.orElseSucceed((): typeof Theme.Type => "light"),
-      Effect.map((theme) => ThemeLoaded.make({ theme })),
-    ),
-});
-export const ThemeSaved = Schema.TaggedStruct("ThemeSaved", {});
-export const SaveTheme = Command.define("SaveTheme", {
-  args: { theme: Theme },
-  messages: [ThemeSaved],
-  execute: ({ theme }) =>
-    Effect.try({
-      try: () => localStorage.setItem("signaturekit-theme", theme),
-      catch: () => undefined,
-    }).pipe(Effect.ignore, Effect.as(ThemeSaved.make({}))),
-});
 
 export const installCommand = "bun add @signature-kit/signatures @signature-kit/a1 effect";
 export const HomeCopyRequest = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -71,20 +42,6 @@ export const CopyHome = Command.define("CopyHome", {
 });
 export const CopyToast = Toast.make(Schema.Struct({ text: Schema.String }));
 
-export const homeProviders = [
-  { name: "Clicksign", slug: "clicksign", logo: "/landing/clicksign.svg", height: 26, width: 109 },
-  { name: "Assinafy", slug: "assinafy", logo: "/landing/assinafy.webp", height: 24, width: 111 },
-  { name: "ZapSign", slug: "zapsign", logo: "/landing/zapsign.svg", height: 30, width: 103 },
-  { name: "DocuSeal", slug: "docuseal", logo: "/landing/docuseal.svg", height: 26, width: 26 },
-  { name: "Documenso", slug: "documenso", logo: "/landing/documenso.svg", height: 21, width: 148 },
-] satisfies ReadonlyArray<{
-  name: string;
-  slug: string;
-  logo: string;
-  height: number;
-  width: number;
-}>;
-
 export const signFreeDescription =
   "Assine documentos PDF grátis no navegador com certificado digital A1. O arquivo, o .p12/.pfx e a senha ficam no seu dispositivo.";
 export const signFreeSteps = [
@@ -96,6 +53,7 @@ export const signFreeSteps = [
   { title: "Carregue o A1", body: "Selecione o .p12 ou .pfx e informe a senha. Tudo fica local." },
   { title: "Baixe assinado", body: "A assinatura PAdES é aplicada na página e o PDF sai pronto." },
 ];
+
 export const signFreeFaqs: ReadonlyArray<{
   readonly index: 0 | 1 | 2;
   readonly question: string;
@@ -300,22 +258,6 @@ const copyIcon = <Message>(h: HtmlBuilder<Message>) =>
     ],
   );
 
-const providerLogo = <Message>(
-  h: HtmlBuilder<Message>,
-  provider: (typeof homeProviders)[number],
-) => [
-  h.img([
-    h.Src(provider.logo),
-    h.Alt(provider.slug === "docuseal" ? "" : provider.name),
-    h.Height(String(provider.height)),
-    h.Width(String(provider.width)),
-    h.Loading("lazy"),
-    h.Decoding("async"),
-    ...sx(h, landing.providerLogo),
-  ]),
-  ...(provider.slug === "docuseal" ? [h.span([...sx(h, landing.providerName)], ["DocuSeal"])] : []),
-];
-
 export const signFreePath = pageRoute({ path: "assine-documentos-gratis" });
 
 type HomeMessages<Message> = {
@@ -355,7 +297,7 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
           h.p(
             [...sx(h, landing.subtitle)],
             [
-              "Assine PDF e XML no servidor ou no navegador. E integre Clicksign, Assinafy, ZapSign, DocuSeal e Documenso com o mesmo kit, open source.",
+              "PAdES e XML-DSig com certificado ICP-Brasil, no servidor ou no navegador. Tipado, testado e open source.",
             ],
           ),
           h.div(
@@ -368,24 +310,8 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
                 ],
                 ["Começar agora"],
               ),
-              h.a([...sx(h, shell.outlineLight), h.Href("#provedores")], ["Ver provedores"]),
+              h.a([...sx(h, shell.outlineLight), h.Href("#assinar")], ["Assinar um PDF"]),
             ],
-          ),
-        ],
-      ),
-      h.div(
-        [...sx(h, landing.strip)],
-        [
-          h.span([...sx(h, landing.stripLabel)], ["Integra com"]),
-          ...homeProviders.map((provider) =>
-            h.a(
-              [
-                ...sx(h, landing.stripCell),
-                h.Href(pageRoute({ path: `docs/providers/${provider.slug}` })),
-                h.AriaLabel(provider.name),
-              ],
-              providerLogo(h, provider),
-            ),
           ),
         ],
       ),
@@ -430,52 +356,6 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
       ),
     ],
   ),
-  h.section(
-    [...sx(h, landing.block, landing.blockSand), h.Id("provedores")],
-    [
-      h.div(
-        [...sx(h, landing.split)],
-        [
-          h.div(
-            [],
-            [
-              h.h2([...sx(h, landing.blockTitle)], ["Não tem certificado A1?"]),
-              h.p(
-                [...sx(h, landing.blockLead)],
-                [
-                  "Mande o documento pelo provedor que você já usa. O signatário assina pelo link, e você recebe o PDF assinado de volta no seu código.",
-                ],
-              ),
-              h.a(
-                [
-                  ...sx(h, landing.textLink),
-                  h.Href(pageRoute({ path: "docs/concepts/remote-signature-requests" })),
-                ],
-                ["Ver como integrar →"],
-              ),
-            ],
-          ),
-          h.div(
-            [...sx(h, landing.providerGrid)],
-            homeProviders.map((provider, index) =>
-              h.a(
-                [
-                  ...sx(
-                    h,
-                    landing.providerCard,
-                    index === homeProviders.length - 1 && landing.providerWide,
-                  ),
-                  h.Href(pageRoute({ path: `docs/providers/${provider.slug}` })),
-                  h.AriaLabel(provider.name),
-                ],
-                providerLogo(h, provider),
-              ),
-            ),
-          ),
-        ],
-      ),
-    ],
-  ),
 ];
 
 export const installPill = <Message>(
@@ -486,7 +366,7 @@ export const installPill = <Message>(
     [...sx(h, landing.install)],
     [
       h.span([...sx(h, landing.installMark), h.AriaHidden(true)], ["$"]),
-      h.code([...sx(h, landing.installText)], [installCommand]),
+      h.code([...sx(h, landing.installText), h.Attribute("tabindex", "0")], [installCommand]),
       Button.view(
         {
           onClick: input.onCopy,

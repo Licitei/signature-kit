@@ -37,7 +37,7 @@ import { cmsErrorMessages } from "@signature-kit/cms/config";
 import { SigningModel } from "@signature-kit/signing-domain";
 import * as stylex from "@stylexjs/stylex";
 import { Effect, Fiber, Layer, Result } from "effect";
-import { captureDocsEvent } from "../lib/posthog/client";
+import { captureDocsEvent } from "./analytics";
 import { makeSigningBatch, makeSigningWorkerSession } from "./signing-runtime";
 import { shell } from "./styles/shell";
 import { signing } from "./styles/signing";

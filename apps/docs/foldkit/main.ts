@@ -1,8 +1,7 @@
 import { homeRoute, pageRoute } from "./routes";
-import { Button, Dialog, Input, Menu, Nav, Popover, Switch, Textarea, Tooltip } from "@foldkit/ui";
+import { Button, Dialog, Input, Menu, Nav, Popover, Textarea } from "@foldkit/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command, Dom, Subscription, Update } from "foldkit";
-import * as Mount from "foldkit/mount";
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
 import { defineMessageUnion } from "foldkit/message";
 import { createArticleCatalog } from "./articles";
@@ -35,9 +34,6 @@ import {
   CopyToast,
   ExpireHomeCopy,
   HomeCopyRequest,
-  SaveTheme,
-  Theme,
-  ThemeMount,
   autoSignSection,
   brandMark,
   copyToastView,
@@ -52,7 +48,6 @@ import { siteOrigin } from "./site-origin";
 import { brand, groupIcon, icon } from "./icons";
 import { NavMenuKind, navMenuInit, navMenuView } from "./navbar";
 import { overlay } from "./styles/overlay";
-import { darkTheme } from "./styles/tokens.stylex";
 import { prose } from "./styles/prose";
 import { shell } from "./styles/shell";
 import { className, sx } from "./styles/sx";
@@ -119,27 +114,22 @@ export const Model = Schema.Struct({
   path: Schema.String,
   signingForm: SigningFormModel,
   homeDemo: HomeDemoModel,
-  theme: Theme,
   query: SearchQuery,
   results: SearchResults,
   feedbackStatus: Schema.Literals(["idle", "sending", "success", "error"]),
   homeCopied: Schema.Boolean,
   pageMenu: Menu.Model,
   navDocs: Popover.Model,
-  navProviders: Popover.Model,
   navResources: Popover.Model,
   homeCopyRequest: HomeCopyRequest,
   openFaq: Schema.Option(Schema.Literals([0, 1, 2])),
   copyToast: CopyToast.Model,
   overlay: Dialog.Model,
   overlayKind: OverlayKind,
-  themeTip: Tooltip.Model,
+  signerRequested: Schema.Boolean,
 });
 export type Model = typeof Model.Type;
 export const Message = defineMessageUnion({
-  ThemeToggled: {},
-  ThemeLoaded: { theme: Theme },
-  ThemeSaved: {},
   GotSigningFormMessage: { message: SigningFormMessage },
   GotHomeDemoMessage: { message: HomeDemoMessage },
   HomeCopyRequested: {},
@@ -160,7 +150,6 @@ export const Message = defineMessageUnion({
   OverlayRequested: { kind: OverlayKind },
   OverlayCloseRequested: {},
   GotOverlayMessage: { message: Dialog.Message },
-  GotThemeTipMessage: { message: Tooltip.Message },
 });
 export type Message = typeof Message.Type;
 export const init = (flags: typeof Flags.Type): { model: Model } => ({
@@ -168,14 +157,12 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
     path: flags.path,
     signingForm: signingFormInit(),
     homeDemo: homeDemoInit(),
-    theme: "light",
     query: flags.query ?? "",
     results: searchDocs(flags.query ?? ""),
     feedbackStatus: "idle",
     homeCopied: false,
     pageMenu: Menu.init({ id: "page-actions", isAnimated: true }),
     navDocs: navMenuInit("docs"),
-    navProviders: navMenuInit("providers"),
     navResources: navMenuInit("resources"),
     homeCopyRequest: 0,
     openFaq: Option.none(),
@@ -186,7 +173,7 @@ export const init = (flags: typeof Flags.Type): { model: Model } => ({
       focusSelector: "[data-overlay-focus]",
     }),
     overlayKind: "menu",
-    themeTip: Tooltip.init({ id: "theme-tip", showDelay: "300 millis" }),
+    signerRequested: false,
   },
 });
 const foldHomeDemo = Update.foldChild({
@@ -231,9 +218,8 @@ const foldPageMenu = Update.foldChild({
 });
 const navField = {
   docs: "navDocs",
-  providers: "navProviders",
   resources: "navResources",
-} satisfies Record<NavMenuKind, "navDocs" | "navProviders" | "navResources">;
+} satisfies Record<NavMenuKind, "navDocs" | "navResources">;
 const foldNavMenu = (kind: NavMenuKind) =>
   Update.foldChild({
     update: Popover.update,
@@ -247,7 +233,6 @@ const foldNavMenu = (kind: NavMenuKind) =>
   });
 const navFolds = {
   docs: foldNavMenu("docs"),
-  providers: foldNavMenu("providers"),
   resources: foldNavMenu("resources"),
 };
 const foldCopyToast = Update.foldChild({
@@ -295,13 +280,6 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
     },
   ),
 }));
-const foldThemeTip = Update.foldChild({
-  update: Tooltip.update,
-  read: (model: Model) => Option.some(model.themeTip),
-  write: (model, themeTip) => ({ ...model, themeTip }),
-  toParentMessage: (message) => Message.GotThemeTipMessage({ message }),
-  foldOutMessage: () => (model) => ({ model }),
-});
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     GotSigningFormMessage: ({ message }) => ({
@@ -310,12 +288,15 @@ export const update = (model: Model, message: Message) =>
     GotHomeDemoMessage: ({ message }) => foldHomeDemo(model, message),
     GotCopyToastMessage: ({ message }) => foldCopyToast(model, message),
     GotOverlayMessage: ({ message }) => foldOverlay(model, message),
-    OverlayRequested: ({ kind }) =>
-      model.overlay.isOpen
-        ? { model: { ...model, overlayKind: kind } }
-        : openOverlay({ ...model, overlayKind: kind }),
+    OverlayRequested: ({ kind }) => {
+      const next = {
+        ...model,
+        overlayKind: kind,
+        signerRequested: model.signerRequested || kind === "signer",
+      };
+      return model.overlay.isOpen ? { model: next } : openOverlay(next);
+    },
     OverlayCloseRequested: () => closeOverlay(model),
-    GotThemeTipMessage: ({ message }) => foldThemeTip(model, message),
     FaqToggled: ({ index, open }) => ({
       model: {
         ...model,
@@ -403,12 +384,6 @@ export const update = (model: Model, message: Message) =>
     SearchSubmitted: () => ({
       model: { ...model, results: searchDocs(model.query) },
     }),
-    ThemeToggled: () => {
-      const theme = model.theme === "light" ? "dark" : "light";
-      return { model: { ...model, theme }, commands: [SaveTheme({ theme })] };
-    },
-    ThemeLoaded: ({ theme }) => ({ model: { ...model, theme } }),
-    ThemeSaved: () => ({ model }),
   });
 export const createView = (source: {
   paths: typeof contentPaths;
@@ -603,7 +578,6 @@ export const createView = (source: {
       );
     const navItems = [
       { label: "Docs", href: pageRoute({ path: "docs" }) },
-      { label: "Provedores", href: `${homeRoute({})}#provedores` },
       { label: "Assinar PDF grátis", href: signFreePath },
       { label: "Blog", href: pageRoute({ path: "blog" }) },
       { label: "Changelog", href: pageRoute({ path: "changelog" }) },
@@ -613,7 +587,6 @@ export const createView = (source: {
         title: "Produto",
         links: [
           { label: "Assinar PDF grátis", href: signFreePath },
-          { label: "Provedores", href: `${homeRoute({})}#provedores` },
           { label: "Documentação", href: pageRoute({ path: "docs" }) },
         ],
       },
@@ -666,11 +639,7 @@ export const createView = (source: {
       canonical,
       ogUrl: canonical,
       body: h.div(
-        [
-          ...sx(h, "site", shell.site, model.theme === "dark" && darkTheme),
-          h.Attribute("data-theme", model.theme),
-          h.OnMount(Mount.mapMessage(ThemeMount(), ({ theme }) => Message.ThemeLoaded({ theme }))),
-        ],
+        [...sx(h, "site", shell.site)],
         [
           h.header(
             [
@@ -699,13 +668,6 @@ export const createView = (source: {
                     current: docs,
                     toParentMessage: (message) =>
                       Message.GotNavMenuMessage({ menuId: "docs", message }),
-                  }),
-                  navMenuView(h, {
-                    kind: "providers",
-                    model: model.navProviders,
-                    current: model.path.startsWith("/docs/providers"),
-                    toParentMessage: (message) =>
-                      Message.GotNavMenuMessage({ menuId: "providers", message }),
                   }),
                   h.a(
                     [
@@ -744,46 +706,6 @@ export const createView = (source: {
                     ],
                     ["Buscar", h.kbd([...sx(h, shell.kbd)], ["⌘K"])],
                   ),
-                  h.submodel({
-                    slotId: "theme-tip",
-                    model: model.themeTip,
-                    view: Tooltip.view,
-                    viewInputs: {
-                      anchor: { placement: "bottom", gap: 8, padding: 8, portal: false },
-                      toView: ({ trigger, panel, isVisible }) =>
-                        h.span(
-                          [],
-                          [
-                            Switch.view(
-                              {
-                                id: "theme-switch",
-                                isChecked: model.theme === "dark",
-                                onToggle: () => Message.ThemeToggled(),
-                                toView: ({ button }) =>
-                                  h.button(
-                                    [
-                                      ...button,
-                                      ...trigger,
-                                      ...sx(
-                                        h,
-                                        shell.iconButton,
-                                        overlayHeader && shell.iconLinkLight,
-                                      ),
-                                      h.Attribute("aria-label", "Alternar tema"),
-                                    ],
-                                    [model.theme === "light" ? "☾" : "☀"],
-                                  ),
-                              },
-                              h,
-                            ),
-                            ...(isVisible
-                              ? [h.div([...panel, ...sx(h, shell.tooltip)], ["Tema"])]
-                              : []),
-                          ],
-                        ),
-                    },
-                    toParentMessage: (message) => Message.GotThemeTipMessage({ message }),
-                  }),
                   githubLink(h, overlayHeader ? "light" : "dark"),
                   h.a(
                     [
@@ -1345,7 +1267,7 @@ export const createView = (source: {
             layer: model.overlay.isOpen ? [toast] : [],
             toParentMessage: (message) => Message.GotOverlayMessage({ message }),
             panels: [
-              ...(home ? [signerPanel()] : []),
+              ...(home && model.signerRequested ? [signerPanel()] : []),
               [
                 "menu",
                 h.div(

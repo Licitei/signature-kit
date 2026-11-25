@@ -1,129 +1,34 @@
 import { pageRoute } from "./routes";
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 import { signatureKitErrorCatalog, signatureKitErrorMessages } from "@signature-kit/signatures";
 import { errorMessage } from "@signature-kit/i18n";
 import GithubSlugger from "github-slugger";
 import { toString } from "mdast-util-to-string";
-import remarkGfm from "remark-gfm";
-import remarkMdx from "remark-mdx";
-import remarkParse from "remark-parse";
-import { unified } from "unified";
-import { parseDocument } from "yaml";
+import { contentKeys, contentMetadata, contentSources, loadContent } from "./content-data";
+import type { ContentNode, ParsedContent } from "./content-parse";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { prose } from "./styles/prose";
 import { sx } from "./styles/sx";
 import { mermaidView } from "./mermaid";
 import { icon } from "./icons";
 
-const sources = import.meta.glob<string>("../content/{docs,blog,changelog}/**/*.mdx", {
-  eager: true,
-  query: "?raw",
-  import: "default",
-});
-const metadata = import.meta.glob<string>("../content/docs/**/meta*.json", {
-  eager: true,
-  query: "?raw",
-  import: "default",
-});
-export const ReleaseCover = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("spans"),
-    caption: Schema.String,
-    package: Schema.optional(Schema.String),
-    spans: Schema.Array(
-      Schema.Struct({ name: Schema.String, start: Schema.Finite, width: Schema.Finite }),
-    ),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("pages"),
-    caption: Schema.String,
-    package: Schema.optional(Schema.String),
-    total: Schema.Finite,
-    selected: Schema.Array(Schema.Finite),
-    code: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("metric"),
-    caption: Schema.String,
-    package: Schema.optional(Schema.String),
-    before: Schema.String,
-    after: Schema.String,
-    delta: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("anchor"),
-    caption: Schema.String,
-    package: Schema.optional(Schema.String),
-    code: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("states"),
-    caption: Schema.String,
-    package: Schema.optional(Schema.String),
-    states: Schema.Array(Schema.String),
-    code: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("bytes"),
-    caption: Schema.String,
-    package: Schema.optional(Schema.String),
-    bytes: Schema.String,
-    highlight: Schema.Tuple([Schema.Finite, Schema.Finite]),
-    code: Schema.String,
-  }),
-]);
-export type ReleaseCover = typeof ReleaseCover.Type;
-const Frontmatter = Schema.Struct({
-  title: Schema.String,
-  description: Schema.optional(Schema.String),
-  date: Schema.optional(Schema.String),
-  author: Schema.optional(Schema.String),
-  tags: Schema.optional(Schema.Array(Schema.String)),
-  cover: Schema.optional(ReleaseCover),
-  packages: Schema.optional(
-    Schema.Record(Schema.String, Schema.Struct({ version: Schema.String })),
-  ),
-});
-const ParsedFrontmatter = Schema.Struct({ valid: Schema.Literal(true), value: Frontmatter });
 const Navigation = Schema.Struct({ title: Schema.String, pages: Schema.Array(Schema.String) });
-const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMdx);
-type NativeNode = ReturnType<typeof parser.parse>["children"][number];
-export type ContentNode = NativeNode;
-
-export const parseContent = (source: string) => {
-  const lines = source.split("\n");
-  const start = lines[0]?.trim() === "---";
-  const end = start ? lines.findIndex((line, index) => index > 0 && line.trim() === "---") : -1;
-  const document = parseDocument(end < 0 ? "" : lines.slice(1, end).join("\n"));
-  // [allow-run: static content is validated at the application boundary]
-  const { value } = Effect.runSync(
-    Schema.decodeUnknownEffect(ParsedFrontmatter)({
-      valid: start && end >= 0 && document.errors.length === 0,
-      value: document.errors.length === 0 ? document.toJS() : undefined,
-    }).pipe(Effect.orDie),
-  );
-  const tree = parser.parse(lines.slice(end + 1).join("\n"));
-  return { ...value, nodes: tree.children };
-};
-
 export const contentSource = (section: string, slug: string) =>
-  sources[`../content/${section}/${slug || "index"}.mdx`];
-export const contentPaths = () =>
-  Object.keys(sources).map((path) => path.slice("../content/".length, -4));
-const parsedContent = new Map<string, ReturnType<typeof parseContent>>();
+  contentSources[`../content/${section}/${slug || "index"}.mdx`];
+export const contentPaths = () => contentKeys.map((path) => path.slice("../content/".length, -4));
+const parsedContent = new Map<string, ParsedContent>();
 export const resolveContent = (section: string, slug: string) => {
   const path = `../content/${section}/${slug || "index"}.mdx`;
   const cached = parsedContent.get(path);
   if (cached !== undefined) return cached;
-  const source = sources[path];
-  if (source === undefined) return undefined;
-  const parsed = parseContent(source);
+  const parsed = loadContent(path);
+  if (parsed === undefined) return undefined;
   parsedContent.set(path, parsed);
   return parsed;
 };
 const buildDocsNavigation = () => {
   const read = (dir: string) => {
-    const raw = metadata[`../content/docs/${dir}meta.json`];
+    const raw = contentMetadata[`../content/docs/${dir}meta.json`];
     if (raw === undefined) return undefined;
     const parsed = Schema.decodeUnknownOption(Navigation)(JSON.parse(raw));
     return parsed._tag === "Some" ? parsed.value : undefined;
@@ -354,7 +259,7 @@ export const renderContent = <Message>(
             [
               h.p([...sx(h, prose.codeHead)], ["terminal"]),
               h.pre(
-                [...sx(h, prose.pre)],
+                [...sx(h, prose.pre), h.Attribute("tabindex", "0")],
                 [
                   h.code(
                     [...sx(h, "language-bash", prose.blockCode)],
@@ -371,7 +276,7 @@ export const renderContent = <Message>(
               [
                 h.p([...sx(h, prose.codeHead)], [codeLabel(node.meta, node.lang)]),
                 h.pre(
-                  [...sx(h, prose.pre)],
+                  [...sx(h, prose.pre), h.Attribute("tabindex", "0")],
                   [
                     h.code(
                       [...sx(h, `language-${node.lang ?? "text"}`, prose.blockCode)],
@@ -525,8 +430,8 @@ export const renderContent = <Message>(
           case "Callout": {
             const tone =
               attr("type") === "warn" ? "warn" : attr("type") === "error" ? "error" : "info";
-            return h.aside(
-              [...sx(h, `callout ${tone}`, prose.callout)],
+            return h.div(
+              [...sx(h, `callout ${tone}`, prose.callout), h.Role("note")],
               [
                 h.span(
                   [
