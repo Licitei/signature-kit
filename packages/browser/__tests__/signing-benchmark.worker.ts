@@ -8,8 +8,8 @@ BrowserRuntime.runMain(
     false,
     {
       batchConfig: {
-        concurrency: Math.max(2, size),
-        queueCapacity: Math.max(4, size * 2),
+        concurrency: Math.min(64, Math.max(2, size * 2)),
+        queueCapacity: Math.max(4, size * 4),
         byteBudget: 256 * 1024 * 1024,
         eventCapacity: 4096,
       },

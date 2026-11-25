@@ -176,7 +176,12 @@ export const localWorker = (
       Layer.provide(
         localHandlersLayer.pipe(
           Layer.provide(
-            batchesLayer(options.batchConfig ?? defaultBatchConfig(signingPool?.size ?? 2)),
+            batchesLayer(
+              options.batchConfig ??
+                defaultBatchConfig(
+                  signingPool === undefined ? 2 : Math.min(64, signingPool.size * 2),
+                ),
+            ),
           ),
           Layer.provide(options.resumeBatches === true ? resumeLayer : Layer.empty),
           Layer.provide(pool ?? Layer.empty),
