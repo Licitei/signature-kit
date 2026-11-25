@@ -21,7 +21,7 @@ const tools = [
   {
     name: "buscar_documentacao",
     description:
-      "Busca na documentação do SignatureKit (assinatura digital A1, PDF/PAdES, XML-DSig, provedores Clicksign, Assinafy, ZapSign, DocuSeal, Documenso). Retorna títulos, trechos e a URL em Markdown de cada resultado.",
+      "Busca na documentação do SignatureKit (assinatura digital A1, PDF/PAdES, XML-DSig, provedores Clicksign, Assinafy, ZapSign, DocuSeal e Documenso). Retorna título, trecho e URL em Markdown de cada resultado.",
     inputSchema: {
       type: "object",
       properties: { consulta: { type: "string", description: "Termos de busca em português." } },
@@ -73,11 +73,11 @@ const tools = [
   {
     name: "abrir_assinador",
     description:
-      "Abre o assinador de PDF grátis do SignatureKit nesta aba. O usuário escolhe o PDF, o certificado A1 e a senha; nada é enviado para servidor.",
+      "Abre o assinador de PDF grátis do SignatureKit nesta aba. O usuário escolhe os PDFs, o certificado A1 e a senha; nada é enviado a servidores.",
     inputSchema: { type: "object", properties: {} },
     execute: async () => {
       location.assign("/assine-documentos-gratis");
-      return text("Assinador aberto. Peça ao usuário para soltar o PDF e escolher o certificado A1.");
+      return text("Assinador aberto. Peça ao usuário para escolher o certificado A1, digitar a senha e adicionar os PDFs.");
     },
   },
 ];

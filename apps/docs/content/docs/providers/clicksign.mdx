@@ -1,9 +1,9 @@
 ---
 title: Clicksign
-description: "Crie requests de documento Clicksign v1 com credenciais Redacted e erros tipados do SignatureKit."
+description: "Crie solicitações de assinatura na Clicksign pela API v1, com o token em Redacted e falhas tipadas como SignatureKitError."
 ---
 
-Clicksign cria o documento e o signatário no upstream, opcionalmente notifica o destinatário e devolve um registro `ClicksignSignatureRequestAttributes` próprio da Clicksign. Não é backend local de `Signatures` e não muta bytes de PDF no processo.
+`@signature-kit/clicksign` cria na Clicksign o documento e os signatários, pela API v1, e notifica os signatários quando `send` não é `false`. O resultado é um `ClicksignSignatureRequestAttributes` com `id`, `state` e as URLs que a Clicksign devolver. Nenhum PDF é assinado no seu processo: a assinatura acontece na Clicksign.
 
 ## Instalação
 
@@ -13,13 +13,14 @@ Clicksign cria o documento e o signatário no upstream, opcionalmente notifica o
 
 ## Quando usar
 
-Use Clicksign quando a cerimônia, lembretes e trilha de auditoria vivem na Clicksign. Use assinatura A1/PDF local quando o app precisa produzir os bytes assinados diretamente.
+Use a Clicksign quando o envio, os lembretes e a trilha de auditoria ficam na Clicksign. Se a aplicação precisa gerar os bytes assinados, use a [assinatura A1 de PDF](/docs/signing/pdf).
 
-<Callout type="error" title="Mantenha credenciais Redacted">
-  Tokens de provider entram como `Redacted.make(...)` e são abertos apenas dentro da fronteira HTTP do pacote. Nunca passe tokens remotos para componentes React ou logs.
+<Callout type="warn" title="Credenciais em Redacted">
+  O token entra como `Redacted.make(...)` e só é aberto na chamada HTTP. Não passe tokens para componentes React nem
+  para logs.
 </Callout>
 
-## Request mínimo
+## Solicitação mínima
 
 ```ts title="clicksign.ts"
 import * as Alchemy from "alchemy"
@@ -46,47 +47,51 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
       title: "Contrato de serviço",
       message: "Revise e assine este documento.",
       documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],
-      recipients: [{ name: "Ana Silva", email: "ada@example.com", role: "signer" }],
+      recipients: [{ name: "Ana Silva", email: "ana@example.com", role: "signer" }],
       send: true,
     })
   }),
 ) {}
 ```
 
+## Detalhes da integração
 
-## Fatos do provider
+- `environment` aceita `"production"` ou `"sandbox"` (padrão). `baseUrl` substitui os dois.
+- A API v1 da Clicksign exige o token no parâmetro `access_token` da URL. Nas mensagens de erro, esse valor aparece como `<redacted>`.
+- Um documento por solicitação: `documents` é uma tupla de um item, e mais de um documento falha com `signature-kit.INVALID_INPUT`.
+- `role` aceita `"signer"` ou `"approver"`; `routingOrder` define a ordem de assinatura.
+- `locale` (`"pt-BR"`, padrão, ou `"en-US"`) e `autoClose` (padrão `true`) vão para o documento na Clicksign.
 
-- Fluxo v1 cria documento, signatário e notificação opcional.
-- Um documento por request; o schema de props é uma tupla de documento único, então passar mais de um documento falha na decodificação do schema como `signature-kit.INVALID_INPUT`.
-- O token é aberto apenas na fronteira HTTP do pacote.
+## Outras operações
 
-## Erros
+`getClicksignSignatureRequest`, `listClicksignSignatureRequests`, `cancelClicksignSignatureRequest`, `deleteClicksignSignatureRequest` e `downloadClicksignSignedDocument` recebem as mesmas opções de `providers(...)` e exigem `SignatureHttpClient`. O download falha com `signature-kit.UNSUPPORTED_OPERATION` enquanto não houver arquivo assinado.
 
-Input inválido, falhas HTTP remotas e shapes de resposta inválidos falham como `SignatureKitError`. Os campos `provider`, `operation` e `status` HTTP são preservados quando a resposta upstream expõe esses dados.
+## Aguarde um estado final
 
-## Relacionados
+`waitForClicksignSignatureRequest(options, id, pollInterval)` consulta a solicitação na hora e repete a cada `pollInterval` enquanto o estado for `draft` ou `sent`. O retorno traz o estado final (`completed`, `cancelled`, `deleted`, `declined` ou `expired`); confira `state` antes de baixar o documento. O intervalo precisa ser positivo e finito. Falhas de consulta não são repetidas automaticamente, e interromper o Effect cancela a consulta em andamento. O prazo máximo fica com a aplicação:
 
-<Cards>
-  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatário e assignment dentro de uma conta.</Card>
-  <Card title="ZapSign" href="/docs/providers/zapsign">Upload PDF com Bearer token e primeira URL de assinatura.</Card>
-  <Card title="Solicitações remotas" href="/docs/concepts/remote-signature-requests">Por que provedores remotos não são backends locais de Signatures.</Card>
-</Cards>
+```ts title="wait.ts"
+import { waitForClicksignSignatureRequest } from "@signature-kit/clicksign"
+import type { ClicksignProviderOptions } from "@signature-kit/clicksign"
+import { signatureHttpClientLive } from "@signature-kit/http"
+import { Duration, Effect } from "effect"
 
-## Aguardar um estado final
-
-`waitForClicksignSignatureRequest(options, id, pollInterval)` consulta imediatamente e repete enquanto o pedido estiver em `draft` ou `sent`. O retorno preserva o estado final do provedor, inclusive cancelamento, recusa, exclusão ou expiração; confira `state` antes de baixar o documento. O intervalo deve ser positivo e finito. Falhas de consulta são propagadas sem retry automático. Interromper o Effect cancela a consulta ativa e impede novas consultas. O prazo fica com a aplicação:
-
-```ts
-import { waitForClicksignSignatureRequest } from "@signature-kit/clicksign";
-import { signatureHttpClientLive } from "@signature-kit/http";
-import { Duration, Effect } from "effect";
-import type { ClicksignProviderOptions } from "@signature-kit/clicksign";
-
-declare const options: ClicksignProviderOptions;
-declare const requestId: string;
+declare const options: ClicksignProviderOptions
+declare const requestId: string
 
 const program = waitForClicksignSignatureRequest(options, requestId, Duration.seconds(2)).pipe(
   Effect.timeout(Duration.minutes(5)),
   Effect.provide(signatureHttpClientLive),
-);
+)
 ```
+
+## Erros
+
+Entrada inválida, falhas HTTP e respostas em formato inesperado falham como `SignatureKitError`, com `provider`, `operation` e o `status` HTTP quando disponíveis.
+
+## Veja também
+
+<Cards>
+  <Card title="Formato da solicitação" href="/docs/providers/request-shape">Os campos comuns a todos os provedores.</Card>
+  <Card title="Solicitações remotas" href="/docs/concepts/remote-signature-requests">Por que os provedores remotos não são backends de Signatures.</Card>
+</Cards>

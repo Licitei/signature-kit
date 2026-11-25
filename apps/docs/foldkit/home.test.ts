@@ -56,7 +56,7 @@ describe("Foldkit home", () => {
       "Como assinar um PDF com certificado A1",
       "Validade jurídica",
       "Precisa de cadastro?",
-      "Funciona com certificado A3 (token ou cartão)?",
+      "Funciona com certificado A3 (token, cartão ou nuvem)?",
       "/docs/a1-signing/browser-pdf-flow",
       'id="assinar"',
       'name="pfx"',
@@ -75,14 +75,16 @@ describe("Foldkit home", () => {
         {
           "@type": "HowTo",
           step: expect.arrayContaining([
-            expect.objectContaining({ name: "Envie o PDF" }),
-            expect.objectContaining({ name: "Baixe assinado" }),
+            expect.objectContaining({ name: "Carregue o certificado A1" }),
+            expect.objectContaining({ name: "Assine e baixe" }),
           ]),
         },
         {
           "@type": "FAQPage",
           mainEntity: expect.arrayContaining([
-            expect.objectContaining({ name: "Funciona com certificado A3 (token ou cartão)?" }),
+            expect.objectContaining({
+              name: "Funciona com certificado A3 (token, cartão ou nuvem)?",
+            }),
           ]),
         },
       ],

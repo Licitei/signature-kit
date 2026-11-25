@@ -82,14 +82,14 @@ export const createServerComposition = (
       (tagPath
         ? "Explore os artigos por assunto."
         : path === "/blog"
-          ? "Artigos sobre assinaturas digitais, TypeScript e infraestrutura Effect-native."
+          ? "Artigos sobre assinatura digital no Brasil, TypeScript e Effect."
           : path === "/changelog"
-            ? "Notas de versão dos pacotes SignatureKit."
+            ? "Notas de versão dos pacotes do SignatureKit."
             : path === "/assine-documentos-gratis"
               ? signFreeDescription
               : path === "/search"
                 ? "Busque na documentação do SignatureKit."
-                : "PAdES e XML-DSig com certificado ICP-Brasil, no servidor ou no navegador. Tipado, testado e open source.");
+                : "Assine PDF (PAdES) e XML (XML-DSig) com certificado ICP-Brasil, no servidor ou no navegador. Biblioteca open source em TypeScript.");
     const meta = (key: string, value: string, property = false): Metadata => ({
       kind: "meta",
       key,
@@ -136,7 +136,7 @@ export const createServerComposition = (
             "@graph": [
               {
                 "@type": "SoftwareApplication",
-                name: "SignatureKit — Assinador de PDF grátis",
+                name: "Assinador de PDF grátis do SignatureKit",
                 applicationCategory: "BusinessApplication",
                 operatingSystem: "Web",
                 url: signFreeUrl,
@@ -226,9 +226,7 @@ export const createServerComposition = (
         Effect.gen(function* () {
           const social = yield* SocialImage;
           return yield* social.render({
-            title: page.application.title
-              .replace(/^SignatureKit — /, "")
-              .replace(/ (\||—) SignatureKit$/, ""),
+            title: page.application.title.replace(/ (\||—) SignatureKit$/, ""),
             description: data.description,
             eyebrow: imagePath.startsWith("docs")
               ? "Documentação"

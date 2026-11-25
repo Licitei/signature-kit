@@ -574,7 +574,7 @@ const footerColumns = [
         label: "Licença MIT",
         href: "https://github.com/Licitei/signature-kit/blob/main/LICENSE",
       },
-      { label: "Créditos das fotos", href: "/landing/CREDITS.md" },
+      { label: "Créditos das imagens", href: "/landing/CREDITS.md" },
     ],
   },
 ];
@@ -857,16 +857,16 @@ export const createView = (source: {
       title: tagRoute
         ? `${tag?.tag ?? "Tags do blog"} | SignatureKit`
         : signing
-          ? "Assinar PDF com certificado digital A1 grátis | SignatureKit"
+          ? "Assinar PDF grátis com certificado digital A1 | SignatureKit"
           : model.path === "/search"
-            ? "Buscar na documentação — SignatureKit"
+            ? "Buscar na documentação | SignatureKit"
             : article !== undefined
-              ? `${article.title} — SignatureKit`
+              ? `${article.title} | SignatureKit`
               : section !== undefined
-                ? `${heading} — SignatureKit`
+                ? `${heading} | SignatureKit`
                 : content !== undefined
-                  ? `${content.title} — SignatureKit`
-                  : "SignatureKit — Assinatura digital com certificado A1 em TypeScript",
+                  ? `${content.title} | SignatureKit`
+                  : "Assinatura digital com certificado A1 em TypeScript | SignatureKit",
       lang: "pt-BR",
       canonical,
       ogUrl: canonical,
@@ -1145,7 +1145,7 @@ export const createView = (source: {
                           lead:
                             article !== undefined
                               ? ""
-                              : "O que mudou em cada versão dos pacotes SignatureKit.",
+                              : "O que mudou em cada versão dos pacotes do SignatureKit.",
                           crumbs:
                             article !== undefined
                               ? [{ label: "Changelog", href: pageRoute({ path: "changelog" }) }]
@@ -1193,7 +1193,7 @@ export const createView = (source: {
                         : [
                             banner({
                               title: "Blog",
-                              lead: "Histórias e decisões de engenharia sobre assinatura digital no Brasil.",
+                              lead: "Artigos e decisões de engenharia sobre assinatura digital no Brasil.",
                               crumbs: [],
                               narrow: true,
                             }),
@@ -1342,7 +1342,7 @@ export const createView = (source: {
                                                 h.Attribute("rows", "3"),
                                                 h.Attribute(
                                                   "placeholder",
-                                                  "Algo faltando ou errado? Conte aqui.",
+                                                  "Faltou algo ou encontrou um erro? Conte para nós.",
                                                 ),
                                                 h.Attribute("aria-label", "Comentário"),
                                               ]),

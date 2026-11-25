@@ -1,17 +1,17 @@
 ---
-title: Fluxo PDF no navegador
-description: "Leia um PDF, monte o template de posicionamento A1 e assine com os helpers de navegador."
+title: Fluxo de PDF no navegador
+description: "Leia um PDF no navegador, posicione o campo de assinatura e assine com um certificado A1 usando os helpers de @signature-kit/pdf."
 ---
 
-Os helpers de navegador são a ponte tipada entre um input de arquivo e o estado do builder PDF. Eles mantêm bytes no `Effect`, produzem um template de posicionamento validado e assinam o campo selecionado com a layer A1 fornecida.
+Os helpers de navegador ligam um `<input type="file">` ao estado do builder de PDF. Os bytes ficam dentro do `Effect`, o template de posicionamento é validado por Schema e o campo selecionado é assinado com a layer A1 que você fornecer.
 
 ## Passos
 
 <Steps>
-  <Step title="Leia o arquivo">`readPdfBlobBytes(file)` transforma um `Blob` do navegador em `Uint8Array` dentro do canal de erro tipado.</Step>
-  <Step title="Monte o estado de posicionamento">`createPdfSignatureBuilderStateFromBytes(...)` lê dimensões das páginas, cria o template e opcionalmente posiciona um campo draft.</Step>
-  <Step title="Renderize sua UI">Crie um `PdfSignatureBuilderStore` uma vez e deixe sua app assinar esse estado na fronteira React/Vue/Svelte que ela já usa.</Step>
-  <Step title="Assine os bytes">`signPdfSignatureField(...)` transforma o campo selecionado em aparência PDF e delega criptografia para `Signatures`.</Step>
+  <Step title="Leia o arquivo">`readPdfBlobBytes(file)` converte um `Blob` do navegador em `Uint8Array`, com falhas no canal de erro tipado.</Step>
+  <Step title="Monte o estado de posicionamento">`createPdfSignatureBuilderStateFromBytes(...)` lê as dimensões das páginas, cria o template e, se você pedir, posiciona um campo de rascunho. Essa etapa usa o motor `PdfCore`.</Step>
+  <Step title="Renderize sua UI">Crie um `PdfSignatureBuilderStore` uma vez e conecte o store à sua UI com o mecanismo de inscrição que o seu framework já usa (React, Vue ou Svelte).</Step>
+  <Step title="Assine os bytes">`signPdfSignatureField(...)` gera a aparência do campo selecionado no PDF e delega a criptografia ao serviço `Signatures`.</Step>
 </Steps>
 
 ```ts title="browser-a1-flow.ts"
@@ -33,10 +33,10 @@ const state = await Effect.runPromise(
     documentId: "contract",
     documentName: file.name,
     pdf,
-    role: { id: "signer", label: "Signer A1", required: true },
+    role: { id: "signer", label: "Signatário A1", required: true },
     draft: { id: "sig", type: "signature", roleId: "signer", width: 156, height: 42 },
     autoPlacement: { page: "last", slot: "bottom-right", margin: 24 },
-  }),
+  }).pipe(Effect.provide(pdfCoreBrowserLayer)),
 )
 
 const store = createPdfSignatureBuilderStore(state)
@@ -57,19 +57,11 @@ const signedPdf = await Effect.runPromise(
 
 ## Assinatura em lote
 
-Use `signPdfSignatureBatch(items, callbacks)` quando um certificado A1 assina muitos PDFs. Ele roda em sequência, captura falhas por documento como valores de resultado e impede que um documento ruim aborte o lote.
-
-## Relacionados
-
-<Cards>
-  <Card title="PDF/PAdES" href="/docs/signing/pdf">Assinatura CMS detached e tamanho de placeholder para documentos PDF.</Card>
-  <Card title="Demo A1 ao vivo" href="/assine-documentos-gratis">Rode o signer do navegador com a mesma fronteira.</Card>
-</Cards>
-
+Use `signPdfSignatureBatch(items, callbacks)` para assinar vários PDFs com o mesmo certificado A1. Os documentos são assinados em sequência, e cada falha volta como um resultado (`ok: false`) daquele documento, sem interromper o lote.
 
 ## Preparação em Web Worker
 
-`PdfWorker` prepara os documentos e renderiza a prévia em um worker. O transporte usa o RPC nativo do Effect. A layer de navegador encerra o worker no fechamento do escopo; interromper o Effect cancela a sessão. Os callbacks de progresso executam na página e os bytes originais continuam disponíveis ao chamador. Certificado e senha não fazem parte desse protocolo: forneça a layer A1 na fronteira que executa a assinatura.
+`PdfWorker` prepara os documentos e gera a prévia do carimbo em um Web Worker, com transporte pelo RPC nativo do Effect. A layer de navegador encerra o worker quando o escopo fecha, e interromper o Effect cancela a sessão. Os callbacks de progresso rodam na página, e os bytes originais continuam com quem chamou. Certificado e senha não passam pelo worker: forneça a layer A1 onde a assinatura é executada.
 
 ```ts
 import type { PdfSigningBatchPreparationInput } from "@signature-kit/pdf/config"
@@ -83,3 +75,10 @@ const prepare = (input: PdfSigningBatchPreparationInput) =>
     return yield* worker.prepare(input)
   }).pipe(Effect.provide(pdfWorkerBrowserLayer()))
 ```
+
+## Relacionados
+
+<Cards>
+  <Card title="PDF/PAdES" href="/docs/signing/pdf">Assinatura CMS destacada e tamanho do placeholder em documentos PDF.</Card>
+  <Card title="Demo A1" href="/assine-documentos-gratis">Assine um PDF no navegador com o mesmo fluxo.</Card>
+</Cards>

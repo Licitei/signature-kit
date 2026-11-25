@@ -1,11 +1,11 @@
 ---
-title: Verificar assinaturas codificadas em BER de comprimento indefinido
+title: Verificação de assinaturas em BER de comprimento indefinido
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf":
     version: 0.6.0
 ---
 
-## Verificar assinaturas codificadas em BER de comprimento indefinido
+## Verificação de assinaturas em BER de comprimento indefinido
 
-`/Contents` de assinatura codificado em BER de comprimento indefinido (`30 80 …`), como geram ferramentas comuns de assinatura ICP-Brasil, não falha mais com `cms.DECODE_ERROR`. O tamanho da assinatura agora é medido percorrendo a estrutura BER até os octetos de fim de conteúdo, em vez de cortar os zeros finais, o que antes removia esses octetos. Bytes diferentes de zero depois da assinatura continuam falhando de forma fechada.
+Assinaturas com `/Contents` codificado em BER de comprimento indefinido (`30 80 …`), formato gerado por ferramentas comuns de assinatura ICP-Brasil, não falham mais com `cms.DECODE_ERROR`. O tamanho da assinatura agora é medido percorrendo a estrutura BER até os octetos de fim de conteúdo. Antes, o corte dos zeros finais removia esses octetos. Bytes diferentes de zero depois da assinatura continuam sendo rejeitados.

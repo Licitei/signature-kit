@@ -28,7 +28,7 @@ export const renderRss = (
         `<item><title>${escapeXml(entry.title)}</title><link>${escapeXml(articleUrl(entry.href))}</link><guid>${escapeXml(articleUrl(entry.href))}</guid><pubDate>${new Date(entry.timestamp).toUTCString()}</pubDate><description>${escapeXml(entry.description ?? "")}</description></item>`,
     )
     .join("");
-  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Blog do SignatureKit</title><link>${url(pageRoute({ path: "blog" }))}</link><description>Histórias, integrações e decisões de engenharia do SignatureKit.</description><language>pt-BR</language><atom:link href="${url(pageRoute({ path: "blog/rss.xml" }))}" rel="self" type="application/rss+xml" />${items}</channel></rss>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Blog do SignatureKit</title><link>${url(pageRoute({ path: "blog" }))}</link><description>Histórias e decisões de engenharia sobre assinatura digital no Brasil.</description><language>pt-BR</language><atom:link href="${url(pageRoute({ path: "blog/rss.xml" }))}" rel="self" type="application/rss+xml" />${items}</channel></rss>`;
 };
 
 export const createFeeds = (source: {

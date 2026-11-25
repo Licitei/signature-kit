@@ -46,15 +46,18 @@ export const CopyHome = Command.define("CopyHome", {
 export const CopyToast = Toast.make(Schema.Struct({ text: Schema.String }));
 
 export const signFreeDescription =
-  "Assine PDF grátis com certificado digital A1 (ICP-Brasil), direto no navegador. Assinatura qualificada em PAdES, sem cadastro: o PDF, o .pfx e a senha não saem do seu dispositivo.";
+  "Assine PDF grátis com certificado digital A1 ICP-Brasil, no padrão PAdES. Sem cadastro: o PDF, o certificado e a senha não saem do seu navegador.";
 export const signFreeSteps = [
-  { title: "Envie o PDF", body: "Lido como bytes no navegador. Nenhum upload acontece." },
+  {
+    title: "Carregue o certificado A1",
+    body: "Escolha o arquivo .pfx ou .p12 e digite a senha do certificado.",
+  },
+  { title: "Escolha os PDFs", body: "Os arquivos são lidos no próprio navegador, sem upload." },
   {
     title: "Posicione a assinatura",
-    body: "Clique no ponto da assinatura ou use o posicionamento automático.",
+    body: "Clique onde a assinatura deve aparecer ou use o posicionamento automático.",
   },
-  { title: "Carregue o A1", body: "Selecione o .p12 ou .pfx e informe a senha. Tudo fica local." },
-  { title: "Baixe assinado", body: "A assinatura PAdES é aplicada na página e o PDF sai pronto." },
+  { title: "Assine e baixe", body: "Clique em Assinar e baixe os PDFs assinados em PAdES." },
 ];
 
 export const SignFreeFaqIndex = Schema.Literals([0, 1, 2, 3, 4, 5, 6]);
@@ -69,7 +72,7 @@ export const signFreeFaqs: ReadonlyArray<{
     index: 0,
     question: "A assinatura tem validade jurídica?",
     answer:
-      "Sim. Com certificado ICP-Brasil, a assinatura é qualificada: o nível mais alto da Lei 14.063/2020, com presunção de validade jurídica dada pela MP 2.200-2/2001.",
+      "Sim. Com certificado ICP-Brasil, a assinatura é qualificada, o nível mais alto da Lei 14.063/2020, e tem presunção de validade jurídica pela MP 2.200-2/2001.",
   },
   {
     index: 1,
@@ -80,73 +83,73 @@ export const signFreeFaqs: ReadonlyArray<{
     index: 2,
     question: "O documento vai para algum servidor?",
     answer:
-      "Não. O PDF, o certificado e a senha ficam na memória do seu navegador durante a assinatura. Nada é enviado.",
+      "Não. O PDF, o certificado e a senha ficam na memória do seu navegador durante a assinatura e não são enviados a nenhum servidor.",
   },
   {
     index: 3,
     question: "Como confiro se a assinatura é válida?",
     answer:
-      "Envie o PDF assinado ao Validar, o verificador oficial do ITI (validar.iti.gov.br), ou abra no Adobe Acrobat Reader e confira o painel de assinaturas.",
+      "Envie o PDF assinado ao Validar, verificador oficial do ITI (validar.iti.gov.br), ou abra o arquivo no Adobe Acrobat Reader e confira o painel de assinaturas.",
   },
   {
     index: 4,
-    question: "Funciona com certificado A3 (token ou cartão)?",
+    question: "Funciona com certificado A3 (token, cartão ou nuvem)?",
     answer:
-      "Ainda não. O A3 fica em mídia criptográfica e o navegador não acessa essa mídia diretamente. Esta página assina com A1.",
+      "Não. Esta página assina apenas com certificado A1, o arquivo .pfx ou .p12. O A3 fica em token, cartão ou nuvem, e o navegador não tem acesso direto a ele.",
   },
   {
     index: 5,
     question: "Posso assinar vários PDFs de uma vez?",
     answer:
-      "Sim. Selecione até 100 PDFs e todos são assinados com o mesmo certificado, um após o outro.",
+      "Sim. Escolha até 100 PDFs. Todos são assinados com o mesmo certificado, um de cada vez.",
   },
   {
     index: 6,
     question: "Dá para escolher onde a assinatura aparece?",
     answer:
-      "Sim. No modo Completa você posiciona o carimbo na página, escolhe o estilo e pode rubricar as demais páginas.",
+      "Sim. Clique na página para posicionar a assinatura. No modo Completa você também ajusta a aparência do carimbo e pode rubricar as demais páginas.",
   },
 ];
 
 const signFreeFacts: ReadonlyArray<{ glyph: IconName; text: string }> = [
   { glyph: "lock", text: "O PDF, o certificado e a senha não saem do seu dispositivo" },
-  { glyph: "zap", text: "Sem cadastro e sem limite: até 100 PDFs por vez" },
+  { glyph: "zap", text: "Sem cadastro, até 100 PDFs por vez" },
   { glyph: "check", text: "Assinatura qualificada ICP-Brasil, no padrão PAdES" },
 ];
 
 const signFreeOutcomes: ReadonlyArray<{ title: string; body: string }> = [
   {
     title: "PDF assinado em PAdES",
-    body: "O padrão de assinatura de PDF aceito pela ICP-Brasil, com a cadeia do seu certificado embutida.",
+    body: "O padrão de assinatura de PDF da ICP-Brasil, com a cadeia do seu certificado incluída no arquivo.",
   },
   {
-    title: "Verificável em qualquer lugar",
-    body: "Confira no Validar do ITI ou no Adobe Acrobat Reader. Não depende do SignatureKit para validar.",
+    title: "Validação independente",
+    body: "Confira a assinatura no Validar do ITI ou no Adobe Acrobat Reader, sem depender do SignatureKit.",
   },
   {
     title: "Carimbo visível e rubricas",
-    body: "Posicione o carimbo na página certa e rubrique as demais, no modo Completa.",
+    body: "No modo Completa, posicione o carimbo na página certa e rubrique as demais.",
   },
   {
     title: "Lote de até 100 PDFs",
-    body: "Contratos, aditivos e procurações assinados de uma vez, com o mesmo certificado.",
+    body: "Assine contratos, aditivos e procurações de uma vez, com o mesmo certificado.",
   },
 ];
 
 const signFreeLevels: ReadonlyArray<{ level: string; body: string; current: boolean }> = [
   {
     level: "Simples",
-    body: "Identifica quem assinou por meios básicos, como e-mail ou SMS.",
+    body: "Identifica o signatário por meios simples, como e-mail ou código por SMS.",
     current: false,
   },
   {
     level: "Avançada",
-    body: "Vincula o signatário de forma unívoca, como a assinatura do gov.br.",
+    body: "Associa a assinatura ao signatário de forma unívoca, como a assinatura gov.br.",
     current: false,
   },
   {
     level: "Qualificada",
-    body: "Usa certificado digital ICP-Brasil, como o seu A1. É o nível que esta página gera.",
+    body: "Usa certificado digital ICP-Brasil, como o seu A1. É o nível gerado por esta página.",
     current: true,
   },
 ];
@@ -173,7 +176,7 @@ export const signFreeLanding = <Message>(
               h.p(
                 [...sx(h, landing.signLead)],
                 [
-                  "Assinatura qualificada ICP-Brasil direto no navegador. Escolha o certificado, digite a senha, solte os PDFs e baixe assinados.",
+                  "Assinatura qualificada ICP-Brasil feita no seu navegador. Escolha o certificado, digite a senha, adicione os PDFs e baixe os arquivos assinados.",
                 ],
               ),
               h.ul(
@@ -200,10 +203,7 @@ export const signFreeLanding = <Message>(
         [...sx(h, landing.head), h.Attribute("data-reveal", "")],
         [
           h.h2([...sx(h, landing.sectionTitle)], ["Como assinar um PDF com certificado A1"]),
-          h.p(
-            [...sx(h, landing.lead)],
-            ["Quatro passos, menos de dois minutos. Tudo acontece no seu navegador."],
-          ),
+          h.p([...sx(h, landing.lead)], ["São quatro passos, todos no seu navegador."]),
         ],
       ),
       h.ol(
@@ -277,7 +277,7 @@ export const signFreeLanding = <Message>(
               h.Target("_blank"),
               h.Rel("noopener"),
             ],
-            ["Validar uma assinatura no ITI →"],
+            ["Validar a assinatura no ITI →"],
           ),
         ],
       ),
@@ -309,14 +309,16 @@ export const signFreeLanding = <Message>(
           h.h2([...sx(h, landing.sectionTitle)], ["Perguntas frequentes"]),
           h.p(
             [...sx(h, landing.lead)],
-            ["Não achou sua dúvida? Veja a documentação do fluxo de assinatura no navegador."],
+            [
+              "Não encontrou sua dúvida? A documentação explica como a assinatura funciona no navegador.",
+            ],
           ),
           h.a(
             [
               ...sx(h, landing.textLink),
               h.Href(pageRoute({ path: "docs/a1-signing/browser-pdf-flow" })),
             ],
-            ["Como funciona por dentro →"],
+            ["Ver a documentação →"],
           ),
         ],
       ),
@@ -408,12 +410,12 @@ export const autoSignSection = <Message>(h: HtmlBuilder<Message>, demo: Html) =>
         [
           h.h2(
             [...sx(h, landing.sectionTitle), h.Id("auto-sign-heading")],
-            ["Veja o posicionamento automático."],
+            ["Posicionamento automático"],
           ),
           h.p(
             [...sx(h, landing.lead)],
             [
-              "Exemplos visuais de onde a marca cai em contratos comuns. A assinatura de verdade acontece no formulário acima.",
+              "Veja onde o posicionamento automático coloca a assinatura em contratos comuns. São só exemplos visuais: para assinar, use o formulário acima.",
             ],
           ),
         ],
@@ -503,15 +505,15 @@ export const signed = signPdf({ pdf, policy: "pades-icp-brasil" }).pipe(
 const homeFacts: ReadonlyArray<{ term: string; body: string }> = [
   {
     term: "PAdES",
-    body: "PDF assinado no padrão aceito pela ICP-Brasil, com carimbo visível e rubricas quando você quiser.",
+    body: "PDF assinado no padrão da ICP-Brasil, com carimbo visível e rubricas opcionais.",
   },
   {
     term: "XML-DSig",
-    body: "NF-e e outros XML assinados com o mesmo certificado e a mesma camada de assinatura.",
+    body: "Documentos XML assinados com o mesmo certificado e a mesma API.",
   },
   {
     term: "Navegador e servidor",
-    body: "O mesmo código roda no Node, no Bun e no navegador. A chave nunca sai de onde você a carregou.",
+    body: "O mesmo código roda no Node, no Bun e no navegador. A chave privada fica onde você a carregou.",
   },
 ];
 
@@ -548,7 +550,7 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
           h.p(
             [...sx(h, landing.subtitle)],
             [
-              "PAdES e XML-DSig com certificado ICP-Brasil, no servidor ou no navegador. Tipado, testado e open source.",
+              "Assine PDF (PAdES) e XML (XML-DSig) com certificado ICP-Brasil, no servidor ou no navegador. Biblioteca open source em TypeScript.",
             ],
           ),
           h.div(
@@ -582,7 +584,7 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
           h.p(
             [...sx(h, landing.blockLead)],
             [
-              "Você entrega os bytes do PDF e do certificado A1. O SignatureKit devolve o documento assinado, e cada falha chega como um erro tipado.",
+              "Passe os bytes do PDF e do certificado A1 e receba o documento assinado. Cada falha volta como um erro tipado.",
             ],
           ),
           h.dl(
@@ -651,7 +653,7 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
                 [
                   messages.dragOver
                     ? "Os arquivos ficam no seu navegador"
-                    : "ou escolha no computador · até 100 arquivos",
+                    : "ou escolha no computador (até 100 PDFs)",
                 ],
               ),
             ],

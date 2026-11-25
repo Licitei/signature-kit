@@ -1,5 +1,5 @@
 ---
-title: Âncoras de texto rodam no núcleo WASM próprio
+title: Âncoras de texto no núcleo WASM próprio
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf":
@@ -8,10 +8,10 @@ packages:
     version: 0.1.4
 ---
 
-## Âncoras de texto rodam no núcleo WASM próprio
+## Âncoras de texto no núcleo WASM próprio
 
-`findPdfTextAnchors`, `prepareAndSignPdf` e `preparePdfVisualPreview` agora leem a geometria das páginas, os itens de texto e as anotações de link pelo `@signature-kit/pdf-core` em vez do LiteParse. Não há mais worker por documento nem o limite de 5 s, e as âncoras de texto e de dígitos também funcionam no Node e no Bun.
+`findPdfTextAnchors`, `prepareAndSignPdf` e `preparePdfVisualPreview` agora leem a geometria das páginas, os itens de texto e as anotações de link pelo `@signature-kit/pdf-core`, em vez do LiteParse. Não há mais um worker por documento nem o limite de 5 s, e as âncoras de texto e de dígitos também funcionam no Node e no Bun.
 
-O requisito `LiteParseWorkerFactory` passa a ser `PdfCore`: forneça `pdfCoreBrowserLayer` no navegador ou `pdfCoreFileLayer` no Node/Bun. Chamadas que passam `pages` e `textBoxes` só com matchers `text`/`digits` continuam sem precisar de serviço. `parsePdfTextBoxesBrowser` e os schemas de resultado de texto do LiteParse foram removidos.
+O requisito `LiteParseWorkerFactory` foi substituído por `PdfCore`: forneça `pdfCoreBrowserLayer` no navegador ou `pdfCoreFileLayer` no Node e no Bun. Chamadas que passam `pages` e `textBoxes` só com matchers `text` ou `digits` continuam sem precisar de serviço. `parsePdfTextBoxesBrowser` e os schemas de resultado de texto do LiteParse foram removidos.
 
-`findPdfTextAnchors` informa documentos que passam de um limite de processamento do pdf-core com o novo código de erro `pdf.LIMIT_EXCEEDED` (com mensagens en-US/pt-BR) em vez de `pdf.INVALID_PDF`.
+Quando um documento passa de um limite de processamento do pdf-core, `findPdfTextAnchors` falha com o novo código de erro `pdf.LIMIT_EXCEEDED` (com mensagens em en-US e pt-BR) em vez de `pdf.INVALID_PDF`.

@@ -1,28 +1,46 @@
 ---
 title: Formato da solicitação
-description: "Os fatos de request compartilhados por cada API de provedor."
+description: "Os campos comuns às solicitações de assinatura da Clicksign, Assinafy, ZapSign, DocuSeal e Documenso, e o que muda em cada provedor."
 ---
 
-APIs de provedores criam cerimônias de assinatura no upstream. Elas não são backends locais de `Signatures`: o provedor possui links, notificações, destinatários, envelopes e UX de auditoria. O SignatureKit mantém as chamadas boring: input tipado, credenciais Redacted, `SignatureHttpClient` e `SignatureKitError` em falhas recuperáveis.
+Os pacotes de provedores criam solicitações de assinatura na plataforma de cada provedor. Eles não são backends do serviço `Signatures`: links, notificações, destinatários, envelopes e trilha de auditoria ficam com o provedor. O SignatureKit cuida da entrada validada por schema, das credenciais em `Redacted`, do transporte via `SignatureHttpClient` e das falhas como `SignatureKitError`.
 
 ```package-install
 @signature-kit/http @signature-kit/clicksign @signature-kit/assinafy @signature-kit/zapsign @signature-kit/docuseal @signature-kit/documenso
 ```
 
-## Providers
+## Provedores
 
 <Cards>
-  <Card title="Clicksign" href="/docs/providers/clicksign">Fluxo v1 de documento + signatário, um documento por request.</Card>
-  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatário e assignment dentro de uma conta.</Card>
-  <Card title="ZapSign" href="/docs/providers/zapsign">Upload PDF com Bearer token e primeira URL de assinatura.</Card>
-  <Card title="DocuSeal" href="/docs/providers/docuseal">Submissões PDF open-source com links de submitter.</Card>
-  <Card title="Documenso" href="/docs/providers/documenso">Envelopes v2 open-source com distribuição opcional.</Card>
+  <Card title="Clicksign" href="/docs/providers/clicksign">API v1: documento, signatários e notificação. Um documento por solicitação.</Card>
+  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatários e assignment em uma conta. Um PDF por solicitação.</Card>
+  <Card title="ZapSign" href="/docs/providers/zapsign">Envio de um PDF com token Bearer; devolve a URL de assinatura do primeiro signatário.</Card>
+  <Card title="DocuSeal" href="/docs/providers/docuseal">Submissão de um ou mais PDFs, com links por signatário.</Card>
+  <Card title="Documenso" href="/docs/providers/documenso">Envelope da API v2 com um ou mais PDFs e envio opcional.</Card>
 </Cards>
 
-## Shape compartilhado
+## Campos comuns
 
-Todo provider começa dos mesmos fatos de request do SignatureKit: `title`, `documents`, `recipients`, `subject`, `message`, `send`, `expiresAt` e `redirectUrl` opcionais. Cada página de provider explica como esses fatos mapeiam para seu protocolo upstream.
+Cada provedor declara seu próprio schema de props, mas todos partem dos mesmos campos:
 
-<Callout type="info" title="Local vs remoto">
-  Use `@signature-kit/pdf` + `Signatures` quando o SignatureKit deve assinar bytes. Use funções de request de provider quando uma plataforma upstream possui a cerimônia.
+| Campo | Obrigatório | Observação |
+| --- | --- | --- |
+| `title` | sim | Nome do documento ou envelope. |
+| `documents` | sim | `{ fileName, mimeType, contentBase64 }`. Clicksign, Assinafy e ZapSign aceitam um único documento; DocuSeal e Documenso aceitam vários. |
+| `recipients` | sim | `{ name, email, routingOrder? }`, mais `role` na Clicksign, na DocuSeal e na Documenso. |
+| `message` | não | Mensagem enviada aos signatários. |
+| `send` | não | `false` cria a solicitação sem notificar ninguém. |
+| `expiresAt` | não | Prazo para assinar (`Date`). |
+| `redirectUrl` | não | Para onde o signatário vai depois de assinar. |
+| `subject` | não | Só na DocuSeal e na Documenso. |
+
+Um documento a mais, um MIME diferente de `application/pdf` onde só PDF é aceito ou um campo ausente falham na decodificação do schema com `signature-kit.INVALID_INPUT`, antes de qualquer chamada HTTP.
+
+## Ciclo de vida
+
+Cada solicitação é um recurso do Alchemy (por exemplo, `ClicksignSignatureRequest("id", props)`), registrado pela layer `providers(options)` do pacote. Depois de criada, a solicitação não é atualizada: mudar as props não altera nada no provedor. Para consultar, cancelar, excluir ou baixar, cada pacote exporta funções próprias, como `getClicksignSignatureRequest` e `downloadClicksignSignedDocument`, apenas quando o provedor oferece a operação.
+
+<Callout type="info" title="Local ou remoto">
+  Use `@signature-kit/pdf` com `Signatures` quando o SignatureKit deve assinar os bytes. Use um pacote de provedor
+  quando a assinatura acontece na plataforma do provedor.
 </Callout>

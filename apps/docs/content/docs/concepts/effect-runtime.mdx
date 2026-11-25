@@ -1,17 +1,17 @@
 ---
 title: Runtime do Effect
-description: "As APIs do SignatureKit retornam Effects tipados para manter requisitos e erros recuperáveis explícitos."
+description: "As APIs do SignatureKit retornam Effects tipados, com dependências e erros recuperáveis explícitos na assinatura de tipo."
 ---
 
-SignatureKit mantém falhas técnicas recuperáveis no canal de erro tipado do Effect. Invariantes obrigatórios continuam falhas duras. Serviços usam `Context.Service` + `Layer`, então os internos não escondem `Effect.provide` dentro da biblioteca.
+O SignatureKit mantém falhas técnicas recuperáveis no canal de erro tipado do Effect. A violação de um invariante obrigatório não é recuperável e vira defeito ou falha de decodificação de Schema. Os serviços usam `Context.Service` e `Layer`, e os pacotes não chamam `Effect.provide` internamente.
 
-## O que isso compra
+## O que você ganha
 
-- Call sites enxergam os serviços exigidos no ambiente do Effect.
-- Segredos ficam em `Redacted` até uma borda explícita de importação ou transporte.
-- Testes trocam layers sem mockar estado global.
-- Falhas HTTP, de schema e provider carregam fatos estruturados estáveis.
+- O tipo de cada chamada mostra os serviços que ela exige.
+- Segredos ficam em `Redacted` até a borda explícita de importação ou transporte.
+- Os testes trocam layers sem mockar estado global.
+- Falhas de HTTP, de Schema e de provedor carregam dados estruturados e estáveis.
 
 <Callout type="info" title="Regra de borda">
-  Aplicações executam Effects. Bibliotecas retornam Effects. Por isso os exemplos colocam `Effect.runPromise` em handlers, scripts, testes ou bordas da app.
+  Aplicações executam Effects; bibliotecas retornam Effects. Por isso os exemplos chamam `Effect.runPromise` em handlers, scripts, testes ou na borda da aplicação.
 </Callout>

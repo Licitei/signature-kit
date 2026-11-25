@@ -1,5 +1,5 @@
 ---
-title: Módulo WebAssembly do pdf-core menor
+title: Módulo WebAssembly do pdf-core 13% menor
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
@@ -12,6 +12,6 @@ cover:
   delta: "−13%"
 ---
 
-## Módulo WebAssembly do pdf-core menor
+## Módulo WebAssembly do pdf-core 13% menor
 
-O módulo wasm de release (leitor, escritor e renderizador) ficou cerca de 13% menor: 1.249.882 → 1.087.037 bytes sem compressão, 434 KB → 423 KB com gzip, 335 KB → 328 KB com brotli. Os ganhos vêm do Binaryen `wasm-opt -O3` no build (`binaryen` 130 fixado), empacotamento zlib das strings padrão do CFF, deduplicação das linhas de largura das Standard 14, codepoints AGL como `u16`, remoção das format strings de `format!` / Debug em produção, case folding Latin-1 em vez do `to_lowercase` Unicode e fusão das monomorfizações de stable sort. As tabelas quentes de glifo/AGL continuam como dados estáticos simples, então a extração de texto fica dentro do ruído da linha de base. O teste de orçamento do wasm é de 1072 KiB.
+O módulo WebAssembly de release (leitor, escritor e renderizador) ficou cerca de 13% menor: 1.249.882 → 1.087.037 bytes sem compressão, 434 KB → 423 KB com gzip, 335 KB → 328 KB com brotli. Os ganhos vêm do Binaryen `wasm-opt -O3` no build (`binaryen` 130 fixado), empacotamento zlib das strings padrão do CFF, deduplicação das linhas de largura das Standard 14, codepoints AGL como `u16`, remoção das format strings de `format!` / Debug em produção, case folding Latin-1 em vez do `to_lowercase` Unicode e fusão das monomorfizações de stable sort. As tabelas quentes de glifo/AGL continuam como dados estáticos simples, então a extração de texto fica dentro do ruído da linha de base. O teste de orçamento do wasm é de 1072 KiB.

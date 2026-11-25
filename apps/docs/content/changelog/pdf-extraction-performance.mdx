@@ -49,6 +49,6 @@ cover:
 
 ## Extração de PDF mais rápida em páginas selecionadas e Markdown
 
-O núcleo de PDF abre páginas selecionadas sem materializar a árvore de páginas inteira, adia XObjects não usados e aceita streams completos antes do próximo offset de referência cruzada. A renderização de Markdown reutiliza buffers, e o parser de números usa acumulação limitada para os operandos comuns. Os recursos de página compartilham o dicionário resolvido entre leitores, e os bindings JavaScript compartilham a validação e o descarte dos blocos de resultado.
+O núcleo de PDF abre só as páginas selecionadas, sem montar a árvore de páginas inteira, adia XObjects não usados e aceita streams completos antes do próximo offset de referência cruzada. A renderização de Markdown reutiliza buffers, e o parser de números usa acumulação limitada para os operandos comuns. Os recursos de página compartilham o dicionário resolvido entre leitores, e os bindings JavaScript compartilham a validação e o descarte dos blocos de resultado.
 
 O README do pdf-core documenta os resultados no corpus de licitações, a auditoria de evidências, o tamanho do Wasm e um benchmark isolado contra o LiteParse e o PDF Inspector. Esta versão também atualiza todos os pacotes públicos do SignatureKit.

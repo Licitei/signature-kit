@@ -1,9 +1,9 @@
 ---
 title: ZapSign
-description: "Crie requests de PDF na ZapSign com credenciais Bearer e erros tipados do SignatureKit."
+description: "Envie um PDF para assinatura na ZapSign com token Bearer em Redacted e receba a URL de assinatura e falhas tipadas."
 ---
 
-ZapSign faz upload do PDF, cria a lista de signatários e devolve a primeira URL de assinatura quando disponível. O provider possui a cerimônia externa; SignatureKit possui validação e erros tipados.
+`@signature-kit/zapsign` envia o PDF para a ZapSign com a lista de signatários e devolve um `ZapSignDocument` com `id`, `state` e, quando disponível, a URL de assinatura do primeiro signatário. A assinatura acontece na ZapSign.
 
 ## Instalação
 
@@ -13,13 +13,14 @@ ZapSign faz upload do PDF, cria a lista de signatários e devolve a primeira URL
 
 ## Quando usar
 
-Use ZapSign quando o produto quer um link hospedado de assinatura após upload simples de PDF. Use A1/PDF local quando não há cerimônia upstream.
+Use a ZapSign quando o produto precisa de um link de assinatura hospedado a partir de um único PDF. Se a aplicação deve gerar os bytes assinados, use a [assinatura A1 de PDF](/docs/signing/pdf).
 
-<Callout type="error" title="Mantenha credenciais Redacted">
-  Tokens de provider entram como `Redacted.make(...)` e são abertos apenas dentro da fronteira HTTP do pacote. Nunca passe tokens remotos para componentes React ou logs.
+<Callout type="warn" title="Credenciais em Redacted">
+  O token entra como `Redacted.make(...)` e só é aberto na chamada HTTP. Não passe tokens para componentes React nem
+  para logs.
 </Callout>
 
-## Request mínimo
+## Solicitação mínima
 
 ```ts title="zapsign.ts"
 import * as Alchemy from "alchemy"
@@ -45,48 +46,51 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
       title: "Contrato de serviço",
       message: "Revise e assine este documento.",
       documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],
-      recipients: [{ name: "Ana Silva", email: "ada@example.com", routingOrder: 1 }],
+      recipients: [{ name: "Ana Silva", email: "ana@example.com", routingOrder: 1 }],
       send: true,
     })
   }),
 ) {}
 ```
 
+## Detalhes da integração
 
-## Fatos do provider
+- `environment` aceita `"production"`, `"sandbox"` (padrão) ou `"brazil"` (`https://br.api.zapsign.com.br/api/v1`). `baseUrl` substitui os três.
+- A autenticação usa o `apiToken` no cabeçalho `Authorization: Bearer`.
+- Um PDF por solicitação. Outro MIME ou mais de um documento falham antes da chamada HTTP.
+- `locale` aceita `"pt-br"`, `"es"` ou `"en"`. `authMode` define o método de autenticação do signatário na ZapSign (por exemplo `"assinaturaTela"`, `"tokenEmail"` ou `"certificadoDigital"`).
+- `send: false` ou `disableSignerEmails: true` desligam os e-mails da ZapSign aos signatários.
 
-- A opção `environment` aceita `"production"`, `"sandbox"` ou `"brazil"` (base URL `https://br.api.zapsign.com.br/api/v1`).
-- Aceita um único PDF por request, como o upload de documento da ZapSign.
-- Autorização usa bearer token em `Redacted`.
-- MIME inválido ou múltiplos documentos falham antes da chamada HTTP.
+## Outras operações
 
-## Erros
+`getZapSignSignatureRequest`, `listZapSignSignatureRequests`, `cancelZapSignSignatureRequest`, `deleteZapSignSignatureRequest` e `downloadZapSignSignedDocument` recebem as mesmas opções de `providers(...)` e exigem `SignatureHttpClient`. O download falha com `signature-kit.UNSUPPORTED_OPERATION` enquanto não houver arquivo assinado.
 
-Input inválido, falhas HTTP remotas e shapes de resposta inválidos falham como `SignatureKitError`. Os campos `provider`, `operation` e `status` HTTP são preservados quando a resposta upstream expõe esses dados.
+## Aguarde um estado final
 
-## Relacionados
+`waitForZapSignSignatureRequest(options, id, pollInterval)` consulta o documento na hora e repete a cada `pollInterval` enquanto o estado for `draft` ou `sent`. O retorno traz o estado final (`completed`, `cancelled`, `deleted`, `declined` ou `expired`); confira `state` antes de baixar o documento. O intervalo precisa ser positivo e finito. Falhas de consulta não são repetidas automaticamente, e interromper o Effect cancela a consulta em andamento. O prazo máximo fica com a aplicação:
 
-<Cards>
-  <Card title="Clicksign" href="/docs/providers/clicksign">Fluxo v1 de documento + signatário, um documento por request.</Card>
-  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatário e assignment dentro de uma conta.</Card>
-  <Card title="Solicitações remotas" href="/docs/concepts/remote-signature-requests">Por que provedores remotos não são backends locais de Signatures.</Card>
-</Cards>
+```ts title="wait.ts"
+import { waitForZapSignSignatureRequest } from "@signature-kit/zapsign"
+import type { ZapSignProviderOptions } from "@signature-kit/zapsign"
+import { signatureHttpClientLive } from "@signature-kit/http"
+import { Duration, Effect } from "effect"
 
-## Aguardar um estado final
-
-`waitForZapSignSignatureRequest(options, id, pollInterval)` consulta imediatamente e repete enquanto o pedido estiver em `draft` ou `sent`. O retorno preserva o estado final do provedor, inclusive cancelamento, recusa, exclusão ou expiração; confira `state` antes de baixar o documento. O intervalo deve ser positivo e finito. Falhas de consulta são propagadas sem retry automático. Interromper o Effect cancela a consulta ativa e impede novas consultas. O prazo fica com a aplicação:
-
-```ts
-import { waitForZapSignSignatureRequest } from "@signature-kit/zapsign";
-import { signatureHttpClientLive } from "@signature-kit/http";
-import { Duration, Effect } from "effect";
-import type { ZapSignProviderOptions } from "@signature-kit/zapsign";
-
-declare const options: ZapSignProviderOptions;
-declare const requestId: string;
+declare const options: ZapSignProviderOptions
+declare const requestId: string
 
 const program = waitForZapSignSignatureRequest(options, requestId, Duration.seconds(2)).pipe(
   Effect.timeout(Duration.minutes(5)),
   Effect.provide(signatureHttpClientLive),
-);
+)
 ```
+
+## Erros
+
+Entrada inválida, falhas HTTP e respostas em formato inesperado falham como `SignatureKitError`, com `provider`, `operation` e o `status` HTTP quando disponíveis.
+
+## Veja também
+
+<Cards>
+  <Card title="Formato da solicitação" href="/docs/providers/request-shape">Os campos comuns a todos os provedores.</Card>
+  <Card title="Solicitações remotas" href="/docs/concepts/remote-signature-requests">Por que os provedores remotos não são backends de Signatures.</Card>
+</Cards>

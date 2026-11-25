@@ -1,5 +1,5 @@
 ---
-title: Assinar PDFs já assinados com bytes no final e identificar os danificados
+title: PDFs assinados com bytes extras ou referência cruzada danificada
 date: 2026-11-24T15:38:32.058Z
 packages:
   "@signature-kit/pdf-core":
@@ -8,8 +8,8 @@ packages:
     version: 0.7.0
 ---
 
-## Assinar PDFs já assinados com bytes no final e identificar os danificados
+## PDFs assinados com bytes extras ou referência cruzada danificada
 
-PDFs já assinados são carimbados e assinados por atualizações incrementais, para que as assinaturas anteriores continuem válidas. Quando um arquivo desses tinha bytes depois do último `%%EOF` (um rodapé de download, por exemplo), o carimbo falhava com `pdf.STAMP_FAILED` e o motivo `incremental update needs an intact cross-reference chain`. O `PdfCore.edit` no modo incremental agora descarta os bytes depois do último `%%EOF`, que nenhuma assinatura cobre, e adiciona a atualização à revisão intacta, então as assinaturas anteriores continuam válidas.
+PDFs que já têm assinatura recebem o carimbo e a nova assinatura por atualização incremental, para que as assinaturas anteriores continuem válidas. Quando um desses arquivos tinha bytes depois do último `%%EOF` (um rodapé de download, por exemplo), o carimbo falhava com `pdf.STAMP_FAILED` e o motivo `incremental update needs an intact cross-reference chain`. Agora, no modo incremental, o `PdfCore.edit` descarta os bytes depois do último `%%EOF`, que nenhuma assinatura cobre, e anexa a atualização à revisão intacta. As assinaturas anteriores continuam válidas.
 
-Arquivos assinados cuja cadeia de referência cruzada está danificada de outras formas ainda não aceitam uma atualização incremental sem invalidar as assinaturas. Agora eles falham com `pdfCore.DAMAGED_XREF`, cujo motivo diz o que está errado: bytes antes do cabeçalho `%PDF`, ausência de `startxref`, uma tabela de referência cruzada que precisou ser reconstruída ou uma revisão incompleta. O carimbo e a inserção do placeholder informam essas falhas como `pdf.DAMAGED_SIGNED_PDF`, com uma mensagem que pede para baixar o documento de novo na origem, em vez de `pdf.STAMP_FAILED` ou `pdf.INVALID_PDF`.
+Arquivos assinados com a cadeia de referência cruzada danificada de outras formas ainda não aceitam atualização incremental sem invalidar as assinaturas. Eles passam a falhar com `pdfCore.DAMAGED_XREF`, e o motivo diz o que está errado: bytes antes do cabeçalho `%PDF`, falta de `startxref`, tabela de referência cruzada que precisou ser reconstruída ou revisão incompleta. O carimbo e a inserção do placeholder informam essas falhas como `pdf.DAMAGED_SIGNED_PDF`, com uma mensagem que pede para baixar o documento de novo na origem, em vez de `pdf.STAMP_FAILED` ou `pdf.INVALID_PDF`.

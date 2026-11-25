@@ -1,16 +1,16 @@
 ---
-title: Núcleo de PDF próprio em WASM
+title: Núcleo de PDF próprio em WebAssembly
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
     version: 0.2.0
 ---
 
-## Núcleo de PDF próprio em WASM
+## Núcleo de PDF próprio em WebAssembly
 
-Novo pacote `@signature-kit/pdf-core`: um motor de PDF em Rust/WebAssembly sem dependências, com geometria de página, anotações de link e inspeção de texto posicionado. Ele expõe um serviço Effect `PdfCore` com layers para navegador e sistema de arquivos e falhas tipadas `PdfCoreError`.
+Novo pacote `@signature-kit/pdf-core`: um motor de PDF em Rust/WebAssembly sem dependências, com geometria de página, anotações de link e inspeção de texto posicionado. O pacote expõe um serviço Effect `PdfCore` com layers para navegador e sistema de arquivos e falhas tipadas `PdfCoreError`.
 
-### Tabelas, markdown e cabeçalhos repetidos
+### Tabelas, Markdown e cabeçalhos repetidos
 
 `PdfCore.tables(pdf, { pageIndexes })` retorna tabelas estruturadas por página: grades com linhas a partir dos operadores de caminho do content stream (com CTM aplicada, segmentos colineares unidos e caminhos só de recorte e molduras do tamanho da página ignorados) e tabelas sem borda a partir do alinhamento de colunas, com índices de linha/coluna, células mescladas, caixas e texto das células. `PdfCore.text` ganha `format: "markdown"` (agrupamento de parágrafos sobre a ordem de leitura do texto simples, junção de hifenização e quebras de página, títulos por tamanho, ênfase e profundidade de numeração, negrito/itálico a partir das tabelas da fonte embutida, listas aninhadas que mantêm marcadores numerados e jurídicos, sobreposição de links e tabelas GFM) e `dropRunningHeaders` (padrão `true`: cabeçalhos e rodapés repetidos em pelo menos metade das páginas são removidos; uma linha idêntica em todas as páginas fica com uma cópia na primeira página). Tabelas com linhas agora são montadas célula por célula, o que mantém títulos abaixo de uma tabela fora da última célula. A extração de texto também respeita `/ActualText` de marked content, recorta glifos fora do `/BBox` de um Form XObject e continua extraindo texto nos modos de renderização de recorte 4-7. `pdf_core_tables` é uma nova exportação wasm; `pdf_core_text` aceita as novas flags `markdown` e `drop running headers`.
 
@@ -20,4 +20,4 @@ Novo pacote `@signature-kit/pdf-core`: um motor de PDF em Rust/WebAssembly sem d
 
 ### Fidelidade e velocidade do Markdown
 
-O Markdown não perde mais texto de tabelas sem borda: uma linha de continuação embaixo de uma linha em negrito que ocupa duas colunas encerra a tabela em vez de ser descartada, e segmentos de largura zero vão para a coluna certa. Com `dropRunningHeaders`, o markdown também remove blocos que se repetem na mesma posição entre os três primeiros ou os três últimos blocos de pelo menos max(3, páginas / 20) páginas (cabeçalhos e rodapés fora das faixas de topo e base, carimbos de assinatura), mantendo a primeira ocorrência. URLs quebradas entre linhas são unidas sem espaço e mantêm o link, `?`/`&` no fim de uma URL não encerram mais um parágrafo, `. , ; )` no final saem do texto do link, e marcadores sem espaço como `c)Informar` ou `10.10.Os` são reconhecidos como itens de lista e cláusulas. A saída em texto simples não mudou. A extração de texto ficou cerca de 20% mais rápida em nativo e 30% mais rápida em WebAssembly (sem chamadas de libm `mul_add`/`hypot`/`powi`, tabelas de Huffman do inflate sem alocação, invariantes de posicionamento por TJ e um inflate só de prefixo para a sondagem de estilo da fonte embutida).
+O Markdown não perde mais texto de tabelas sem borda: uma linha de continuação embaixo de uma linha em negrito que ocupa duas colunas encerra a tabela em vez de ser descartada, e segmentos de largura zero vão para a coluna certa. Com `dropRunningHeaders`, o Markdown também remove blocos que se repetem na mesma posição entre os três primeiros ou os três últimos blocos de pelo menos max(3, páginas / 20) páginas (cabeçalhos e rodapés fora das faixas de topo e base, carimbos de assinatura), mantendo a primeira ocorrência. URLs quebradas entre linhas são unidas sem espaço e mantêm o link, `?`/`&` no fim de uma URL não encerram mais um parágrafo, `. , ; )` no final saem do texto do link, e marcadores sem espaço como `c)Informar` ou `10.10.Os` são reconhecidos como itens de lista e cláusulas. A saída em texto simples não mudou. A extração de texto ficou cerca de 20% mais rápida em nativo e 30% mais rápida em WebAssembly (sem chamadas de libm `mul_add`/`hypot`/`powi`, tabelas de Huffman do inflate sem alocação, invariantes de posicionamento por TJ e um inflate só de prefixo para a sondagem de estilo da fonte embutida).

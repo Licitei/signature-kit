@@ -17,15 +17,15 @@ export const navMenuInit = (kind: NavMenuKind) =>
   Popover.init({ id: `nav-${kind}`, isAnimated: true });
 
 const groupBlurb: Record<string, string> = {
-  "Comece aqui": "Instale e assine os primeiros bytes.",
-  "Assinatura A1": "PDF no navegador com certificado A1.",
+  "Comece aqui": "Instale e faça a primeira assinatura.",
+  "Assinatura A1": "Assine PDF no navegador com certificado A1.",
   Receitas: "React, Promise, âncoras e tracing.",
-  Conceitos: "O modelo mental e a fronteira do signer.",
+  Conceitos: "Modelo mental, signers, formatos e runtime Effect.",
   Referência: "Certificados, PDF/PAdES, XML-DSig e erros.",
 };
 
 const resources: ReadonlyArray<{ title: string; hint: string; href: string; glyph: IconName }> = [
-  { title: "Blog", hint: "Histórias e decisões de engenharia.", href: "/blog", glyph: "book" },
+  { title: "Blog", hint: "Artigos e decisões de engenharia.", href: "/blog", glyph: "book" },
   { title: "Changelog", hint: "O que mudou em cada versão.", href: "/changelog", glyph: "list" },
   {
     title: "llms.txt",
@@ -309,7 +309,7 @@ const content = <Message>(h: HtmlBuilder<Message>, kind: NavMenuKind): Html => {
             h.span([...sx(h, styles.featureTitle)], ["Assinar PDF grátis"]),
             h.span(
               [...sx(h, styles.featureHint)],
-              ["Certificado A1 no navegador. Nada é enviado para servidor."],
+              ["Com certificado A1, no navegador. Nada é enviado a servidores."],
             ),
           ],
         ),
@@ -375,7 +375,7 @@ export const mobileMenuView = <Message>(
           h.span([...sx(h, styles.featureTitle)], ["Assinar PDF grátis"]),
           h.span(
             [...sx(h, styles.featureHint)],
-            ["Certificado A1 no navegador. Nada é enviado para servidor."],
+            ["Com certificado A1, no navegador. Nada é enviado a servidores."],
           ),
         ],
       ),

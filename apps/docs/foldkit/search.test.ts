@@ -77,7 +77,7 @@ describe("documentation search", () => {
           expect(page.application.html).toContain(`id="${decodeURIComponent(anchor)}"`);
       }
     }
-    expect(searchDocs("Verificações locais não são validade jurídica").length).toBeGreaterThan(0);
+    expect(searchDocs("Verificação local não é validade jurídica").length).toBeGreaterThan(0);
     expect(searchDocs("Carregue um A1, leia a identidade").length).toBeGreaterThan(0);
     const entry = signatureKitErrorCatalog[0];
     expect(entry).toBeDefined();

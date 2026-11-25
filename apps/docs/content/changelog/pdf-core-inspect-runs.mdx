@@ -1,11 +1,11 @@
 ---
-title: Inspecionar trechos de texto com estilos negrito e itálico
+title: Trechos de texto com negrito e itálico no inspect
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
     version: 0.2.0
 ---
 
-## Inspecionar trechos de texto com estilos negrito e itálico
+## Trechos de texto com negrito e itálico no inspect
 
-`PdfCore.inspect` aceita `runs: true`: os itens de texto passam a terminar também onde o estilo negrito/itálico muda, ou onde o texto é reposicionado mais de 0,2 em depois do último glifo visível, então colunas de relatório (`17/06/2026 15:39:26` e `MENSAGEM PREGOEIRO`) e rótulos em negrito voltam como itens separados, cada um com seu `x`. Um trecho desenhado dentro dessa distância (um `™` de outra fonte) fica no mesmo item, e o kerning de `TJ` nunca divide um item. Toda página de texto agora traz `styles`, um `Uint8Array` com um byte por item (bit 0 negrito, bit 1 itálico), resolvido a partir do programa de fonte embutido, do nome da fonte (também para fontes Standard 14 não embutidas, como `Helvetica-Bold`), do descritor da fonte e da renderização de preenchimento e contorno. Sem `runs`, um item pode misturar estilos (os bits cobrem só o estilo comum a todos os glifos) e o peso de fontes TrueType embutidas não é lido; por isso, leia `styles` com `runs: true`. O payload do inspect está na versão 3 (bytes de estilo depois dos offsets) e a ABI adiciona o bit de flag 5.
+`PdfCore.inspect` aceita `runs: true`. Com essa opção, um item de texto também termina onde o estilo negrito ou itálico muda, ou onde o texto é reposicionado mais de 0,2 em depois do último glifo visível. Assim, colunas de relatório (`17/06/2026 15:39:26` e `MENSAGEM PREGOEIRO`) e rótulos em negrito voltam como itens separados, cada um com seu `x`. Um trecho desenhado dentro dessa distância (um `™` de outra fonte) fica no mesmo item, e o kerning de `TJ` nunca divide um item. Toda página de texto agora traz `styles`, um `Uint8Array` com um byte por item (bit 0 negrito, bit 1 itálico). O estilo é resolvido a partir do programa de fonte embutido, do nome da fonte (também para fontes Standard 14 não embutidas, como `Helvetica-Bold`), do descritor da fonte e da renderização de preenchimento e contorno. Sem `runs`, um item pode misturar estilos (os bits cobrem só o estilo comum a todos os glifos) e o peso de fontes TrueType embutidas não é lido. Por isso, leia `styles` com `runs: true`. O payload do inspect está na versão 3 (bytes de estilo depois dos offsets) e a ABI adiciona o bit de flag 5.

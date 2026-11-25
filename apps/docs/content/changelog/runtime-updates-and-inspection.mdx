@@ -43,15 +43,20 @@ cover:
 
 ## Atualizações de runtime e inspeção de assinaturas
 
-Atualizamos para o Effect 4 estável e para as versões compatíveis atuais das dependências. As classes de erro usam o construtor nativo de Schema.TaggedError com brand. Usamos TypeScript 7 para builds e checagens, com o alias oficial de compatibilidade da API do TypeScript 6. Atualizamos as dependências diretas de ASN.1 para a v4, trocamos valores com os SDKs via DER e codificamos requisições de carimbo do tempo com o schema nativo da RFC 3161. Os pacotes não exigem override de ASN.1 por parte de quem os consome.
+Atualizamos para o Effect 4 estável e para as versões compatíveis mais recentes das dependências. As classes de erro usam o construtor nativo de `Schema.TaggedError` com brand. Builds e checagens usam o TypeScript 7, com o alias oficial de compatibilidade da API do TypeScript 6. As dependências diretas de ASN.1 foram para a v4, os valores trocados com os SDKs passam por DER e as requisições de carimbo do tempo usam o schema nativo da RFC 3161. Quem consome os pacotes não precisa mais de override de ASN.1.
 
-Adicionamos verificação de PDF por assinatura, inspeção de validade de certificado pelo relógio do Effect e polling cancelável até o estado final das solicitações nos cinco assinadores remotos. A aplicação controla os prazos de polling e a política de retry; uma solicitação em estado final não está necessariamente concluída.
+### Inspeção de assinaturas
 
+Adicionamos verificação de PDF por assinatura, inspeção da validade do certificado pelo relógio do Effect e polling cancelável até o estado final das solicitações nos cinco assinadores remotos. A aplicação controla os prazos de polling e a política de retry. Uma solicitação em estado final não está necessariamente concluída.
 
-Atualizamos o runtime da documentação, usamos a loading task para a limpeza do PDF.js e corrigimos rotas dinâmicas no Node repassando Request.duplex no adaptador do Hono. O app e o Fumapress ficam em um único runtime Waku.
+Números de domínio não finitos agora são rejeitados, os métodos de assinatura XML são validados antes da verificação com WebCrypto e falhas inesperadas de SDK continuam como defeitos. As checagens de lint nativas do Effect e de acessibilidade ficaram mais rígidas.
 
-Rejeitamos números de domínio não finitos, validamos os métodos de assinatura XML antes da verificação WebCrypto e preservamos falhas inesperadas de SDK como defeitos. Reforçamos as checagens de lint nativas do Effect e de acessibilidade.
+### Carimbos e prévia de PDF
 
-Adicionamos carimbos de PDF com marca, logos PNG proporcionais e texto manuscrito, controles de tema e título e uma prévia renderizada do PDF. A preparação do PDF no navegador e a renderização da prévia rodam via worker RPC nativo do Effect, com encerramento por escopo e falhas de validação tipadas. Os buffers de quem chama e as datas de assinatura são preservados na fronteira do worker.
+Adicionamos carimbos de PDF com marca, logos PNG proporcionais e texto manuscrito, controles de tema e título e uma prévia renderizada do PDF. A preparação do PDF no navegador e a renderização da prévia rodam por worker RPC nativo do Effect, com encerramento por escopo e falhas de validação tipadas. Os buffers recebidos e as datas de assinatura são preservados na fronteira do worker.
 
-Corrigimos conflitos de opções de carimbo estruturado em lote, rejeitamos badges sem espaço útil de desenho e impedimos que texto pré-medido quebre para as linhas vizinhas. Restauramos a interação do assinador após o replay de montagem do React StrictMode e registramos as rotas de demonstração localizadas do Fumapress pela opção nativa de locale do framework. Adicionamos regressões com worker real, StrictMode, text streams de PDF, páginas recortadas/rotacionadas, cancelamento e imagens inválidas.
+Corrigimos conflitos de opções de carimbo estruturado em lote, passamos a rejeitar badges sem espaço útil de desenho e impedimos que texto pré-medido invada as linhas vizinhas. O assinador volta a responder após a remontagem do React StrictMode. Novos testes de regressão cobrem worker real, StrictMode, text streams de PDF, páginas recortadas ou rotacionadas, cancelamento e imagens inválidas.
+
+### Documentação
+
+Atualizamos o runtime da documentação, passamos a usar a loading task para liberar o PDF.js e corrigimos rotas dinâmicas no Node repassando `Request.duplex` no adaptador do Hono. O app e o Fumapress rodam em um único runtime Waku, e as rotas de demonstração localizadas do Fumapress são registradas pela opção nativa de locale do framework.

@@ -1,9 +1,9 @@
 ---
 title: Documenso
-description: "Crie envelopes Documenso v2 com upload de PDF multipart e erros tipados do SignatureKit."
+description: "Crie envelopes na API v2 da Documenso com envio de PDFs em multipart, chave em Redacted e falhas tipadas como SignatureKitError."
 ---
 
-Documenso cria um envelope v2, envia PDFs como multipart e pode distribuir o envelope quando `send` está ativo.
+`@signature-kit/documenso` cria um envelope na API v2 da Documenso, envia os PDFs como multipart e distribui o envelope aos destinatários quando `send` não é `false`. O resultado é um `DocumensoEnvelope` com `id`, `state` e as URLs devolvidas. A Documenso tem código aberto e pode ser hospedada por você. A assinatura acontece na Documenso.
 
 ## Instalação
 
@@ -13,13 +13,14 @@ Documenso cria um envelope v2, envia PDFs como multipart e pode distribuir o env
 
 ## Quando usar
 
-Use Documenso quando posse do envelope, roteamento e ações de destinatário ficam no Documenso. Use assinatura local para bytes PDF/PAdES no processo.
+Use a Documenso quando o envelope, a ordem dos destinatários e as ações de cada um ficam na Documenso. Se a aplicação deve gerar os bytes PDF/PAdES assinados, use a [assinatura A1 de PDF](/docs/signing/pdf).
 
-<Callout type="error" title="Mantenha credenciais Redacted">
-  Tokens de provider entram como `Redacted.make(...)` e são abertos apenas dentro da fronteira HTTP do pacote. Nunca passe tokens remotos para componentes React ou logs.
+<Callout type="warn" title="Credenciais em Redacted">
+  A chave entra como `Redacted.make(...)` e só é aberta na chamada HTTP. Não passe chaves para componentes React nem
+  para logs.
 </Callout>
 
-## Request mínimo
+## Solicitação mínima
 
 ```ts title="documenso.ts"
 import * as Alchemy from "alchemy"
@@ -44,47 +45,52 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
       title: "Contrato de serviço",
       message: "Revise e assine este documento.",
       documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],
-      recipients: [{ name: "Ana Silva", email: "ada@example.com", role: "signer" }],
+      recipients: [{ name: "Ana Silva", email: "ana@example.com", role: "signer" }],
       send: true,
     })
   }),
 ) {}
 ```
 
+## Detalhes da integração
 
-## Fatos do provider
+- O envelope é criado em `POST /envelope/create` e distribuído em `POST /envelope/distribute`.
+- `baseUrl` tem como padrão `https://app.documenso.com/api/v2`; aponte para a sua instância se você hospeda a Documenso.
+- A chave vai no cabeçalho `Authorization` como está (`authorizationScheme: "raw"`, padrão) ou com prefixo `Bearer` (`"bearer"`).
+- Aceita um ou mais PDFs. `subject` define o assunto do e-mail.
+- `role` aceita `"signer"` ou `"approver"`; `routingOrder` vira a ordem de assinatura do envelope.
+- Com `send: false`, o envelope é criado e fica em `draft`, sem distribuição.
 
-- Usa a API v2 de envelope com upload multipart.
-- `send: false` para após a criação e retorna um request em draft.
-- Roles e ordem de assinatura mapeiam para campos do envelope Documenso.
+## Outras operações
 
-## Erros
+`getDocumensoSignatureRequest`, `listDocumensoSignatureRequests`, `cancelDocumensoSignatureRequest`, `deleteDocumensoSignatureRequest` e `downloadDocumensoSignedDocument` recebem as mesmas opções de `providers(...)` e exigem `SignatureHttpClient`. O download falha com `signature-kit.UNSUPPORTED_OPERATION` enquanto o envelope não estiver concluído.
 
-Input inválido, falhas HTTP remotas e shapes de resposta inválidos falham como `SignatureKitError`. Os campos `provider`, `operation` e `status` HTTP são preservados quando a resposta upstream expõe esses dados.
+## Aguarde um estado final
 
-## Relacionados
+`waitForDocumensoSignatureRequest(options, id, pollInterval)` consulta o envelope na hora e repete a cada `pollInterval` enquanto o estado for `draft` ou `sent`. O retorno traz o estado final (`completed`, `cancelled`, `deleted`, `declined` ou `expired`); confira `state` antes de baixar o documento. O intervalo precisa ser positivo e finito. Falhas de consulta não são repetidas automaticamente, e interromper o Effect cancela a consulta em andamento. O prazo máximo fica com a aplicação:
 
-<Cards>
-  <Card title="Clicksign" href="/docs/providers/clicksign">Fluxo v1 de documento + signatário, um documento por request.</Card>
-  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatário e assignment dentro de uma conta.</Card>
-  <Card title="Solicitações remotas" href="/docs/concepts/remote-signature-requests">Por que provedores remotos não são backends locais de Signatures.</Card>
-</Cards>
+```ts title="wait.ts"
+import { waitForDocumensoSignatureRequest } from "@signature-kit/documenso"
+import type { DocumensoProviderOptions } from "@signature-kit/documenso"
+import { signatureHttpClientLive } from "@signature-kit/http"
+import { Duration, Effect } from "effect"
 
-## Aguardar um estado final
-
-`waitForDocumensoSignatureRequest(options, id, pollInterval)` consulta imediatamente e repete enquanto o pedido estiver em `draft` ou `sent`. O retorno preserva o estado final do provedor, inclusive cancelamento, recusa, exclusão ou expiração; confira `state` antes de baixar o documento. O intervalo deve ser positivo e finito. Falhas de consulta são propagadas sem retry automático. Interromper o Effect cancela a consulta ativa e impede novas consultas. O prazo fica com a aplicação:
-
-```ts
-import { waitForDocumensoSignatureRequest } from "@signature-kit/documenso";
-import { signatureHttpClientLive } from "@signature-kit/http";
-import { Duration, Effect } from "effect";
-import type { DocumensoProviderOptions } from "@signature-kit/documenso";
-
-declare const options: DocumensoProviderOptions;
-declare const requestId: string;
+declare const options: DocumensoProviderOptions
+declare const requestId: string
 
 const program = waitForDocumensoSignatureRequest(options, requestId, Duration.seconds(2)).pipe(
   Effect.timeout(Duration.minutes(5)),
   Effect.provide(signatureHttpClientLive),
-);
+)
 ```
+
+## Erros
+
+Entrada inválida, falhas HTTP e respostas em formato inesperado falham como `SignatureKitError`, com `provider`, `operation` e o `status` HTTP quando disponíveis.
+
+## Veja também
+
+<Cards>
+  <Card title="Formato da solicitação" href="/docs/providers/request-shape">Os campos comuns a todos os provedores.</Card>
+  <Card title="Solicitações remotas" href="/docs/concepts/remote-signature-requests">Por que os provedores remotos não são backends de Signatures.</Card>
+</Cards>

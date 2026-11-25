@@ -216,7 +216,7 @@ describe("Foldkit content", () => {
       );
     const introduction = await page("/docs");
     expect(introduction).toContain("SignatureKit é uma biblioteca da");
-    expect(introduction).toContain("Escolha o caminho");
+    expect(introduction).toContain("Por onde começar");
     expect(introduction).toContain('href=\\"https://licitei.com.br\\"');
     expect(introduction).toContain("language-ts");
     expect(introduction).toMatch(
