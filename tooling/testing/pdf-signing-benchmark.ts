@@ -26,7 +26,13 @@ const syntheticPdf = (core: PdfCoreService, pages: number) =>
           op: "appendContent",
           pageIndex,
           ref: { number: nextObjectNumber + pageIndex + 1, generation: 0 },
-          data: encoder.encode(`BT /F1 14 Tf 32 118 Td <${text.toHex().toUpperCase()}> Tj ET`),
+          data: encoder.encode(
+            `BT /F1 14 Tf 32 118 Td <${Array.from(text, (byte) =>
+              byte.toString(16).padStart(2, "0"),
+            )
+              .join("")
+              .toUpperCase()}> Tj ET`,
+          ),
           compress: true,
         },
       );

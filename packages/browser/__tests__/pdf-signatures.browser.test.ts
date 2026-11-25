@@ -1,9 +1,9 @@
 import { pdfCoreBrowserLayer } from "@signature-kit/engine/wasm/browser";
-import { Effect, Layer, Option, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { expect, it } from "vitest";
 import { LocalClient, localClientLayer } from "../src/client.js";
 import { PdfCore } from "@signature-kit/engine/wasm/pdf-core";
-import { LocalTelemetry } from "@signature-kit/engine/rpc";
+import { LocalTelemetry, TelemetryBatch } from "@signature-kit/engine/rpc";
 import { localTelemetryLayer } from "@signature-kit/engine/telemetry";
 import ecpfUrl from "../../../tooling/testing/fixtures/local/ecpf.p12?inline";
 import {
@@ -11,6 +11,8 @@ import {
   signingCorpus,
   signingOptions,
 } from "../../../tooling/testing/pdf-signing-benchmark.js";
+
+const encodeBatch = Schema.encodeEffect(TelemetryBatch);
 
 const createWorker = () =>
   new Worker(new URL("../src/worker.ts", import.meta.url), { type: "module" });
@@ -55,11 +57,17 @@ it("measures warm-session signing through the Chromium worker on the 1.x corpus"
         yield* client.collectTelemetry();
         const collectMs = performance.now() - drainStarted;
         const pageDrainStarted = performance.now();
-        const { spans, bytes: telemetryBytes } = yield* telemetry.drain;
+        const batch = yield* telemetry.drain;
+        const drainMs = performance.now() - pageDrainStarted;
+        const encodingStarted = performance.now();
+        yield* encodeBatch(batch);
+        const encodeMs = performance.now() - encodingStarted;
+        const { spans, bytes: telemetryBytes } = batch;
         telemetryProfile = {
           signMs,
           collectMs,
-          drainMs: performance.now() - pageDrainStarted,
+          drainMs,
+          encodeMs,
           spans: spans.length,
           attributes: spans.reduce((count, span) => count + span.attributes.length, 0),
           bytes: telemetryBytes,

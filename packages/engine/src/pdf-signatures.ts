@@ -140,23 +140,20 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
   const [start, firstLength, secondStart, secondLength] = byteRange;
   const byteLength = sourceLength + signed.byteLength;
   yield* Effect.annotateCurrentSpan("byteLength", byteLength);
-  yield* Effect.gen(function* () {
-    if (
-      start !== 0 ||
-      firstLength !== contentsStart - 1 ||
-      secondStart !== contentsEnd + 1 ||
-      secondStart + secondLength !== byteLength ||
-      contentsStart <= sourceLength ||
-      contentsEnd <= contentsStart ||
-      signed.byteLength !== prepared.appendix.byteLength
-    )
-      return yield* new LocalError({ code: "selfVerificationFailed" });
-  }).pipe(Effect.withSpan("local.pdf.checkCoverage"));
+  if (
+    start !== 0 ||
+    firstLength !== contentsStart - 1 ||
+    secondStart !== contentsEnd + 1 ||
+    secondStart + secondLength !== byteLength ||
+    contentsStart <= sourceLength ||
+    contentsEnd <= contentsStart ||
+    signed.byteLength !== prepared.appendix.byteLength
+  )
+    return yield* new LocalError({ code: "selfVerificationFailed" });
 
-  const report = yield* signing.signatures("verification").pipe(
-    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
-    Effect.withSpan("local.pdf.findSignature"),
-  );
+  const report = yield* signing
+    .signatures("verification")
+    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
   const signature = report.dictionaries.find(
     (dictionary) =>
       dictionary.kind === "signature" &&
@@ -179,10 +176,9 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
   );
   if (!result) return yield* new LocalError({ code: "selfVerificationFailed" });
 
-  const changes = yield* signing.changes(sourceLength).pipe(
-    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
-    Effect.withSpan("local.pdf.checkChanges"),
-  );
+  const changes = yield* signing
+    .changes(sourceLength)
+    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
   if (
     changes.pageContentChanged ||
     changes.changes.some(

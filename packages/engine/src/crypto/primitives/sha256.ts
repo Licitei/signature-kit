@@ -1,8 +1,8 @@
-const INIT_H = new Uint32Array([
+const INIT_H = new Int32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ]);
 
-const K = new Uint32Array([
+const K = new Int32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
   0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -14,17 +14,17 @@ const K = new Uint32Array([
 ]);
 
 function rotr32(x: number, n: number): number {
-  return ((x >>> n) | (x << (32 - n))) >>> 0;
+  return (x >>> n) | (x << (32 - n));
 }
 
-function processBlock(h: Uint32Array, view: DataView, offset: number, w: Uint32Array): void {
+function processBlock(h: Int32Array, view: DataView, offset: number, w: Int32Array): void {
   for (let t = 0; t < 16; t++) {
-    w[t] = view.getUint32(offset + t * 4, false);
+    w[t] = view.getInt32(offset + t * 4, false);
   }
   for (let t = 16; t < 64; t++) {
     const s0 = rotr32(w[t - 15]!, 7) ^ rotr32(w[t - 15]!, 18) ^ (w[t - 15]! >>> 3);
     const s1 = rotr32(w[t - 2]!, 17) ^ rotr32(w[t - 2]!, 19) ^ (w[t - 2]! >>> 10);
-    w[t] = (w[t - 16]! + s0 + w[t - 7]! + s1) >>> 0;
+    w[t] = (w[t - 16]! + s0 + w[t - 7]! + s1) | 0;
   }
 
   let a = h[0]!;
@@ -38,30 +38,30 @@ function processBlock(h: Uint32Array, view: DataView, offset: number, w: Uint32A
 
   for (let t = 0; t < 64; t++) {
     const S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
-    const ch = (e & f) ^ ((~e >>> 0) & g);
-    const temp1 = (hh + S1 + ch + K[t]! + w[t]!) >>> 0;
+    const ch = (e & f) ^ (~e & g);
+    const temp1 = (hh + S1 + ch + K[t]! + w[t]!) | 0;
     const S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
     const maj = (a & b) ^ (a & c) ^ (b & c);
-    const temp2 = (S0 + maj) >>> 0;
+    const temp2 = (S0 + maj) | 0;
 
     hh = g;
     g = f;
     f = e;
-    e = (d + temp1) >>> 0;
+    e = (d + temp1) | 0;
     d = c;
     c = b;
     b = a;
-    a = (temp1 + temp2) >>> 0;
+    a = (temp1 + temp2) | 0;
   }
 
-  h[0] = (h[0]! + a) >>> 0;
-  h[1] = (h[1]! + b) >>> 0;
-  h[2] = (h[2]! + c) >>> 0;
-  h[3] = (h[3]! + d) >>> 0;
-  h[4] = (h[4]! + e) >>> 0;
-  h[5] = (h[5]! + f) >>> 0;
-  h[6] = (h[6]! + g) >>> 0;
-  h[7] = (h[7]! + hh) >>> 0;
+  h[0] = (h[0]! + a) | 0;
+  h[1] = (h[1]! + b) | 0;
+  h[2] = (h[2]! + c) | 0;
+  h[3] = (h[3]! + d) | 0;
+  h[4] = (h[4]! + e) | 0;
+  h[5] = (h[5]! + f) | 0;
+  h[6] = (h[6]! + g) | 0;
+  h[7] = (h[7]! + hh) | 0;
 }
 
 export function sha256(data: Uint8Array): Uint8Array {
@@ -79,9 +79,9 @@ export function sha256(data: Uint8Array): Uint8Array {
   view.setUint32(totalLen - 8, bitLenHi, false);
   view.setUint32(totalLen - 4, bitLenLo, false);
 
-  const h = new Uint32Array(INIT_H);
+  const h = new Int32Array(INIT_H);
 
-  const schedule = new Uint32Array(64);
+  const schedule = new Int32Array(64);
   for (let i = 0; i < totalLen; i += 64) {
     processBlock(h, view, i, schedule);
   }
@@ -95,10 +95,10 @@ export function sha256(data: Uint8Array): Uint8Array {
 }
 
 export function sha256WithState(
-  initState: Uint32Array,
+  initState: Int32Array,
   data: Uint8Array,
   prefixLen: number,
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   const totalDataLen = prefixLen + data.length;
   const bitLen = totalDataLen * 8;
   const padLen = totalDataLen % 64 < 56 ? 56 - (totalDataLen % 64) : 120 - (totalDataLen % 64);
@@ -114,9 +114,9 @@ export function sha256WithState(
   view.setUint32(totalLen - 8, bitLenHi, false);
   view.setUint32(totalLen - 4, bitLenLo, false);
 
-  const h = new Uint32Array(initState);
+  const h = new Int32Array(initState);
 
-  const schedule = new Uint32Array(64);
+  const schedule = new Int32Array(64);
   for (let i = 0; i < totalLen; i += 64) {
     processBlock(h, view, i, schedule);
   }
@@ -129,33 +129,49 @@ export function sha256WithState(
   return digest;
 }
 
-export function sha256ProcessBlock(blockBytes: Uint8Array): Uint32Array {
-  const h = new Uint32Array(INIT_H);
+export function sha256ProcessBlock(blockBytes: Uint8Array): Int32Array {
+  const h = new Int32Array(INIT_H);
   const view = new DataView(blockBytes.buffer, blockBytes.byteOffset, blockBytes.byteLength);
-  processBlock(h, view, 0, new Uint32Array(64));
+  processBlock(h, view, 0, new Int32Array(64));
   return h;
 }
 
-export function sha256Prefix(prefix: Uint8Array) {
+export function sha256Prefix(
+  prefix: Uint8Array,
+  initialState = INIT_H,
+  initialLength = 0,
+): {
+  readonly digest: (parts?: readonly Uint8Array[]) => Uint8Array<ArrayBuffer>;
+  readonly append: (bytes: Uint8Array) => ReturnType<typeof sha256Prefix>;
+} {
   const blockLength = prefix.length - (prefix.length % 64);
-  const state = new Uint32Array(INIT_H);
+  const state = new Int32Array(initialState);
   const view = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength);
-  const schedule = new Uint32Array(64);
+  const schedule = new Int32Array(64);
   for (let offset = 0; offset < blockLength; offset += 64) {
     processBlock(state, view, offset, schedule);
   }
   const tail = prefix.slice(blockLength);
 
-  return (parts: readonly Uint8Array[]) => {
-    const bytes = new Uint8Array(
-      tail.length + parts.reduce((length, part) => length + part.length, 0),
-    );
-    bytes.set(tail);
-    let offset = tail.length;
-    for (const part of parts) {
-      bytes.set(part, offset);
-      offset += part.length;
-    }
-    return sha256WithState(state, bytes, blockLength);
+  const hashedLength = initialLength + blockLength;
+  return {
+    digest: (parts = []) => {
+      const bytes = new Uint8Array(
+        tail.length + parts.reduce((length, part) => length + part.length, 0),
+      );
+      bytes.set(tail);
+      let offset = tail.length;
+      for (const part of parts) {
+        bytes.set(part, offset);
+        offset += part.length;
+      }
+      return sha256WithState(state, bytes, hashedLength);
+    },
+    append: (part) => {
+      const bytes = new Uint8Array(tail.length + part.length);
+      bytes.set(tail);
+      bytes.set(part, tail.length);
+      return sha256Prefix(bytes, state, hashedLength);
+    },
   };
 }

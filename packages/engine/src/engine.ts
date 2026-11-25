@@ -20,7 +20,7 @@ import {
   ScopedCache,
   Semaphore,
 } from "effect";
-import { A1Hash, a1Profile, importA1SigningKey, sha256Hex } from "./a1-certificate.js";
+import { A1Hash, a1Profile, importA1SigningKey } from "./a1-certificate.js";
 import { LocalTelemetry, Handle, LocalError } from "./rpc.js";
 import type {
   A1OpenInput,
@@ -44,6 +44,11 @@ const cmsHash = {
 type DetachedSigner = Effect.Success<ReturnType<typeof makeDetachedSigner>>;
 const storeRevision = Symbol();
 const loadRevision = Symbol();
+type RevisionBytes = {
+  readonly bytes: Uint8Array<ArrayBuffer>;
+  readonly digest: string;
+  readonly prefix: ReturnType<typeof sha256Prefix>;
+};
 
 export class Documents extends Context.Service<
   Documents,
@@ -51,14 +56,9 @@ export class Documents extends Context.Service<
     readonly open: (bytes: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
     readonly [storeRevision]: (
       bytes: Uint8Array<ArrayBuffer>,
-      digest: string,
+      prefix: RevisionBytes["prefix"],
     ) => Effect.Effect<RevisionRef, LocalError>;
-    readonly [loadRevision]: (
-      handle: Handle,
-    ) => Effect.Effect<
-      { readonly digest: string; readonly bytes: Uint8Array<ArrayBuffer> },
-      LocalError
-    >;
+    readonly [loadRevision]: (handle: Handle) => Effect.Effect<RevisionBytes, LocalError>;
     readonly read: (revision: RevisionRef) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly validate: (revision: RevisionRef) => Effect.Effect<void, LocalError>;
     readonly export: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
@@ -99,16 +99,12 @@ const documentsLayer = (instanceId: InstanceId) =>
     Effect.gen(function* () {
       const telemetry = Option.isSome(yield* Effect.serviceOption(LocalTelemetry));
       const digest: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E> = telemetry
-        ? Effect.withSpan("local.crypto.digest", undefined, { captureStackTrace: false })
+        ? Effect.withSpan("local.crypto.digestPrefix", undefined, { captureStackTrace: false })
         : Function.identity;
       const prefix = `${instanceId}/`;
-      const documents = yield* Ref.make<
-        | HashMap.HashMap<
-            Handle,
-            { readonly digest: string; readonly bytes: Uint8Array<ArrayBuffer> }
-          >
-        | undefined
-      >(HashMap.empty());
+      const documents = yield* Ref.make<HashMap.HashMap<Handle, RevisionBytes> | undefined>(
+        HashMap.empty(),
+      );
       yield* Effect.addFinalizer(() => Ref.set(documents, undefined));
 
       const load = Effect.fnUntraced(function* (handle: Handle) {
@@ -120,12 +116,18 @@ const documentsLayer = (instanceId: InstanceId) =>
         return stored.value;
       });
 
-      const store = Effect.fnUntraced(function* (owned: Uint8Array<ArrayBuffer>, digest: string) {
+      const store = Effect.fnUntraced(function* (
+        owned: Uint8Array<ArrayBuffer>,
+        checkpoint: RevisionBytes["prefix"],
+      ) {
+        const digest = Array.from(checkpoint.digest(), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
         const handle = Handle.make(`${prefix}${crypto.randomUUID()}`);
         const stored = yield* Ref.modify(documents, (current) =>
           current === undefined
             ? [false, current]
-            : [true, HashMap.set(current, handle, { digest, bytes: owned })],
+            : [true, HashMap.set(current, handle, { digest, bytes: owned, prefix: checkpoint })],
         );
         if (!stored) return yield* new LocalError({ code: "runtimeClosed" });
         return { handle, digest, byteLength: owned.byteLength };
@@ -145,8 +147,8 @@ const documentsLayer = (instanceId: InstanceId) =>
         open: Effect.fn(
           function* (bytes) {
             const owned = new Uint8Array(bytes);
-            const fingerprint = yield* sha256Hex(owned).pipe(digest);
-            return yield* store(owned, fingerprint);
+            const checkpoint = yield* Effect.sync(() => sha256Prefix(owned)).pipe(digest);
+            return yield* store(owned, checkpoint);
           },
           (effect, bytes) =>
             effect.pipe(
@@ -375,7 +377,7 @@ export const pdfEngineLayer = Layer.effectContext(
     const cache = yield* ScopedCache.makeWith({
       capacity: Infinity,
       lookup: Effect.fn("local.pdf.open")(function* (handle: Handle) {
-        const { bytes } = yield* documents[loadRevision](handle);
+        const { bytes, prefix } = yield* documents[loadRevision](handle);
         const scope = yield* Effect.scope;
         const view = yield* Effect.cached(
           Effect.gen(function* () {
@@ -409,12 +411,9 @@ export const pdfEngineLayer = Layer.effectContext(
             ),
           ),
         );
-        const prefix = yield* Effect.cached(
-          Effect.sync(() => sha256Prefix(bytes)).pipe(Effect.withSpan("local.crypto.digestPrefix")),
-        );
         const digest: PdfRevision["digest"] = Effect.fn("local.crypto.digest")(
           function* (hash, before, after) {
-            if (hash === "SHA-256") return (yield* prefix)([before, after]);
+            if (hash === "SHA-256") return prefix.digest([before, after]);
             return yield* Effect.tryPromise({
               try: () => {
                 const content = new Uint8Array(bytes.length + before.length + after.length);
@@ -431,7 +430,6 @@ export const pdfEngineLayer = Layer.effectContext(
           const result = new Uint8Array(bytes.length + appendix.length);
           result.set(bytes);
           result.set(appendix, bytes.length);
-          const hash = (yield* prefix)([result.subarray(bytes.length)]);
           if (validate !== undefined) {
             yield* core.openSigningDocument(result).pipe(
               Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
@@ -439,10 +437,7 @@ export const pdfEngineLayer = Layer.effectContext(
               Effect.scoped,
             );
           }
-          const fingerprint = Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join(
-            "",
-          );
-          return yield* documents[storeRevision](result, fingerprint);
+          return yield* documents[storeRevision](result, prefix.append(appendix));
         });
 
         return { byteLength: bytes.length, view, signing, fields, digest, append };

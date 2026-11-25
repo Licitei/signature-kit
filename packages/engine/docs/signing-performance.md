@@ -1,4 +1,6 @@
-# Warm A1 signing
+# Local A1 signing performance
+
+## Previous cut
 
 The four synthetic PDFs come from the 1.x baseline corpus. The timed interval
 starts with a loaded document handle and A1 session and ends with the receipt.
@@ -119,3 +121,40 @@ Reproduce with `bunx vitest run --reporter=verbose
 packages/engine/__tests__/pdf-signatures.performance.test.ts` and
 `bunx vitest run --reporter=verbose --config tooling/vitest/browser.config.ts
 packages/browser/__tests__/pdf-signatures.browser.test.ts`.
+
+## First-sign and telemetry profile on the restructured branch
+
+The source snapshot now yields both its SHA-256 fingerprint and a reusable
+checkpoint. Derived revisions advance that checkpoint using the incremental
+suffix. The SHA-384 and SHA-512 ByteRanges retain their WebCrypto digest path.
+
+A Node trace of the port at Rust opt-level `s` attributed 276.55 ms of the
+first 21 MiB prepare to generating the checkpoint, and 2.81 ms to copying the
+source into WASM. With the single-pass fingerprint and signed 32-bit SHA-256
+arithmetic, the checkpoint took 215.32 ms during open in a separate trace.
+The WASM copy remains scoped to the signing handle.
+
+| 21 MiB, opt-level `s` | Open before | Open after | First sign before | First sign after | Open + first before | Open + first after |
+| --------------------- | ----------: | ---------: | ----------------: | ---------------: | ------------------: | -----------------: |
+| Node                  |       92.72 |     229.03 |            284.81 |            41.15 |              377.54 |             270.18 |
+| Chromium worker       |      117.60 |     324.30 |            313.40 |            79.00 |              431.00 |             403.30 |
+
+A first sign on an already-open handle no longer reads the source again for
+SHA-256. Opening a large document for inspection alone takes longer with this
+change.
+
+A separate warm Chromium signing cycle plus cleanup recorded 42 spans and 43
+attributes before the telemetry change. It now records 39 spans with the same
+43 attributes. Coverage stays in the self-verification span, and the WASM
+operation spans still time signature discovery and revision analysis. Attribute
+validation selects the existing tuple schema by key. Worker collection still
+validates the batch and transfers it through RPC.
+
+| Chromium, opt-level `s` | Buffered bytes before → after | Collection RPC before → after (ms) | Page drain before → after (ms) |
+| ----------------------- | ----------------------------: | ---------------------------------: | -----------------------------: |
+| 20 pages                |               13,109 → 12,261 |                        6.30 → 4.20 |                    0.10 → 0.00 |
+| 200 pages               |               13,110 → 12,262 |                        6.30 → 5.90 |                    0.00 → 0.10 |
+
+Collection and drain run outside the prepare-to-receipt timing. This profile
+records the volume of attributes and gives a combined time for worker encoding,
+transfer, and receipt validation. It does not time each stage separately.

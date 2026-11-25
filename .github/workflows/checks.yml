@@ -92,6 +92,9 @@ jobs:
       - name: Build packages
         run: bun run build
 
+      - name: Install independent PDF and CMS validators
+        run: sudo apt-get update && sudo apt-get install -y qpdf poppler-utils openssl
+
       - name: Run non-browser tests
         run: bun run test:unit --shard=${{ matrix.shard }}/2
 
