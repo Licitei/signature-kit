@@ -320,6 +320,15 @@ const PdfSignatureVerification = Schema.Struct({
   claimedSigningTime: Schema.optional(Schema.Date),
   timestampEvidence: Schema.Literals(["present", "absent"]),
   changes: Schema.optional(PdfReportedChanges),
+  mdp: Schema.optional(
+    Schema.Struct({
+      docMdp: PdfCorePrepareSignatureRequestSchema.fields.docMdp,
+      fieldLocks: PdfCoreRevisionChangesSchema.fields.policies.value.fields.fieldLocks,
+      permittedChanges: PdfCoreRevisionChangesSchema.fields.changes,
+      violations: PdfCoreRevisionChangesSchema.fields.changes,
+      pageContentViolation: Schema.Boolean,
+    }),
+  ),
   trust: Schema.Literals(["notEvaluated", "trusted", "untrusted"]),
   revocation: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("notChecked") }),
@@ -354,6 +363,7 @@ export const ComparisonReport = Schema.Struct({
       "invalidSignature",
       "pageContentChanged",
       "unexpectedChange",
+      "mdpViolation",
       "trailingUnparsedBytes",
       "unknownObjects",
       "untrustedSignature",

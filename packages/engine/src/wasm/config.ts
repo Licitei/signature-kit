@@ -852,6 +852,7 @@ export const PdfCoreRevisionChangeKindSchema = Schema.Literals([
   "pageContent",
   "catalogOther",
   "unknown",
+  "formValue",
 ]);
 export const PdfCoreRevisionEndSchema = byteOffsetSchema;
 export const PdfCoreRevisionChangesSchema = Schema.Struct({
@@ -862,6 +863,20 @@ export const PdfCoreRevisionChangesSchema = Schema.Struct({
       kind: PdfCoreRevisionChangeKindSchema,
       change: Schema.Literals(["added", "modified", "removed"]),
       revisionEnd: byteOffsetSchema,
+      fieldNames: Schema.Array(Schema.String),
+    }),
+  ),
+  policies: Schema.Array(
+    Schema.Struct({
+      byteRange: pdfSignatureByteRangeSchema,
+      docMdp: Schema.optional(pdfSignaturePermissionSchema),
+      fieldName: Schema.String,
+      fieldLocks: Schema.Array(
+        Schema.Struct({
+          action: Schema.optional(Schema.String),
+          fields: Schema.Array(Schema.String),
+        }),
+      ),
     }),
   ),
   pageContentChanged: Schema.Boolean,

@@ -29,6 +29,55 @@ const reportChanges = ({ changes, pageContentChanged }: PdfCoreRevisionChanges) 
   };
 };
 
+const signingChanges = new Set(["signature", "signatureField", "widgetAppearance", "acroForm"]);
+
+const reportPolicy = (
+  policy: PdfCoreRevisionChanges["policies"][number],
+  { changes, pageContentChanged }: PdfCoreRevisionChanges,
+): PdfSignatureVerification["mdp"] => {
+  const { docMdp, fieldLocks } = policy;
+  if (docMdp === undefined && fieldLocks.length === 0) return undefined;
+  const permittedChanges = [];
+  const violations = [];
+  const signingEnds = new Set(
+    changes
+      .filter(
+        ({ kind, change, fieldNames }) =>
+          kind === "signature" && change === "added" && fieldNames.length > 0,
+      )
+      .map(({ revisionEnd }) => revisionEnd),
+  );
+  for (const change of changes) {
+    const { kind, fieldNames, revisionEnd } = change;
+    const fieldViolation = fieldLocks.some(({ action, fields }) =>
+      fieldNames.some((name) => {
+        const listed = fields.some((field) => name === field || name.startsWith(`${field}.`));
+        if (action === "Include") return fields.length === 0 || listed;
+        if (action === "Exclude") return !listed;
+        return true;
+      }),
+    );
+    const docPermits =
+      docMdp === undefined ||
+      (docMdp > 1 &&
+        ((kind === "formValue" && change.change === "modified") ||
+          (kind === "widgetAppearance" && fieldNames.length > 0 && change.change !== "removed") ||
+          (signingChanges.has(kind) &&
+            signingEnds.has(revisionEnd) &&
+            change.change !== "removed") ||
+          (docMdp === 3 && kind === "annotation")));
+    if (fieldViolation || !docPermits) violations.push(change);
+    else permittedChanges.push(change);
+  }
+  return {
+    docMdp,
+    fieldLocks,
+    permittedChanges,
+    violations,
+    pageContentViolation: docMdp !== undefined && pageContentChanged,
+  };
+};
+
 const readVerification = Effect.fn("local.pdf.verify")(function* (
   signing: PdfCoreSigningSession,
   pdf: Uint8Array,
@@ -79,6 +128,9 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
         if (Option.isNone(contents) || range[0] !== 0) return initial;
         const changes = yield* signing.changes(revisionEnd).pipe(Effect.option);
         if (Option.isNone(changes)) return initial;
+        const policy = changes.value.policies.find(({ byteRange }) =>
+          byteRange.every((value, index) => value === range[index]),
+        );
         const covered = {
           ...initial,
           coverage: {
@@ -87,6 +139,8 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
             bytesAfter: pdf.byteLength - revisionEnd,
           },
           changes: reportChanges(changes.value),
+          fieldName: policy?.fieldName ?? initial.fieldName,
+          mdp: policy === undefined ? undefined : reportPolicy(policy, changes.value),
         } satisfies PdfSignatureVerification;
         if (dictionary.kind !== "signature") return covered;
         if (
@@ -157,8 +211,6 @@ export const verifyPdfRevision = (
   options?: PdfVerifyOptions,
 ) => Effect.map(readVerification(signing, pdf, options), ({ signatures }) => ({ signatures }));
 
-const signingChanges = new Set(["signature", "signatureField", "widgetAppearance", "acroForm"]);
-
 export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
   signing: PdfCoreSigningSession,
   sent: Uint8Array,
@@ -205,6 +257,9 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
         change === "removed" ||
         (kind !== "dss" && (!signingChanges.has(kind) || !signedEnds.has(revisionEnd))),
     ) ?? false;
+  const mdpViolation = allSignatures.some(
+    ({ mdp }) => mdp !== undefined && (mdp.pageContentViolation || mdp.violations.length > 0),
+  );
   const unknown = (changes?.unknownObjectCount ?? 0) > 0;
   const untrusted = signatures.some(({ trust }) => trust === "untrusted");
   const reasons: ComparisonReport["reasons"][number][] = [];
@@ -212,6 +267,7 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
   if (invalid) reasons.push("invalidSignature");
   if (pageContentChanged) reasons.push("pageContentChanged");
   if (unexpected) reasons.push("unexpectedChange");
+  if (mdpViolation) reasons.push("mdpViolation");
   if (trailingBytes) reasons.push("trailingUnparsedBytes");
   if (unknown) reasons.push("unknownObjects");
   if (untrusted) reasons.push("untrustedSignature");
@@ -226,7 +282,7 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
       ? "differentDocument"
       : invalid
         ? "integrityFailure"
-        : pageContentChanged || unexpected || trailingBytes
+        : pageContentChanged || unexpected || mdpViolation || trailingBytes
           ? "modifiedAfterSigning"
           : unknown
             ? "unknownChanges"

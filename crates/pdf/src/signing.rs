@@ -109,6 +109,25 @@ pub struct PreparedUpdate {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the WASM ABI serializes the policy"
+)]
+pub struct SignaturePolicy {
+    pub byte_range: [u64; 4],
+    pub doc_mdp: Option<u32>,
+    pub field_locks: Vec<FieldLock>,
+    pub field_name: String,
+}
+
+pub(crate) struct RevisionField {
+    pub(crate) name: String,
+    pub(crate) references: Vec<ObjRef>,
+    pub(crate) signature: bool,
+    pub(crate) value: Option<Object>,
+}
+
+#[derive(Debug)]
 struct Field {
     lock: Option<Object>,
     name: String,
@@ -379,7 +398,7 @@ impl<'doc, 'data> FieldTree<'doc, 'data> {
             .filter(|item| !matches!(item, Object::Null))
             .or(parent.value);
         let mut widgets = Vec::new();
-        if signature && named(self.document, dict, b"Subtype", b"Widget")? {
+        if named(self.document, dict, b"Subtype", b"Widget")? {
             widgets.push(self.widget(object, dict)?);
         }
         let mut terminal = true;
@@ -394,8 +413,8 @@ impl<'doc, 'data> FieldTree<'doc, 'data> {
                 && named(self.document, child_dict, b"Subtype", b"Widget")?
             {
                 self.step(&kid, parent.depth.saturating_add(1))?;
+                widgets.push(self.widget(&kid, child_dict)?);
                 if signature {
-                    widgets.push(self.widget(&kid, child_dict)?);
                     widget_value = widget_value.or_else(|| {
                         child_dict
                             .get(b"V")
@@ -663,8 +682,12 @@ fn doc_mdp(document: &Document<'_>) -> Outcome<(bool, Option<u32>)> {
         return Ok((false, None));
     };
     let signature = document.follow(doc_mdp_entry)?;
+    Ok((true, doc_mdp_permission(document, &signature)?))
+}
+
+fn doc_mdp_permission(document: &Document<'_>, signature: &Object) -> Outcome<Option<u32>> {
     let Some(dict) = signature.as_dict() else {
-        return Ok((true, None));
+        return Ok(None);
     };
     for entry in array(document, dict, b"Reference")? {
         let reference = document.follow(&entry)?;
@@ -677,10 +700,10 @@ fn doc_mdp(document: &Document<'_>) -> Outcome<(bool, Option<u32>)> {
                 .and_then(|value| value.as_integer())
                 .and_then(|number| u32::try_from(number).ok())
                 .filter(|number| (1..=3).contains(number));
-            return Ok((true, permission));
+            return Ok(permission);
         }
     }
-    Ok((true, None))
+    Ok(None)
 }
 
 fn read_field_lock(document: &Document<'_>, object: &Object) -> Outcome<FieldLock> {
@@ -1286,21 +1309,76 @@ fn ensure_first_signature(
     Ok(())
 }
 
-pub(crate) fn signature_references(
+pub(crate) fn signature_policies(
     document: &Document<'_>,
-) -> Outcome<(HashSet<ObjRef>, Vec<Object>)> {
-    let mut fields = HashSet::new();
-    let mut values = Vec::new();
-    for field in FieldTree::read(document, false)?
+    index: &RevisionIndex<'_>,
+) -> Outcome<Vec<SignaturePolicy>> {
+    let catalog = document.catalog()?;
+    let perms = match catalog.as_deref().and_then(Object::as_dict) {
+        Some(dict) => resolved(document, dict, b"Perms")?,
+        None => None,
+    };
+    let certification = perms
+        .as_deref()
+        .and_then(Object::as_dict)
+        .and_then(|dict| dict.get(b"DocMDP"));
+    let mut policies = Vec::new();
+    for field in FieldTree::read(document, false)?.fields {
+        let Some(value) = field.value.filter(|_| field.signature && field.terminal) else {
+            continue;
+        };
+        let Some(byte_range) =
+            signature_value(document, index, &value)?.and_then(|signature| signature.byte_range)
+        else {
+            continue;
+        };
+        let signature = document.follow(&value)?;
+        let mut field_locks = Vec::new();
+        if let Some(dict) = signature.as_dict() {
+            for item in array(document, dict, b"Reference")? {
+                let resolved_item = document.follow(&item)?;
+                if let Some(reference) = resolved_item.as_dict()
+                    && named(document, reference, b"TransformMethod", b"FieldMDP")?
+                {
+                    field_locks.push(match reference.get(b"TransformParams") {
+                        Some(params) => read_field_lock(document, params)?,
+                        None => FieldLock {
+                            action: None,
+                            fields: Vec::new(),
+                        },
+                    });
+                }
+            }
+        }
+        policies.push(SignaturePolicy {
+            byte_range,
+            doc_mdp: if certification == Some(&value) {
+                Some(doc_mdp_permission(document, &signature)?.unwrap_or(1))
+            } else {
+                None
+            },
+            field_locks,
+            field_name: field.name,
+        });
+    }
+    Ok(policies)
+}
+
+pub(crate) fn revision_fields(document: &Document<'_>) -> Outcome<Vec<RevisionField>> {
+    Ok(FieldTree::read(document, false)?
         .fields
         .into_iter()
-        .filter(|field| field.signature)
-    {
-        fields.extend(field.reference);
-        fields.extend(field.widgets.iter().filter_map(|widget| widget.reference));
-        values.extend(field.value);
-    }
-    Ok((fields, values))
+        .map(|field| {
+            let mut references: Vec<_> = field.reference.into_iter().collect();
+            references.extend(field.widgets.iter().filter_map(|widget| widget.reference));
+            RevisionField {
+                name: field.name,
+                references,
+                signature: field.signature,
+                value: field.value,
+            }
+        })
+        .collect())
 }
 
 #[expect(

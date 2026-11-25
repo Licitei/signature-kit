@@ -956,6 +956,22 @@ fn encode_revision_changes(report: &RevisionChanges) -> Outcome<Writer> {
         out.u32(u32::from(change.kind));
         out.u32(u32::from(change.added) | (u32::from(change.removed) << 1_i32));
         out.u32(len32(change.revision_end)?);
+        out.u32(len32(change.field_names.len())?);
+        for field in &change.field_names {
+            sized_bytes(&mut out, field.as_bytes())?;
+        }
+    }
+    out.u32(len32(report.policies.len())?);
+    for policy in &report.policies {
+        for offset in policy.byte_range {
+            out.f64(u64_to_f64(offset));
+        }
+        out.u32(policy.doc_mdp.unwrap_or(0));
+        sized_bytes(&mut out, policy.field_name.as_bytes())?;
+        out.u32(len32(policy.field_locks.len())?);
+        for lock in &policy.field_locks {
+            encode_lock(&mut out, lock)?;
+        }
     }
     out.done()
 }

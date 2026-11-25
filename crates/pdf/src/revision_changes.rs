@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{Entry, MAX_REVISION_WORK, RevisionIndex, SourceKind, Terminal, revision_index};
 use crate::document::{Document, Page};
-use crate::edit::signing::signature_references;
+use crate::edit::signing::{RevisionField, SignaturePolicy, revision_fields, signature_policies};
 use crate::failure::{Failure, Outcome};
 use crate::inspection::Limits;
 use crate::object::{Dict, ObjRef, Object};
@@ -33,6 +33,7 @@ pub enum ChangeKind {
     CatalogOther,
     DocTimeStamp,
     Dss,
+    FormValue,
     PageContent,
     Signature,
     SignatureField,
@@ -54,6 +55,7 @@ impl From<ChangeKind> for u32 {
             ChangeKind::PageContent => 7,
             ChangeKind::CatalogOther => 8,
             ChangeKind::Unknown => 9,
+            ChangeKind::FormValue => 10,
         }
     }
 }
@@ -65,6 +67,7 @@ impl From<ChangeKind> for u32 {
 )]
 pub struct Change {
     pub added: bool,
+    pub field_names: Vec<String>,
     pub kind: ChangeKind,
     pub reference: ObjRef,
     pub removed: bool,
@@ -84,10 +87,12 @@ pub struct RevisionChanges {
     pub changes: Vec<Change>,
     pub from_revision_index: usize,
     pub page_content_changed: bool,
+    pub policies: Vec<SignaturePolicy>,
 }
 
 struct Graph<'doc, 'data> {
     document: &'doc Document<'data>,
+    field_names: HashMap<ObjRef, Vec<String>>,
     pages: Vec<Page>,
     roles: HashMap<ObjRef, u16>,
     signature_fields: HashSet<ObjRef>,
@@ -112,17 +117,71 @@ impl<'doc, 'data> Graph<'doc, 'data> {
         Ok(())
     }
 
+    fn field_dependencies(&mut self, object: &Object, name: &str, depth: usize) -> Outcome<()> {
+        self.work = self.work.saturating_add(1);
+        if depth > 128 || self.work > MAX_REVISION_WORK {
+            return Err(Failure::limit(
+                "PDF field dependency graph exceeds its traversal budget",
+            ));
+        }
+        let next = depth.saturating_add(1);
+        if let Some(reference) = object.as_reference() {
+            let names = self.field_names.entry(reference).or_default();
+            if names.iter().any(|field| field == name) {
+                return Ok(());
+            }
+            names.push(name.to_owned());
+            return self.field_dependencies(self.document.load(reference)?.as_ref(), name, next);
+        }
+        if let Some(items) = object.as_array() {
+            for item in items {
+                self.field_dependencies(item, name, next)?;
+            }
+        } else if let Some(dict) = object.as_dict() {
+            for (key, value) in &dict.entries {
+                if !matches!(key.as_slice(), b"P" | b"Parent" | b"Data") {
+                    self.field_dependencies(value, name, next)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn read(document: &'doc Document<'data>) -> Outcome<Self> {
-        let (signature_fields, values) = signature_references(document)?;
         let mut graph = Self {
             document,
             pages: Vec::new(),
             roles: HashMap::new(),
-            signature_fields,
+            signature_fields: HashSet::new(),
+            field_names: HashMap::new(),
             work: 0,
         };
-        for value in &values {
-            graph.walk(value, SIGNATURE, 0)?;
+        for RevisionField {
+            name,
+            references,
+            signature,
+            value,
+        } in revision_fields(document)?
+        {
+            if signature {
+                graph.signature_fields.extend(references.iter().copied());
+                if let Some(signature_value) = &value {
+                    graph.walk(signature_value, SIGNATURE, 0)?;
+                }
+            }
+            for reference in references {
+                let field = document.load(reference)?;
+                for key in [b"AP".as_slice(), b"V"] {
+                    if let Some(dependency) = field.as_dict().and_then(|dict| dict.get(key)) {
+                        graph.field_dependencies(dependency, &name, 0)?;
+                    }
+                }
+                graph
+                    .field_names
+                    .entry(reference)
+                    .or_default()
+                    .push(name.clone());
+            }
         }
         if let Some(root) = document.trailer().get(b"Root") {
             graph.walk(root, CATALOG, 0)?;
@@ -257,7 +316,17 @@ impl Pair<'_, '_> {
             None => ChangeKind::Unknown,
         };
         result.page_content_changed |= roles & PAGE_DATA != 0 || kind == ChangeKind::PageContent;
+        let mut field_names: Vec<_> = before
+            .and_then(|key| self.old.field_names.get(&key))
+            .into_iter()
+            .chain(after.and_then(|key| self.new.field_names.get(&key)))
+            .flatten()
+            .cloned()
+            .collect();
+        field_names.sort_unstable();
+        field_names.dedup();
         let change = Change {
+            field_names,
             added: before.is_none(),
             kind,
             reference: object_ref,
@@ -299,6 +368,7 @@ impl Pair<'_, '_> {
             {
                 result.changes.push(Change {
                     added: false,
+                    field_names: Vec::new(),
                     kind: ChangeKind::CatalogOther,
                     reference,
                     removed: false,
@@ -486,6 +556,13 @@ fn classify(
             );
         }
     }
+    if matches!(roles, FIELD | FIELD_WIDGET)
+        && !signature_field
+        && before.is_some()
+        && recognized(&keys, &[b"V", b"AS", b"AP", b"I", b"TI"])
+    {
+        return Ok(ChangeKind::FormValue);
+    }
     if roles == CATALOG {
         return Ok(classify_catalog(old_dict, dict, &keys));
     }
@@ -632,10 +709,12 @@ pub fn revision_changes(pdf: &[u8], from: usize, limits: &Limits) -> Outcome<Rev
         .iter()
         .position(|candidate| candidate.eof_end == terminal.eof_end)
         .ok_or_else(|| Failure::invalid("missing PDF revision terminal"))?;
+    let signed = Document::open(pdf.get(..from).unwrap_or_default(), limits)?;
     let mut result = RevisionChanges {
         changes: Vec::new(),
         from_revision_index,
         page_content_changed: false,
+        policies: signature_policies(&signed, &index)?,
     };
     for pair in index.structure.terminals.windows(2) {
         let [previous, current] = pair else { continue };
