@@ -1,11 +1,12 @@
 import { Schema } from "effect";
 
-export const Start = Schema.TaggedStruct("Start", { hold: Schema.Boolean });
+export const Start = Schema.TaggedStruct("Start", {});
 export const Cancel = Schema.TaggedStruct("Cancel", {});
+export const Finish = Schema.TaggedStruct("Finish", {});
 export const Inspect = Schema.TaggedStruct("Inspect", {});
 export const Shutdown = Schema.TaggedStruct("Shutdown", {});
 export const MachineEvent = Schema.Union([Start, Cancel]);
-export const MachineCommand = Schema.Union([MachineEvent, Inspect, Shutdown]);
+export const MachineCommand = Schema.Union([MachineEvent, Finish, Inspect, Shutdown]);
 export const MachineReply = Schema.Union([
   Schema.TaggedStruct("State", {
     path: Schema.Literals(["Idle", "Running", "Done", "Cancelled"]),

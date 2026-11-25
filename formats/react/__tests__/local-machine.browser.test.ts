@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { expect, it } from "vitest";
 import {
   Cancel,
+  Finish,
   Inspect,
   MachineCommand,
   MachineReply,
@@ -47,7 +48,7 @@ it(
             workerGlobal: "DedicatedWorkerGlobalScope",
             interrupted: false,
           });
-          expect(yield* exchange(local, { _tag: "Start", hold: "no" })).toEqual({
+          expect(yield* exchange(local, { _tag: "Unknown" })).toEqual({
             _tag: "Rejected",
             reason: "InvalidMessage",
           });
@@ -55,7 +56,7 @@ it(
             _tag: "Rejected",
             reason: "DisabledEvent",
           });
-          expect(yield* send(local, Start.make({ hold: true }))).toMatchObject({
+          expect(yield* send(local, Start.make({}))).toMatchObject({
             _tag: "State",
             path: "Running",
             interrupted: false,
@@ -80,7 +81,11 @@ it(
       Effect.scoped(
         Effect.gen(function* () {
           const local = yield* worker;
-          expect(yield* send(local, Start.make({ hold: false }))).toEqual({
+          expect(yield* send(local, Start.make({}))).toMatchObject({
+            _tag: "State",
+            path: "Running",
+          });
+          expect(yield* send(local, Finish.make({}))).toEqual({
             _tag: "State",
             path: "Done",
             workerGlobal: "DedicatedWorkerGlobalScope",
