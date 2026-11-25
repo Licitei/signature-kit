@@ -3,7 +3,7 @@ import { Deferred, Effect, Result, Schema, Stream } from "effect";
 import { MachineCommand, MachineEvent, MachineReply } from "./local-machine-protocol";
 
 const states = Machine.state({
-  states: { Idle: {}, Running: { fields: { hold: Schema.Boolean } }, Done: {}, Cancelled: {} },
+  states: { Idle: {}, Running: {}, Done: {}, Cancelled: {} },
 });
 
 const reply = (message: typeof MachineReply.Type) =>
@@ -14,22 +14,22 @@ const reply = (message: typeof MachineReply.Type) =>
 const run = Effect.gen(function* () {
   const entered = yield* Deferred.make<void>();
   const interrupted = yield* Deferred.make<void>();
+  const release = yield* Deferred.make<void>();
   const machine = Machine.make({
     root: states,
     events: Machine.eventsFromSchemas(...MachineEvent.members),
     effects: {
-      work: (hold: boolean) =>
-        Deferred.succeed(entered, undefined).pipe(
-          Effect.andThen(hold ? Effect.never : Effect.void),
-          Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
-        ),
+      work: Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+        Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+      ),
     },
   }).handle({
     initial: { target: "Idle" },
     states: {
-      Idle: { on: { Start: { target: "Running", data: ({ event }) => ({ hold: event.hold }) } } },
+      Idle: { on: { Start: { target: "Running" } } },
       Running: {
-        invoke: { src: "work", input: ({ state }) => state.hold, onDone: { target: "Done" } },
+        invoke: { src: "work", onDone: { target: "Done" } },
         on: { Cancel: { target: "Cancelled" } },
       },
       Done: {},
@@ -53,19 +53,20 @@ const run = Effect.gen(function* () {
             }
             const event = command.success;
             if (event._tag === "Shutdown") return;
-            if (event._tag !== "Inspect") {
+            if (event._tag === "Finish") {
+              const state = yield* ref.state;
+              if (state.state.path !== "Running") {
+                return yield* reply({ _tag: "Rejected", reason: "DisabledEvent" });
+              }
+              yield* Deferred.succeed(release, undefined);
+              yield* Machine.waitFor(ref, ({ state }) => state.state.path === "Done");
+            } else if (event._tag !== "Inspect") {
               const state = yield* ref.state;
               if (!(yield* Machine.can(machine, state, event))) {
                 return yield* reply({ _tag: "Rejected", reason: "DisabledEvent" });
               }
               yield* ref.send(event);
-              if (event._tag === "Cancel") {
-                yield* Deferred.await(interrupted);
-              } else if (event.hold) {
-                yield* Deferred.await(entered);
-              } else {
-                yield* Machine.waitFor(ref, ({ state }) => state.state.path === "Done");
-              }
+              yield* Deferred.await(event._tag === "Cancel" ? interrupted : entered);
             }
             const state = yield* ref.state;
             const path = state.state.path;
