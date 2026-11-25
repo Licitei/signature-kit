@@ -13,16 +13,22 @@ use core::slice;
 use crate::deflate::zlib_compress;
 use crate::diagnostics::{self, PageDiagnostics, TextLayer};
 use crate::document::{self, PageRequest};
-use crate::edit::{DocumentInfo, FieldTarget, Slot, document_info, edit};
+use crate::edit::{
+    DocumentInfo, FieldLock, FieldTarget, PreparedSignature, SignatureField, SignatureFields, Slot,
+    document_info, edit, prepare_signature, signature_fields,
+};
 use crate::failure::{Failure, Outcome};
 use crate::font_tables::{Standard14Font, win_ansi_unicode};
 use crate::inspection::{InspectOptions, Inspection, Limits};
 use crate::layout::{self, TextOptions};
 use crate::lazy::{Lazy, Plan, Tuning};
-use crate::num::widen;
+use crate::num::{u64_to_f64, widen};
+use crate::object::ObjRef;
 use crate::png;
 use crate::render::{self, RenderedPage};
-use crate::revision::{Analysis, Report, analyze, revision_complete};
+use crate::revision::{
+    Analysis, Report, RevisionChanges, analyze, revision_changes, revision_complete,
+};
 use crate::table::Table;
 use crate::write::{Packing, create, merge};
 
@@ -840,6 +846,106 @@ fn encode_signatures(report: &Report) -> Outcome<Writer> {
     out.done()
 }
 
+fn sized_bytes(out: &mut Writer, bytes: &[u8]) -> Outcome<()> {
+    out.u32(len32(bytes.len())?);
+    out.bytes(bytes);
+    Ok(())
+}
+
+fn object_ref(out: &mut Writer, reference: Option<ObjRef>) {
+    out.u32(reference.map_or(0, |value| value.number));
+    out.u32(reference.map_or(0, |value| u32::from(value.generation)));
+}
+
+fn encode_lock(out: &mut Writer, lock: &FieldLock) -> Outcome<()> {
+    sized_bytes(out, lock.action.as_deref().unwrap_or_default().as_bytes())?;
+    out.u32(len32(lock.fields.len())?);
+    for field in &lock.fields {
+        sized_bytes(out, field.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn encode_signature_field(out: &mut Writer, field: &SignatureField) -> Outcome<()> {
+    sized_bytes(out, field.name.as_bytes())?;
+    object_ref(out, field.reference);
+    out.u32(
+        u32::from(field.signed)
+            | (u32::from(field.value.is_some()) << 1_i32)
+            | (u32::from(field.lock.is_some()) << 2_i32),
+    );
+    if let Some(value) = &field.value {
+        out.u32(u32::from(value.byte_range.is_some()));
+        if let Some(range) = value.byte_range {
+            for number in range {
+                out.f64(u64_to_f64(number));
+            }
+        }
+        out.u32(len32(value.revision_end.unwrap_or(0))?);
+        sized_bytes(out, value.sub_filter.as_deref().unwrap_or_default())?;
+    }
+    if let Some(lock) = &field.lock {
+        encode_lock(out, lock)?;
+    }
+    out.u32(len32(field.widgets.len())?);
+    for widget in &field.widgets {
+        object_ref(out, widget.reference);
+        out.u32(widget.page.unwrap_or(u32::MAX));
+        out.u32(u32::from(widget.rect.is_some()));
+        if let Some(rect) = &widget.rect {
+            out.boxed(rect);
+        }
+    }
+    Ok(())
+}
+
+fn encode_signature_fields(report: &SignatureFields) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(64);
+    out.u32(0x4643_5350);
+    out.u32(1);
+    out.u32(report.doc_mdp.unwrap_or(0));
+    out.u32(len32(report.revisions.len())?);
+    for &end in &report.revisions {
+        out.u32(len32(end)?);
+    }
+    out.u32(len32(report.fields.len())?);
+    for field in &report.fields {
+        encode_signature_field(&mut out, field)?;
+    }
+    out.done()
+}
+
+fn encode_preparation(result: &PreparedSignature) -> Outcome<Writer> {
+    let mut out = Writer::with_capacity(result.pdf.len().saturating_add(132));
+    out.u32(0x4f50_5350);
+    out.u32(1);
+    for offset in result.byte_range {
+        out.u32(len32(offset)?);
+    }
+    out.u32(len32(result.contents_start)?);
+    out.u32(len32(result.contents_end)?);
+    out.bytes(&result.sha256);
+    sized_bytes(&mut out, result.sha512.as_deref().unwrap_or_default())?;
+    sized_bytes(&mut out, &result.pdf)?;
+    out.done()
+}
+
+fn encode_revision_changes(report: &RevisionChanges) -> Outcome<Writer> {
+    let mut out =
+        Writer::with_capacity(16_usize.saturating_add(report.changes.len().saturating_mul(20)));
+    out.u32(0x4843_5350);
+    out.u32(1);
+    out.u32(u32::from(report.page_content_changed));
+    out.u32(len32(report.changes.len())?);
+    for change in &report.changes {
+        object_ref(&mut out, Some(change.reference));
+        out.u32(u32::from(change.kind));
+        out.u32(u32::from(change.added) | (u32::from(change.removed) << 1_i32));
+        out.u32(len32(change.revision_end)?);
+    }
+    out.done()
+}
+
 fn merge_request(payload: &[u8]) -> Outcome<MergeRequest<'_>> {
     let mut cursor = 0_usize;
     let next = |position: &mut usize| -> Outcome<u32> {
@@ -1002,6 +1108,62 @@ pub(crate) unsafe extern "C" fn pdf_core_edit(
     finish(pdf.and_then(|document| {
         let output = edit(document, ops?, &Limits::default())?;
         bytes_result(&output)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` and `request_ptr` must satisfy [`view`] for their lengths until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_prepare_signature(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    // SAFETY: forwarded from this function's contract.
+    let request = unsafe { view(request_ptr, request_len) };
+    finish(pdf.and_then(|bytes| {
+        encode_preparation(&prepare_signature(bytes, request?, &Limits::default())?)
+    }))
+}
+
+/// # Safety
+///
+/// `pdf_ptr` must satisfy [`view`] for `pdf_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_signature_fields(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    finish(
+        pdf.and_then(|bytes| {
+            encode_signature_fields(&signature_fields(bytes, &Limits::default())?)
+        }),
+    )
+}
+
+/// # Safety
+///
+/// `pdf_ptr` must satisfy [`view`] for `pdf_len` until the call returns.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn pdf_core_revision_changes(
+    pdf_ptr: *const u8,
+    pdf_len: usize,
+    from_revision_end: usize,
+) -> *mut u8 {
+    // SAFETY: forwarded from this function's contract.
+    let pdf = unsafe { view(pdf_ptr, pdf_len) };
+    finish(pdf.and_then(|bytes| {
+        encode_revision_changes(&revision_changes(
+            bytes,
+            from_revision_end,
+            &Limits::default(),
+        )?)
     }))
 }
 

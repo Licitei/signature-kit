@@ -585,7 +585,15 @@ pub(crate) fn create(sizes: &[[f64; 2]]) -> Outcome<Vec<u8>> {
 }
 
 pub(crate) fn incremental(document: &Document<'_>, changed: &Changes) -> Outcome<Vec<u8>> {
-    let original = document.bytes();
+    incremental_with_prefix(document, changed, document.bytes(), None).map(|(bytes, _)| bytes)
+}
+
+pub(crate) fn incremental_with_prefix(
+    document: &Document<'_>,
+    changed: &Changes,
+    original: &[u8],
+    tracked: Option<ObjRef>,
+) -> Outcome<(Vec<u8>, Option<usize>)> {
     let previous = document
         .startxref()
         .ok_or_else(|| Failure::invalid("missing startxref for incremental update"))?;
@@ -610,7 +618,11 @@ pub(crate) fn incremental(document: &Document<'_>, changed: &Changes) -> Outcome
         written.out.push(b'\n');
     }
     let appended_start = written.out.len();
+    let mut tracked_offset = None;
     for (number, body) in &changed.0 {
+        if tracked.is_some_and(|reference| reference.number == *number) {
+            tracked_offset = Some(written.out.len());
+        }
         let data = stream_bytes(document, body)?;
         written.indirect(*number, body.generation, &body.object, data, &Object::Ref);
     }
@@ -645,7 +657,7 @@ pub(crate) fn incremental(document: &Document<'_>, changed: &Changes) -> Outcome
         );
     }
     written.xref(&trailer, Some(previous), previous_is_stream, size);
-    Ok(written.out)
+    Ok((written.out, tracked_offset))
 }
 
 pub(crate) fn rewrite(
@@ -1073,7 +1085,7 @@ fn push_string(out: &mut Vec<u8>, bytes: &[u8]) {
     out.push(b')');
 }
 
-fn rect_object(rect: [f64; 4]) -> Object {
+pub(crate) fn rect_object(rect: [f64; 4]) -> Object {
     Object::Array(rect.iter().map(|value| number_object(*value)).collect())
 }
 
