@@ -1,0 +1,1070 @@
+{
+  "hardwareConcurrency": 28,
+  "signingWorkers": 7,
+  "poolScaling": [
+    {
+      "signingWorkers": 0,
+      "documents": 200,
+      "prepareMs": {
+        "p50": 360.6,
+        "p95": 423.8,
+        "n": 2
+      },
+      "signMs": {
+        "p50": 748.8,
+        "p95": 782.6,
+        "n": 2
+      },
+      "totalMs": {
+        "p50": 1109.4,
+        "p95": 1206.4,
+        "n": 2
+      },
+      "workerBackingPeakBytes": 69413649
+    },
+    {
+      "signingWorkers": 1,
+      "documents": 200,
+      "prepareMs": {
+        "p50": 513.1,
+        "p95": 550.9,
+        "n": 2
+      },
+      "signMs": {
+        "p50": 639.7,
+        "p95": 898.4,
+        "n": 2
+      },
+      "totalMs": {
+        "p50": 1190.6,
+        "p95": 1411.5,
+        "n": 2
+      },
+      "workerBackingPeakBytes": 135999288
+    },
+    {
+      "signingWorkers": 2,
+      "documents": 200,
+      "prepareMs": {
+        "p50": 306.2,
+        "p95": 315.1,
+        "n": 2
+      },
+      "signMs": {
+        "p50": 412.4,
+        "p95": 434.1,
+        "n": 2
+      },
+      "totalMs": {
+        "p50": 727.5,
+        "p95": 740.3,
+        "n": 2
+      },
+      "workerBackingPeakBytes": 176958553
+    },
+    {
+      "signingWorkers": 4,
+      "documents": 200,
+      "prepareMs": {
+        "p50": 243.2,
+        "p95": 313.3,
+        "n": 2
+      },
+      "signMs": {
+        "p50": 295.4,
+        "p95": 324.7,
+        "n": 2
+      },
+      "totalMs": {
+        "p50": 538.6,
+        "p95": 638,
+        "n": 2
+      },
+      "workerBackingPeakBytes": 259467205
+    },
+    {
+      "signingWorkers": 7,
+      "documents": 200,
+      "prepareMs": {
+        "p50": 284.1,
+        "p95": 351.3,
+        "n": 2
+      },
+      "signMs": {
+        "p50": 270.5,
+        "p95": 289.2,
+        "n": 2
+      },
+      "totalMs": {
+        "p50": 573.3,
+        "p95": 621.8,
+        "n": 2
+      },
+      "workerBackingPeakBytes": 382005964
+    }
+  ],
+  "cold": {
+    "bootMs": {
+      "p50": 899.7,
+      "p95": 1002.5,
+      "n": 7
+    },
+    "a1OpenMs": {
+      "p50": 46.5,
+      "p95": 62.1,
+      "n": 7
+    },
+    "openMs": {
+      "p50": 2.7,
+      "p95": 4.6,
+      "n": 7
+    },
+    "prepareMs": {
+      "p50": 11.6,
+      "p95": 20.4,
+      "n": 7
+    },
+    "confirmMs": {
+      "p50": 14.1,
+      "p95": 23.5,
+      "n": 7
+    },
+    "exportMs": {
+      "p50": 1.5,
+      "p95": 1.8,
+      "n": 7
+    },
+    "totalMs": {
+      "p50": 29.5,
+      "p95": 50.2,
+      "n": 7
+    },
+    "firstSignatureMs": {
+      "p50": 992.2,
+      "p95": 1104.8,
+      "n": 7
+    },
+    "afterBootMs": {
+      "p50": 76.6,
+      "p95": 112.3,
+      "n": 7
+    }
+  },
+  "coldBundled": {
+    "bootMs": {
+      "p50": 297.9,
+      "p95": 1526.9,
+      "n": 7
+    },
+    "a1OpenMs": {
+      "p50": 45.6,
+      "p95": 48.7,
+      "n": 7
+    },
+    "openMs": {
+      "p50": 2.6,
+      "p95": 3.2,
+      "n": 7
+    },
+    "prepareMs": {
+      "p50": 11.9,
+      "p95": 12.6,
+      "n": 7
+    },
+    "confirmMs": {
+      "p50": 13.8,
+      "p95": 14.6,
+      "n": 7
+    },
+    "exportMs": {
+      "p50": 1.7,
+      "p95": 1.8,
+      "n": 7
+    },
+    "totalMs": {
+      "p50": 30.3,
+      "p95": 31.9,
+      "n": 7
+    },
+    "firstSignatureMs": {
+      "p50": 366.8,
+      "p95": 1606,
+      "n": 7
+    },
+    "afterBootMs": {
+      "p50": 75.9,
+      "p95": 80.2,
+      "n": 7
+    }
+  },
+  "coldPrewarmed": {
+    "bootMs": {
+      "p50": 356.1,
+      "p95": 372.6,
+      "n": 7
+    },
+    "prewarmMs": {
+      "p50": 861.8,
+      "p95": 1057.8,
+      "n": 7
+    },
+    "a1OpenMs": {
+      "p50": 54.1,
+      "p95": 73.6,
+      "n": 7
+    },
+    "openMs": {
+      "p50": 2.3,
+      "p95": 2.7,
+      "n": 7
+    },
+    "prepareMs": {
+      "p50": 8.5,
+      "p95": 10.5,
+      "n": 7
+    },
+    "confirmMs": {
+      "p50": 15.7,
+      "p95": 20.1,
+      "n": 7
+    },
+    "exportMs": {
+      "p50": 1.8,
+      "p95": 2,
+      "n": 7
+    },
+    "totalMs": {
+      "p50": 28,
+      "p95": 34,
+      "n": 7
+    },
+    "firstSignatureMs": {
+      "p50": 1301,
+      "p95": 1405,
+      "n": 7
+    },
+    "afterBootMs": {
+      "p50": 80.4,
+      "p95": 104.5,
+      "n": 7
+    }
+  },
+  "coldStages": {
+    "wasmCompile": {
+      "p50": 14.4,
+      "p95": 16.9,
+      "n": 3
+    },
+    "wasmInstantiate": {
+      "p50": 0.3,
+      "p95": 0.6,
+      "n": 3
+    },
+    "a1Open": {
+      "p50": 39.7,
+      "p95": 39.9,
+      "n": 3
+    },
+    "pkcs12Parse": {
+      "p50": 21.1,
+      "p95": 21.5,
+      "n": 3
+    },
+    "keyImport": {
+      "p50": 0.6,
+      "p95": 0.7,
+      "n": 3
+    },
+    "transferIn": {
+      "p50": 1.1,
+      "p95": 1.3,
+      "n": 3
+    },
+    "documentOpen": {
+      "p50": 1.6,
+      "p95": 1.7,
+      "n": 3
+    },
+    "pdfOpen": {
+      "p50": 0.9,
+      "p95": 1,
+      "n": 3
+    },
+    "fieldResolve": {
+      "p50": 2,
+      "p95": 2.3,
+      "n": 3
+    },
+    "apAndIncrementalWrite": {
+      "p50": 2.2,
+      "p95": 2.3,
+      "n": 3
+    },
+    "byteRangeDigest": {
+      "p50": 0.1,
+      "p95": 0.2,
+      "n": 3
+    },
+    "cmsBuild": {
+      "p50": 0.2,
+      "p95": 0.3,
+      "n": 3
+    },
+    "webCryptoSign": {
+      "p50": 0.9,
+      "p95": 0.9,
+      "n": 3
+    },
+    "cmsEmbed": {
+      "p50": 0.5,
+      "p95": 0.6,
+      "n": 3
+    },
+    "selfVerify": {
+      "p50": 5.2,
+      "p95": 5.3,
+      "n": 3
+    },
+    "transferOut": {
+      "p50": 0.8,
+      "p95": 0.9,
+      "n": 3
+    },
+    "exportCopy": {
+      "p50": 0.2,
+      "p95": 0.3,
+      "n": 3
+    },
+    "prepareRpc": {
+      "p50": 1.3,
+      "p95": 1.9,
+      "n": 3
+    },
+    "confirmRpc": {
+      "p50": 1.4,
+      "p95": 1.5,
+      "n": 3
+    },
+    "prepareOther": {
+      "p50": 6.4,
+      "p95": 6.6,
+      "n": 3
+    },
+    "receiptOther": {
+      "p50": 6.6,
+      "p95": 7.4,
+      "n": 3
+    },
+    "prepare": {
+      "p50": 11.7,
+      "p95": 12.1,
+      "n": 3
+    },
+    "confirm": {
+      "p50": 13.5,
+      "p95": 13.9,
+      "n": 3
+    },
+    "confirmWithoutSign": {
+      "p50": 12.6,
+      "p95": 13,
+      "n": 3
+    },
+    "wasmCopiesPerSignature": {
+      "p50": 2.15,
+      "p95": 2.15,
+      "n": 3
+    }
+  },
+  "warm": [
+    {
+      "fixture": "contract-1p",
+      "bytes": 37505,
+      "openMs": {
+        "p50": 1.3,
+        "p95": 1.6,
+        "n": 21
+      },
+      "prepareMs": {
+        "p50": 2.6,
+        "p95": 3.7,
+        "n": 21
+      },
+      "confirmMs": {
+        "p50": 4.4,
+        "p95": 6,
+        "n": 21
+      },
+      "exportMs": {
+        "p50": 0.6,
+        "p95": 2.5,
+        "n": 21
+      },
+      "totalMs": {
+        "p50": 8.8,
+        "p95": 14.5,
+        "n": 21
+      }
+    },
+    {
+      "fixture": "contract-10p",
+      "bytes": 54858,
+      "openMs": {
+        "p50": 1.3,
+        "p95": 1.6,
+        "n": 21
+      },
+      "prepareMs": {
+        "p50": 2.5,
+        "p95": 3.2,
+        "n": 21
+      },
+      "confirmMs": {
+        "p50": 3.7,
+        "p95": 5,
+        "n": 21
+      },
+      "exportMs": {
+        "p50": 0.5,
+        "p95": 0.7,
+        "n": 21
+      },
+      "totalMs": {
+        "p50": 8,
+        "p95": 10,
+        "n": 21
+      }
+    },
+    {
+      "fixture": "report-100p",
+      "bytes": 207793,
+      "openMs": {
+        "p50": 2.9,
+        "p95": 3.3,
+        "n": 21
+      },
+      "prepareMs": {
+        "p50": 5.1,
+        "p95": 7.9,
+        "n": 21
+      },
+      "confirmMs": {
+        "p50": 6.6,
+        "p95": 9.6,
+        "n": 21
+      },
+      "exportMs": {
+        "p50": 0.7,
+        "p95": 0.8,
+        "n": 21
+      },
+      "totalMs": {
+        "p50": 15.3,
+        "p95": 20.3,
+        "n": 21
+      }
+    },
+    {
+      "fixture": "synthetic-21mib",
+      "bytes": 22027211,
+      "openMs": {
+        "p50": 221.4,
+        "p95": 240.9,
+        "n": 11
+      },
+      "prepareMs": {
+        "p50": 5.5,
+        "p95": 10.8,
+        "n": 11
+      },
+      "confirmMs": {
+        "p50": 6.8,
+        "p95": 7.7,
+        "n": 11
+      },
+      "exportMs": {
+        "p50": 14.9,
+        "p95": 16.9,
+        "n": 11
+      },
+      "totalMs": {
+        "p50": 247.8,
+        "p95": 270.5,
+        "n": 11
+      }
+    }
+  ],
+  "batches": [
+    {
+      "documents": 10,
+      "prepareMs": {
+        "p50": 20.9,
+        "p95": 36.4,
+        "n": 5
+      },
+      "signMs": {
+        "p50": 28.8,
+        "p95": 34.7,
+        "n": 5
+      },
+      "totalMs": {
+        "p50": 49.5,
+        "p95": 71.1,
+        "n": 5
+      },
+      "budgetPeakBytes": 2395860,
+      "pageHeapPeakBytes": 26975628,
+      "workerHeapPeakBytes": 362674268,
+      "workerBackingPeakBytes": 339384894,
+      "workers": 8
+    },
+    {
+      "documents": 50,
+      "prepareMs": {
+        "p50": 70,
+        "p95": 90.9,
+        "n": 5
+      },
+      "signMs": {
+        "p50": 80.1,
+        "p95": 92.4,
+        "n": 5
+      },
+      "totalMs": {
+        "p50": 158,
+        "p95": 183.3,
+        "n": 5
+      },
+      "budgetPeakBytes": 8242122,
+      "pageHeapPeakBytes": 31853692,
+      "workerHeapPeakBytes": 384663672,
+      "workerBackingPeakBytes": 370177419,
+      "workers": 8
+    },
+    {
+      "documents": 200,
+      "prepareMs": {
+        "p50": 231.8,
+        "p95": 248.8,
+        "n": 3
+      },
+      "signMs": {
+        "p50": 233,
+        "p95": 239,
+        "n": 3
+      },
+      "totalMs": {
+        "p50": 464.8,
+        "p95": 475.1,
+        "n": 3
+      },
+      "budgetPeakBytes": 28608447,
+      "pageHeapPeakBytes": 42313196,
+      "workerHeapPeakBytes": 393813192,
+      "workerBackingPeakBytes": 391821586,
+      "workers": 8
+    }
+  ],
+  "stages": [
+    {
+      "fixture": "contract-1p",
+      "bytes": 37505,
+      "transferIn": {
+        "p50": 0.7,
+        "p95": 0.9,
+        "n": 11
+      },
+      "documentOpen": {
+        "p50": 1.4,
+        "p95": 1.6,
+        "n": 11
+      },
+      "pdfOpen": {
+        "p50": 0.3,
+        "p95": 0.7,
+        "n": 11
+      },
+      "fieldResolve": {
+        "p50": 1.2,
+        "p95": 1.6,
+        "n": 11
+      },
+      "apAndIncrementalWrite": {
+        "p50": 1.9,
+        "p95": 2.7,
+        "n": 11
+      },
+      "byteRangeDigest": {
+        "p50": 0.1,
+        "p95": 0.1,
+        "n": 11
+      },
+      "cmsBuild": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 11
+      },
+      "webCryptoSign": {
+        "p50": 1.9,
+        "p95": 2.4,
+        "n": 11
+      },
+      "cmsEmbed": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "n": 11
+      },
+      "selfVerify": {
+        "p50": 4.3,
+        "p95": 5,
+        "n": 11
+      },
+      "transferOut": {
+        "p50": 0.6,
+        "p95": 1.2,
+        "n": 11
+      },
+      "exportCopy": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "n": 11
+      },
+      "prepareRpc": {
+        "p50": 0.7,
+        "p95": 0.9,
+        "n": 11
+      },
+      "confirmRpc": {
+        "p50": 0.6,
+        "p95": 1.4,
+        "n": 11
+      },
+      "prepareOther": {
+        "p50": 2.5,
+        "p95": 2.7,
+        "n": 11
+      },
+      "receiptOther": {
+        "p50": 3.3,
+        "p95": 3.9,
+        "n": 11
+      },
+      "prepare": {
+        "p50": 6.2,
+        "p95": 7.3,
+        "n": 11
+      },
+      "confirm": {
+        "p50": 9.9,
+        "p95": 11.3,
+        "n": 11
+      },
+      "confirmWithoutSign": {
+        "p50": 7.9,
+        "p95": 9.2,
+        "n": 11
+      },
+      "wasmCopiesPerSignature": {
+        "p50": 2.15,
+        "p95": 2.15,
+        "n": 11
+      },
+      "workerHeapBytes": {
+        "p50": 346394860,
+        "p95": 348799900,
+        "n": 11
+      },
+      "workerBackingBytes": {
+        "p50": 334022640,
+        "p95": 334513222,
+        "n": 11
+      }
+    },
+    {
+      "fixture": "contract-10p",
+      "bytes": 54858,
+      "transferIn": {
+        "p50": 0.6,
+        "p95": 0.7,
+        "n": 11
+      },
+      "documentOpen": {
+        "p50": 1.7,
+        "p95": 2.4,
+        "n": 11
+      },
+      "pdfOpen": {
+        "p50": 0.3,
+        "p95": 0.6,
+        "n": 11
+      },
+      "fieldResolve": {
+        "p50": 1.3,
+        "p95": 1.7,
+        "n": 11
+      },
+      "apAndIncrementalWrite": {
+        "p50": 2.2,
+        "p95": 3.5,
+        "n": 11
+      },
+      "byteRangeDigest": {
+        "p50": 0.1,
+        "p95": 0.1,
+        "n": 11
+      },
+      "cmsBuild": {
+        "p50": 0.1,
+        "p95": 0.4,
+        "n": 11
+      },
+      "webCryptoSign": {
+        "p50": 2,
+        "p95": 3.3,
+        "n": 11
+      },
+      "cmsEmbed": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "n": 11
+      },
+      "selfVerify": {
+        "p50": 4.7,
+        "p95": 6.1,
+        "n": 11
+      },
+      "transferOut": {
+        "p50": 0.4,
+        "p95": 0.6,
+        "n": 11
+      },
+      "exportCopy": {
+        "p50": 0.2,
+        "p95": 0.2,
+        "n": 11
+      },
+      "prepareRpc": {
+        "p50": 0.7,
+        "p95": 1,
+        "n": 11
+      },
+      "confirmRpc": {
+        "p50": 0.7,
+        "p95": 0.8,
+        "n": 11
+      },
+      "prepareOther": {
+        "p50": 2.2,
+        "p95": 3,
+        "n": 11
+      },
+      "receiptOther": {
+        "p50": 3,
+        "p95": 4.3,
+        "n": 11
+      },
+      "prepare": {
+        "p50": 6,
+        "p95": 8.8,
+        "n": 11
+      },
+      "confirm": {
+        "p50": 9.8,
+        "p95": 14.2,
+        "n": 11
+      },
+      "confirmWithoutSign": {
+        "p50": 7.9,
+        "p95": 10.9,
+        "n": 11
+      },
+      "wasmCopiesPerSignature": {
+        "p50": 2.1,
+        "p95": 2.1,
+        "n": 11
+      },
+      "workerHeapBytes": {
+        "p50": 347872876,
+        "p95": 349788772,
+        "n": 11
+      },
+      "workerBackingBytes": {
+        "p50": 335665655,
+        "p95": 336318904,
+        "n": 11
+      }
+    },
+    {
+      "fixture": "report-100p",
+      "bytes": 207793,
+      "transferIn": {
+        "p50": 0.8,
+        "p95": 1.4,
+        "n": 11
+      },
+      "documentOpen": {
+        "p50": 4.6,
+        "p95": 5.4,
+        "n": 11
+      },
+      "pdfOpen": {
+        "p50": 0.3,
+        "p95": 0.4,
+        "n": 11
+      },
+      "fieldResolve": {
+        "p50": 3.5,
+        "p95": 3.9,
+        "n": 11
+      },
+      "apAndIncrementalWrite": {
+        "p50": 5.5,
+        "p95": 5.8,
+        "n": 11
+      },
+      "byteRangeDigest": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 11
+      },
+      "cmsBuild": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "n": 11
+      },
+      "webCryptoSign": {
+        "p50": 1.9,
+        "p95": 2,
+        "n": 11
+      },
+      "cmsEmbed": {
+        "p50": 0.1,
+        "p95": 0.1,
+        "n": 11
+      },
+      "selfVerify": {
+        "p50": 8.5,
+        "p95": 9.2,
+        "n": 11
+      },
+      "transferOut": {
+        "p50": 0.5,
+        "p95": 1,
+        "n": 11
+      },
+      "exportCopy": {
+        "p50": 0.3,
+        "p95": 0.4,
+        "n": 11
+      },
+      "prepareRpc": {
+        "p50": 0.8,
+        "p95": 1.1,
+        "n": 11
+      },
+      "confirmRpc": {
+        "p50": 0.5,
+        "p95": 0.7,
+        "n": 11
+      },
+      "prepareOther": {
+        "p50": 2.2,
+        "p95": 2.5,
+        "n": 11
+      },
+      "receiptOther": {
+        "p50": 2.9,
+        "p95": 3.1,
+        "n": 11
+      },
+      "prepare": {
+        "p50": 11.8,
+        "p95": 12.3,
+        "n": 11
+      },
+      "confirm": {
+        "p50": 13.6,
+        "p95": 14.2,
+        "n": 11
+      },
+      "confirmWithoutSign": {
+        "p50": 11.7,
+        "p95": 12.2,
+        "n": 11
+      },
+      "wasmCopiesPerSignature": {
+        "p50": 2.03,
+        "p95": 2.03,
+        "n": 11
+      },
+      "workerHeapBytes": {
+        "p50": 347036972,
+        "p95": 350325400,
+        "n": 11
+      },
+      "workerBackingBytes": {
+        "p50": 340107178,
+        "p95": 342290224,
+        "n": 11
+      }
+    },
+    {
+      "fixture": "synthetic-21mib",
+      "bytes": 22027211,
+      "transferIn": {
+        "p50": 0.7,
+        "p95": 1.5,
+        "n": 11
+      },
+      "documentOpen": {
+        "p50": 222.9,
+        "p95": 238.9,
+        "n": 11
+      },
+      "pdfOpen": {
+        "p50": 2.9,
+        "p95": 3.5,
+        "n": 11
+      },
+      "fieldResolve": {
+        "p50": 0.7,
+        "p95": 1.1,
+        "n": 11
+      },
+      "apAndIncrementalWrite": {
+        "p50": 1.1,
+        "p95": 1.9,
+        "n": 11
+      },
+      "byteRangeDigest": {
+        "p50": 0,
+        "p95": 0.1,
+        "n": 11
+      },
+      "cmsBuild": {
+        "p50": 0,
+        "p95": 0.2,
+        "n": 11
+      },
+      "webCryptoSign": {
+        "p50": 1,
+        "p95": 1.2,
+        "n": 11
+      },
+      "cmsEmbed": {
+        "p50": 0.1,
+        "p95": 0.1,
+        "n": 11
+      },
+      "selfVerify": {
+        "p50": 5,
+        "p95": 7.2,
+        "n": 11
+      },
+      "transferOut": {
+        "p50": 0.5,
+        "p95": 4.3,
+        "n": 11
+      },
+      "exportCopy": {
+        "p50": 7.9,
+        "p95": 16.1,
+        "n": 11
+      },
+      "prepareRpc": {
+        "p50": 0.7,
+        "p95": 4.3,
+        "n": 11
+      },
+      "confirmRpc": {
+        "p50": 0.6,
+        "p95": 4.1,
+        "n": 11
+      },
+      "prepareOther": {
+        "p50": 1.4,
+        "p95": 2.4,
+        "n": 11
+      },
+      "receiptOther": {
+        "p50": 1.7,
+        "p95": 2.7,
+        "n": 11
+      },
+      "prepare": {
+        "p50": 6.2,
+        "p95": 8.6,
+        "n": 11
+      },
+      "confirm": {
+        "p50": 7.7,
+        "p95": 11.3,
+        "n": 11
+      },
+      "confirmWithoutSign": {
+        "p50": 6.8,
+        "p95": 10.1,
+        "n": 11
+      },
+      "wasmCopiesPerSignature": {
+        "p50": 2,
+        "p95": 2,
+        "n": 11
+      },
+      "workerHeapBytes": {
+        "p50": 342609952,
+        "p95": 343275504,
+        "n": 11
+      },
+      "workerBackingBytes": {
+        "p50": 420437203,
+        "p95": 464491625,
+        "n": 11
+      }
+    }
+  ],
+  "batchItems": [
+    {
+      "documents": 10,
+      "itemPrepareMs": {
+        "p50": 13.5,
+        "p95": 18.6,
+        "n": 10
+      },
+      "itemConfirmMs": {
+        "p50": 15.4,
+        "p95": 24.1,
+        "n": 10
+      },
+      "droppedSpans": 9
+    },
+    {
+      "documents": 50,
+      "itemPrepareMs": {
+        "p50": 23.6,
+        "p95": 27.2,
+        "n": 50
+      },
+      "itemConfirmMs": {
+        "p50": 27.7,
+        "p95": 39.6,
+        "n": 50
+      },
+      "droppedSpans": 9
+    },
+    {
+      "documents": 200,
+      "itemPrepareMs": {
+        "p50": 22.7,
+        "p95": 29.8,
+        "n": 200
+      },
+      "itemConfirmMs": {
+        "p50": 14.2,
+        "p95": 20.6,
+        "n": 200
+      },
+      "droppedSpans": 9
+    }
+  ]
+}

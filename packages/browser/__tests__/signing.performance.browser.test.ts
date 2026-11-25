@@ -560,4 +560,45 @@ it("measures cold and warm single signatures and batches in a Chromium worker", 
   const json = JSON.stringify(result, null, 2);
   console.info(json);
   await commands.writeBenchmark("signing", json);
+
+  const p50 = (value: unknown) =>
+    typeof value === "object" && value !== null && "p50" in value && typeof value.p50 === "number"
+      ? value.p50
+      : Infinity;
+  const warm = (fixture: string, metric: string) =>
+    p50(
+      new Map(Object.entries(result.warm.find((row) => row.fixture === fixture) ?? {})).get(metric),
+    );
+  const stage = (fixture: string, metric: string) =>
+    p50(
+      new Map(Object.entries(result.stages.find((row) => row.fixture === fixture) ?? {})).get(
+        metric,
+      ),
+    );
+  const batch = (documents: number) =>
+    p50(result.batches.find((row) => row.documents === documents)?.totalMs);
+  const gates = [
+    { name: "contract-1p prepare", measured: warm("contract-1p", "prepareMs"), limit: 5 },
+    { name: "contract-1p confirm", measured: warm("contract-1p", "confirmMs"), limit: 8 },
+    {
+      name: "contract-1p confirm without sign",
+      measured: warm("contract-1p", "confirmMs") - stage("contract-1p", "webCryptoSign"),
+      limit: 5,
+    },
+    { name: "report-100p total", measured: warm("report-100p", "totalMs"), limit: 30 },
+    { name: "synthetic-21mib prepare", measured: warm("synthetic-21mib", "prepareMs"), limit: 12 },
+    { name: "synthetic-21mib confirm", measured: warm("synthetic-21mib", "confirmMs"), limit: 15 },
+    { name: "synthetic-21mib total", measured: warm("synthetic-21mib", "totalMs"), limit: 350 },
+    { name: "batch of 50 total", measured: batch(50), limit: 400 },
+    { name: "batch of 200 total", measured: batch(200), limit: 900 },
+    {
+      name: "cold bundled first signature",
+      measured: p50(result.coldBundled["firstSignatureMs"]),
+      limit: 700,
+    },
+    { name: "cold A1 open", measured: p50(result.cold["a1OpenMs"]), limit: 80 },
+  ];
+  for (const { name, measured, limit } of gates) {
+    expect.soft(measured, name).toBeLessThanOrEqual(limit);
+  }
 }, 900_000);

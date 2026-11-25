@@ -183,6 +183,18 @@ The peak counter measures these reservations. Chromium's heap, internal PDF and
 cryptographic scratch allocations, and browser storage overhead have their own
 lifetimes.
 
+The shipped worker signs batch items on `navigator.hardwareConcurrency - 1`
+helper workers. Helpers receive the session's non-extractable `CryptoKey` and
+certificate chain from the runtime worker, so the PFX is parsed once. The runtime
+worker keeps handles, digests, receipts, admission, the byte budget and events.
+A custom entry passes the pool as the third argument of `localWorker`, for example
+`localWorker(false, {}, { size: 4, createWorker: () => new Worker(new URL("./signing-helper.js", import.meta.url), { type: "module" }) })`;
+omit it to sign batch items in the runtime worker.
+
+Helpers start on the first batch. Call `LocalClient.prewarm()` while the page is
+idle and online to start them early and warm the signing path; helper scripts are
+fetched like the worker itself.
+
 To opt in to recovery, import `localWorker` from
 `@signature-kit/browser/worker-runtime`. In your worker entry, pass
 `localWorker(false, { resumeBatches: true })` to `BrowserRuntime.runMain`.
