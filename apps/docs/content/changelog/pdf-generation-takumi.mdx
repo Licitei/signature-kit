@@ -1,5 +1,5 @@
 ---
-title: takumi-pdf generation for signature anchors
+title: Geração com takumi-pdf para âncoras de assinatura
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
@@ -8,6 +8,6 @@ packages:
     version: 0.0.4
 ---
 
-## takumi-pdf generation for signature anchors
+## Geração com takumi-pdf para âncoras de assinatura
 
-Adds `takumi-pdf` 0.20.0 for PDF generation in the docs registry and pdf-core regression corpus. The shadcn `pdf-signature-anchor` registry item now ships invisible text (`{{signature}}`) and URI link (`https://signature.invalid/anchor`) markers for `findPdfTextAnchors`. Committed fixture `takumi-declaration.pdf` with golden anchor metadata exercises multi-page Portuguese copy, Liberation fonts, and paginated footers. Generation benchmarks compare takumi-pdf vs react-pdf under `shared/pdf-core/bench/`. `@react-pdf/renderer` is removed from `apps/docs`; react-pdf preview (`signature-pdf-viewer`) is unchanged.
+Adicionamos o `takumi-pdf` 0.20.0 para gerar PDFs no registry da documentação e no corpus de regressão do pdf-core. O item `pdf-signature-anchor` do registry shadcn agora traz marcadores de texto invisível (`{{signature}}`) e de link URI (`https://signature.invalid/anchor`) para o `findPdfTextAnchors`. A fixture versionada `takumi-declaration.pdf`, com metadados de âncora de referência, cobre texto em português em várias páginas, fontes Liberation e rodapés paginados. Benchmarks de geração comparam takumi-pdf e react-pdf em `shared/pdf-core/bench/`. O `@react-pdf/renderer` foi removido de `apps/docs`; a prévia com react-pdf (`signature-pdf-viewer`) não mudou.

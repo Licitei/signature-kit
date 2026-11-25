@@ -1,25 +1,25 @@
 ---
 title: Clicksign
-description: "Create Clicksign v1 document requests with Redacted credentials and typed SignatureKit errors."
+description: "Crie requests de documento Clicksign v1 com credenciais Redacted e erros tipados do SignatureKit."
 ---
 
-Clicksign creates the upstream document and signer, optionally notifies the recipient, then returns a Clicksign-owned `ClicksignSignatureRequestAttributes` record. It is not a local `Signatures` backend and it does not mutate PDF bytes in-process.
+Clicksign cria o documento e o signatário no upstream, opcionalmente notifica o destinatário e devolve um registro `ClicksignSignatureRequestAttributes` próprio da Clicksign. Não é backend local de `Signatures` e não muta bytes de PDF no processo.
 
-## Installation
+## Instalação
 
 ```package-install
 @signature-kit/http @signature-kit/clicksign
 ```
 
-## When to use
+## Quando usar
 
-Use Clicksign when the signing ceremony, reminders, and audit trail live in Clicksign. Use local A1/PDF signing when your app must produce signed bytes directly.
+Use Clicksign quando a cerimônia, lembretes e trilha de auditoria vivem na Clicksign. Use assinatura A1/PDF local quando o app precisa produzir os bytes assinados diretamente.
 
-<Callout type="error" title="Keep credentials Redacted">
-  Provider tokens enter as `Redacted.make(...)` and are unwrapped only inside the package HTTP boundary. Never pass remote tokens to React components or logs.
+<Callout type="error" title="Mantenha credenciais Redacted">
+  Tokens de provider entram como `Redacted.make(...)` e são abertos apenas dentro da fronteira HTTP do pacote. Nunca passe tokens remotos para componentes React ou logs.
 </Callout>
 
-## Minimal request
+## Request mínimo
 
 ```ts title="clicksign.ts"
 import * as Alchemy from "alchemy"
@@ -42,11 +42,11 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
     state: Alchemy.inMemoryState(),
   },
   Effect.gen(function* () {
-    return yield* ClicksignSignatureRequest("service-agreement", {
-      title: "Service agreement",
-      message: "Review and sign this document.",
+    return yield* ClicksignSignatureRequest("contrato-de-servico", {
+      title: "Contrato de serviço",
+      message: "Revise e assine este documento.",
       documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],
-      recipients: [{ name: "Ada Lovelace", email: "ada@example.com", role: "signer" }],
+      recipients: [{ name: "Ana Silva", email: "ada@example.com", role: "signer" }],
       send: true,
     })
   }),
@@ -54,27 +54,27 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
 ```
 
 
-## Provider facts
+## Fatos do provider
 
-- v1 flow creates a document, signer, and optional notification.
-- One document per request; the props schema is a single-document tuple, so passing more than one document fails at schema decode time as `signature-kit.INVALID_INPUT`.
-- The access token is unwrapped only inside the package HTTP boundary.
+- Fluxo v1 cria documento, signatário e notificação opcional.
+- Um documento por request; o schema de props é uma tupla de documento único, então passar mais de um documento falha na decodificação do schema como `signature-kit.INVALID_INPUT`.
+- O token é aberto apenas na fronteira HTTP do pacote.
 
-## Errors
+## Erros
 
-Invalid input, remote HTTP failures, and invalid response shapes fail as `SignatureKitError`. The `provider`, `operation`, and HTTP `status` fields are preserved when the upstream response exposes them.
+Input inválido, falhas HTTP remotas e shapes de resposta inválidos falham como `SignatureKitError`. Os campos `provider`, `operation` e `status` HTTP são preservados quando a resposta upstream expõe esses dados.
 
-## Related
+## Relacionados
 
 <Cards>
-  <Card title="Assinafy" href="/en-US/docs/providers/assinafy">Document, signer, and assignment inside an account.</Card>
-  <Card title="ZapSign" href="/en-US/docs/providers/zapsign">Bearer-token PDF upload with first signing URL.</Card>
-  <Card title="Remote requests" href="/en-US/docs/concepts/remote-signature-requests">Why remote providers are not local Signatures backends.</Card>
+  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatário e assignment dentro de uma conta.</Card>
+  <Card title="ZapSign" href="/docs/providers/zapsign">Upload PDF com Bearer token e primeira URL de assinatura.</Card>
+  <Card title="Requests remotos" href="/docs/concepts/remote-signature-requests">Por que providers remotos não são backends locais de Signatures.</Card>
 </Cards>
 
-## Wait for a final state
+## Aguardar um estado final
 
-`waitForClicksignSignatureRequest(options, id, pollInterval)` reads immediately and polls while the request is `draft` or `sent`. It returns the provider's final state, including cancellation, rejection, deletion, or expiry; inspect `state` before downloading. The interval must be positive and finite. Read failures propagate immediately without automatic retry. Interruption cancels the active read and stops future polls. The caller owns the deadline:
+`waitForClicksignSignatureRequest(options, id, pollInterval)` consulta imediatamente e repete enquanto o pedido estiver em `draft` ou `sent`. O retorno preserva o estado final do provedor, inclusive cancelamento, recusa, exclusão ou expiração; confira `state` antes de baixar o documento. O intervalo deve ser positivo e finito. Falhas de consulta são propagadas sem retry automático. Interromper o Effect cancela a consulta ativa e impede novas consultas. O prazo fica com a aplicação:
 
 ```ts
 import { waitForClicksignSignatureRequest } from "@signature-kit/clicksign";

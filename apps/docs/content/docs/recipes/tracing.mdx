@@ -1,11 +1,11 @@
 ---
-title: OpenTelemetry tracing
-description: "Export SignatureKit spans for PDF parsing, signing and provider calls to an OTLP collector or the console."
+title: Rastreamento com OpenTelemetry
+description: "Exporte spans do SignatureKit de leitura de PDF, assinatura e chamadas a provedores para um coletor OTLP ou para o console."
 ---
 
-Every public SignatureKit operation runs inside an Effect span. PDF parsing, Markdown extraction, certificate loading, signing, verification and remote-provider calls each produce one. The packages only use Effect's built-in tracer and depend on neither `@opentelemetry/api` nor an SDK. If your app doesn't install an exporter, Effect's native tracer discards each span when it ends.
+Toda operação pública do SignatureKit roda dentro de um span do Effect. Leitura de PDF, extração de Markdown, carga de certificado, assinatura, verificação e chamadas a provedores remotos geram um span cada. Os pacotes usam só o tracer nativo do Effect e não dependem de `@opentelemetry/api` nem de um SDK. Se a sua app não instala um exportador, o tracer nativo descarta cada span quando ele termina.
 
-To export them, provide the official [`@effect/opentelemetry`](https://effect.website/docs/observability/tracing/) layer at the app boundary.
+Para exportar, forneça a camada oficial do [`@effect/opentelemetry`](https://effect.website/docs/observability/tracing/) na fronteira da app.
 
 ```sh
 bun add @effect/opentelemetry @opentelemetry/api @opentelemetry/resources \
@@ -51,13 +51,13 @@ await Effect.runPromise(
 )
 ```
 
-Run `bun tracing.ts contract.pdf` to print the spans to the console. Set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` to send them to a collector, such as Jaeger, Grafana Tempo or the OpenTelemetry Collector, over OTLP/HTTP.
+Rode `bun tracing.ts contrato.pdf` para imprimir os spans no console. Defina `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` para enviá-los via OTLP/HTTP a um coletor, como Jaeger, Grafana Tempo ou o OpenTelemetry Collector.
 
-Provide the tracing layer beneath the SignatureKit layers with `Layer.provideMerge`, not beside them with `Layer.mergeAll`. Otherwise, spans emitted while a layer is being built, such as `pdfCore.load`, never reach the exporter.
+Forneça a camada de rastreamento por baixo das camadas do SignatureKit com `Layer.provideMerge`, não ao lado delas com `Layer.mergeAll`. Caso contrário, os spans emitidos enquanto uma camada é construída, como `pdfCore.load`, não chegam ao exportador.
 
-## Span tree
+## Árvore de spans
 
-The example above produces this tree:
+O exemplo acima gera esta árvore:
 
 ```text
 contracts.extractMarkdown
@@ -69,23 +69,23 @@ pdfCore.text                    signature_kit.pdf.bytes, .page_count, .output_fo
   pdfCore.wasm.decode           signature_kit.wasm.result_bytes
 ```
 
-`pdfCore.wasm.run` covers parsing, layout, table stitching and Markdown rendering inside the Wasm core. The Rust core takes no imports, so it has no clock, and per-page spans would add overhead to the hot path.
+`pdfCore.wasm.run` cobre a leitura, o layout, a junção de tabelas e a renderização de Markdown dentro do núcleo Wasm. O núcleo em Rust não recebe imports, então não tem relógio, e spans por página adicionariam custo ao caminho crítico.
 
-Span names follow `<scope>.<operation>`:
+Os nomes dos spans seguem `<escopo>.<operação>`:
 
-- `pdfCore.*`: PDF engine operations. Lazy documents add `pdfCore.lazy.plan`, `pdfCore.lazy.supply` and `pdfCore.readRange`.
-- `pdf.*`: signing in `@signature-kit/pdf`. `pdf.sign` contains `pdf.placeholder`, `pdf.byteRange.prepare`, `pdf.signer.load`, `pdf.cms.create` and `pdf.contents.embed`. Verification, stamping, merging, anchor search and batch workflows have their own spans.
-- `crypto.pkcs12.*`, `certificates.*`, `a1.*` and `signatures.*`: certificate loading, key import, signing and verification.
-- `cms.*`, `xml.*` and `iti.*`: CMS, timestamping, XML-DSig and ITI validation.
-- `assinafy.*`, `clicksign.*`, `documenso.*`, `docuseal.*` and `zapsign.*`: remote signature-request lifecycles.
-- HTTP calls are client spans named after the method (`GET`, `POST`). They carry `http.request.method`, `http.response.status_code`, `server.address` and `signature_kit.provider`.
+- `pdfCore.*`: operações do motor de PDF. Documentos lazy adicionam `pdfCore.lazy.plan`, `pdfCore.lazy.supply` e `pdfCore.readRange`.
+- `pdf.*`: assinatura em `@signature-kit/pdf`. `pdf.sign` contém `pdf.placeholder`, `pdf.byteRange.prepare`, `pdf.signer.load`, `pdf.cms.create` e `pdf.contents.embed`. Verificação, carimbo, junção, busca de âncoras e lotes têm spans próprios.
+- `crypto.pkcs12.*`, `certificates.*`, `a1.*` e `signatures.*`: carga de certificado, importação de chave, assinatura e verificação.
+- `cms.*`, `xml.*` e `iti.*`: CMS, carimbo do tempo, XML-DSig e validação no ITI.
+- `assinafy.*`, `clicksign.*`, `documenso.*`, `docuseal.*` e `zapsign.*`: ciclo de vida das solicitações de assinatura remota.
+- Chamadas HTTP são spans de cliente com o nome do método (`GET`, `POST`). Elas trazem `http.request.method`, `http.response.status_code`, `server.address` e `signature_kit.provider`.
 
-Failed operations end with status `ERROR` and an `exception` event carrying the tagged error.
+Operações que falham terminam com status `ERROR` e um evento `exception` com o erro tipado.
 
-## What spans never contain
+## O que os spans nunca contêm
 
-Attributes carry sizes, counts, algorithm and status literals, and provider names. They never contain document text, anchor search strings, certificate subjects or serials, CPF/CNPJ, passwords, keys, digests, signature bytes, upstream request ids, or URLs with paths or query strings.
+Os atributos trazem tamanhos, contagens, literais de algoritmo e de status, e nomes de provedor. Eles nunca contêm texto do documento, termos de busca de âncoras, titular ou número de série do certificado, CPF/CNPJ, senhas, chaves, digests, bytes de assinatura, ids de solicitação do provedor nem URLs com caminho ou query string.
 
-## Promise entry points
+## Entradas Promise
 
-`@signature-kit/pdf-core/promise` and `@signature-kit/pdf-core/node` run Effect's default tracer, so their spans are never exported. Use the Effect API with the layer above when you need traces.
+`@signature-kit/pdf-core/promise` e `@signature-kit/pdf-core/node` usam o tracer padrão do Effect, então os spans delas nunca são exportados. Use a API Effect com a camada acima quando precisar de traces.

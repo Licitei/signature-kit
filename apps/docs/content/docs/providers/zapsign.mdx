@@ -1,25 +1,25 @@
 ---
 title: ZapSign
-description: "Create ZapSign PDF requests with Bearer credentials and typed SignatureKit errors."
+description: "Crie requests de PDF na ZapSign com credenciais Bearer e erros tipados do SignatureKit."
 ---
 
-ZapSign uploads a PDF, creates the signer list, and returns the first signing URL when available. The provider owns the external ceremony; SignatureKit owns request validation and typed errors.
+ZapSign faz upload do PDF, cria a lista de signatários e devolve a primeira URL de assinatura quando disponível. O provider possui a cerimônia externa; SignatureKit possui validação e erros tipados.
 
-## Installation
+## Instalação
 
 ```package-install
 @signature-kit/http @signature-kit/zapsign
 ```
 
-## When to use
+## Quando usar
 
-Use ZapSign when the product wants a hosted signing link after a simple PDF upload. Use local A1/PDF signing when no upstream ceremony is involved.
+Use ZapSign quando o produto quer um link hospedado de assinatura após upload simples de PDF. Use A1/PDF local quando não há cerimônia upstream.
 
-<Callout type="error" title="Keep credentials Redacted">
-  Provider tokens enter as `Redacted.make(...)` and are unwrapped only inside the package HTTP boundary. Never pass remote tokens to React components or logs.
+<Callout type="error" title="Mantenha credenciais Redacted">
+  Tokens de provider entram como `Redacted.make(...)` e são abertos apenas dentro da fronteira HTTP do pacote. Nunca passe tokens remotos para componentes React ou logs.
 </Callout>
 
-## Minimal request
+## Request mínimo
 
 ```ts title="zapsign.ts"
 import * as Alchemy from "alchemy"
@@ -41,11 +41,11 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
     state: Alchemy.inMemoryState(),
   },
   Effect.gen(function* () {
-    return yield* ZapSignSignatureRequest("service-agreement", {
-      title: "Service agreement",
-      message: "Review and sign this document.",
+    return yield* ZapSignSignatureRequest("contrato-de-servico", {
+      title: "Contrato de serviço",
+      message: "Revise e assine este documento.",
       documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],
-      recipients: [{ name: "Ada Lovelace", email: "ada@example.com", routingOrder: 1 }],
+      recipients: [{ name: "Ana Silva", email: "ada@example.com", routingOrder: 1 }],
       send: true,
     })
   }),
@@ -53,28 +53,28 @@ export default class Contracts extends Alchemy.Stack<Contracts>()(
 ```
 
 
-## Provider facts
+## Fatos do provider
 
-- The `environment` option accepts `"production"`, `"sandbox"`, or `"brazil"` (base URL `https://br.api.zapsign.com.br/api/v1`).
-- Accepts a single PDF per request, matching ZapSign document upload.
-- Authorization uses a Redacted bearer token.
-- Unsupported MIME types or multiple documents fail before the HTTP call.
+- A opção `environment` aceita `"production"`, `"sandbox"` ou `"brazil"` (base URL `https://br.api.zapsign.com.br/api/v1`).
+- Aceita um único PDF por request, como o upload de documento da ZapSign.
+- Autorização usa bearer token em `Redacted`.
+- MIME inválido ou múltiplos documentos falham antes da chamada HTTP.
 
-## Errors
+## Erros
 
-Invalid input, remote HTTP failures, and invalid response shapes fail as `SignatureKitError`. The `provider`, `operation`, and HTTP `status` fields are preserved when the upstream response exposes them.
+Input inválido, falhas HTTP remotas e shapes de resposta inválidos falham como `SignatureKitError`. Os campos `provider`, `operation` e `status` HTTP são preservados quando a resposta upstream expõe esses dados.
 
-## Related
+## Relacionados
 
 <Cards>
-  <Card title="Clicksign" href="/en-US/docs/providers/clicksign">v1 document + signer flow, one document per request.</Card>
-  <Card title="Assinafy" href="/en-US/docs/providers/assinafy">Document, signer, and assignment inside an account.</Card>
-  <Card title="Remote requests" href="/en-US/docs/concepts/remote-signature-requests">Why remote providers are not local Signatures backends.</Card>
+  <Card title="Clicksign" href="/docs/providers/clicksign">Fluxo v1 de documento + signatário, um documento por request.</Card>
+  <Card title="Assinafy" href="/docs/providers/assinafy">Documento, signatário e assignment dentro de uma conta.</Card>
+  <Card title="Requests remotos" href="/docs/concepts/remote-signature-requests">Por que providers remotos não são backends locais de Signatures.</Card>
 </Cards>
 
-## Wait for a final state
+## Aguardar um estado final
 
-`waitForZapSignSignatureRequest(options, id, pollInterval)` reads immediately and polls while the request is `draft` or `sent`. It returns the provider's final state, including cancellation, rejection, deletion, or expiry; inspect `state` before downloading. The interval must be positive and finite. Read failures propagate immediately without automatic retry. Interruption cancels the active read and stops future polls. The caller owns the deadline:
+`waitForZapSignSignatureRequest(options, id, pollInterval)` consulta imediatamente e repete enquanto o pedido estiver em `draft` ou `sent`. O retorno preserva o estado final do provedor, inclusive cancelamento, recusa, exclusão ou expiração; confira `state` antes de baixar o documento. O intervalo deve ser positivo e finito. Falhas de consulta são propagadas sem retry automático. Interromper o Effect cancela a consulta ativa e impede novas consultas. O prazo fica com a aplicação:
 
 ```ts
 import { waitForZapSignSignatureRequest } from "@signature-kit/zapsign";

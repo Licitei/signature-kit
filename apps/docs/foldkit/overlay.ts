@@ -4,7 +4,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { overlay } from "./styles/overlay";
 import { sx } from "./styles/sx";
 
-export const OverlayKind = Schema.Literals(["signer", "providers", "quickstart", "menu", "search"]);
+export const OverlayKind = Schema.Literals(["signer", "menu", "search"]);
 export type OverlayKind = typeof OverlayKind.Type;
 
 export const overlayView = <Message>(
@@ -16,12 +16,13 @@ export const overlayView = <Message>(
     closeLabel: string;
     panels: ReadonlyArray<readonly [OverlayKind, Html]>;
     layer: ReadonlyArray<Html>;
+    wide?: boolean;
     toParentMessage: (message: Dialog.Message) => Message;
   },
 ) => {
   const state = input.model.animation.transitionState;
   const closed = state === "EnterStart" || state === "LeaveAnimating";
-  const modal = input.kind === "providers" || input.kind === "search";
+  const modal = input.kind === "search" || input.kind === "signer";
   return h.submodel({
     slotId: "site-overlay",
     model: input.model,
@@ -39,7 +40,8 @@ export const overlayView = <Message>(
                   h,
                   overlay.panel,
                   modal ? overlay.modal : overlay.sheet,
-                  input.kind === "signer" && overlay.sheetWide,
+                  input.kind === "signer" && overlay.signer,
+                  input.kind === "signer" && input.wide === true && overlay.signerWide,
                   closed && (modal ? overlay.modalClosed : overlay.sheetClosed),
                 ),
               ],

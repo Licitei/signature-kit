@@ -1,4 +1,3 @@
-import { Popover } from "@foldkit/ui";
 import { describe, expect, it } from "vitest";
 import { searchDocs } from "./search";
 import { parseContent, renderContent } from "./content";
@@ -25,50 +24,46 @@ describe("documentation search", () => {
             body: h.main([], renderContent(page.nodes, h)),
           }),
         },
-        { flags: { locale: "en-US", path: "/docs" }, buildId: "test" },
+        { flags: { path: "/docs" }, buildId: "test" },
       ),
     );
     for (const term of ["unique needle", "12345"]) {
       expect(result.html).toContain(term);
-      expect(searchDocs("en-US", term, pages).length).toBeGreaterThan(0);
+      expect(searchDocs(term, pages).length).toBeGreaterThan(0);
     }
   });
 
-  it("finds titles and body text in the selected locale", () => {
+  it("finds titles and body text in the pt-BR corpus without a locale prefix", () => {
+    expect(searchDocs("INTRODUÇÃO").some((result) => result.href === "/docs")).toBe(true);
     expect(
-      searchDocs("en-US", "INTRODUCTION").some((result) => result.href === "/en-US/docs"),
-    ).toBe(true);
-    expect(
-      searchDocs("en-US", "shadcn registry").some((result) =>
-        result.href.startsWith("/en-US/docs/recipes/react-components"),
+      searchDocs("itens do registry").some((result) =>
+        result.href.startsWith("/docs/recipes/react-components"),
       ),
     ).toBe(true);
-    const accented = searchDocs("pt-BR", "certificado");
+    const accented = searchDocs("certificado");
     expect(accented.length).toBeGreaterThan(0);
-    expect(accented.every((result) => result.href.startsWith("/pt-BR/docs"))).toBe(true);
-    expect(searchDocs("pt-BR", "ASSINATURA")).toEqual(searchDocs("pt-BR", "assinatura"));
-    const unaccented = searchDocs("pt-BR", "servico");
+    expect(accented.every((result) => result.href.startsWith("/docs"))).toBe(true);
+    expect(searchDocs("ASSINATURA")).toEqual(searchDocs("assinatura"));
+    const unaccented = searchDocs("servico");
     expect(unaccented.length).toBeGreaterThan(0);
-    expect(unaccented).toEqual(searchDocs("pt-BR", "serviço"));
+    expect(unaccented).toEqual(searchDocs("serviço"));
   });
 
   it("uses the rendered explicit heading anchor and bounds unsafe queries", () => {
     expect(
-      searchDocs("pt-BR", "catálogo de erros").some((result) =>
-        result.href.endsWith("#error-catalog"),
-      ),
+      searchDocs("catálogo de erros").some((result) => result.href.endsWith("#error-catalog")),
     ).toBe(true);
-    expect(searchDocs("en-US", " ")).toEqual([]);
-    expect(searchDocs("en-US", "x".repeat(201))).toEqual([]);
-    expect(searchDocs("en-US", "<script>alert(1)</script>")).toEqual([]);
+    expect(searchDocs(" ")).toEqual([]);
+    expect(searchDocs("x".repeat(201))).toEqual([]);
+    expect(searchDocs("<script>alert(1)</script>")).toEqual([]);
   });
 
   it("indexes visible attributes and the generated catalog with real anchors", async () => {
-    const steps = searchDocs("pt-BR", "Instale os pacotes");
+    const steps = searchDocs("Instale os pacotes");
     const step = steps.find(
       (result) =>
         result.heading === "Instale os pacotes" &&
-        result.href.startsWith("/pt-BR/docs/get-started/installation"),
+        result.href.startsWith("/docs/get-started/installation"),
     );
     expect(step).toBeDefined();
     if (step !== undefined) {
@@ -81,14 +76,12 @@ describe("documentation search", () => {
           expect(page.application.html).toContain(`id="${decodeURIComponent(anchor)}"`);
       }
     }
-    expect(
-      searchDocs("pt-BR", "Verificações locais não são validade jurídica").length,
-    ).toBeGreaterThan(0);
-    expect(searchDocs("pt-BR", "Carregue um A1, leia a identidade").length).toBeGreaterThan(0);
+    expect(searchDocs("Verificações locais não são validade jurídica").length).toBeGreaterThan(0);
+    expect(searchDocs("Carregue um A1, leia a identidade").length).toBeGreaterThan(0);
     const entry = signatureKitErrorCatalog[0];
     expect(entry).toBeDefined();
     if (entry === undefined) return;
-    const match = searchDocs("pt-BR", entry.code).find((result) =>
+    const match = searchDocs(entry.code).find((result) =>
       result.href.includes("/signing/errors#err-"),
     );
     expect(match).toBeDefined();
@@ -98,52 +91,52 @@ describe("documentation search", () => {
     expect(page._tag).toBe("Rendered");
     if (page._tag === "Rendered")
       expect(page.application.html).toContain(`id="${decodeURIComponent(anchor ?? "")}"`);
-  });
+  }, 20_000);
 
-  it("updates the single model and recalculates results for the locale", async () => {
-    const initial = init({ locale: "pt-BR", path: "/search" }).model;
+  it("updates the single model and recalculates results", async () => {
+    const initial = init({ path: "/search" }).model;
     const changed = update(initial, Message.QueryChanged({ value: "configuração & a/b" })).model;
     expect(changed.query).toBe("configuração & a/b");
     expect(update(changed, Message.SearchSubmitted()).model.results).toEqual(
-      searchDocs("pt-BR", changed.query),
+      searchDocs(changed.query),
     );
-    const toggled = update(
-      changed,
-      Message.GotLanguagePopoverMessage({ message: Popover.Message.RequestedOpen() }),
-    ).model;
-    expect(toggled.languagePopover.isOpen).toBe(true);
+    const certificate = update(initial, Message.QueryChanged({ value: "certificado" })).model;
+    expect(certificate.results.length).toBeGreaterThan(0);
     const rendered = await Effect.runPromise(
       Server.renderToString(
-        { Flags, init: () => ({ model: toggled }), view },
-        { flags: { locale: "pt-BR", path: "/search" }, isHydratable: false },
+        { Flags, init: () => ({ model: certificate }), view },
+        { flags: { path: "/search" }, isHydratable: false },
       ),
     );
-    expect(rendered.html).toContain("/en-US/search?q=configura%C3%A7%C3%A3o+%26+a%2Fb");
-    expect(rendered.html).toContain('aria-current="page"');
-    expect(init({ locale: "en-US", path: "/search", query: changed.query }).model.results).toEqual(
-      searchDocs("en-US", changed.query),
+    expect(rendered.html).toContain('action="/search"');
+    expect(rendered.html).toContain('value="certificado"');
+    expect(rendered.html).not.toMatch(/href="\/(en-US|pt-BR)\//);
+    for (const result of certificate.results.slice(0, 3))
+      expect(rendered.html).toContain(`href="${result.href}"`);
+    expect(init({ path: "/search", query: changed.query }).model.results).toEqual(
+      searchDocs(changed.query),
     );
   });
 
   it("bounds and escapes SSR query flags", async () => {
     const malicious = "</script><script>alert(1)</script>";
     const page = await renderPage(
-      new Request(`https://signaturekit.dev/en-US/search?q=${encodeURIComponent(malicious)}`),
+      new Request(`https://signaturekit.dev/search?q=${encodeURIComponent(malicious)}`),
       "test",
     );
     expect(page._tag).toBe("Rendered");
     if (page._tag === "Rendered") expect(page.application.html).not.toContain(malicious);
     const long = await renderPage(
-      new Request(`https://signaturekit.dev/en-US/search?q=${"x".repeat(201)}`),
+      new Request(`https://signaturekit.dev/search?q=${"x".repeat(201)}`),
       "test",
     );
     expect(JSON.stringify(long)).not.toContain("x".repeat(201));
   });
 
-  it("renders a localized GET search and results on the server", async () => {
+  it("renders a GET search and results on the server", async () => {
     const result = JSON.stringify(
       await renderPage(
-        new Request("https://signaturekit.dev/pt-BR/search?q=cat%C3%A1logo%20de%20erros"),
+        new Request("https://signaturekit.dev/search?q=cat%C3%A1logo%20de%20erros"),
         "test",
       ),
     );
@@ -151,8 +144,8 @@ describe("documentation search", () => {
     expect(result).toContain("#error-catalog");
     expect(result).toContain('name=\\"q\\"');
     const empty = JSON.stringify(
-      await renderPage(new Request("https://signaturekit.dev/en-US/search"), "test"),
+      await renderPage(new Request("https://signaturekit.dev/search"), "test"),
     );
-    expect(empty).toContain("Enter a search term");
+    expect(empty).toContain("Digite um termo para buscar.");
   });
 });

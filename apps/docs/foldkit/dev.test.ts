@@ -24,7 +24,7 @@ it("serves social WebP through the real Vite development server", async () => {
           return expect.fail("Missing development server address");
         yield* Effect.promise(async (signal) => {
           const origin = `http://127.0.0.1:${address.port}`;
-          const response = await fetch(`${origin}/en-US/index.webp`, {
+          const response = await fetch(`${origin}/index.webp`, {
             signal,
             headers: { "sec-fetch-dest": "image" },
           });
@@ -37,12 +37,12 @@ it("serves social WebP through the real Vite development server", async () => {
           expect([(dimensions & 0x3fff) + 1, ((dimensions >>> 14) & 0x3fff) + 1]).toEqual([
             1200, 630,
           ]);
-          const head = await fetch(`${origin}/en-US/index.webp`, { method: "HEAD", signal });
+          const head = await fetch(`${origin}/index.webp`, { method: "HEAD", signal });
           expect(head.status).toBe(200);
           expect(await head.text()).toBe("");
-          const missing = await fetch(`${origin}/en-US/blog/not-real.webp`, { signal });
+          const missing = await fetch(`${origin}/blog/not-real.webp`, { signal });
           expect(missing.status).toBe(404);
-          const post = await fetch(`${origin}/en-US/index.webp`, { method: "POST", signal });
+          const post = await fetch(`${origin}/index.webp`, { method: "POST", signal });
           expect(post.status).toBe(405);
           expect(post.headers.get("allow")).toBe("GET, HEAD");
         });

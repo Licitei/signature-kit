@@ -1,5 +1,5 @@
 ---
-title: PDF writing and signature analysis in the in-house core
+title: Escrita de PDF e análise de assinaturas no núcleo próprio
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
@@ -10,18 +10,18 @@ packages:
     version: 0.2.0
 ---
 
-## PDF writing and signature analysis in the in-house core
+## Escrita de PDF e análise de assinaturas no núcleo próprio
 
-`@signature-kit/pdf-core` now writes PDFs. `PdfCore.edit(pdf, operations, options)` applies typed edit operations (set or add objects and streams, dictionary and array edits, flag ORs, page content with `q`/`Q` wrapping, page resources, image XObjects with soft masks, standard-14 fonts, signature dictionaries with `/ByteRange` and `/Contents` placeholders, catalog repair) and serializes the result either as an incremental update that leaves the original bytes untouched (classic table or xref stream, chained with `/Prev`) or as a full rewrite with renumbered objects and optional object streams. `PdfCore.merge` copies selected pages from several documents, `PdfCore.document` describes pages, annotations, signature slots, and the next free signature field name, and `PdfCore.deflate` exposes the new in-house zlib encoder. Invalid edit requests fail with `pdfCore.INVALID_OPTIONS`.
+O `@signature-kit/pdf-core` agora escreve PDFs. `PdfCore.edit(pdf, operations, options)` aplica operações de edição tipadas (definir ou adicionar objetos e streams, edições de dicionário e array, OR de flags, conteúdo de página com `q`/`Q` em volta, recursos de página, image XObjects com soft masks, fontes standard-14, dicionários de assinatura com placeholders de `/ByteRange` e `/Contents`, reparo do catálogo) e serializa o resultado como atualização incremental que não mexe nos bytes originais (tabela clássica ou xref stream, encadeada com `/Prev`) ou como reescrita completa com objetos renumerados e object streams opcionais. `PdfCore.merge` copia páginas selecionadas de vários documentos, `PdfCore.document` descreve páginas, anotações, campos de assinatura e o próximo nome de campo de assinatura livre, e `PdfCore.deflate` expõe o novo codificador zlib próprio. Pedidos de edição inválidos falham com `pdfCore.INVALID_OPTIONS`.
 
-`PdfCore.signatures(pdf, analysis)` and `PdfCore.revisionComplete(pdf, end)` port the signature and revision analysis that `@signature-kit/pdf` previously ran on pdf-lib's parser internals: signature dictionaries with exact `/ByteRange` and `/Contents` offsets, per-revision indirect stream lengths, classic, xref-stream, and hybrid cross-reference sections, object streams (signature dictionaries are never packed into one), AcroForm reachability, and the same fail-closed limits (128 revisions, 1,024 signature dictionaries, 200,000 traversal steps). The wasm module exports six new functions; the ABI is documented in the README.
+`PdfCore.signatures(pdf, analysis)` e `PdfCore.revisionComplete(pdf, end)` trazem a análise de assinaturas e revisões que o `@signature-kit/pdf` antes rodava sobre os internos do parser do pdf-lib: dicionários de assinatura com offsets exatos de `/ByteRange` e `/Contents`, tamanhos de stream indireto por revisão, seções de referência cruzada clássicas, em xref stream e híbridas, object streams (dicionários de assinatura nunca são empacotados em um), alcance do AcroForm e os mesmos limites que falham de forma fechada (128 revisões, 1.024 dicionários de assinatura, 200.000 passos de travessia). O módulo wasm exporta seis funções novas; a ABI está documentada no README.
 
-## PDF signing and verification run on the in-house core
+## Assinatura e verificação de PDF rodam no núcleo próprio
 
-`@signature-kit/pdf` no longer parses signatures or writes signature placeholders with pdf-lib. `signPdf` appends the signature dictionary, widget, AcroForm field, and `/SigFlags` as an incremental update, so the source bytes and every earlier signature stay valid; documents whose cross-reference chain fails the same completeness check the verifier applies are rewritten instead, and already signed documents always fail closed rather than being rewritten. Linearized documents, whose first-page cross-reference section points forward with `/Prev`, are accepted by both the writer and the verifier, so they are signed incrementally too.
+O `@signature-kit/pdf` não analisa mais assinaturas nem grava placeholders de assinatura com o pdf-lib. `signPdf` adiciona o dicionário de assinatura, o widget, o campo do AcroForm e `/SigFlags` como atualização incremental, então os bytes de origem e todas as assinaturas anteriores continuam válidos; documentos cuja cadeia de referência cruzada não passa na mesma checagem de completude que o verificador aplica são reescritos, e documentos já assinados sempre falham de forma fechada em vez de serem reescritos. Documentos linearizados, cuja seção de referência cruzada da primeira página aponta para a frente com `/Prev`, são aceitos tanto pelo escritor quanto pelo verificador, então também são assinados de forma incremental.
 
-The requirement `PdfCore` is added to `signPdf`, `verifyPdf`, `verifyPdfSignatures`, `mergePdfs`, `removePdfLinkAnchors`, `stampPdfVisibleSignature`, `stampPdfRubric`, `stampPdfRubricOnPages` (when `forIncrementalUpdate` is omitted), `signPdfSignatureField`, `signPdfSignatureBatch`, and `preparePdfSigningBatch`, and to the `@signature-kit/pdf/byte-range` helpers. `hasPdfByteRange` and `hasPdfSignatureDictionary` are now Effects. Provide `pdfCoreBrowserLayer` in the browser or `pdfCoreFileLayer` on Node and Bun; the PDF worker provides it inside the worker.
+O requisito `PdfCore` passa a valer para `signPdf`, `verifyPdf`, `verifyPdfSignatures`, `mergePdfs`, `removePdfLinkAnchors`, `stampPdfVisibleSignature`, `stampPdfRubric`, `stampPdfRubricOnPages` (quando `forIncrementalUpdate` é omitido), `signPdfSignatureField`, `signPdfSignatureBatch` e `preparePdfSigningBatch`, e para os helpers de `@signature-kit/pdf/byte-range`. `hasPdfByteRange` e `hasPdfSignatureDictionary` agora são Effects. Forneça `pdfCoreBrowserLayer` no navegador ou `pdfCoreFileLayer` no Node e no Bun; o worker de PDF fornece o serviço dentro do worker.
 
-## ITI conformance
+## Conformidade ITI
 
-`validatePdfConformance` and `validatePdfWithIti` require `PdfCore` because they read signatures and revisions through `@signature-kit/pdf/byte-range`.
+`validatePdfConformance` e `validatePdfWithIti` exigem `PdfCore`, porque leem assinaturas e revisões por `@signature-kit/pdf/byte-range`.

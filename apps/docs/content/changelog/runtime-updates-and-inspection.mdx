@@ -1,5 +1,5 @@
 ---
-title: Runtime updates and signature inspection
+title: Atualizações de runtime e inspeção de assinaturas
 date: 2026-11-06T17:46:39.022Z
 packages:
   "@signature-kit/signatures":
@@ -34,19 +34,24 @@ packages:
     version: 0.2.3
   "@signature-kit/iti":
     version: 0.1.1
+cover:
+  kind: states
+  caption: Polling cancelável até o estado final
+  states: [draft, sent, completed]
+  code: "waitForClicksignSignatureRequest(options, id, Duration.seconds(2))"
 ---
 
-## Runtime updates and signature inspection
+## Atualizações de runtime e inspeção de assinaturas
 
-Update to stable Effect 4 and current compatible dependencies. Error classes use the native branded Schema.TaggedError constructor. Use TypeScript 7 for builds and checks with the official TypeScript 6 API compatibility alias. Upgrade direct ASN.1 dependencies to v4, interchange SDK values through DER, and encode timestamp requests with the native RFC 3161 schema. Packages do not require a consumer ASN.1 override.
+Atualizamos para o Effect 4 estável e para as versões compatíveis atuais das dependências. As classes de erro usam o construtor nativo de Schema.TaggedError com brand. Usamos TypeScript 7 para builds e checagens, com o alias oficial de compatibilidade da API do TypeScript 6. Atualizamos as dependências diretas de ASN.1 para a v4, trocamos valores com os SDKs via DER e codificamos requisições de carimbo do tempo com o schema nativo da RFC 3161. Os pacotes não exigem override de ASN.1 por parte de quem os consome.
 
-Add per-signature PDF verification, certificate-validity inspection through the Effect clock, and cancellable polling for final request states in all five remote signers. Applications control polling deadlines and retry policy; a terminal request is not necessarily completed.
+Adicionamos verificação de PDF por assinatura, inspeção de validade de certificado pelo relógio do Effect e polling cancelável até o estado final das solicitações nos cinco assinadores remotos. A aplicação controla os prazos de polling e a política de retry; uma solicitação em estado final não está necessariamente concluída.
 
 
-Update the documentation runtime, use the loading task for PDF.js cleanup, and fix dynamic Node routes by forwarding Request.duplex in the Hono adapter. Keep the app and Fumapress on a single Waku runtime.
+Atualizamos o runtime da documentação, usamos a loading task para a limpeza do PDF.js e corrigimos rotas dinâmicas no Node repassando Request.duplex no adaptador do Hono. O app e o Fumapress ficam em um único runtime Waku.
 
-Reject non-finite domain numbers, validate XML signature methods before WebCrypto verification, and preserve unexpected SDK failures as defects. Strengthen native Effect and accessibility lint checks.
+Rejeitamos números de domínio não finitos, validamos os métodos de assinatura XML antes da verificação WebCrypto e preservamos falhas inesperadas de SDK como defeitos. Reforçamos as checagens de lint nativas do Effect e de acessibilidade.
 
-Add branded PDF stamps with proportional PNG logos and handwriting, theme/title controls, and a PDF-rendered preview. Run browser PDF preparation and preview rendering through native Effect worker RPC with scoped termination and typed validation failures. Preserve caller buffers and signing dates across the worker boundary.
+Adicionamos carimbos de PDF com marca, logos PNG proporcionais e texto manuscrito, controles de tema e título e uma prévia renderizada do PDF. A preparação do PDF no navegador e a renderização da prévia rodam via worker RPC nativo do Effect, com encerramento por escopo e falhas de validação tipadas. Os buffers de quem chama e as datas de assinatura são preservados na fronteira do worker.
 
-Fix structured batch stamp option conflicts, reject badges without usable drawing space, and prevent premeasured text from wrapping into adjacent rows. Restore signer interaction after React StrictMode mount replay and register localized Fumapress demo routes through the framework's native locale option. Add real worker, StrictMode, PDF text-stream, cropped/rotated page, cancellation, and invalid-image regressions.
+Corrigimos conflitos de opções de carimbo estruturado em lote, rejeitamos badges sem espaço útil de desenho e impedimos que texto pré-medido quebre para as linhas vizinhas. Restauramos a interação do assinador após o replay de montagem do React StrictMode e registramos as rotas de demonstração localizadas do Fumapress pela opção nativa de locale do framework. Adicionamos regressões com worker real, StrictMode, text streams de PDF, páginas recortadas/rotacionadas, cancelamento e imagens inválidas.

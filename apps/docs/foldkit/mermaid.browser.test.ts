@@ -1,7 +1,6 @@
 import { Effect, Schema } from "effect";
 import * as Server from "foldkit/experimental/server";
 import { parseContent, renderContent, resolveContent } from "./content";
-import type { Locale } from "./content";
 import { Flags, init } from "./main";
 import type { Model } from "./main";
 import { Runtime } from "foldkit";
@@ -80,11 +79,11 @@ it("keeps source for invalid syntax without an unhandled rejection", async () =>
   window.removeEventListener("unhandledrejection", listener);
 }, 20_000);
 
-it("renders localized SSR card grids with individual direct children", async () => {
-  for (const locale of ["en-US", "pt-BR"] satisfies Locale[]) {
-    const page = resolveContent(locale, "docs", "");
+it("renders SSR card grids with individual direct children", async () => {
+  {
+    const page = resolveContent("docs", "");
     expect(page).toBeDefined();
-    if (page === undefined) continue;
+    if (page === undefined) return;
     const result = await Effect.runPromise(
       Server.renderToString<Model, never, typeof Flags.Type>(
         {
@@ -95,7 +94,7 @@ it("renders localized SSR card grids with individual direct children", async () 
             body: h.main([], renderContent(page.nodes, h)),
           }),
         },
-        { flags: { locale, path: "/docs" }, isHydratable: false },
+        { flags: { path: "/docs" }, isHydratable: false },
       ),
     );
     const doc = new DOMParser().parseFromString(result.html, "text/html");
@@ -127,7 +126,7 @@ it("preserves inline content around a card grid", async () => {
           body: h.main([], renderContent(page.nodes, h)),
         }),
       },
-      { flags: { locale: "en-US", path: "/docs" }, isHydratable: false },
+      { flags: { path: "/docs" }, isHydratable: false },
     ),
   );
   const doc = new DOMParser().parseFromString(result.html, "text/html");

@@ -1,32 +1,21 @@
 ---
-title: Introduction
-description: Effect-native signing for TypeScript — A1 first, one Signatures boundary, XML/PDF formats around it, and browser UI at the app edge.
+title: Introdução
+description: Assinatura nativa de Effect para TypeScript — A1 primeiro, uma fronteira Signatures, formatos XML/PDF ao redor e UI de navegador na borda da app.
 icon: Rocket
 ---
 
-SignatureKit is a library from **licitei-oss**, the open-source initiative maintained by [Licitei](https://licitei.com.br). The source code lives at [Licitei/signature-kit](https://github.com/Licitei/signature-kit) and is licensed under MIT.
+SignatureKit é uma biblioteca da **licitei-oss**, a iniciativa de código aberto mantida pela [Licitei](https://licitei.com.br). O código está em [Licitei/signature-kit](https://github.com/Licitei/signature-kit), sob licença MIT.
 
-SignatureKit has one signing boundary: the `Signatures` Effect service. Start with an A1 / PKCS#12 certificate, then reuse the same boundary from Node, the browser, XML-DSig, and PDF/PAdES. Remote providers stay separate provider APIs; browser UI stays at the application edge.
-
-## Choose the path
-
-<Cards>
-  <Card title="Install A1" href="/en-US/docs/get-started/installation" description="Add the Effect runtime, the core Signatures service, and the PKCS#12 signer." />
-  <Card title="First signature" href="/en-US/docs/get-started/quickstart" description="Load an A1 certificate, inspect the identity, sign bytes, and verify the result." />
-  <Card title="PDF/PAdES" href="/en-US/docs/signing/pdf" description="Sign PDFs by placing a detached CMS signature into a PDF placeholder." />
-  <Card title="Browser PDF flow" href="/en-US/docs/a1-signing/browser-pdf-flow" description="Read PDF bytes, render placement UI, and provide the A1 layer only at the action boundary." />
-</Cards>
-
-## One boundary
+SignatureKit mantém o poder de assinatura atrás de um serviço Effect. Comece com certificado A1 / PKCS#12; reutilize a mesma fronteira no Node, no navegador, em XML-DSig e em PDF/PAdES. Provedores remotos continuam como APIs próprias, sem virar um gateway universal falso.
 
 ```mermaid
 flowchart TD
-  app["Application / browser UI"]
+  app["Aplicação / UI de navegador"]
   service["Signatures service<br/>inspect / sign / verify"]
   adapter["SignerAdapter layer"]
-  a1["A1 / PKCS#12<br/>Node or browser"]
-  formats["XML-DSig + PDF/PAdES<br/>document mutation"]
-  providers["Provider APIs<br/>remote request flows"]
+  a1["A1 / PKCS#12<br/>navegador ou Node"]
+  formats["XML-DSig + PDF/PAdES<br/>mutação de documento"]
+  providers["APIs de provedores<br/>requests remotos"]
 
   app --> service
   service --> adapter
@@ -34,6 +23,17 @@ flowchart TD
   service --> formats
   app --> providers
 ```
+
+## Escolha o caminho
+
+<Cards>
+  <Card title="Primeira assinatura" href="/docs/get-started/quickstart" description="Carregue um A1, leia a identidade, assine bytes e verifique o resultado." />
+  <Card title="Certificados A1" href="/docs/signing/certificates" description="PKCS#12, identidade e-CPF / e-CNPJ, senha e falhas comuns de certificado." />
+  <Card title="Fronteira de assinatura" href="/docs/signing/signers" description="O contrato SignerAdapter e o serviço Signatures consumido por formatos e React." />
+  <Card title="Fluxo PDF no navegador" href="/docs/a1-signing/browser-pdf-flow" description="PDF entra, UI posiciona a assinatura, layer A1 roda só na ação do usuário." />
+</Cards>
+
+## O contrato
 
 ```ts title="signature-kit.ts"
 import { a1SignaturesLayer } from "@signature-kit/a1/signer"
@@ -56,31 +56,30 @@ export const signWithA1 = (content: Uint8Array, pfx: Uint8Array, password: strin
   )
 ```
 
-The program knows the contract, not the key location. Browser A1, server A1, XML, and PDF/PAdES all provide or consume the same service.
+Esse programa não sabe onde a chave vive. A1 no navegador, A1 no servidor e módulos de formato fornecem ou consomem o mesmo serviço `Signatures`.
 
-## Product rules
+## O que importa
 
-- **A1 first.** The first local signer is PKCS#12 (`.pfx` / `.p12`) with passwords kept in `Redacted`.
-- **Browser PDF is format-owned.** `@signature-kit/pdf` owns file bytes, placement state, and browser A1 PDF signing; app UI only subscribes to that state and provides `a1SignaturesLayer` at the action boundary.
-- **Formats mutate documents.** XML-DSig and PDF/PAdES own document mutation around `signatures.sign`; signer adapters only own signing power.
-- **Remote APIs stay explicit.** Clicksign, Assinafy, ZapSign, DocuSeal, and Documenso keep provider-specific APIs instead of pretending to be one universal signer.
-- **Failures are values.** Recoverable faults are typed `SignatureKitError` or package-specific Effect errors, not thrown exceptions.
+- **A1 primeiro.** O signer local principal é PKCS#12 (`.pfx` / `.p12`) com segredo em `Redacted`.
+- **PDF no navegador pertence ao formato.** `@signature-kit/pdf` cuida de bytes, estado de posicionamento e assinatura PDF A1 no navegador; a UI da app só assina esse estado e fornece `a1SignaturesLayer` na fronteira da ação.
+- **Formatos fazem o trabalho de documento.** XML-DSig e PDF/PAdES mutam documentos ao redor de `signatures.sign`; adapters de signer não cuidam de XML ou layout de PDF.
+- **Falhas são valores.** Erros recuperáveis são `SignatureKitError` tipados no canal de erro do Effect, não exceções lançadas.
 
-## Go deeper
+## Aprofunde
 
 <Cards>
-  <Card title="PDF/PAdES" href="/en-US/docs/signing/pdf" description="Detached CMS signing and placeholder sizing for PDF documents." />
-  <Card title="XML-DSig" href="/en-US/docs/signing/xml" description="XML mutation through an explicit XmlRuntime dependency." />
-  <Card title="Provider APIs" href="/en-US/docs/providers/request-shape" description="Clicksign, Assinafy, ZapSign, DocuSeal, and Documenso as explicit upstream request packages." />
-  <Card title="Error catalog" href="/en-US/docs/signing/errors" description="Literal error codes and the metadata preserved at each failure point." />
+  <Card title="PDF/PAdES" href="/docs/signing/pdf" description="CMS detached e tamanho de placeholder para documentos PDF." />
+  <Card title="XML-DSig" href="/docs/signing/xml" description="Mutação de XML com dependência explícita de XmlRuntime." />
+  <Card title="APIs de provedores" href="/docs/providers/request-shape" description="Clicksign, Assinafy, ZapSign, DocuSeal e Documenso como pacotes upstream explícitos." />
+  <Card title="Catálogo de erros" href="/docs/signing/errors" description="Códigos literais e metadados preservados em cada ponto de falha." />
 </Cards>
 
 ```package-install
 @signature-kit/signatures @signature-kit/a1
 ```
 
-<Callout type="warn" title="Local checks are not legal validity">
-  `verifyXml`, `verifyPdf`, and `signatures.verify` confirm the cryptography against the key in the
-  document — not legal validity. Verify with your own ICP-Brasil trust chain and policy before
-  treating a signed document as valid.
+<Callout type="warn" title="Verificações locais não são validade jurídica">
+  `verifyXml`, `verifyPdf` e `signatures.verify` confirmam a criptografia contra a chave presente no
+  documento — não a validade jurídica. Verifique com sua própria cadeia de confiança e política ICP-Brasil antes de
+  tratar um documento assinado como válido.
 </Callout>

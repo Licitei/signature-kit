@@ -1,19 +1,19 @@
 ---
-title: Signer boundary
-description: "A signer owns where signing power comes from; formats own document mutation."
+title: Fronteira do signer
+description: "Um signer possui a origem do poder de assinatura; formatos possuem a mutação do documento."
 ---
 
-The `SignerAdapter` is the capability seam. It can inspect a certificate, expose the certificate, import a signing key, sign bytes, and verify bytes. It does not know whether the caller is building XML-DSig, PAdES, CMS, or a UI preview.
+O `SignerAdapter` é a fronteira de capability. Ele inspeciona certificado, expõe certificado, importa chave, assina bytes e verifica bytes. Ele não sabe se o chamador está montando XML-DSig, PAdES, CMS ou preview de UI.
 
-That split keeps A1 as one backend, not the product definition. A future HSM signer can satisfy the same capability without moving PDF or XML code.
+Essa separação mantém A1 como um backend, não como definição do produto. Um HSM futuro pode satisfazer a mesma capability sem mover código de PDF ou XML.
 
-## Rule
+## Regra
 
-- Signers answer **where the key comes from**.
-- Format packages answer **how the document is changed**.
-- Application boundaries provide the concrete signer layer.
+- Signers respondem **de onde vem a chave**.
+- Pacotes de formato respondem **como o documento muda**.
+- A borda da aplicação fornece a layer concreta do signer.
 
 <Cards>
-  <Card title="The signing boundary" href="/en-US/docs/signing/signers">Read the API-level SignerAdapter page.</Card>
-  <Card title="PDF signing" href="/en-US/docs/signing/pdf">See how the PDF format consumes Signatures.</Card>
+  <Card title="A fronteira de assinatura" href="/docs/signing/signers">Leia a página de API do SignerAdapter.</Card>
+  <Card title="Assinatura PDF" href="/docs/signing/pdf">Veja como o formato PDF consome Signatures.</Card>
 </Cards>

@@ -1,21 +1,21 @@
 ---
-title: Installation
-description: "Install the core and the A1 signer, provide the Signatures layer, and sign your first bytes with typed errors."
+title: Instalação
+description: "Instale o core e o signer A1, forneça a layer Signatures e assine seus primeiros bytes com erros tipados."
 ---
 
-**What you'll do:** install the runtime, load an A1 certificate, and sign bytes with typed errors. Formats and providers come later, without changing your application's contract.
+**O que você vai fazer:** instalar o runtime, carregar um certificado A1 e assinar bytes com erros tipados. Formatos e provedores vêm depois, sem alterar o contrato da sua aplicação.
 
 <Steps>
-  <Step title="Install the packages">
-    Start with the `@signature-kit/signatures` runtime and the `@signature-kit/a1` signer.
+  <Step title="Instale os pacotes">
+    Comece pelo runtime `@signature-kit/signatures` e pelo signer `@signature-kit/a1`.
 
     ```package-install
     @signature-kit/signatures @signature-kit/a1
     ```
   </Step>
 
-  <Step title="Provide the Signatures layer">
-    `a1SignaturesLayer` takes the `.pfx` bytes and the `Redacted` password, validates the certificate, and provides the `Signatures` service.
+  <Step title="Forneça a layer Signatures">
+    O `a1SignaturesLayer` recebe os bytes do `.pfx` e a senha em `Redacted`, valida o certificado e fornece o serviço `Signatures`.
 
     ```ts title="signature-kit.ts"
     import { a1SignaturesLayer } from "@signature-kit/a1/signer"
@@ -23,18 +23,18 @@ description: "Install the core and the A1 signer, provide the Signatures layer, 
     import { Effect, Redacted } from "effect"
 
     export const layer = a1SignaturesLayer({
-      pfx,                                          // Uint8Array — bytes of the .pfx/.p12
+      pfx,                                          // Uint8Array — bytes do .pfx/.p12
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
     })
     ```
 
     <Callout type="info">
-      the password is `Redacted.Redacted<string>` — wrap it with `Redacted.make(...)` to keep the secret out of logs until the point of use.
+      a senha é `Redacted.Redacted<string>` — envolva-a com `Redacted.make(...)` para manter o segredo fora dos logs até o momento de uso.
     </Callout>
   </Step>
 
-  <Step title="Sign and verify bytes">
-    The service exposes `signatures.inspect`, `signatures.sign`, and `signatures.verify`. The algorithm is `"rsa-sha256"` or `"rsa-sha512"`; the catalog also accepts the legacy `"rsa-sha1"`, supported for compatibility but discouraged.
+  <Step title="Assine e verifique bytes">
+    O serviço expõe `signatures.inspect`, `signatures.sign` e `signatures.verify`. O algoritmo é `"rsa-sha256"` ou `"rsa-sha512"`; o catálogo também aceita o legado `"rsa-sha1"`, suportado por compatibilidade, mas desencorajado.
 
     ```ts title="sign.ts"
     const program = Effect.gen(function* () {
@@ -55,8 +55,8 @@ description: "Install the core and the A1 signer, provide the Signatures layer, 
     ```
   </Step>
 
-  <Step title="Add XML and PDF">
-    PDF reuses the same boundary via `Effect.provide(layer)` and also needs the `PdfCore` engine layer (`pdfCoreFileLayer` on Node/Bun, `pdfCoreBrowserLayer` in browsers). XML also declares `xmlRuntimeLayer`, an explicit runtime dependency.
+  <Step title="Adicione XML e PDF">
+    O PDF reaproveita a mesma fronteira via `Effect.provide(layer)` e também precisa da camada do motor `PdfCore` (`pdfCoreFileLayer` no Node/Bun, `pdfCoreBrowserLayer` no navegador). O XML também declara o `xmlRuntimeLayer`, uma dependência de runtime explícita.
 
     ```package-install
     @signature-kit/xml @signature-kit/pdf @signature-kit/pdf-core
@@ -73,7 +73,7 @@ description: "Install the core and the A1 signer, provide the Signatures layer, 
 
     const pdfCoreLayer = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))
     const layer = a1SignaturesLayer({
-      pfx,                                          // Uint8Array — bytes of the .pfx/.p12
+      pfx,                                          // Uint8Array — bytes do .pfx/.p12
       password: Redacted.make(process.env.A1_PASSWORD ?? ""),
     })
 
@@ -86,17 +86,17 @@ description: "Install the core and the A1 signer, provide the Signatures layer, 
   </Step>
 </Steps>
 
-## Errors you may see
+## Erros que você pode encontrar
 
-Every failure is a typed `SignatureKitError` on the error channel. The most common ones during installation:
+Toda falha é um `SignatureKitError` tipado no canal de erro. Os mais comuns durante a instalação:
 
-- [`signature-kit.WRONG_PASSWORD`](/en-US/docs/signing/errors) — "Wrong certificate password."
-- [`signature-kit.NO_PRIVATE_KEY`](/en-US/docs/signing/errors) — "The file does not contain a private key."
-- [`signature-kit.INVALID_FORMAT`](/en-US/docs/signing/errors) — the file is not a PKCS#12 (.pfx/.p12).
+- [`signature-kit.WRONG_PASSWORD`](/docs/signing/errors) — "Senha do certificado incorreta."
+- [`signature-kit.NO_PRIVATE_KEY`](/docs/signing/errors) — "O arquivo não contém uma chave privada."
+- [`signature-kit.INVALID_FORMAT`](/docs/signing/errors) — o arquivo não é um PKCS#12 (.pfx/.p12).
 
-## Next steps
+## Próximos passos
 
 <Cards>
-  <Card title="First use" href="/en-US/docs/get-started/quickstart">Load an A1 certificate and produce your first signature in minutes.</Card>
-  <Card title="The boundary" href="/en-US/docs/signing/signers">The SignerAdapter: the seam through which the power to sign enters.</Card>
+  <Card title="Primeiro uso" href="/docs/get-started/quickstart">Carregue um certificado A1 e produza sua primeira assinatura em minutos.</Card>
+  <Card title="A camada de assinatura" href="/docs/signing/signers">O SignerAdapter: a junção por onde entra o poder de assinar.</Card>
 </Cards>

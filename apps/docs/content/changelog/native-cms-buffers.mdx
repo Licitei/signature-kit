@@ -1,13 +1,19 @@
 ---
-title: Native byte conversion and verified release gates
+title: Conversão nativa de bytes e etapas de release verificadas
 date: 2026-09-22T11:35:16.185Z
 packages:
   '@signature-kit/cms':
     version: 0.2.2
+cover:
+  kind: bytes
+  caption: "1.2.840.113549.1.7.2 · signedData"
+  bytes: "30 82 05 a1 06 09 2a 86 48 86 f7 0d 01 07 02 a0 82 05 92"
+  highlight: [4, 15]
+  code: "bytes.slice(offset, offset + length)"
 ---
 
-## Native byte conversion and verified release gates
+## Conversão nativa de bytes e etapas de release verificadas
 
-Use native Uint8Array copies at ASN.1 and WebCrypto boundaries, removing redundant buffer adapters while preserving byte offsets and detached-signature verification. Add coverage for sliced buffers and tampered content.
+Usamos cópias nativas de Uint8Array nas fronteiras de ASN.1 e WebCrypto, removendo adaptadores de buffer redundantes e preservando os offsets de bytes e a verificação de assinaturas destacadas. Adicionamos testes para buffers fatiados e conteúdo adulterado.
 
-The workspace now discovers every browser test, isolates live provider suites from local runs, and requires the complete CI validation workflow before publishing.
+O workspace agora encontra todos os testes de navegador, isola as suítes de provedores reais das execuções locais e exige o workflow completo de validação de CI antes de publicar.

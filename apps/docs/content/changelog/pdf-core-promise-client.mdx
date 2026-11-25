@@ -1,11 +1,11 @@
 ---
-title: Promise client for apps without Effect
+title: Cliente com Promises para apps sem Effect
 date: 2026-11-18T13:26:35.317Z
 packages:
   "@signature-kit/pdf-core":
     version: 0.2.0
 ---
 
-## Promise client for apps without Effect
+## Cliente com Promises para apps sem Effect
 
-`loadPdfCoreNode()` (`@signature-kit/pdf-core/node`) and `loadPdfCoreBrowser()` (`@signature-kit/pdf-core/promise`) load the WebAssembly module and return the `PdfCore` operations as Promises that reject with the `PdfCoreError`, so an app can use the engine without installing or importing `effect`. `createPdfCoreClient(module)` builds the same client from a compiled module, and `pdfCoreBrowserModule` exposes the browser module loader behind `pdfCoreBrowserLayer`.
+`loadPdfCoreNode()` (`@signature-kit/pdf-core/node`) e `loadPdfCoreBrowser()` (`@signature-kit/pdf-core/promise`) carregam o módulo WebAssembly e retornam as operações do `PdfCore` como Promises que rejeitam com o `PdfCoreError`, para que um app use o motor sem instalar nem importar `effect`. `createPdfCoreClient(module)` monta o mesmo cliente a partir de um módulo compilado, e `pdfCoreBrowserModule` expõe o carregador de módulo do navegador que fica por trás do `pdfCoreBrowserLayer`.

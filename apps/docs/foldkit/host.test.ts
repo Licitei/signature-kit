@@ -128,24 +128,21 @@ test("serves the Foldkit build over HTTP", async () => {
               join(fixture, "dist-foldkit/server/foldkit.build.json"),
               join(fixture, "dist-foldkit/client/r/escape.json"),
             );
-            for (const locale of ["en-US", "pt-BR"]) {
-              const directory = join(fixture, "dist-foldkit/client", locale);
-              await mkdir(directory, { recursive: true });
-              const generated = await readFile(
-                new URL(`dist-foldkit/client/${locale}/index.html`, root),
-                "utf8",
-              );
-              await writeFile(join(directory, "index.html"), `${generated}${marker}`);
-              const asset = generated.match(/(?:src|href)="(\/assets\/[^"]+\.js)"/)?.[1];
-              expect(asset).toBeDefined();
-              if (asset === undefined) return expect.fail("Missing asset");
-              {
-                await copyFile(
-                  new URL(`dist-foldkit/client${asset}`, root),
-                  join(fixture, "dist-foldkit/client", asset),
-                );
-              }
-            }
+            const generated = await readFile(
+              new URL("dist-foldkit/client/index.html", root),
+              "utf8",
+            );
+            await writeFile(
+              join(fixture, "dist-foldkit/client/index.html"),
+              `${generated}${marker}`,
+            );
+            const asset = generated.match(/(?:src|href)="(\/assets\/[^"]+\.js)"/)?.[1];
+            expect(asset).toBeDefined();
+            if (asset === undefined) return expect.fail("Missing asset");
+            await copyFile(
+              new URL(`dist-foldkit/client${asset}`, root),
+              join(fixture, "dist-foldkit/client", asset),
+            );
           }),
         );
         const server = yield* child("bun", ["foldkit/host.mjs"], fixture);
@@ -153,23 +150,20 @@ test("serves the Foldkit build over HTTP", async () => {
         yield* Effect.promise(async (signal) => {
           const request = (url: URL | string, options?: RequestInit) =>
             fetch(url, { ...options, signal });
-          for (const [locale, title] of [
-            ["en-US", "Typed digital signatures"],
-            ["pt-BR", "Assinaturas digitais tipadas"],
-          ]) {
-            const response = await request(new URL(locale, origin));
+          {
+            const response = await request(new URL("/", origin));
             const html = await response.text();
             const generated = await readFile(
-              join(fixture, "dist-foldkit/client", locale, "index.html"),
+              join(fixture, "dist-foldkit/client/index.html"),
               "utf8",
             );
             expect(html).toContain(marker);
             expect(response.status).toBe(200);
             expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
             expect(html).toBe(generated);
-            expect(html).toContain(title);
-            expect(html).toContain(`lang="${locale}"`);
-            expect(html).toContain(`https://signaturekit.dev/${locale}`);
+            expect(html).toContain("Assinatura digital com certificado A1");
+            expect(html).toContain(`lang="pt-BR"`);
+            expect(html).toContain(`href="https://signaturekit.dev/"`);
             expect(html).toContain("data-foldkit-app");
             const asset = html.match(/(?:src|href)="(\/assets\/[^"]+\.js)"/)?.[1];
             expect(asset).toBeDefined();
@@ -185,8 +179,8 @@ test("serves the Foldkit build over HTTP", async () => {
             }
           }
           for (const [page, image] of [
-            ["/en-US", "/en-US/index.webp"],
-            ["/pt-BR/changelog/a1-node-esm-release", "/en-US/changelog/a1-node-esm-release.webp"],
+            ["/", "/index.webp"],
+            ["/changelog/a1-node-esm-release", "/changelog/a1-node-esm-release.webp"],
           ]) {
             const pageResponse = await request(new URL(page, origin));
             expect(pageResponse.status).toBe(200);
@@ -211,7 +205,7 @@ test("serves the Foldkit build over HTTP", async () => {
             expect(post.status).toBe(405);
             expect(post.headers.get("allow")).toBe("GET, HEAD");
           }
-          expect((await request(new URL("/en-US/blog/not-real.webp", origin))).status).toBe(404);
+          expect((await request(new URL("/blog/not-real.webp", origin))).status).toBe(404);
           const registry = await request(new URL("/r/registry.json", origin));
           expect(registry.status).toBe(200);
           expect(registry.headers.get("content-type")).toMatch(/application\/json/);
@@ -242,23 +236,25 @@ test("serves the Foldkit build over HTTP", async () => {
           ]) {
             expect((await request(new URL(path, origin))).status).toBe(404);
           }
-          const head = await request(new URL("en-US", origin), { method: "HEAD" });
+          const head = await request(new URL("/", origin), { method: "HEAD" });
           expect(head.status).toBe(200);
           expect(await head.text()).toBe("");
           expect(
             (await request(new URL("/assets/%2e%2e%2fserver/foldkit.build.json", origin))).status,
           ).toBe(404);
           expect((await request(new URL("/missing", origin))).status).toBe(404);
-          await rm(join(fixture, "dist-foldkit/client/en-US/index.html"));
-          const fallback = await request(new URL("/en-US", origin));
+          await rm(join(fixture, "dist-foldkit/client/index.html"));
+          const fallback = await request(new URL("/", origin));
           const fallbackHtml = await fallback.text();
           expect(fallback.status).toBe(200);
-          expect(fallbackHtml).toContain("Typed digital signatures");
+          expect(fallbackHtml).toContain("Assinatura digital com certificado A1");
           expect(fallbackHtml).toContain("data-foldkit-app");
           expect(fallbackHtml).not.toContain(marker);
-          const redirect = await request(origin, { redirect: "manual" });
-          expect(redirect.status).toBe(302);
-          expect(redirect.headers.get("location")).toBe(new URL("/en-US", origin).href);
+          const redirect = await request(new URL("/en-US/docs?q=a", origin), {
+            redirect: "manual",
+          });
+          expect(redirect.status).toBe(301);
+          expect(redirect.headers.get("location")).toBe(new URL("/docs?q=a", origin).href);
         }).pipe(Effect.timeout(20000));
       }),
     ),

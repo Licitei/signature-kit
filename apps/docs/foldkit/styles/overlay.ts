@@ -56,8 +56,17 @@ export const overlay = stylex.create({
     maxHeight: { default: "92svh", [wide]: "none" },
     borderRadius: { default: "16px 16px 0 0", [wide]: 0 },
   },
-  sheetWide: {
-    width: { default: "100%", [wide]: "min(1040px, 100%)" },
+  signer: {
+    top: { default: "16px", [wide]: "6vh" },
+    width: "min(480px, calc(100% - 32px))",
+    maxHeight: { default: "calc(100svh - 32px)", [wide]: "88vh" },
+    borderRadius: "20px",
+    backgroundColor: tokens.bgElevated,
+    transitionProperty: { default: "transform, opacity, width", [reduced]: "opacity" },
+    transitionDuration: "320ms",
+  },
+  signerWide: {
+    width: "min(1080px, calc(100% - 32px))",
   },
   sheetClosed: {
     opacity: { default: 1, [reduced]: 0 },

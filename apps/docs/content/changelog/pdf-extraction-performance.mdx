@@ -1,5 +1,5 @@
 ---
-title: Faster selected-page and Markdown PDF extraction
+title: Extração de PDF mais rápida em páginas selecionadas e Markdown
 date: 2026-11-21T15:47:35.873Z
 packages:
   "@signature-kit/certificates":
@@ -38,10 +38,17 @@ packages:
     version: 0.2.4
   "@signature-kit/iti":
     version: 0.2.1
+cover:
+  kind: pages
+  package: pdf-core
+  caption: Só as páginas pedidas são abertas
+  total: 12
+  selected: [2, 5, 9]
+  code: "PdfCore.tables(pdf, { pageIndexes: [2, 5, 9] })"
 ---
 
-## Faster selected-page and Markdown PDF extraction
+## Extração de PDF mais rápida em páginas selecionadas e Markdown
 
-The PDF core opens selected pages without materializing the whole page tree, defers unused XObjects, and accepts complete streams before the next cross-reference offset. Markdown rendering reuses buffers and the number parser uses bounded accumulation for common operands. Page resources share the resolved dictionary across readers, and the JavaScript bindings share result-block validation and disposal.
+O núcleo de PDF abre páginas selecionadas sem materializar a árvore de páginas inteira, adia XObjects não usados e aceita streams completos antes do próximo offset de referência cruzada. A renderização de Markdown reutiliza buffers, e o parser de números usa acumulação limitada para os operandos comuns. Os recursos de página compartilham o dicionário resolvido entre leitores, e os bindings JavaScript compartilham a validação e o descarte dos blocos de resultado.
 
-The pdf-core README documents the procurement corpus results, evidence audit, Wasm size, and an isolated benchmark against LiteParse and PDF Inspector. This release also refreshes all public SignatureKit packages.
+O README do pdf-core documenta os resultados no corpus de licitações, a auditoria de evidências, o tamanho do Wasm e um benchmark isolado contra o LiteParse e o PDF Inspector. Esta versão também atualiza todos os pacotes públicos do SignatureKit.

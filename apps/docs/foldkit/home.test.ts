@@ -10,42 +10,40 @@ import { contentPaths, resolveContent } from "./content";
 import { createServerComposition, renderDocument, renderPage } from "./entry.server";
 import { Message, init, update } from "./main";
 import { ExpireHomeCopy, installCommand } from "./home";
-import { Tabs } from "@foldkit/ui";
 
 describe("Foldkit home", () => {
-  it("renders each home section and localized metadata on the server", async () => {
+  it("renders each home section and metadata on the server", async () => {
     const assets = { entryScript: "/entry.js", stylesheets: [], modulePreloads: [] };
-    for (const [locale, title] of [
-      ["en-US", "Typed digital signatures"],
-      ["pt-BR", "Assinaturas digitais tipadas"],
-    ]) {
-      const result = await renderPage(new Request(`https://signaturekit.dev/${locale}`), "test");
-      if (result._tag !== "Rendered") return expect.fail(`Missing ${locale} home`);
-      const html = renderDocument(result.application, assets);
-      expect(html).toContain(title);
-      for (const id of ["signer", "providers", "formats", "get-started"])
-        expect(html).toContain(`id="${id}"`);
-      expect(html).not.toContain('id="auto-sign"');
-      expect(html).not.toContain("first-signature.ts");
-      expect(html.split(installCommand)).toHaveLength(3);
-      expect(html).toContain("ClicksignSignatureRequest");
-      expect(html).toContain("contentBase64");
-      expect(html).toContain('name="pfx"');
-      expect(html).toContain(`rel="canonical" href="https://signaturekit.dev/${locale}"`);
-      expect(html).toContain('hreflang="en-US"');
-      expect(html).toContain('hreflang="pt-BR"');
-      expect(html).toContain(`href="/${locale}/blog"`);
-      expect(html).toContain(`href="/${locale}/changelog"`);
-      expect(html).toContain("https://github.com/Licitei/signature-kit/issues");
-      expect(html).toContain("https://licitei.com.br");
-      expect(html).toContain("npm install @signature-kit/signatures @signature-kit/a1");
-      expect(html).toContain("pnpm add @signature-kit/signatures @signature-kit/a1");
-      expect(html).toContain("yarn add @signature-kit/signatures @signature-kit/a1");
-    }
+    const result = await renderPage(new Request("https://signaturekit.dev/"), "test");
+    if (result._tag !== "Rendered") return expect.fail("Missing home");
+    const html = renderDocument(result.application, assets);
+    expect(html).toContain("Assinatura digital com certificado A1.");
+    expect(html).toContain('lang="pt-BR"');
+    for (const id of ["assinar", "provedores", "site-footer"]) expect(html).toContain(`id="${id}"`);
+    expect(html).not.toContain('id="auto-sign"');
+    expect(html).not.toContain("hreflang");
+    expect(html.split(installCommand)).toHaveLength(3);
+    expect(html).toContain('rel="canonical" href="https://signaturekit.dev/"');
+    expect(html).toContain('data-overlay="signer"');
+    expect(html).toContain('href="/assine-documentos-gratis"');
+    for (const slug of ["clicksign", "assinafy", "zapsign", "docuseal", "documenso"])
+      expect(html).toContain(`href="/docs/providers/${slug}"`);
+    for (const href of [
+      "/blog",
+      "/changelog",
+      "/docs/get-started/quickstart",
+      "https://licitei.com.br",
+      "https://github.com/Licitei/signature-kit",
+    ])
+      expect(html).toContain(`href="${href}"`);
+    expect(html).toContain("Apoiado pela");
+    expect(html).toContain("Não tem certificado A1?");
+    expect(html).toContain("CC BY-SA 4.0");
+    expect(html).not.toContain("en-US");
   });
   it("renders the Portuguese signing landing and structured data", async () => {
     const result = await renderPage(
-      new Request("https://signaturekit.dev/pt-BR/assine-documentos-gratis"),
+      new Request("https://signaturekit.dev/assine-documentos-gratis"),
       "test",
     );
     if (result._tag !== "Rendered") return expect.fail("Missing signing landing");
@@ -59,7 +57,7 @@ describe("Foldkit home", () => {
       "Sem upload do PDF",
       "Precisa de cadastro?",
       "Funciona com A3?",
-      "/pt-BR/docs/a1-signing/browser-pdf-flow",
+      "/docs/a1-signing/browser-pdf-flow",
       'id="assinar"',
       'name="pfx"',
     ])
@@ -72,7 +70,7 @@ describe("Foldkit home", () => {
       "@graph": [
         {
           "@type": "SoftwareApplication",
-          url: "https://signaturekit.dev/pt-BR/assine-documentos-gratis",
+          url: "https://signaturekit.dev/assine-documentos-gratis",
         },
         {
           "@type": "HowTo",
@@ -90,8 +88,8 @@ describe("Foldkit home", () => {
       ],
     });
   });
-  it("renders localized navigation and preserves the theme toggle", () => {
-    const initial = init({ locale: "pt-BR", path: "" }).model;
+  it("preserves the theme toggle", () => {
+    const initial = init({ path: "" }).model;
     expect(update(initial, Message.ThemeToggled()).model.theme).toBe("dark");
     expect(update({ ...initial, theme: "dark" }, Message.ThemeToggled()).model.theme).toBe("light");
   });
@@ -140,7 +138,7 @@ describe("Foldkit home", () => {
           const secret = "private-search-content";
           const result = yield* Effect.promise(() =>
             server.renderPage(
-              new Request(`https://signaturekit.dev/en-US/search?q=${secret}${"x".repeat(250)}`, {
+              new Request(`https://signaturekit.dev/search?q=${secret}${"x".repeat(250)}`, {
                 headers: {
                   referer: "https://private.example/secret",
                   "user-agent": "private-agent",
@@ -173,108 +171,47 @@ describe("Foldkit home", () => {
       ).pipe(Effect.timeout("15 seconds")),
     );
   }, 20000);
-  it("selects providers and records copy success or failure without storing secrets", () => {
-    const initial = init({ locale: "en-US", path: "" }).model;
-    const selected = update(
-      initial,
-      Message.GotProviderTabsMessage({
-        message: Tabs.Message.SelectedTab({ index: 3, value: "DocuSeal" }),
-      }),
+  it("records copy success or failure", () => {
+    const initial = init({ path: "" }).model;
+    const requested = update(initial, Message.HomeCopyRequested()).model;
+    expect(requested.homeCopyRequest).toBe(initial.homeCopyRequest + 1);
+    const ok = update(
+      requested,
+      Message.HomeCopyFinished({ request: requested.homeCopyRequest, ok: true }),
     ).model;
-    expect(selected.homeProvider).toBe("DocuSeal");
-    const requested = update(
-      selected,
-      Message.HomeCopyRequested({ target: "provider", location: "providers" }),
+    expect(ok.homeCopied).toBe(true);
+    expect(ok.copyToast.entries.at(-1)?.payload.text).toBe("Comando copiado.");
+    const failed = update(
+      requested,
+      Message.HomeCopyFinished({ request: requested.homeCopyRequest, ok: false }),
     ).model;
-    expect(
-      update(
-        requested,
-        Message.HomeCopyFinished({
-          target: "provider",
-          request: requested.homeCopyRequest,
-          provider: "DocuSeal",
-          ok: true,
-        }),
-      ).model.homeCopied,
-    ).toBe("provider");
-    expect(
-      update(
-        requested,
-        Message.HomeCopyFinished({
-          target: "provider",
-          request: requested.homeCopyRequest,
-          provider: "DocuSeal",
-          ok: false,
-        }),
-      ).model.homeCopied,
-    ).toBe("failed");
-    expect(JSON.stringify(selected)).not.toContain("apiKey");
+    expect(failed.homeCopied).toBe(false);
+    expect(failed.copyToast.entries.at(-1)?.payload.text).toBe("Não foi possível copiar.");
   });
   effectIt.effect("expires current feedback and ignores stale copies and timers", () =>
     Effect.gen(function* () {
-      const initial = init({ locale: "en-US", path: "" }).model;
-      const first = update(
-        initial,
-        Message.HomeCopyRequested({ target: "provider", location: "providers" }),
-      ).model;
-      const second = update(
-        first,
-        Message.HomeCopyRequested({ target: "provider", location: "providers" }),
-      ).model;
-      const old = Message.HomeCopyFinished({
-        target: "provider",
-        provider: "Clicksign",
-        request: first.homeCopyRequest,
-        ok: true,
-      });
-      expect(update(second, old).model.homeCopied).toBe("none");
+      const initial = init({ path: "" }).model;
+      const first = update(initial, Message.HomeCopyRequested()).model;
+      const second = update(first, Message.HomeCopyRequested()).model;
+      const old = Message.HomeCopyFinished({ request: first.homeCopyRequest, ok: true });
+      expect(update(second, old).model.homeCopied).toBe(false);
       const completed = update(
         second,
-        Message.HomeCopyFinished({
-          target: "provider",
-          provider: "Clicksign",
-          request: second.homeCopyRequest,
-          ok: true,
-        }),
+        Message.HomeCopyFinished({ request: second.homeCopyRequest, ok: true }),
       ).model;
-      expect(completed.homeCopied).toBe("provider");
+      expect(completed.homeCopied).toBe(true);
       const fiber = yield* Effect.forkChild(
-        ExpireHomeCopy({ request: second.homeCopyRequest, provider: "Clicksign" }).effect,
+        ExpireHomeCopy({ request: second.homeCopyRequest }).effect,
       );
       yield* TestClock.adjust("1800 millis");
       const expired = yield* Fiber.join(fiber);
-      const next = update(
-        completed,
-        Message.HomeCopyRequested({ target: "provider", location: "providers" }),
-      ).model;
+      const next = update(completed, Message.HomeCopyRequested()).model;
       const nextDone = update(
         next,
-        Message.HomeCopyFinished({
-          target: "provider",
-          provider: "Clicksign",
-          request: next.homeCopyRequest,
-          ok: true,
-        }),
+        Message.HomeCopyFinished({ request: next.homeCopyRequest, ok: true }),
       ).model;
-      expect(update(nextDone, expired).model.homeCopied).toBe("provider");
-      expect(update(completed, expired).model.homeCopied).toBe("none");
-      const changed = update(
-        second,
-        Message.GotProviderTabsMessage({
-          message: Tabs.Message.SelectedTab({ index: 3, value: "DocuSeal" }),
-        }),
-      ).model;
-      expect(
-        update(
-          changed,
-          Message.HomeCopyFinished({
-            target: "provider",
-            provider: "Clicksign",
-            request: second.homeCopyRequest,
-            ok: true,
-          }),
-        ).model.homeCopied,
-      ).toBe("none");
+      expect(update(nextDone, expired).model.homeCopied).toBe(true);
+      expect(update(completed, expired).model.homeCopied).toBe(false);
     }),
   );
 });

@@ -1,11 +1,11 @@
 ---
-title: Column-aware reading order and text flow
+title: Ordem de leitura com colunas e fluxo de texto
 date: 2026-11-24T15:38:32.058Z
 packages:
   "@signature-kit/pdf-core":
     version: 0.4.0
 ---
 
-## Column-aware reading order and text flow
+## Ordem de leitura com colunas e fluxo de texto
 
-`text` and Markdown now split each page into column regions at prose and index gutters before building lines, tables and blocks. Two-column papers read the whole left column before the right one, tight 3–4 column layouts (gutters of about 1 em) read column by column, and prose columns no longer turn into borderless tables. Footnotes at the bottom of a column move to the end of the page, superscript footnote markers stay with their text, and page continuations skip footnotes, captions and tables. End-of-line hyphens are joined with a document-vocabulary rule that keeps real compounds.
+`text` e Markdown agora dividem cada página em regiões de coluna nos espaços entre blocos de prosa e de índice antes de montar linhas, tabelas e blocos. Artigos em duas colunas leem a coluna esquerda inteira antes da direita, layouts apertados de 3–4 colunas (espaços de cerca de 1 em) são lidos coluna por coluna, e colunas de prosa não viram mais tabelas sem borda. Notas de rodapé no fim de uma coluna vão para o fim da página, marcadores de nota sobrescritos ficam junto do texto e as continuações de página pulam notas, legendas e tabelas. Hífens de fim de linha são unidos com uma regra baseada no vocabulário do documento, que preserva palavras compostas de verdade.

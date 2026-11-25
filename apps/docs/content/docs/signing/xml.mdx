@@ -1,21 +1,21 @@
 ---
 title: XML-DSig
-description: "Sign XML with signXml and validate with verifyXml: enveloped reference, X.509 in KeyInfo, verification needs no signer."
+description: "Assine XML com signXml e valide com verifyXml: referência enveloped, X.509 no KeyInfo, verificação sem signatário."
 ---
 
-**What you'll do:** sign an XML string with `signXml` over the `Signatures` boundary, then validate with `verifyXml` — which needs no signer and runs anywhere.
+**O que você vai fazer:** assinar uma string XML com `signXml` na camada do `Signatures`, depois validar com `verifyXml` — que não exige signatário e roda em qualquer lugar.
 
 <Steps>
-  <Step title="Install the package">
-    The XML format lives in `@signature-kit/xml` and consumes the `Signatures` service provided by a signer.
+  <Step title="Instale o pacote">
+    O formato XML vive em `@signature-kit/xml` e consome o serviço `Signatures` fornecido por um signatário.
 
     ```package-install
     @signature-kit/xml
     ```
   </Step>
 
-  <Step title="Sign an XML document">
-    `signXml` takes an `XmlSigningRequest` and returns `Effect<string, XmlError | SignatureKitError, Signatures | XmlRuntime>` — the signed XML as a string. Satisfy the `Signatures` requirement with `Effect.provide(a1SignaturesLayer(...))`: A1 provides the signing power, the format module only mutates the document.
+  <Step title="Assine um documento XML">
+    `signXml` recebe um `XmlSigningRequest` e retorna `Effect<string, XmlError | SignatureKitError, Signatures | XmlRuntime>` — o XML assinado como string. Satisfaça o requisito `Signatures` com `Effect.provide(a1SignaturesLayer(...))`: o A1 fornece o poder de assinatura, o módulo de formato só altera o documento.
 
     ```ts title="sign-xml.ts"
     import { signXml } from "@signature-kit/xml/sign"
@@ -37,12 +37,12 @@ description: "Sign XML with signXml and validate with verifyXml: enveloped refer
     ```
 
     <Callout type="info">
-      `verifyXml` has no `Signatures` requirement — only `signXml` needs the signer boundary.
+      `verifyXml` não tem requisito `Signatures` — apenas `signXml` precisa da camada de assinatura.
     </Callout>
   </Step>
 
-  <Step title="Reference and enveloped">
-    `referenceId` sets the target of the enveloped signature: passing `referenceId: "nfe-1"` produces a `Reference` with URI `"#nfe-1"`, pointing to the element with the same `Id` in the document. The remaining `XmlSigningRequest` fields are optional:
+  <Step title="Referência e enveloped">
+    `referenceId` define o alvo da assinatura enveloped: passar `referenceId: "nfe-1"` produz uma `Reference` com URI `"#nfe-1"`, apontando para o elemento de mesmo `Id` no próprio documento. Os demais campos de `XmlSigningRequest` são opcionais:
 
     ```ts title="request-xml.ts"
     // XmlSigningRequest — only 'xml' is required
@@ -55,11 +55,11 @@ description: "Sign XML with signXml and validate with verifyXml: enveloped refer
     }).pipe(Effect.provide(layer), Effect.provide(xmlRuntimeLayer))
     ```
 
-    Without `algorithm`, the default `"rsa-sha256"` applies; the other options are `"rsa-sha512"` and the legacy, discouraged `"rsa-sha1"`. The signer's X.509 certificate is embedded in the signature's `KeyInfo`, but the verifier does not trust it automatically — the last two steps below cover supplying the trusted key or certificate out of band.
+    Sem `algorithm`, vale o padrão `"rsa-sha256"`; as outras opções são `"rsa-sha512"` e a legada e desaconselhada `"rsa-sha1"`. O certificado X.509 do signatário é embutido no `KeyInfo` da assinatura, mas o verificador não confia nele automaticamente — os últimos dois passos abaixo cobrem como fornecer a chave ou o certificado confiável por fora.
   </Step>
 
-  <Step title="NF-e framing">
-    The NF-e is a common case: the `Id` of `infNFe` is the access key, and the signature points to it. Use the access key as `referenceId` so the URI becomes `"#NFe35..."`.
+  <Step title="Estrutura da NF-e">
+    A NF-e é um caso comum: o `Id` de `infNFe` é a chave de acesso, e a assinatura aponta para ele. Use a chave de acesso como `referenceId` para que a URI fique `"#NFe35..."`.
 
     ```ts title="sign-nfe.ts"
     // NF-e: the id of <infNFe> is the target of the enveloped reference
@@ -77,26 +77,26 @@ description: "Sign XML with signXml and validate with verifyXml: enveloped refer
     ```
 
     <Callout type="info">
-      The output string is the XML ready to send. Since `signXml` returns `string`, drop it straight
-      into the SEFAZ payload.
+      A string de saída é o XML pronto para enviar. Como `signXml` retorna `string`, jogue-a
+      direto no payload da SEFAZ.
     </Callout>
   </Step>
 
-  <Step title="Verify the signature">
-    `verifyXml` takes an `XmlVerificationRequest` and returns `Effect<XmlVerificationResult, XmlError, XmlRuntime>`. There is no `Signatures` requirement, but the `XmlRuntime` service is required. Supply exactly one of `trustedCertificateDer` (the X.509 certificate DER you trust) or `publicKeyDer` (the `SubjectPublicKeyInfo` DER) so `verifyXml` knows which key to check the signature against.
+  <Step title="Verifique a assinatura">
+    `verifyXml` recebe um `XmlVerificationRequest` e retorna `Effect<XmlVerificationResult, XmlError, XmlRuntime>`. Não há requisito `Signatures`, mas o serviço `XmlRuntime` é exigido. Forneça exatamente um entre `trustedCertificateDer` (o certificado X.509 em que você confia) e `publicKeyDer` (o `SubjectPublicKeyInfo` em DER) para que `verifyXml` saiba contra qual chave checar a assinatura.
 
-    When an application consumes a specific signed element, use `requiredReference`. Its `path` runs from the document element through the target; each segment must match exactly one namespace-aware direct child. Use `namespaceUri: null` for elements without a namespace.
+    Quando a aplicação consome um elemento assinado específico, use `requiredReference`. Seu `path` vai do elemento do documento até o alvo; cada segmento deve corresponder a exatamente um filho direto, com namespace. Use `namespaceUri: null` para elementos sem namespace.
 
-    To bound verification work, documents may contain at most 4 `<Signature>` elements, 4 direct `SignedInfo` `<Reference>` elements per signature, 8 of those references in total, 3 direct `<Transform>` elements per reference, and 8 transforms in total. A reference may contain only one canonicalization transform. Exceeding a limit returns `result.valid === false` before cryptographic verification.
+    Para limitar o trabalho de verificação, o documento pode conter no máximo 4 elementos `<Signature>`, 4 elementos `<Reference>` diretos de `SignedInfo` por assinatura, 8 dessas referências no total, 3 elementos `<Transform>` diretos por referência e 8 transformações no total. Uma referência pode conter somente uma transformação de canonicalização. Exceder um limite retorna `result.valid === false` antes da verificação criptográfica.
 
-    Only XML 1.0 is accepted. Parser guardrails reject input above 10 MiB, 16,384 nodes, 2,048 attributes, 64 namespace declarations, or depth 1,024. `InclusiveNamespaces` `PrefixList` values are capped at 4,096 characters and 64 tokens.
+    Somente XML 1.0 é aceito. As proteções do parser rejeitam entrada acima de 10 MiB, 16.384 nós, 2.048 atributos, 64 declarações de namespace ou profundidade 1.024. Valores de `PrefixList` em `InclusiveNamespaces` são limitados a 4.096 caracteres e 64 tokens.
 
-    Documents must contain exactly one root element. Other than the optional leading XML declaration and XML whitespace, prolog and epilog content is rejected.
+    Documentos devem conter exatamente um elemento raiz. Fora a declaração XML inicial opcional e espaços em branco XML, conteúdo no prólogo e epílogo é rejeitado.
 
-    `signXml` revalidates its serialized result with these guards and fails with `xml.SIGN_FAILED` rather than returning XML that `verifyXml` would reject.
+    `signXml` revalida seu resultado serializado com essas proteções e falha com `xml.SIGN_FAILED` em vez de retornar XML que `verifyXml` rejeitaria.
 
     <Callout type="warn">
-      `verifyXml` never trusts the certificate embedded in the signature's `KeyInfo` automatically — that's a deliberate hardening measure against signature-wrapping attacks, where an attacker swaps in their own certificate alongside a forged signature. Omitting a trust source or supplying both sources fails with `xml.INVALID_INPUT`.
+      `verifyXml` nunca confia automaticamente no certificado embutido no `KeyInfo` da assinatura — isso é uma medida de hardening deliberada contra ataques de signature-wrapping, em que um atacante troca o certificado por outro seu junto de uma assinatura forjada. Omitir uma fonte de confiança ou fornecer as duas falha com `xml.INVALID_INPUT`.
     </Callout>
 
     ```ts title="verify-xml.ts"
@@ -120,13 +120,13 @@ description: "Sign XML with signXml and validate with verifyXml: enveloped refer
 
     // XmlVerificationResult
     result.valid           // boolean
-    result.signatureCount  // number — how many <Signature> elements were found
+    result.signatureCount  // number — quantos elementos <Signature> foram encontrados
     result.referenceUris   // readonly string[] — e.g. ["#nfe-1"]
     ```
   </Step>
 
-  <Step title="Verification with an explicit key">
-    `trustedCertificateDer` and `publicKeyDer` are the only two ways to supply a verification key — pass `publicKeyDer` instead when you already hold the raw `SubjectPublicKeyInfo` rather than a full certificate.
+  <Step title="Verificação com chave explícita">
+    `trustedCertificateDer` e `publicKeyDer` são as duas únicas formas de fornecer uma chave de verificação — passe `publicKeyDer` quando você já tem o `SubjectPublicKeyInfo` bruto em vez de um certificado completo.
 
     ```ts title="verify-key.ts"
     import { verifyXml } from "@signature-kit/xml/verify"
@@ -150,21 +150,21 @@ description: "Sign XML with signXml and validate with verifyXml: enveloped refer
   </Step>
 </Steps>
 
-## Errors you might see
+## Erros que você pode encontrar
 
-Every signing failure is a typed `SignatureKitError` on the error channel; XML parsing, canonicalization, and verification failures arrive as `XmlError`. The most common:
+Toda falha de assinatura é um `SignatureKitError` tipado no canal de erro; falhas de parsing, canonicalização e verificação de XML chegam como `XmlError`. As mais comuns:
 
 <Cards>
-  <Card title="xml.INVALID_INPUT" href="/en-US/docs/signing/errors#error-catalog">An invalid signing or verification request — including missing or competing verification trust sources.</Card>
-  <Card title="xml.SIGN_FAILED" href="/en-US/docs/signing/errors#error-catalog">The signing operation over the digest could not be completed, including an unresolvable referenceId (no element with that Id).</Card>
+  <Card title="xml.INVALID_INPUT" href="/docs/signing/errors#error-catalog">Uma requisição de assinatura ou verificação inválida — incluindo fontes de confiança ausentes ou concorrentes.</Card>
+  <Card title="xml.SIGN_FAILED" href="/docs/signing/errors#error-catalog">A operação de assinatura sobre o digest não pôde ser concluída, incluindo um referenceId não resolvível (nenhum elemento com esse Id).</Card>
 </Cards>
 
 <Callout type="info">
-  An invalid signature, a `requiredReference` whose signed URI and semantic path do not match, or a verification work limit is **not** an Effect error — `verifyXml` still succeeds and returns `result.valid === false`. `verifyXml` only fails on the error channel for the cases below.
+  Uma assinatura inválida, um `requiredReference` cuja URI assinada e caminho semântico não correspondem ou um limite de trabalho de verificação **não** é um erro do Effect — `verifyXml` ainda é bem-sucedido e retorna `result.valid === false`. `verifyXml` só falha no canal de erro nos casos abaixo.
 </Callout>
 
 <Cards>
-  <Card title="xml.VERIFY_FAILED" href="/en-US/docs/signing/errors#error-catalog">The verification step itself could not run to completion.</Card>
-  <Card title="xml.SIGNATURE_NOT_FOUND" href="/en-US/docs/signing/errors#error-catalog">No `<Signature>` element was found in the document.</Card>
-  <Card title="xml.KEY_IMPORT_FAILED" href="/en-US/docs/signing/errors#error-catalog">The provided `publicKeyDer`/`trustedCertificateDer` could not be imported as a verification key.</Card>
+  <Card title="xml.VERIFY_FAILED" href="/docs/signing/errors#error-catalog">A etapa de verificação em si não pôde ser concluída.</Card>
+  <Card title="xml.SIGNATURE_NOT_FOUND" href="/docs/signing/errors#error-catalog">Nenhum elemento `<Signature>` foi encontrado no documento.</Card>
+  <Card title="xml.KEY_IMPORT_FAILED" href="/docs/signing/errors#error-catalog">O `publicKeyDer`/`trustedCertificateDer` fornecido não pôde ser importado como chave de verificação.</Card>
 </Cards>

@@ -1,58 +1,64 @@
 ---
-title: "SignatureKit × Licitei: signing in the browser, without per-signature fees"
-description: "How Licitei moved A1 signing into the browser: zero marginal cost, the flow unbroken, the private key never leaving the device."
+title: "SignatureKit × Licitei: assinar com A1 no navegador, sem cobrar por assinatura"
+description: "Como a Licitei levou a assinatura A1 para o navegador: custo marginal zero, fluxo intacto e a chave privada nunca sai do dispositivo."
 date: "2026-06-26"
 author: "Licitei"
 ---
 
-[Licitei](https://licitei.com.br) is one of the largest public-procurement (*licitação*) platforms in Brazil. To bid, a user has to sign: every proposal (*proposta*) and every qualification declaration (*declaração de habilitação*) needs a real digital signature with the bidder's A1 certificate.
+A [Licitei](https://licitei.com.br) é uma das maiores plataformas de licitação do Brasil. Para disputar, o usuário precisa assinar: cada proposta e cada declaração de habilitação exige uma assinatura digital de verdade, com o certificado A1 do licitante.
 
-That sounds solved — plug in an e-signature API and move on. Except the economics don't work, and the legal and procedural constraints leave no room to cut corners.
+Parece um problema resolvido — é só plugar uma API de assinatura e seguir. Só que a conta não fecha.
 
-## The cost of a signature
+## O custo de uma assinatura
 
-The major e-signature services bill against document or signature volume, so cost scales linearly with how much you sign. Clicksign sells a fixed monthly base — R$39/mo Start, R$59/mo Plus, R$85/mo Automação — bundled with a document allowance, and once you exceed it each additional document is billed individually, from R$2,40 up to R$6,90 depending on tier ([Clicksign pricing](https://www.clicksign.com/preco)). ZapSign is even more explicit: a digital-certificate signature is an add-on at R$0,50 per signature on top of the plan's document limit ([ZapSign feature table](https://zapsign.com.br/tabela-funcionalidades-v2)).
+Os serviços de assinatura pagos cobram **por documento, por envelope ou por assinatura**. Para um documento, tudo bem. Mas uma licitação nunca é um documento só: o licitante assina **dezenas de documentos de uma vez**, toda vez que entra numa disputa. E o modelo de preço é, por construção, indexado a essa contagem.
 
-For one document that's fine. But a *licitação* is never one document: a bidder signs **dozens of documents at once**, every time they enter a bid. Multiply per-document pricing by dozens of documents, by thousands of bidders, by every bid they file, and the line item stops being a feature cost — it becomes the product's cost. The per-document model penalizes exactly this usage; on Clicksign the per-doc overage rate actually *rises* with the higher-feature tiers at the entry allowance (R$3,00 on Start vs R$6,90 on Automação), only dropping if you pre-commit to a 200-document allowance ([Clicksign pricing](https://www.clicksign.com/preco)). Cost is indexed to document count.
+Não é especulação, é o que as tabelas dizem. A Clicksign tem uma base mensal a partir de R$39/mês e cobra cada documento que estoura a franquia — de R$2,40 a R$6,90 por documento, sendo que o plano com mais recursos chega a custar *mais* caro por documento na franquia de entrada (R$3,00 no Start contra R$6,90 no Automação, a 20 documentos) ([Clicksign, preços](https://www.clicksign.com/preco)). A ZapSign cobra um adicional explícito de R$0,50 por assinatura com certificado digital, que se soma ao limite de documentos do plano ([ZapSign, tabela de funcionalidades](https://zapsign.com.br/tabela-funcionalidades-v2)).
 
-The obvious escape — "let the user sign somewhere else and upload the result" — is worse. A *licitação* under the Nova Lei de Licitações (Lei 14.133/2021) is conducted preferentially in electronic form, with the public session opening at the date and time fixed in the *edital* (art. 17, §2º) ([TCE-SP, art. 17](https://www.tce.sp.gov.br/legislacao-comentada/lei-14133-1o-abril-2021/17)). In the federal electronic *pregão*, bidders must submit the proposal and the *habilitação* documents together, exclusively through the system, and may only swap them out until the session opens; the dispute then runs on fixed timings — ten minutes in the open mode ([Portal de Compras / Decreto do Pregão Eletrônico](https://www.gov.br/compras/pt-br/acesso-a-informacao/perguntas-frequentes/novo-decreto-do-pregao-eletronico)). Sending the bidder out of Licitei to a second tool mid-bid, against a deadline measured in minutes, loses bids.
+Multiplique qualquer um desses por dezenas de documentos, por milhares de licitantes, por cada disputa que eles entram, e aquele item de custo deixa de ser o custo de uma funcionalidade — vira o custo do produto.
 
-## What the signature actually has to be
+A saída óbvia — "deixa o usuário assinar por fora e subir o resultado" — é pior. Ela quebra o fluxo: o licitante sai da Licitei no meio da disputa, briga com outra ferramenta, volta e sobe tudo de novo. E não há folga para isso. A Lei 14.133/2021 determina que as licitações sejam realizadas **preferencialmente sob a forma eletrônica** (art. 17, §2º), com fases ordenadas de apresentação de propostas e de habilitação ([TCE-SP, art. 17](https://www.tce.sp.gov.br/legislacao-comentada/lei-14133-1o-abril-2021/17)). No pregão eletrônico federal, propostas e documentos de habilitação são enviados juntos e **exclusivamente pelo sistema**, só podem ser substituídos até a abertura da sessão pública, e a disputa corre em tempos automáticos fixos — dez minutos no modo aberto ([Portal de Compras, pregão eletrônico](https://www.gov.br/compras/pt-br/acesso-a-informacao/perguntas-frequentes/novo-decreto-do-pregao-eletronico)). Num processo que fecha num minuto exato, esse atrito faz perder licitação.
 
-The reason none of this can be faked with a drawn-on image: a *proposta* signed for a *licitação* needs to carry full legal weight. Brazilian law (Lei 14.063/2020) defines three tiers of electronic signature — simple, advanced, and qualified — and only the **qualified** tier uses an ICP-Brasil digital certificate, under §1 of art. 10 of MP 2.200-2/2001, the measure that created ICP-Brasil ([Governo Digital](https://www.gov.br/governodigital/pt-br/identidade/assinatura-eletronica/saiba-mais-sobre-a-assinatura-eletronica)). A document signed with an ICP-Brasil certificate carries the same legal validity as a paper document with a handwritten signature, per art. 10 of MP 2.200-2/2001 ([ITI](https://www.gov.br/iti/pt-br/acesso-a-informacao/perguntas-frequentes/certificacao-digital)).
+## O que é, de fato, assinar com A1
 
-The A1 certificate is the software-based ICP-Brasil certificate: a file stored locally on the user's computer or phone, valid for one year — distinct from the A3, which lives on a smart card, token, or remote HSM and is valid for one to five years ([ITI](https://www.gov.br/iti/pt-br/acesso-a-informacao/perguntas-frequentes/certificacao-digital)). Because the A1 is just a file the bidder already holds, it's the natural fit for signing in software — and in the browser.
+O A1 não é uma assinatura genérica de PDF. É um certificado **ICP-Brasil**, e isso tem peso jurídico definido: documentos assinados com certificado ICP-Brasil têm a **mesma validade jurídica que documentos em papel com assinatura manuscrita**, nos termos do art. 10 da MP 2.200-2/2001 ([ITI, certificação digital](https://www.gov.br/iti/pt-br/acesso-a-informacao/perguntas-frequentes/certificacao-digital)). É o que a Lei 14.063/2020 chama de **assinatura eletrônica qualificada** — o nível mais alto entre simples, avançada e qualificada, justamente o que usa certificado ICP-Brasil (§1º do art. 10 da MP 2.200-2/2001) ([Governo Digital, assinatura eletrônica](https://www.gov.br/governodigital/pt-br/identidade/assinatura-eletronica/saiba-mais-sobre-a-assinatura-eletronica)).
 
-## Why "A1 signing" still costs so much
+O que distingue o A1 dos outros é onde a chave mora. O A1 é um certificado **em software**, um arquivo guardado no próprio computador ou celular do titular, com validade de um ano. O A3 vive em mídia de hardware — cartão, token ou HSM remoto — com validade de um a cinco anos ([ITI, certificação digital](https://www.gov.br/iti/pt-br/acesso-a-informacao/perguntas-frequentes/certificacao-digital)). O A1 ser um arquivo é exatamente o que torna possível assiná-lo no navegador, sem token físico, e por isso ele é o formato que o licitante leva para uma disputa eletrônica.
 
-Here's the part that's easy to miss. Most services that *do* support A1 certificates still charge heavily for it, and the reason is architectural: they sign **on a server**. The user hands over the `.pfx` (or a managed key vault holds it) along with the document; the service signs server-side and returns the result.
+## Por que "assinatura com A1" ainda custa tanto
 
-The per-signature price isn't paying for the cryptography. A public-key signature — RSA or ECDSA — is computed over a fixed-size *hash* of the document, not the whole document, which is exactly what makes it fast ([MDN, SubtleCrypto.sign()](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign)). What you're paying for is the *server*: infrastructure to run, a private key that leaves the user's machine, and the liability of holding that key.
+Aqui está a parte fácil de não enxergar. A maioria dos serviços que *aceitam* certificado A1 ainda cobra caro por isso, e o motivo é arquitetural: eles assinam **no servidor**. O usuário entrega o `.pfx` (ou um cofre de chaves gerenciado o guarda) junto com o documento; o serviço assina no servidor e devolve o resultado.
 
-That liability is the real cost. NIST is unambiguous that a signing private key should remain under the sole control of its owner and be protected against disclosure ([NIST SP 800-57 Pt. 1 Rev. 5](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf)). Disclose it and "the integrity and non-repudiation qualities of all data signed by that key are suspect" — one exposure invalidates every signature the key ever produced ([NIST SP 800-57 Pt. 1 Rev. 5](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf)). Doing this safely on a server is expensive on its own terms: AWS KMS meters asymmetric signing at $0.15 per 10,000 requests — explicitly excluded from the free tier — plus $1 per key per month, and hardware-backed custody via a CloudHSM custom key store adds HSM instances at $1.60 per hour, roughly $2,380 a month for the two HSMs AWS recommends for availability, before a single signature ([AWS KMS pricing](https://aws.amazon.com/kms/pricing/)).
+O preço por assinatura não está pagando a criptografia. A operação criptográfica em si é barata: toda assinatura de chave pública é calculada sobre um **hash de tamanho fixo** do documento, não sobre o documento inteiro — é o que a torna rápida ([MDN, SubtleCrypto.sign()](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign)). O que custa é o *servidor* e, principalmente, a **guarda da chave** que ele implica.
 
-So Licitei asked the obvious question: what if the server isn't in the loop at all?
+E essa guarda é cara de verdade. Assinar no servidor com custódia gerenciada significa pagar por operação: no AWS KMS, assinatura assimétrica custa US$0,15 a cada 10.000 requisições, está explicitamente **fora** da franquia gratuita, e cada chave ainda custa US$1/mês ([AWS KMS, preços](https://aws.amazon.com/kms/pricing/)). Querer custódia em hardware piora: um *custom key store* com CloudHSM cobra US$1,60 por HSM por hora, e a AWS recomenda no mínimo dois para disponibilidade — cerca de US$2.380/mês só de cluster, antes de qualquer assinatura ([AWS KMS, preços](https://aws.amazon.com/kms/pricing/)).
 
-## Sign in the browser
+Custódia também é **responsabilidade**, não só custo. A recomendação do NIST é direta: a chave privada deve permanecer **sob controle exclusivo de seu titular** e ser protegida contra divulgação não autorizada ([NIST SP 800-57 Part 1 Rev. 5](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf)). E o que está em jogo se isso falha é tudo: o próprio NIST alerta que a divulgação de uma chave privada de assinatura torna **suspeitas a integridade e a irretratabilidade de todos os dados já assinados** por aquela chave ([NIST SP 800-57 Part 1 Rev. 5](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf)). Concentrar milhares de `.pfx` de licitantes num servidor é concentrar exatamente esse risco.
 
-`@signature-kit` runs the **entire signing flow in the browser**. The PDF bytes, the A1 `.p12`/`.pfx` container, and its password stay in the page's local memory and never make a network request. The asymmetric operation is the same one the platform already exposes: the Web Crypto API gives a script direct access to cryptographic primitives via `SubtleCrypto`, and `sign()` produces a digital signature from a private key entirely client-side, with no server in the path ([MDN, Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)). PAdES is computed in the page; the app gets back finished, signed bytes to download or store.
+Então a Licitei fez a pergunta óbvia: e se o servidor não estiver no caminho?
+
+## Assine no navegador
+
+O `@signature-kit` roda o **fluxo de assinatura inteiro no navegador**. Os bytes do PDF, o container A1 `.p12`/`.pfx` e a senha ficam na memória local da página e nunca fazem uma requisição de rede. O PAdES é calculado no cliente; a aplicação recebe de volta os bytes assinados, prontos para baixar ou guardar.
+
+Isso é possível porque o navegador já traz a primitiva certa. A Web Crypto API expõe operações criptográficas direto no cliente — inclusive em Web Workers — e o `SubtleCrypto.sign()` gera a assinatura digital com a chave privada usando RSASSA-PKCS1-v1_5, RSA-PSS, ECDSA ou Ed25519 ([MDN, Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)). É exatamente a operação necessária para assinar o hash de um PDF sem servidor.
 
 ```package-install
 @signature-kit/pdf @signature-kit/a1
 ```
 
-<Callout type="error" title="Nothing leaves the device">
-  The document, the `.pfx`, and the password live only in the browser tab. The password is wrapped as `Redacted`
-  before it reaches `a1SignaturesLayer`, so it never lands in a log or an error message. No request is made — the
-  private key never travels.
+<Callout type="error" title="Nada sai do dispositivo">
+  O documento, o `.pfx` e a senha vivem só na aba do navegador. A senha é embrulhada como `Redacted` antes de chegar
+  ao `a1SignaturesLayer`, então nunca aparece num log ou numa mensagem de erro. Nenhuma requisição é feita — a chave
+  privada não viaja.
 </Callout>
 
-## The flow
+## O fluxo
 
 <Steps>
-  <Step title="Read each uploaded PDF as bytes">
-    `readPdfBlobBytes` turns a `File`/`Blob` into a `Uint8Array`, all in memory. Failures are typed
-    (`react.FILE_READ_FAILED`), never a thrown exception.
+  <Step title="Ler cada PDF enviado como bytes">
+    `readPdfBlobBytes` transforma um `File`/`Blob` em `Uint8Array`, tudo em memória. Falhas são tipadas
+    (`react.FILE_READ_FAILED`), nunca uma exceção solta.
 
     ```ts title="read.ts"
     import { readPdfBlobBytes } from "@signature-kit/pdf/workflow"
@@ -61,9 +67,9 @@ So Licitei asked the obvious question: what if the server isn't in the loop at a
     ```
   </Step>
 
-  <Step title="Build the template and place the signature">
-    `createPdfSignatureBuilderStateFromBytes` reads the PDF's pages with the in-house `PdfCore` engine and produces a validated template with
-    the signature field positioned — explicitly, or auto-placed. Its `template` is what the signer consumes.
+  <Step title="Montar o template e posicionar a assinatura">
+    `createPdfSignatureBuilderStateFromBytes` lê as páginas do PDF com o motor próprio `PdfCore` e produz um template validado, com o
+    campo de assinatura posicionado — de forma explícita ou automática. O `template` dele é o que o assinador consome.
 
     ```ts title="build.ts"
     import { createPdfSignatureBuilderStateFromBytes } from "@signature-kit/pdf/workflow"
@@ -83,18 +89,18 @@ So Licitei asked the obvious question: what if the server isn't in the loop at a
     ```
   </Step>
 
-  <Step title="Sign every bid document in one batch">
-    `signPdfSignatureBatch` signs the whole set under **one** `a1SignaturesLayer` — the certificate is unlocked once and
-    reused for every document. It signs strictly one-by-one, and a document that fails is captured as
-    `{ ok: false, error }` instead of aborting the run, so you always get one result per input, in order. `onItemSettled`
-    fires as each finishes, so the UI can stream progress and hand each signed file straight back to the bid.
+  <Step title="Assinar todos os documentos da disputa num lote só">
+    `signPdfSignatureBatch` assina o conjunto inteiro sob **um** `a1SignaturesLayer` — o certificado é destravado uma vez e
+    reusado em cada documento. Ele assina estritamente um por um, e um documento que falha vira `{ ok: false, error }`
+    em vez de abortar a execução, então você sempre recebe um resultado por entrada, na ordem. O `onItemSettled` dispara
+    a cada documento concluído, então a UI mostra o progresso e devolve cada arquivo assinado direto para a disputa.
 
     ```ts title="sign-batch.ts"
     import { signPdfSignatureBatch } from "@signature-kit/pdf/workflow"
     import { a1SignaturesLayer } from "@signature-kit/a1/signer"
     import { Effect, Redacted } from "effect"
 
-    // `items` = one { id, input } per uploaded document, built with the step above.
+    // `items` = um { id, input } por documento enviado, montado com o passo acima.
     const results = await Effect.runPromise(
       signPdfSignatureBatch(items, {
         onItemSettled: (result, index, total) => {
@@ -102,7 +108,7 @@ So Licitei asked the obvious question: what if the server isn't in the loop at a
           else markFailed(result.id, result.error.message)
         },
       }).pipe(
-        // The certificate is provided ONCE, for the whole batch, and never leaves the tab.
+        // O certificado é provido UMA vez, para o lote inteiro, e nunca sai da aba.
         Effect.provide(a1SignaturesLayer({ pfx, password: Redacted.make(password) })),
       ),
     )
@@ -110,37 +116,37 @@ So Licitei asked the obvious question: what if the server isn't in the loop at a
   </Step>
 </Steps>
 
-That is the whole thing: dozens of documents, one certificate, one pass — and not a single byte sent to a server.
+É isso: dezenas de documentos, um certificado, uma passada — e nenhum byte enviado para um servidor.
 
-<Callout type="info" title="It still meets the Brazilian requirements">
-  The output is PAdES. Need the *rubrica em todas as páginas*? Stamp it before signing with `stampPdfRubric({ pages: "all" })`,
-  so a single signature's byte range covers every page. Need the ICP-Brasil policy embedded? Pass `icpBrasil` to the
-  signing input. None of it changes where the signing happens — still the browser.
+<Callout type="info" title="E ainda atende às exigências brasileiras">
+  A saída é PAdES. Precisa da *rubrica em todas as páginas*? Carimbe antes de assinar com `stampPdfRubric({ pages: "all" })`,
+  para que o byte range de uma única assinatura cubra todas as páginas. Precisa da política ICP-Brasil embutida? Passe
+  `icpBrasil` no input de assinatura. Nada disso muda onde a assinatura acontece — continua sendo o navegador.
 </Callout>
 
-PAdES isn't a SignatureKit invention — it's PDF Advanced Electronic Signatures, the ETSI standard EN 319 142, which defines how an advanced electronic signature is embedded directly into the PDF so it travels with the document ([PAdES](https://en.wikipedia.org/wiki/PAdES)). Computing it in the browser produces the same standard artifact a server would, signed with the same ICP-Brasil key — just without the key ever leaving the page.
+A escolha de PAdES não é casual: é o padrão **ETSI EN 319 142** para assinaturas eletrônicas avançadas embutidas no próprio PDF, com perfis baseline (B-B, B-T, B-LT, B-LTA) que viajam junto com o documento ([PAdES, Wikipedia](https://en.wikipedia.org/wiki/PAdES)). A assinatura fica dentro do arquivo entregue na disputa, sem depender de nenhum servidor da Licitei para ser verificada depois.
 
-## What this changed for Licitei
+## O que isso mudou para a Licitei
 
-- **Zero marginal cost per signature.** The expensive part was the server, and there is no server. Signing dozens of
-  documents per bid costs the same as signing one: nothing.
-- **The certificate never leaves the device.** The `.pfx` and its password stay in the tab, `Redacted` end to end.
-  That is the strongest possible answer to "where did my private key go?" — it didn't go anywhere, and there is no
-  server-side key to disclose.
-- **It stays in the flow.** The bidder never leaves Licitei. Upload, place, sign the batch, attach — inside the same
-  screen, against the same deadline.
-- **One bad document doesn't sink the batch.** A failed signature is a typed result, not an exception. The other
-  documents still sign; the failure surfaces with a code you can act on.
+- **Custo marginal zero por assinatura.** A parte cara era o servidor e a custódia da chave, e não existe servidor. Assinar dezenas de
+  documentos por disputa custa o mesmo que assinar um: nada.
+- **O certificado nunca sai do dispositivo.** O `.pfx` e a senha ficam na aba, `Redacted` de ponta a ponta — a chave sob controle
+  exclusivo do titular, como o NIST recomenda. É a melhor resposta possível para "para onde foi minha chave privada?": ela não foi a lugar nenhum.
+- **Não quebra o fluxo.** O licitante nunca sai da Licitei. Sobe, posiciona, assina o lote, anexa — na mesma tela,
+  contra o mesmo prazo de dez minutos.
+- **Um documento ruim não derruba o lote.** Uma assinatura que falha é um resultado tipado, não uma exceção. Os outros
+  documentos continuam assinando; a falha aparece com um código que dá para tratar.
 
-The cryptography was never the hard part — it's a hash signature measured in microseconds. Moving it off the server — and keeping it typed, batched, and in the browser — is what made qualified digital-certificate signing something Licitei could *include*, rather than meter.
+A criptografia nunca foi a parte difícil — é um hash assinado em microssegundos. Tirar isso do servidor — e manter tipado, em lote e no navegador — é o que
+tornou a assinatura com certificado digital algo que a Licitei pôde *incluir*, em vez de tarifar.
 
-## Keep reading
+## Continue lendo
 
 <Cards>
-  <Card title="Browser signing (live demo)" href="/en-US/docs/a1-signing/browser-pdf-flow">
-    The same primitives wired into an in-browser island: upload, place, add an A1 certificate, and sign a batch — bytes and password never leave the page.
+  <Card title="Assinatura no navegador (demo ao vivo)" href="/docs/a1-signing/browser-pdf-flow">
+    As mesmas primitivas numa ilha React no navegador: suba, posicione, adicione um certificado A1 e assine um lote — os bytes e a senha nunca saem da página.
   </Card>
-  <Card title="A1 certificates" href="/en-US/docs/signing/certificates">
-    How the A1 / PKCS#12 container is read and turned into the Signatures boundary.
+  <Card title="Certificados A1" href="/docs/signing/certificates">
+    Como o container A1 / PKCS#12 é lido e transformado na fronteira Signatures.
   </Card>
 </Cards>

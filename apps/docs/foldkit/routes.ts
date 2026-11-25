@@ -2,13 +2,10 @@ import { Option, Schema, pipe } from "effect";
 import * as Url from "foldkit/url";
 import * as Route from "foldkit/route";
 
-export const Locale = Schema.Literals(["en-US", "pt-BR"]);
-export type Locale = typeof Locale.Type;
-const Home = Schema.TaggedStruct("Home", { locale: Locale });
-const Page = Schema.TaggedStruct("Page", { locale: Locale, path: Schema.String });
-const locale = Route.schemaSegment("locale", Locale);
-export const homeRoute = pipe(locale, Route.mapTo(Home));
-export const pageRoute = pipe(locale, Route.slash(Route.restString("path")), Route.mapTo(Page));
+const Home = Schema.TaggedStruct("Home", {});
+const Page = Schema.TaggedStruct("Page", { path: Schema.String });
+export const homeRoute = pipe(Route.root, Route.mapTo(Home));
+export const pageRoute = pipe(Route.restString("path"), Route.mapTo(Page));
 export const publicRoutes = Route.oneOf(homeRoute, pageRoute);
 
 const NotFound = Schema.TaggedStruct("NotFound", { path: Schema.String });
@@ -20,4 +17,11 @@ export const parsePublicUrl = (input: string) => {
   if (route._tag === "NotFound") return undefined;
   const path = route._tag === "Home" ? homeRoute(route) : pageRoute(route);
   return path === parsed.value.pathname ? route : undefined;
+};
+
+export const legacyLocaleRedirect = (pathname: string) => {
+  const match = /^\/(?:en-US|pt-BR)(\/.*)?$/.exec(pathname);
+  if (match === null) return undefined;
+  const rest = match[1] ?? "/";
+  return rest === "/sign-free" ? "/assine-documentos-gratis" : rest;
 };

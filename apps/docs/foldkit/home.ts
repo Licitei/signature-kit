@@ -1,5 +1,5 @@
 import { pageRoute } from "./routes";
-import { Button, Disclosure, Tabs, Toast } from "@foldkit/ui";
+import { Button, Disclosure, Toast } from "@foldkit/ui";
 import { Effect, Option, Schema } from "effect";
 import { Command } from "foldkit";
 import * as Mount from "foldkit/mount";
@@ -7,10 +7,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { landing } from "./styles/landing";
 import { shell } from "./styles/shell";
 import { sx } from "./styles/sx";
-import en from "../messages/en-US.json";
-import pt from "../messages/pt-BR.json";
 import { captureDocsEvent } from "../lib/posthog/client";
-import type { Locale } from "./content";
 import type { OverlayKind } from "./overlay";
 
 export const Theme = Schema.Literals(["light", "dark"]);
@@ -41,129 +38,46 @@ export const SaveTheme = Command.define("SaveTheme", {
     }).pipe(Effect.ignore, Effect.as(ThemeSaved.make({}))),
 });
 
-export const HomeProvider = Schema.Literals([
-  "Clicksign",
-  "Assinafy",
-  "ZapSign",
-  "DocuSeal",
-  "Documenso",
-]);
-export const HomeProviderSelected = Schema.TaggedStruct("HomeProviderSelected", {
-  provider: HomeProvider,
-});
-export const SelectHomeProvider = Command.define("SelectHomeProvider", {
-  args: { provider: HomeProvider },
-  messages: [HomeProviderSelected],
-  execute: ({ provider }) =>
-    Effect.sync(() => {
-      captureDocsEvent("provider_showcase_selected", { method: "tab", provider });
-      return HomeProviderSelected.make({ provider });
-    }),
-});
-export const HomeCopyTarget = Schema.Literals(["install", "npm", "pnpm", "yarn", "provider"]);
-export const HomeCopyLocation = Schema.Literals(["get_started", "providers"]);
+export const installCommand = "bun add @signature-kit/signatures @signature-kit/a1 effect";
 export const HomeCopyRequest = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const HomeCopyFinished = Schema.TaggedStruct("HomeCopyFinished", {
-  target: HomeCopyTarget,
   request: HomeCopyRequest,
-  provider: HomeProvider,
   ok: Schema.Boolean,
 });
 export const HomeCopyExpired = Schema.TaggedStruct("HomeCopyExpired", {
   request: HomeCopyRequest,
-  provider: HomeProvider,
 });
 export const ExpireHomeCopy = Command.define("ExpireHomeCopy", {
-  args: { request: HomeCopyRequest, provider: HomeProvider },
+  args: { request: HomeCopyRequest },
   messages: [HomeCopyExpired],
-  execute: ({ request, provider }) =>
-    Effect.sleep("1800 millis").pipe(Effect.as(HomeCopyExpired.make({ request, provider }))),
+  execute: ({ request }) =>
+    Effect.sleep("1800 millis").pipe(Effect.as(HomeCopyExpired.make({ request }))),
 });
 export const CopyHome = Command.define("CopyHome", {
-  args: {
-    text: Schema.String,
-    target: HomeCopyTarget,
-    provider: HomeProvider,
-    filename: Schema.String,
-    location: HomeCopyLocation,
-    request: HomeCopyRequest,
-  },
+  args: { request: HomeCopyRequest },
   messages: [HomeCopyFinished],
-  execute: ({ text, target, provider, filename, location, request }) =>
+  execute: ({ request }) =>
     Effect.tryPromise({
       try: async () => {
-        await navigator.clipboard.writeText(text);
-        if (target === "provider")
-          captureDocsEvent("provider_snippet_copied", { filename, provider });
-        else captureDocsEvent("install_command_copied", { analytics_location: location });
-        return HomeCopyFinished.make({ target, request, provider, ok: true });
+        await navigator.clipboard.writeText(installCommand);
+        captureDocsEvent("install_command_copied", { analytics_location: "footer" });
+        return HomeCopyFinished.make({ request, ok: true });
       },
       catch: () => {
-        if (target === "provider")
-          captureDocsEvent("provider_snippet_copy_failed", { filename, provider });
-        else captureDocsEvent("install_command_copy_failed", { analytics_location: location });
-        return HomeCopyFinished.make({ target, request, provider, ok: false });
+        captureDocsEvent("install_command_copy_failed", { analytics_location: "footer" });
+        return HomeCopyFinished.make({ request, ok: false });
       },
     }).pipe(Effect.catch((failure) => Effect.succeed(failure))),
 });
-
-export const homeProviders: ReadonlyArray<{
-  name: typeof HomeProvider.Type;
-  filename: string;
-  code: string;
-}> = [
-  {
-    name: "Clicksign",
-    filename: "clicksign.ts",
-    code: 'import * as Alchemy from "alchemy"\nimport { ClicksignSignatureRequest, providers as clicksignProviders } from "@signature-kit/clicksign"\nimport { signatureHttpClientLive } from "@signature-kit/http"\nimport { Effect, Layer, Redacted } from "effect"\n\nexport default class Contracts extends Alchemy.Stack<Contracts>()(\n  "Contracts",\n  {\n    providers: Layer.merge(\n      clicksignProviders({\n        accessToken: Redacted.make(process.env.CLICKSIGN_TOKEN ?? ""),\n        environment: "sandbox",\n        locale: "pt-BR",\n        autoClose: true,\n      }),\n      signatureHttpClientLive,\n    ),\n    state: Alchemy.inMemoryState(),\n  },\n  Effect.gen(function* () {\n    return yield* ClicksignSignatureRequest("membership-agreement", {\n      title: "Membership agreement",\n      documents: [{ fileName: "agreement.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],\n      recipients: [{ name: "Bruno Lima", email: "bruno@example.com", role: "signer" }],\n    })\n  }),\n) {}',
-  },
-  {
-    name: "Assinafy",
-    filename: "assinafy.ts",
-    code: 'import * as Alchemy from "alchemy"\nimport { AssinafySignatureRequest, providers as assinafyProviders } from "@signature-kit/assinafy"\nimport { signatureHttpClientLive } from "@signature-kit/http"\nimport { Effect, Layer, Redacted } from "effect"\n\nexport default class Contracts extends Alchemy.Stack<Contracts>()(\n  "Contracts",\n  {\n    providers: Layer.merge(\n      assinafyProviders({\n        accountId: process.env.ASSINAFY_ACCOUNT_ID ?? "",\n        apiKey: Redacted.make(process.env.ASSINAFY_API_KEY ?? ""),\n        environment: "sandbox",\n      }),\n      signatureHttpClientLive,\n    ),\n    state: Alchemy.inMemoryState(),\n  },\n  Effect.gen(function* () {\n    return yield* AssinafySignatureRequest("contract", {\n      title: "Contract",\n      documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],\n      recipients: [{ name: "Carla Nunes", email: "carla@example.com" }],\n    })\n  }),\n) {}',
-  },
-  {
-    name: "ZapSign",
-    filename: "zapsign.ts",
-    code: 'import * as Alchemy from "alchemy"\nimport { ZapSignSignatureRequest, providers as zapSignProviders } from "@signature-kit/zapsign"\nimport { signatureHttpClientLive } from "@signature-kit/http"\nimport { Effect, Layer, Redacted } from "effect"\n\nexport default class Contracts extends Alchemy.Stack<Contracts>()(\n  "Contracts",\n  {\n    providers: Layer.merge(\n      zapSignProviders({\n        apiToken: Redacted.make(process.env.ZAPSIGN_API_TOKEN ?? ""),\n        environment: "sandbox",\n        locale: "pt-br",\n      }),\n      signatureHttpClientLive,\n    ),\n    state: Alchemy.inMemoryState(),\n  },\n  Effect.gen(function* () {\n    return yield* ZapSignSignatureRequest("contract", {\n      title: "Contract",\n      documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],\n      recipients: [{ name: "Davi Rocha", email: "davi@example.com" }],\n    })\n  }),\n) {}',
-  },
-  {
-    name: "DocuSeal",
-    filename: "docuseal.ts",
-    code: 'import * as Alchemy from "alchemy"\nimport { DocuSealSignatureRequest, providers as docuSealProviders } from "@signature-kit/docuseal"\nimport { signatureHttpClientLive } from "@signature-kit/http"\nimport { Effect, Layer, Redacted } from "effect"\n\nexport default class Contracts extends Alchemy.Stack<Contracts>()(\n  "Contracts",\n  {\n    providers: Layer.merge(\n      docuSealProviders({\n        apiKey: Redacted.make(process.env.DOCUSEAL_API_KEY ?? ""),\n        baseUrl: "https://api.docuseal.com",\n        submittersOrder: "preserved",\n      }),\n      signatureHttpClientLive,\n    ),\n    state: Alchemy.inMemoryState(),\n  },\n  Effect.gen(function* () {\n    return yield* DocuSealSignatureRequest("service-agreement", {\n      title: "Service agreement",\n      documents: [{ fileName: "agreement.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],\n      recipients: [{ name: "Ana Silva", email: "ana@example.com", role: "signer" }],\n    })\n  }),\n) {}',
-  },
-  {
-    name: "Documenso",
-    filename: "documenso.ts",
-    code: 'import * as Alchemy from "alchemy"\nimport { DocumensoSignatureRequest, providers as documensoProviders } from "@signature-kit/documenso"\nimport { signatureHttpClientLive } from "@signature-kit/http"\nimport { Effect, Layer, Redacted } from "effect"\n\nexport default class Contracts extends Alchemy.Stack<Contracts>()(\n  "Contracts",\n  {\n    providers: Layer.merge(\n      documensoProviders({\n        apiKey: Redacted.make(process.env.DOCUMENSO_API_KEY ?? ""),\n        baseUrl: "https://app.documenso.com/api/v2",\n      }),\n      signatureHttpClientLive,\n    ),\n    state: Alchemy.inMemoryState(),\n  },\n  Effect.gen(function* () {\n    return yield* DocumensoSignatureRequest("service-agreement", {\n      title: "Service agreement",\n      documents: [{ fileName: "agreement.pdf", mimeType: "application/pdf", contentBase64: pdfBase64 }],\n      recipients: [{ name: "Ana Silva", email: "ana@example.com", role: "approver", routingOrder: 1 }],\n    })\n  }),\n) {}',
-  },
-];
-export const firstSignature =
-  'import { a1SignaturesLayer } from "@signature-kit/a1/signer"\nimport { signatures } from "@signature-kit/signatures"\nimport { Effect, Redacted } from "effect"\n\nconst layer = a1SignaturesLayer({\n  pfx,\n  password: Redacted.make(process.env.A1_PASSWORD ?? ""),\n})\n\nconst program = Effect.gen(function* () {\n  const identity = yield* signatures.inspect()\n\n  const artifact = yield* signatures.sign({\n    content,\n    algorithm: "rsa-sha256",\n  })\n\n  return { identity, artifact }\n}).pipe(Effect.provide(layer))\n\nconst { identity, artifact } = await Effect.runPromise(program)';
-export const installCommand = "bun add @signature-kit/signatures @signature-kit/a1";
-export const InstallManager = Schema.Literals(["bun", "npm", "pnpm", "yarn"]);
-export const installSnippets: Record<typeof InstallManager.Type, string> = {
-  bun: installCommand,
-  npm: "npm install @signature-kit/signatures @signature-kit/a1",
-  pnpm: "pnpm add @signature-kit/signatures @signature-kit/a1",
-  yarn: "yarn add @signature-kit/signatures @signature-kit/a1",
-};
-export const installCopyTarget = (
-  manager: typeof InstallManager.Type,
-): typeof HomeCopyTarget.Type => (manager === "bun" ? "install" : manager);
-export const HomeProviderTabs = Tabs.create<typeof HomeProvider.Type>();
-export const HomeInstallTabs = Tabs.create<typeof InstallManager.Type>();
 export const CopyToast = Toast.make(Schema.Struct({ text: Schema.String }));
-const installManagers = ["bun", "npm", "pnpm", "yarn"] satisfies ReadonlyArray<
-  typeof InstallManager.Type
->;
-const providerNames = [
-  "Clicksign",
-  "Assinafy",
-  "ZapSign",
-  "DocuSeal",
-  "Documenso",
-] satisfies ReadonlyArray<typeof HomeProvider.Type>;
+
+export const homeProviders = [
+  { name: "Clicksign", slug: "clicksign", logo: "/landing/clicksign.svg", height: 26 },
+  { name: "Assinafy", slug: "assinafy", logo: "/landing/assinafy.png", height: 24 },
+  { name: "ZapSign", slug: "zapsign", logo: "/landing/zapsign.svg", height: 30 },
+  { name: "DocuSeal", slug: "docuseal", logo: "/landing/docuseal.svg", height: 26 },
+  { name: "Documenso", slug: "documenso", logo: "/landing/documenso.svg", height: 21 },
+] satisfies ReadonlyArray<{ name: string; slug: string; logo: string; height: number }>;
 
 export const signFreeDescription =
   "Assine documentos PDF grátis no navegador com certificado digital A1. O arquivo, o .p12/.pfx e a senha ficam no seu dispositivo.";
@@ -224,7 +138,7 @@ export const signFreeLanding = <Message>(
           h.a(
             [
               ...sx(h, shell.ghost),
-              h.Href(pageRoute({ locale: "pt-BR", path: "docs/a1-signing/browser-pdf-flow" })),
+              h.Href(pageRoute({ path: "docs/a1-signing/browser-pdf-flow" })),
             ],
             ["Como funciona"],
           ),
@@ -303,77 +217,68 @@ export const signFreeLanding = <Message>(
     ],
   ),
 ];
-
-export const autoSignSection = <Message>(h: HtmlBuilder<Message>, locale: Locale, demo: Html) => {
-  const copy = locale === "pt-BR" ? pt : en;
-  return h.section(
+export const autoSignSection = <Message>(h: HtmlBuilder<Message>, demo: Html) =>
+  h.section(
     [...sx(h, landing.section), h.Id("auto-sign")],
     [
       h.div(
         [...sx(h, landing.head)],
         [
-          h.h2([...sx(h, landing.sectionTitle), h.Id("auto-sign-heading")], [copy.autosign_title]),
-          h.p([...sx(h, landing.lead)], [copy.autosign_lead]),
+          h.h2(
+            [...sx(h, landing.sectionTitle), h.Id("auto-sign-heading")],
+            ["Veja o posicionamento automático."],
+          ),
+          h.p(
+            [...sx(h, landing.lead)],
+            [
+              "Exemplos visuais de onde a marca cai em contratos comuns. A assinatura de verdade acontece no formulário acima.",
+            ],
+          ),
         ],
       ),
       demo,
     ],
   );
-};
 
 export const brandMark = <Message>(h: HtmlBuilder<Message>) =>
   h.svg(
-    [h.ViewBox("0 0 24 24"), h.AriaHidden(true), ...sx(h, landing.brandMark)],
+    [h.ViewBox("0 0 34 22"), h.AriaHidden(true), ...sx(h, landing.brandMark)],
     [
-      h.circle([h.Cx("12"), h.Cy("12"), h.R("11"), ...sx(h, landing.markDisc)]),
-      h.path([h.D("M7 12.5l3.2 3.2L17 9"), ...sx(h, landing.markCheck)]),
+      h.path([
+        h.D("M2 15c3 0 4-10 7-10s-2 12 2 12 3-8 6-8-1 6 2 6 3-4 6-4 2 2 4 2"),
+        ...sx(h, landing.brandStroke),
+      ]),
+      h.circle([h.Cx("31.5"), h.Cy("13"), h.R("2"), ...sx(h, landing.brandDot)]),
     ],
   );
 
-const seal = <Message>(h: HtmlBuilder<Message>) =>
+const githubIcon = <Message>(h: HtmlBuilder<Message>) =>
   h.svg(
-    [h.ViewBox("0 0 240 240"), h.AriaHidden(true), ...sx(h, landing.seal)],
+    [h.ViewBox("0 0 16 16"), h.AriaHidden(true), ...sx(h, landing.icon)],
     [
-      h.defs(
-        [],
-        [h.path([h.Id("seal-orbit"), h.D("M120 120m-88 0a88 88 0 1 1 176 0a88 88 0 1 1 -176 0")])],
-      ),
-      h.circle([h.Cx("120"), h.Cy("120"), h.R("112"), ...sx(h, landing.sealRing)]),
-      h.circle([h.Cx("120"), h.Cy("120"), h.R("100"), ...sx(h, landing.sealDash)]),
-      h.text(
-        [...sx(h, landing.sealText)],
-        [
-          h.textPath(
-            [h.Attribute("href", "#seal-orbit"), h.Attribute("textLength", "548")],
-            ["PAdES · ICP-BRASIL · XML-DSIG · A1 · PKCS#12 · "],
-          ),
-        ],
-      ),
-      h.circle([h.Cx("120"), h.Cy("120"), h.R("64"), ...sx(h, landing.sealCore)]),
-      h.path([h.D("M96 122l16 16 32-34"), ...sx(h, landing.sealCheck)]),
+      h.path([
+        h.D(
+          "M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z",
+        ),
+        ...sx(h, landing.iconFill),
+      ]),
     ],
   );
+export const githubLink = <Message>(h: HtmlBuilder<Message>, tone: "light" | "dark") =>
+  h.a(
+    [
+      ...sx(h, shell.iconLink, tone === "light" && shell.iconLinkLight),
+      h.Href("https://github.com/Licitei/signature-kit"),
+      h.AriaLabel("GitHub"),
+    ],
+    [githubIcon(h)],
+  );
 
-const providerSnippet =
-  'yield* ClicksignSignatureRequest("contract", {\n  title: "Contract",\n  documents: [{ fileName: "contract.pdf", mimeType: "application/pdf", contentBase64 }],\n  recipients: [{ name: "Ana Silva", email: "ana@example.com", role: "signer" }],\n})';
-
-type HomeState = {
-  locale: Locale;
-  provider: typeof HomeProvider.Type;
-  copied: typeof HomeCopyTarget.Type | "none" | "failed";
-  installManager: typeof InstallManager.Type;
-  providerTabs: Tabs.Model;
-  installTabs: Tabs.Model;
-  copyToast: typeof CopyToast.Model.Type;
-};
-type HomeMessages<Message> = {
-  open: (kind: OverlayKind) => Message;
-  copy: (target: typeof HomeCopyTarget.Type, location: typeof HomeCopyLocation.Type) => Message;
-  gotProviderTabs: (message: Tabs.Message) => Message;
-  gotInstallTabs: (message: Tabs.Message) => Message;
-  gotCopyToast: (message: typeof CopyToast.Message.Type) => Message;
-};
-
+const uploadIcon = <Message>(h: HtmlBuilder<Message>) =>
+  h.svg(
+    [h.ViewBox("0 0 24 24"), h.AriaHidden(true), ...sx(h, landing.uploadIcon)],
+    [h.path([h.D("M12 16V5M7 10l5-5 5 5M5 19h14"), ...sx(h, landing.iconStroke)])],
+  );
 const copyIcon = <Message>(h: HtmlBuilder<Message>) =>
   h.svg(
     [h.ViewBox("0 0 16 16"), h.AriaHidden(true), ...sx(h, landing.icon)],
@@ -389,415 +294,225 @@ const copyIcon = <Message>(h: HtmlBuilder<Message>) =>
     ],
   );
 
-const signFreePath = (locale: Locale) =>
-  pageRoute({ locale, path: locale === "pt-BR" ? "assine-documentos-gratis" : "sign-free" });
-
-export const homeOverlayPanels = <Message>(
+const providerLogo = <Message>(
   h: HtmlBuilder<Message>,
-  state: HomeState,
-  signer: Html,
-  messages: HomeMessages<Message>,
-): ReadonlyArray<readonly [OverlayKind, Html]> => {
-  const copy = state.locale === "pt-BR" ? pt : en;
-  const copyButton = (
-    target: typeof HomeCopyTarget.Type,
-    location: typeof HomeCopyLocation.Type,
-    label: string,
-  ) =>
-    Button.view(
-      {
-        onClick: messages.copy(target, location),
-        toView: (attributes) =>
-          h.button(
-            [...attributes.button, ...sx(h, "home-copy", landing.copy), h.AriaLabel(label)],
-            [copyIcon(h), state.copied === target ? copy.showcase_copied : copy.showcase_copy],
-          ),
-      },
-      h,
-    );
-  return [
-    ["signer", signer],
-    [
-      "providers",
-      h.submodel({
-        slotId: "home-providers",
-        model: state.providerTabs,
-        view: HomeProviderTabs.view,
-        viewInputs: {
-          tabs: providerNames,
-          selectedValue: state.provider,
-          ariaLabel: copy.nav_providers,
-          panelMount: "ActiveOnly",
-          toView: ({ tablist, tabs }) =>
-            h.div(
-              [...sx(h, "home-code", landing.mockup)],
-              [
-                h.div(
-                  [...sx(h, landing.chrome)],
-                  [
-                    h.div(
-                      [...tablist, ...sx(h, "home-providers", landing.tabs)],
-                      tabs.map((tab) =>
-                        h.button(
-                          [...tab.tab, ...sx(h, landing.tab, tab.isActive && landing.tabOn)],
-                          [tab.value],
-                        ),
-                      ),
-                    ),
-                    copyButton("provider", "providers", `${copy.showcase_copy} ${state.provider}`),
-                  ],
-                ),
-                ...tabs
-                  .filter((tab) => tab.isActive)
-                  .map((tab) =>
-                    h.div(tab.panel, [
-                      h.p([...sx(h, landing.filename)], [homeProviders[tab.index]?.filename ?? ""]),
-                      h.pre(
-                        [...sx(h, landing.code)],
-                        [
-                          h.code(
-                            [...sx(h, landing.codeText)],
-                            [homeProviders[tab.index]?.code ?? ""],
-                          ),
-                        ],
-                      ),
-                    ]),
-                  ),
-              ],
-            ),
-        },
-        toParentMessage: messages.gotProviderTabs,
-      }),
-    ],
-    [
-      "quickstart",
-      h.div(
-        [...sx(h, landing.sheetStack)],
-        [
-          h.h3([...sx(h, landing.step)], [copy.install_step]),
-          h.submodel({
-            slotId: "home-install",
-            model: state.installTabs,
-            view: HomeInstallTabs.view,
-            viewInputs: {
-              tabs: installManagers,
-              selectedValue: state.installManager,
-              ariaLabel: copy.install_copy_label,
-              panelMount: "All",
-              toView: ({ tablist, tabs }) =>
-                h.div(
-                  [...sx(h, landing.mockup)],
-                  [
-                    h.div(
-                      [...sx(h, landing.chrome)],
-                      [
-                        h.div(
-                          [...tablist, ...sx(h, landing.tabs)],
-                          tabs.map((tab) =>
-                            h.button(
-                              [...tab.tab, ...sx(h, landing.tab, tab.isActive && landing.tabOn)],
-                              [tab.value],
-                            ),
-                          ),
-                        ),
-                        copyButton(
-                          installCopyTarget(state.installManager),
-                          "get_started",
-                          `${copy.install_copy_label} ${state.installManager}`,
-                        ),
-                      ],
-                    ),
-                    ...tabs.map((tab) =>
-                      h.pre(
-                        [
-                          ...tab.panel,
-                          ...sx(h, landing.code),
-                          ...(tab.isActive ? [] : [h.Hidden(true)]),
-                        ],
-                        [h.code([...sx(h, landing.codeText)], [installSnippets[tab.value]])],
-                      ),
-                    ),
-                  ],
-                ),
-            },
-            toParentMessage: messages.gotInstallTabs,
-          }),
-          h.h3([...sx(h, landing.step)], [copy.first_call]),
-          h.div(
-            [...sx(h, landing.mockup)],
-            [
-              h.pre(
-                [...sx(h, landing.code)],
-                [h.code([...sx(h, landing.codeText)], [firstSignature])],
-              ),
-            ],
-          ),
-          h.a(
-            [
-              ...sx(h, landing.feature),
-              h.Href(pageRoute({ locale: state.locale, path: "docs/get-started/quickstart" })),
-            ],
-            [copy.quickstart_docs],
-          ),
-        ],
-      ),
-    ],
-  ];
+  provider: (typeof homeProviders)[number],
+) => [
+  h.img([
+    h.Src(provider.logo),
+    h.Alt(provider.slug === "docuseal" ? "" : provider.name),
+    h.Height(String(provider.height)),
+    h.Loading("lazy"),
+    h.Decoding("async"),
+    ...sx(h, landing.providerLogo),
+  ]),
+  ...(provider.slug === "docuseal" ? [h.span([...sx(h, landing.providerName)], ["DocuSeal"])] : []),
+];
+
+export const signFreePath = pageRoute({ path: "assine-documentos-gratis" });
+
+type HomeMessages<Message> = {
+  open: (kind: OverlayKind) => Message;
 };
 
-export const homeView = <Message>(
-  h: HtmlBuilder<Message>,
-  state: HomeState,
-  messages: HomeMessages<Message>,
-) => {
-  const copy = state.locale === "pt-BR" ? pt : en;
-  const docs = (path: string) => pageRoute({ locale: state.locale, path: `docs/${path}` });
-  const signFree = signFreePath(state.locale);
-  const trigger = (
-    kind: OverlayKind,
-    href: string,
-    label: string,
-    tone: "primary" | "ghost" | "feature",
-  ) =>
-    h.a(
-      [
-        ...sx(
-          h,
-          tone === "primary" ? shell.primary : tone === "ghost" ? shell.ghost : landing.feature,
-          tone !== "feature" && landing.wide,
-        ),
-        h.Href(href),
-        h.Attribute("data-overlay", kind),
-        h.OnClick(messages.open(kind), { defaultAction: "Prevent" }),
-      ],
-      [label],
-    );
-  const showcase = (config: {
-    id: string;
-    title: string;
-    lead: string;
-    rest: string;
-    links: ReadonlyArray<Html>;
-    mockup: Html;
-    flip: boolean;
-  }) =>
-    h.section(
-      [...sx(h, landing.showcase, config.flip && landing.showcaseFlip), h.Id(config.id)],
-      [
-        h.h2([...sx(h, landing.showcaseTitle), h.Id(`${config.id}-heading`)], [config.title]),
-        h.div([...sx(h, landing.mockup, landing.mockupArea)], [config.mockup]),
-        h.div(
-          [...sx(h, landing.aside)],
-          [
-            h.p(
-              [...sx(h, landing.statement)],
-              [config.lead, " ", h.span([...sx(h, landing.quiet)], [config.rest])],
-            ),
-            h.ul(
-              [...sx(h, landing.features)],
-              config.links.map((link) => h.li([], [link])),
-            ),
-          ],
-        ),
-      ],
-    );
-  const link = (label: string, href: string) =>
-    h.a([...sx(h, landing.feature), h.Href(href)], [label]);
-  const checks = (rows: ReadonlyArray<string>) =>
-    h.ul(
-      [...sx(h, landing.checks)],
-      rows.map((row) =>
-        h.li(
-          [...sx(h, landing.check)],
-          [h.span([...sx(h, landing.tick), h.AriaHidden(true)], ["✓"]), row],
-        ),
-      ),
-    );
-  return [
-    h.section(
-      [...sx(h, landing.hero)],
-      [
-        h.div(
-          [...sx(h, landing.heroGrid)],
-          [
-            h.div(
-              [...sx(h, landing.heroCopy)],
-              [
-                h.h1([...sx(h, landing.title)], [copy.hero_title]),
-                h.div(
-                  [...sx(h, landing.actions)],
-                  [
-                    h.a(
-                      [
-                        ...sx(h, shell.primary, landing.wide),
-                        h.Href(pageRoute({ locale: state.locale, path: "docs" })),
-                      ],
-                      [copy.hero_cta_docs],
-                    ),
-                    trigger("signer", signFree, copy.hero_cta_sign, "ghost"),
-                  ],
-                ),
-              ],
-            ),
-            h.div([...sx(h, landing.visual)], [seal(h)]),
-            h.ul(
-              [...sx(h, landing.taglines)],
-              [copy.hero_line1, copy.hero_line2, copy.hero_line3].map((line) => h.li([], [line])),
-            ),
-          ],
-        ),
-        h.ul(
-          [...sx(h, landing.logos), h.AriaLabel(copy.nav_providers)],
-          [...providerNames, "ICP-Brasil"].map((name) => h.li([...sx(h, landing.logo)], [name])),
-        ),
-      ],
-    ),
-    showcase({
-      id: "signer",
-      title: copy.signer_title,
-      lead: copy.signer_lead,
-      rest: copy.signer_rest,
-      flip: false,
-      links: [
-        trigger("signer", signFree, copy.nav_sign, "feature"),
-        link(copy.feature_browser_flow, docs("a1-signing/browser-pdf-flow")),
-        link(copy.feature_certificates, docs("signing/certificates")),
-        link(copy.feature_batch, signFree),
-      ],
-      mockup: h.div(
-        [],
+export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessages<Message>) => [
+  h.section(
+    [...sx(h, landing.hero)],
+    [
+      h.div(
+        [...sx(h, landing.heroCopy)],
         [
-          h.div(
-            [...sx(h, landing.chrome)],
-            [h.span([...sx(h, landing.chromeUrl)], [`signaturekit.dev${signFree}`])],
-          ),
-          h.div(
-            [...sx(h, landing.signerMock)],
+          h.p(
+            [...sx(h, landing.backed)],
             [
-              h.div(
-                [...sx(h, landing.paper), h.AriaHidden(true)],
+              "Apoiado pela",
+              h.a(
                 [
-                  h.span([...sx(h, landing.paperLine)]),
-                  h.span([...sx(h, landing.paperLine, landing.paperShort)]),
-                  h.span([...sx(h, landing.paperLine)]),
-                  h.span([...sx(h, landing.stamp)], [copy.mock_stamp]),
+                  ...sx(h, landing.backedLink),
+                  h.Href("https://licitei.com.br"),
+                  h.AriaLabel("Licitei"),
+                ],
+                [
+                  h.img([
+                    h.Src("/landing/licitei.png"),
+                    h.Alt("Licitei"),
+                    h.Height("15"),
+                    ...sx(h, landing.backedLogo),
+                  ]),
                 ],
               ),
-              checks([copy.mock_certificate, copy.mock_document, copy.mock_signed]),
             ],
           ),
-        ],
-      ),
-    }),
-    showcase({
-      id: "providers",
-      title: copy.showcase_title,
-      lead: copy.showcase_lead,
-      rest: copy.showcase_rest,
-      flip: true,
-      links: [
-        trigger("providers", docs("providers/request-shape"), copy.view_providers, "feature"),
-        link(copy.feature_request_shape, docs("providers/request-shape")),
-        link(copy.feature_remote, docs("concepts/remote-signature-requests")),
-        link(copy.feature_errors, docs("signing/errors")),
-      ],
-      mockup: h.div(
-        [],
-        [
-          h.div(
-            [...sx(h, landing.chrome)],
-            [h.span([...sx(h, landing.chromeUrl)], ["clicksign.ts"])],
-          ),
-          h.pre(
-            [...sx(h, landing.code, landing.codeArea)],
-            [h.code([...sx(h, landing.codeText)], [providerSnippet])],
-          ),
-        ],
-      ),
-    }),
-    showcase({
-      id: "formats",
-      title: copy.formats_title,
-      lead: copy.formats_lead,
-      rest: copy.formats_rest,
-      flip: false,
-      links: [
-        link(copy.feature_pdf, docs("signing/pdf")),
-        link(copy.feature_xml, docs("signing/xml")),
-        link(copy.feature_signers, docs("signing/signers")),
-      ],
-      mockup: h.div(
-        [],
-        [
-          h.div(
-            [...sx(h, landing.chrome)],
+          h.h1([...sx(h, landing.title)], ["Assinatura digital com certificado A1."]),
+          h.p(
+            [...sx(h, landing.subtitle)],
             [
-              h.span([...sx(h, landing.chromeUrl)], [copy.verify_file]),
-              h.span([...sx(h, landing.badge)], [copy.verify_valid]),
+              "Assine PDF e XML no servidor ou no navegador. E integre Clicksign, Assinafy, ZapSign, DocuSeal e Documenso com o mesmo kit, open source.",
             ],
           ),
           h.div(
-            [...sx(h, landing.verify)],
+            [...sx(h, landing.heroActions)],
             [
-              checks([
-                copy.verify_signature,
-                copy.verify_coverage,
-                copy.verify_chain,
-                copy.verify_policy,
-              ]),
+              h.a(
+                [
+                  ...sx(h, shell.primary),
+                  h.Href(pageRoute({ path: "docs/get-started/quickstart" })),
+                ],
+                ["Começar agora"],
+              ),
+              h.a([...sx(h, shell.outlineLight), h.Href("#provedores")], ["Ver provedores"]),
             ],
           ),
         ],
       ),
-    }),
-    h.section(
-      [...sx(h, landing.closing), h.Id("get-started")],
-      [
-        h.h2([...sx(h, landing.closingTitle), h.Id("get-started-heading")], [copy.gs_title]),
-        h.div(
-          [...sx(h, landing.actions, landing.centered)],
-          [
-            trigger("quickstart", docs("get-started/quickstart"), copy.final_cta, "primary"),
-            Button.view(
-              {
-                onClick: messages.copy("install", "get_started"),
-                toView: ({ button }) =>
-                  h.button(
-                    [
-                      ...button,
-                      ...sx(h, "home-install", landing.pill),
-                      h.AriaLabel(`${copy.install_copy_label} bun`),
-                    ],
-                    [
-                      h.span([...sx(h, landing.pillMark)], ["$"]),
-                      h.code([...sx(h, landing.pillText)], [installCommand]),
-                      copyIcon(h),
-                    ],
-                  ),
-              },
-              h,
+      h.div(
+        [...sx(h, landing.strip)],
+        [
+          h.span([...sx(h, landing.stripLabel)], ["Integra com"]),
+          ...homeProviders.map((provider) =>
+            h.a(
+              [
+                ...sx(h, landing.stripCell),
+                h.Href(pageRoute({ path: `docs/providers/${provider.slug}` })),
+                h.AriaLabel(provider.name),
+              ],
+              providerLogo(h, provider),
             ),
-          ],
+          ),
+        ],
+      ),
+    ],
+  ),
+  h.section(
+    [...sx(h, landing.block), h.Id("assinar")],
+    [
+      h.div(
+        [...sx(h, landing.blockHead)],
+        [
+          h.h2([...sx(h, landing.blockTitle)], ["Assine um PDF agora, com o seu A1."]),
+          h.p(
+            [...sx(h, landing.blockLead)],
+            ["Grátis, sem cadastro. PDF, certificado e senha não saem do seu navegador."],
+          ),
+        ],
+      ),
+      h.a(
+        [
+          ...sx(h, landing.drop),
+          h.Href(signFreePath),
+          h.Attribute("data-overlay", "signer"),
+          h.OnClick(messages.open("signer"), { defaultAction: "Prevent" }),
+        ],
+        [
+          h.span(
+            [...sx(h, landing.dropInner)],
+            [
+              h.span([...sx(h, landing.dropIcon)], [uploadIcon(h)]),
+              h.strong([...sx(h, landing.dropTitle)], ["Solte seus PDFs aqui"]),
+              h.span([...sx(h, landing.dropHint)], ["ou escolha no computador · até 100 arquivos"]),
+            ],
+          ),
+        ],
+      ),
+      h.ul(
+        [...sx(h, landing.facts)],
+        ["Nada é enviado", "PAdES · ICP-Brasil", "Lote de até 100 PDFs"].map((fact) =>
+          h.li([...sx(h, landing.fact)], [fact]),
         ),
-      ],
-    ),
-  ];
-};
+      ),
+    ],
+  ),
+  h.section(
+    [...sx(h, landing.block, landing.blockSand), h.Id("provedores")],
+    [
+      h.div(
+        [...sx(h, landing.split)],
+        [
+          h.div(
+            [],
+            [
+              h.h2([...sx(h, landing.blockTitle)], ["Não tem certificado A1?"]),
+              h.p(
+                [...sx(h, landing.blockLead)],
+                [
+                  "Mande o documento pelo provedor que você já usa. O signatário assina pelo link, e você recebe o PDF assinado de volta no seu código.",
+                ],
+              ),
+              h.a(
+                [
+                  ...sx(h, landing.textLink),
+                  h.Href(pageRoute({ path: "docs/concepts/remote-signature-requests" })),
+                ],
+                ["Ver como integrar →"],
+              ),
+            ],
+          ),
+          h.div(
+            [...sx(h, landing.providerGrid)],
+            homeProviders.map((provider, index) =>
+              h.a(
+                [
+                  ...sx(
+                    h,
+                    landing.providerCard,
+                    index === homeProviders.length - 1 && landing.providerWide,
+                  ),
+                  h.Href(pageRoute({ path: `docs/providers/${provider.slug}` })),
+                  h.AriaLabel(provider.name),
+                ],
+                providerLogo(h, provider),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ],
+  ),
+];
+
+export const installPill = <Message>(
+  h: HtmlBuilder<Message>,
+  input: { copied: boolean; onCopy: Message },
+) =>
+  h.div(
+    [...sx(h, landing.install)],
+    [
+      h.span([...sx(h, landing.installMark), h.AriaHidden(true)], ["$"]),
+      h.code([...sx(h, landing.installText)], [installCommand]),
+      Button.view(
+        {
+          onClick: input.onCopy,
+          toView: ({ button }) =>
+            h.button(
+              [
+                ...button,
+                ...sx(h, "home-install", landing.installCopy),
+                h.AriaLabel(input.copied ? "Copiado" : `Copiar ${installCommand}`),
+              ],
+              [copyIcon(h)],
+            ),
+        },
+        h,
+      ),
+    ],
+  );
 
 export const copyToastView = <Message>(
   h: HtmlBuilder<Message>,
-  state: HomeState,
-  messages: HomeMessages<Message>,
+  input: {
+    model: typeof CopyToast.Model.Type;
+    toParentMessage: (message: typeof CopyToast.Message.Type) => Message;
+  },
 ) =>
   h.submodel({
     slotId: "home-toast",
-    model: state.copyToast,
+    model: input.model,
     view: CopyToast.view,
     viewInputs: {
       position: "BottomRight",
-      ariaLabel: state.locale === "pt-BR" ? "Avisos" : "Notices",
+      ariaLabel: "Avisos",
       entryClassName: "home-status",
       entryToView: (entry) => h.p([...sx(h, landing.toast)], [entry.payload.text]),
     },
-    toParentMessage: messages.gotCopyToast,
+    toParentMessage: input.toParentMessage,
   });

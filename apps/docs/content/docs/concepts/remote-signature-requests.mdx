@@ -1,17 +1,17 @@
 ---
-title: Remote signature requests
-description: "Remote providers create external signing workflows; they are not local Signatures backends."
+title: Requests remotos de assinatura
+description: "Providers remotos criam workflows externos de assinatura; eles não são backends locais de Signatures."
 ---
 
-Clicksign, Assinafy, ZapSign, DocuSeal, and Documenso are remote workflow providers. Their APIs create documents, recipients, envelopes, links, and notifications in an upstream system. They do not mutate your local PDF/XML bytes through the `Signatures` service.
+Clicksign, Assinafy, ZapSign, DocuSeal e Documenso são providers remotos de workflow. Suas APIs criam documentos, destinatários, envelopes, links e notificações em um sistema upstream. Eles não mutam seus bytes locais de PDF/XML via serviço `Signatures`.
 
-## Provider rule
+## Regra de provider
 
-- Use local `Signatures` when SignatureKit signs document bytes directly.
-- Use provider request functions when an upstream platform owns the signing ceremony.
-- Keep provider tokens in `Redacted`; HTTP errors must never serialize secrets.
+- Use `Signatures` local quando o SignatureKit assina bytes do documento diretamente.
+- Use funções de request de provider quando uma plataforma upstream possui a cerimônia de assinatura.
+- Mantenha tokens de provider em `Redacted`; erros HTTP nunca devem serializar segredos.
 
 <Cards>
-  <Card title="Remote APIs" href="/en-US/docs/providers/request-shape">Provider overview and matrix.</Card>
-  <Card title="Clicksign" href="/en-US/docs/providers/clicksign">One provider page in the separated docs pattern.</Card>
+  <Card title="APIs remotas" href="/docs/providers/request-shape">Overview e matriz de providers.</Card>
+  <Card title="Clicksign" href="/docs/providers/clicksign">Uma página de provider no padrão separado da documentação.</Card>
 </Cards>

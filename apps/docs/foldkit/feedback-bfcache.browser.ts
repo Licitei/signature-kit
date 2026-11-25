@@ -16,7 +16,7 @@ const handle = Runtime.embed(
     view,
     container: document.querySelector<HTMLElement>("#app"),
   }),
-  { flags: Effect.succeed(Flags.make({ locale: "pt-BR", path: "/docs" })) },
+  { flags: Effect.succeed(Flags.make({ path: "/docs" })) },
 );
 
 window.addEventListener("pagehide", (event) => {

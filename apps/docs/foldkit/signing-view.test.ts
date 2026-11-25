@@ -1,4 +1,3 @@
-import { Popover } from "@foldkit/ui";
 import { expect, it } from "vitest";
 import { Effect } from "effect";
 import * as Server from "foldkit/experimental/server";
@@ -6,49 +5,55 @@ import { Flags, init, Message, update, view } from "./main";
 import { renderPage, prerenderPaths } from "./entry.server";
 import { Message as SigningFormMessage } from "./signing-view";
 
-it("renders both canonical signing routes and links them from the home pages", async () => {
-  for (const [locale, path, title] of [
-    ["pt-BR", "assine-documentos-gratis", "Assine documentos grátis"],
-    ["en-US", "sign-free", "Sign documents for free"],
+it("renders the canonical signing route in pt-BR and links it from the home page", async () => {
+  const route = "/assine-documentos-gratis";
+  expect(prerenderPaths).toContain(route);
+  expect(prerenderPaths.some((path) => /^\/(en-US|pt-BR)(\/|$)/.test(path))).toBe(false);
+  const page = await renderPage(new Request(`https://signaturekit.dev${route}`), "test");
+  expect(page._tag).toBe("Rendered");
+  const html = JSON.stringify(page);
+  expect(html).toContain("Assine documentos grátis");
+  expect(html).toContain("Senha do certificado");
+  expect(html).not.toContain("Sign documents for free");
+  expect(html).not.toContain("Certificate password");
+  const home = await renderPage(new Request("https://signaturekit.dev/"), "test");
+  expect(JSON.stringify(home)).toContain(`href=\\"${route}\\"`);
+});
+
+it("redirects legacy locale-prefixed signing and content URLs permanently", async () => {
+  for (const [legacy, target] of [
+    ["/pt-BR/assine-documentos-gratis", "/assine-documentos-gratis"],
+    ["/en-US/sign-free", "/assine-documentos-gratis"],
+    ["/en-US/docs/signing/errors", "/docs/signing/errors"],
+    ["/pt-BR", "/"],
+    ["/en-US/search?q=certificado", "/search?q=certificado"],
   ]) {
-    const route = `/${locale}/${path}`;
-    expect(prerenderPaths).toContain(route);
-    const page = await renderPage(new Request(`https://signaturekit.dev${route}`), "test");
-    expect(page._tag).toBe("Rendered");
-    expect(JSON.stringify(page)).toContain(title);
-    const home = await renderPage(new Request(`https://signaturekit.dev/${locale}`), "test");
-    expect(JSON.stringify(home)).toContain(route);
+    const result = await renderPage(new Request(`https://signaturekit.dev${legacy}`), "test");
+    expect(result._tag, legacy).toBe("Responded");
+    if (result._tag === "Responded") {
+      expect(result.response.status, legacy).toBe(301);
+      const location = new URL(result.response.headers.get("location") ?? "");
+      expect(`${location.pathname}${location.search}`, legacy).toBe(target);
+    }
   }
 });
 
-it("renders language links for signing routes and preserves documentation and article paths", async () => {
-  for (const [locale, path, english, portuguese] of [
-    ["pt-BR", "/assine-documentos-gratis", "/en-US/sign-free", "/pt-BR/assine-documentos-gratis"],
-    ["en-US", "/sign-free", "/en-US/sign-free", "/pt-BR/assine-documentos-gratis"],
-    ["en-US", "/docs/example", "/en-US/docs/example", "/pt-BR/docs/example"],
-    ["en-US", "/blog/example", "/en-US/blog/example", "/pt-BR/blog/example"],
-  ] satisfies ["en-US" | "pt-BR", string, string, string][]) {
-    const openMenu = (flags: typeof Flags.Type) => ({
-      model: update(
-        init(flags).model,
-        Message.GotLanguagePopoverMessage({ message: Popover.Message.RequestedOpen() }),
-      ).model,
-    });
+it("renders unprefixed navigation on signing, documentation and article paths", async () => {
+  for (const path of ["/assine-documentos-gratis", "/docs/signing/errors", "/blog", "/changelog"]) {
     const page = JSON.stringify(
       await Effect.runPromise(
-        Server.renderToString(
-          { Flags, init: openMenu, view },
-          { flags: { locale, path }, buildId: "test" },
-        ),
+        Server.renderToString({ Flags, init, view }, { flags: { path }, buildId: "test" }),
       ),
     );
-    expect(page).toContain(`href=\\"${english}\\"`);
-    expect(page).toContain(`href=\\"${portuguese}\\"`);
+    for (const href of ["/docs", "/assine-documentos-gratis", "/blog", "/changelog"])
+      expect(page, path).toContain(`href=\\"${href}\\"`);
+    expect(page, path).not.toMatch(/href=\\"\/(en-US|pt-BR)(\/|\\")/);
+    expect(page, path).toContain('"lang":"pt-BR"');
   }
-});
+}, 20_000);
 
 it("updates appearance toggles without storing certificate material in the model", () => {
-  const initial = init({ locale: "pt-BR", path: "/assine-documentos-gratis" }).model;
+  const initial = init({ path: "/assine-documentos-gratis" }).model;
   const changed = update(
     initial,
     Message.GotSigningFormMessage({
@@ -61,6 +66,7 @@ it("updates appearance toggles without storing certificate material in the model
     "date",
     "identity",
     "logo",
+    "mode",
     "pdf",
     "pfx",
     "rubric",

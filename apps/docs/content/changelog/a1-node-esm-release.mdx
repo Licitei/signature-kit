@@ -1,13 +1,13 @@
 ---
-title: Publish A1 with Node-resolvable imports
+title: Publicar o A1 com imports resolvíveis pelo Node
 date: 2026-11-06T17:46:39.022Z
 packages:
   "@signature-kit/a1":
     version: 0.4.0
 ---
 
-## Publish A1 with Node-resolvable imports
+## Publicar o A1 com imports resolvíveis pelo Node
 
-Release the fully specified relative imports already in source, so `@signature-kit/a1/signer` loads under native Node ESM instead of failing with `ERR_MODULE_NOT_FOUND`.
+Publicamos os imports relativos totalmente especificados que já estavam no código-fonte, para que `@signature-kit/a1/signer` carregue no ESM nativo do Node em vez de falhar com `ERR_MODULE_NOT_FOUND`.
 
-This release also removes the unused `A1Signer` service and `a1SignerLayer`; use `a1SignaturesLayer` or `loadA1SignerAdapter`.
+Esta versão também remove o serviço `A1Signer` e o `a1SignerLayer`, que não eram usados; use `a1SignaturesLayer` ou `loadA1SignerAdapter`.

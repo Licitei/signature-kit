@@ -1,18 +1,18 @@
 ---
-title: Document formats
-description: "PDF and XML packages own document mutation while sharing the same signing capability."
+title: Formatos de documento
+description: "Pacotes PDF e XML possuem a mutação de documento enquanto compartilham a mesma capability de assinatura."
 ---
 
-A document format package decides where bytes go. PDF owns visible rectangles, PAdES placeholders, byte ranges, and validation policy. XML owns canonicalization, transforms, references, and XML-DSig placement. Both consume `Signatures`; neither owns the signer backend.
+Um pacote de formato decide onde os bytes entram. PDF possui retângulos visíveis, placeholders PAdES, byte ranges e política de validação. XML possui canonicalização, transforms, referências e posicionamento XML-DSig. Ambos consomem `Signatures`; nenhum possui o backend de assinatura.
 
-## Format responsibilities
+## Responsabilidades do formato
 
-- Parse or prepare the document.
-- Derive the bytes that must be signed.
-- Ask `Signatures` to sign those bytes.
-- Embed the artifact back into the document.
+- Ler ou preparar o documento.
+- Derivar os bytes que precisam ser assinados.
+- Pedir para `Signatures` assinar esses bytes.
+- Embutir o artefato de volta no documento.
 
 <Cards>
-  <Card title="PDF / PAdES" href="/en-US/docs/signing/pdf">Visible rectangles, policies, and signed PDF bytes.</Card>
-  <Card title="XML-DSig" href="/en-US/docs/signing/xml">References, canonicalization, and XML mutation.</Card>
+  <Card title="PDF / PAdES" href="/docs/signing/pdf">Retângulos visíveis, políticas e bytes PDF assinados.</Card>
+  <Card title="XML-DSig" href="/docs/signing/xml">Referências, canonicalização e mutação XML.</Card>
 </Cards>
