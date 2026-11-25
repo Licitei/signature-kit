@@ -109,6 +109,7 @@ impl Composition {
     pub fn finish(self, root: u32, info: u32) -> Vec<u8> {
         let mut written = Written {
             entries: Vec::new(),
+            base: 0,
             out: HEADER.to_vec(),
         };
         for (index, body) in self.objects.into_iter().enumerate() {
