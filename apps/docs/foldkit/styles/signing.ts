@@ -195,6 +195,7 @@ export const signing = stylex.create({
   areaDocument: { gridArea: "document" },
   areaPlace: { gridArea: "place", alignSelf: "stretch" },
   areaSign: { gridArea: "sign" },
+  placeWrap: { display: "grid", minWidth: 0 },
   card: {
     margin: 0,
     minWidth: 0,

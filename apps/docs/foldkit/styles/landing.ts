@@ -132,7 +132,7 @@ export const landing = stylex.create({
     fontSize: "clamp(2.375rem, 5vw, 4rem)",
     fontWeight: 600,
     lineHeight: 1,
-    letterSpacing: "-0.05em",
+    letterSpacing: "-0.035em",
     textWrap: "balance",
   },
   signLead: {
@@ -325,9 +325,9 @@ export const landing = stylex.create({
   sectionTitle: {
     margin: 0,
     fontSize: "clamp(2rem, 4vw, 3.5rem)",
-    letterSpacing: "-0.05em",
+    letterSpacing: "-0.035em",
     lineHeight: 1.05,
-    fontWeight: 500,
+    fontWeight: 600,
     textWrap: "balance",
   },
   lead: {
@@ -501,7 +501,7 @@ export const landing = stylex.create({
     fontSize: "clamp(2.5rem, 6.4vw, 4.75rem)",
     fontWeight: 600,
     lineHeight: 0.98,
-    letterSpacing: "-0.05em",
+    letterSpacing: "-0.035em",
     textWrap: "balance",
   },
   subtitle: {
@@ -538,7 +538,7 @@ export const landing = stylex.create({
     fontSize: "clamp(2rem, 4.4vw, 3.25rem)",
     fontWeight: 600,
     lineHeight: 1,
-    letterSpacing: "-0.045em",
+    letterSpacing: "-0.03em",
     textWrap: "balance",
   },
   blockLead: {
@@ -602,29 +602,6 @@ export const landing = stylex.create({
   dropHint: {
     color: "#ffffff",
     fontSize: "0.9375rem",
-  },
-  facts: {
-    display: "flex",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: "8px 28px",
-    listStyle: "none",
-    margin: "20px 0 0",
-    padding: 0,
-    color: tokens.muted,
-    fontSize: "0.875rem",
-  },
-  fact: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "7px",
-    "::before": {
-      content: "''",
-      width: "6px",
-      height: "6px",
-      borderRadius: "50%",
-      backgroundColor: tokens.teal,
-    },
   },
   brandMark: {
     width: "32px",

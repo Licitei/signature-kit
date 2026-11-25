@@ -51,7 +51,7 @@ export const socialImageTree = (input: SocialImageInput): Node => ({
         position: "absolute",
         inset: 0,
         backgroundImage:
-          "linear-gradient(90deg, rgba(6, 30, 43, 0.97) 0%, rgba(6, 30, 43, 0.9) 52%, rgba(6, 30, 43, 0.45) 100%)",
+          "linear-gradient(90deg, rgba(6, 30, 43, 0.97) 0%, rgba(6, 30, 43, 0.9) 45%, rgba(6, 30, 43, 0.15) 100%)",
       },
       children: [],
     },

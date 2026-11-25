@@ -574,12 +574,6 @@ export const homeView = <Message>(h: HtmlBuilder<Message>, messages: HomeMessage
           ),
         ],
       ),
-      h.ul(
-        [...sx(h, landing.facts)],
-        ["Nada é enviado", "PAdES · ICP-Brasil", "Lote de até 100 PDFs"].map((fact) =>
-          h.li([...sx(h, landing.fact)], [fact]),
-        ),
-      ),
     ],
   ),
 ];

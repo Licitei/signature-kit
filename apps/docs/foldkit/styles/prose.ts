@@ -11,8 +11,9 @@ export const prose = stylex.create({
     paddingTop: "72px",
     color: "#ffffff",
     backgroundColor: tokens.ink,
-    backgroundImage: "url(/landing/hero-chapada.webp)",
-    backgroundPosition: "center 46%",
+    backgroundImage:
+      "linear-gradient(180deg, rgba(6, 30, 43, 0.9) 0%, rgba(6, 30, 43, 0.72) 50%, rgba(6, 30, 43, 0) 88%), url(/landing/hero-chapada.webp)",
+    backgroundPosition: "center bottom",
     backgroundSize: { default: "1600px auto", [wide]: "100% auto" },
     backgroundRepeat: "no-repeat",
     imageRendering: "pixelated",
@@ -20,7 +21,7 @@ export const prose = stylex.create({
   bannerInner: {
     maxWidth: "1280px",
     marginInline: "auto",
-    padding: { default: "40px 20px 88px", [compact]: "28px 20px 72px" },
+    padding: { default: "32px 20px 104px", [compact]: "24px 20px 80px" },
     paddingInline: { default: "48px", [compact]: "20px" },
   },
   bannerNarrow: {
@@ -54,7 +55,7 @@ export const prose = stylex.create({
     fontSize: "clamp(2rem, 4vw, 3rem)",
     fontWeight: 600,
     lineHeight: 1,
-    letterSpacing: "-0.045em",
+    letterSpacing: "-0.03em",
     textWrap: "balance",
   },
   bannerLead: {
@@ -307,7 +308,7 @@ export const prose = stylex.create({
   h1: {
     fontSize: "clamp(2rem, 4vw, 2.75rem)",
     fontWeight: 600,
-    letterSpacing: "-0.045em",
+    letterSpacing: "-0.03em",
     lineHeight: 1.05,
     margin: "0 0 18px",
   },
