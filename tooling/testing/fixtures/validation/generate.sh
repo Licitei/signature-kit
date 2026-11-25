@@ -31,7 +31,7 @@ serial=serial
 crlnumber=crlnumber
 default_md=sha256
 default_days=3650
-default_crl_days=30
+default_crl_days=3650
 policy=policy
 x509_extensions=leaf
 [policy]
@@ -64,25 +64,32 @@ openssl pkcs12 -export -inkey signer.key -in signer.pem -certfile ca.pem \
   -passout pass:changeit -out "$fixtures/signer.p12"
 
 ocsp() {
-  local name=$1 signer=$2 days=$3
-  openssl ocsp -index index.txt -issuer ca.pem -cert signer.pem \
+  local name=$1 signer=$2 days=$3 subject=${4:-signer}
+  openssl ocsp -index index.txt -issuer ca.pem -cert "$subject.pem" \
     -CA ca.pem -rsigner "$signer.pem" -rkey "$signer.key" -ndays "$days" \
     -no_nonce -respout "$fixtures/$name.der"
 }
-ocsp good ca 30
+ocsp good ca 3650
 ocsp expired ca 1
-ocsp wrong-responder wrong 30
+ocsp wrong-responder wrong 3650
+ocsp tsa-good ca 3650 timestamp
 openssl ca -config ca.cnf -batch -revoke signer.pem -crl_reason keyCompromise
-ocsp revoked ca 30
+ocsp revoked ca 3650
 openssl ca -config ca.cnf -gencrl -out revoked.pem
 openssl crl -in revoked.pem -outform DER -out "$fixtures/revoked-crl.der"
 for response in good expired revoked; do
   openssl ocsp -respin "$fixtures/$response.der" -verify_other ca.pem -CAfile ca.pem \
     -issuer ca.pem -cert signer.pem -no_nonce
 done
+openssl ocsp -respin "$fixtures/tsa-good.der" -CAfile ca.pem -issuer ca.pem -cert timestamp.pem -no_nonce
+if openssl ocsp -respin "$fixtures/wrong-responder.der" -CAfile ca.pem -issuer ca.pem \
+  -cert signer.pem -no_nonce 2>/dev/null; then
+  exit 1
+fi
 openssl crl -inform DER -in "$fixtures/revoked-crl.der" -verify -CAfile ca.pem -noout
 openssl x509 -in timestamp.pem -outform DER -out "$fixtures/tsa.der"
-cp "$fixtures/ca.der" "$fixtures/tsa-root.der"
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 \
+  -subj '/CN=Unrelated Test Root' -keyout unrelated.key -outform DER -out "$fixtures/unrelated-root.der"
 openssl pkcs12 -export -inkey timestamp.key -in timestamp.pem -certfile ca.pem \
   -passout pass:changeit -out "$fixtures/tsa.p12"
 

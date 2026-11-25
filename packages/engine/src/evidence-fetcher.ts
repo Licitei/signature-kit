@@ -19,7 +19,7 @@ export const evidenceFetcherHttpLayer = Layer.effect(
       operation: EvidenceOperation,
       address: string,
       request: Uint8Array | undefined,
-      timeoutMillis: number = 15_000,
+      timeoutMillis = 15_000,
     ) {
       const timeout = yield* Schema.decodeUnknownEffect(TimeoutMillisSchema)(timeoutMillis).pipe(
         Effect.mapError(() => new EvidenceFetchError({ code: "invalidRequest", operation })),
@@ -27,7 +27,11 @@ export const evidenceFetcherHttpLayer = Layer.effect(
       if (!URL.canParse(address))
         return yield* new EvidenceFetchError({ code: "invalidUrl", operation });
       const url = new URL(address);
-      if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) {
+      if (
+        (url.protocol !== "https:" && url.protocol !== "http:") ||
+        url.username !== "" ||
+        url.password !== ""
+      ) {
         return yield* new EvidenceFetchError({ code: "invalidUrl", operation });
       }
       const httpRequest =

@@ -6,7 +6,7 @@ import {
   PdfCorePrepareSignatureRequestSchema,
   PdfCoreRevisionChangesSchema,
   PdfCoreSignatureFieldsSchema,
-  PdfCoreValidationData,
+  PdfCoreValidationDataSchema,
 } from "./wasm/config.js";
 import { BrazilianFieldsSchema } from "./certificates/config.js";
 import { Context, Schema } from "effect";
@@ -245,8 +245,8 @@ const PdfAppearance = Schema.Union([
 ]);
 
 export type PdfSignatureFields = (typeof PdfCoreSignatureFieldsSchema)["Type"];
-export const PdfValidationData = PdfCoreValidationData;
-export type PdfValidationData = typeof PdfValidationData.Type;
+export const PdfValidationDataSchema = PdfCoreValidationDataSchema;
+export type PdfValidationData = (typeof PdfValidationDataSchema)["Type"];
 
 export type PdfNewSignatureFields = (typeof PdfCoreNewSignatureFieldsSchema)["Type"];
 
@@ -717,7 +717,7 @@ export const LocalRpcs = RpcGroup.make(
     error: LocalError,
   }),
   Rpc.make("PdfAddValidationData", {
-    payload: { revision: RevisionRef, evidence: PdfValidationData },
+    payload: { revision: RevisionRef, evidence: PdfValidationDataSchema },
     success: RevisionRef,
     error: LocalError,
   }),

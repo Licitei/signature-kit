@@ -17,8 +17,8 @@ it.effect("verifies a standalone OpenSSL RFC 3161 token against explicit TSA roo
   Effect.gen(function* () {
     const [token, root, wrong] = yield* Effect.all([
       fixture("timestamp-token"),
-      fixture("tsa-root"),
       fixture("ca"),
+      fixture("unrelated-root"),
     ]);
     const data = new TextEncoder().encode("SignatureKit timestamp fixture\n");
     const horizon = new Date("2040-01-01T00:00:00Z");

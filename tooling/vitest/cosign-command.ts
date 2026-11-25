@@ -128,7 +128,7 @@ export const runCosignMilestone = defineBrowserCommand(({ page }) =>
           integrity: "valid",
           trust: "trusted",
           revocation: { kind: "notChecked" },
-          timestampEvidence: "absent",
+          timestampEvidence: { kind: "absent" },
           changes: expectedChanges,
         };
         assert.partialDeepStrictEqual(report, {

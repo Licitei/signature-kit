@@ -33,7 +33,8 @@ it.effect("appends and reads DSS evidence without changing the signed bytes", ()
     const basic = ocsp.responseBytes?.response.valueBlock.valueHexView;
     if (basic === undefined) return yield* Effect.die("Missing OCSP fixture body.");
     const at = new Date(
-      pki.BasicOCSPResponse.fromBER(basic).tbsResponseData.producedAt.getTime() + 60_000,
+      pki.BasicOCSPResponse.fromBER(new Uint8Array(basic)).tbsResponseData.producedAt.getTime() +
+        60_000,
     );
     yield* TestClock.setTime(at.getTime());
     const a1 = yield* A1Sessions;

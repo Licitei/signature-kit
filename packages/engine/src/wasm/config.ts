@@ -879,12 +879,12 @@ export const PdfCoreRevisionChangeKindSchema = Schema.Literals([
 const ValidationEntries = Schema.Array(
   Schema.Uint8Array.check(Schema.isMinLength(1), Schema.isMaxLength(16 * 1024 * 1024)),
 ).check(Schema.isMaxLength(1024));
-export const PdfCoreValidationData = Schema.Struct({
+export const PdfCoreValidationDataSchema = Schema.Struct({
   certificates: ValidationEntries,
   ocsp: ValidationEntries,
   crls: ValidationEntries,
 });
-export type PdfCoreValidationData = typeof PdfCoreValidationData.Type;
+export type PdfCoreValidationData = (typeof PdfCoreValidationDataSchema)["Type"];
 
 export const PdfCoreRevisionEndSchema = byteOffsetSchema;
 export const PdfCoreRevisionChangesSchema = Schema.Struct({

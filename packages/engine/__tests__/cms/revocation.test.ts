@@ -26,10 +26,10 @@ it.effect("validates OCSP and CRL signatures, authority, serial and validity", (
       fixture("revoked-crl"),
     ]);
     const path = [pki.Certificate.fromBER(signer), pki.Certificate.fromBER(ca)];
-    const envelope = pki.OCSPResponse.fromBER(good);
+    const envelope = pki.OCSPResponse.fromBER(new Uint8Array(good));
     const response = envelope.responseBytes?.response.valueBlock.valueHexView;
     if (response === undefined) return yield* Effect.die("Missing OCSP response fixture");
-    const basic = pki.BasicOCSPResponse.fromBER(response);
+    const basic = pki.BasicOCSPResponse.fromBER(new Uint8Array(response));
     const at = new Date(basic.tbsResponseData.producedAt.getTime() + 60_000);
     const future = new Date(at.getTime() + 2 * 86_400_000);
 

@@ -134,11 +134,14 @@ const createTsaSigner = async ({
 };
 
 const httpEvidence = evidenceFetcherHttpLayer.pipe(Layer.provide(FetchHttpClient.layer));
-const timestampInput = (tsaUrl: string, signer: TimestampSigner) => ({
+const timestampInput = (
+  tsaUrl: string,
+  signer: TimestampSigner,
+): Parameters<typeof requestTimestamp>[0] => ({
   data: new Uint8Array([1, 2, 3]),
   tsaUrl,
-  trustedRoots: [signer.certificateDer] satisfies readonly [Uint8Array],
-  hashAlgorithm: "sha256" satisfies TimestampOptions["hashAlgorithm"],
+  trustedRoots: [signer.certificateDer],
+  hashAlgorithm: "sha256",
 });
 
 describe("RFC 3161 timestamps", () => {

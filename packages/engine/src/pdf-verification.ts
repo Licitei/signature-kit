@@ -49,8 +49,21 @@ const reportPolicy = (
       )
       .map(({ revisionEnd }) => revisionEnd),
   );
+  const timestampEnds = new Set(
+    changes
+      .filter(({ kind, change }) => kind === "docTimeStamp" && change === "added")
+      .map(({ revisionEnd }) => revisionEnd),
+  );
   for (const change of changes) {
     const { kind, fieldNames, revisionEnd } = change;
+    const preservation =
+      change.change !== "removed" &&
+      (kind === "dss" ||
+        ((kind === "docTimeStamp" || signingChanges.has(kind)) && timestampEnds.has(revisionEnd)));
+    if (preservation) {
+      permittedChanges.push(change);
+      continue;
+    }
     const fieldViolation = fieldLocks.some(({ action, fields }) =>
       fieldNames.some((name) => {
         const listed = fields.some((field) => name === field || name.startsWith(`${field}.`));
@@ -287,7 +300,9 @@ const readVerification = Effect.fn("local.pdf.verify")(function* (
                 at: effectiveTime.at,
               }).pipe(Effect.orElseSucceed(() => undefined));
         const trustedPath =
-          trusted?.result.valid && trusted.result.chainValid ? trusted.certificatePath : [];
+          trusted !== undefined && trusted.result.valid && trusted.result.chainValid
+            ? trusted.certificatePath
+            : [];
         const trust =
           roots === undefined ? "notEvaluated" : trustedPath.length > 0 ? "trusted" : "untrusted";
         return {

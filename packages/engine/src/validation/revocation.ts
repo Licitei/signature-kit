@@ -93,7 +93,7 @@ const verifyOcsp = Effect.fn(function* (
   if (response === undefined) return yield* new RevocationError({ code: "malformedEvidence" });
 
   const { producedAt, responderID, responses, responseExtensions } = response.tbsResponseData;
-  if (responseExtensions?.some(({ critical }) => critical)) {
+  if (responseExtensions?.some(({ critical }) => critical) === true) {
     return yield* new RevocationError({ code: "unsupportedScope" });
   }
   const matching = [];
@@ -116,7 +116,7 @@ const verifyOcsp = Effect.fn(function* (
   }
   const single = matching[0];
   if (single === undefined) return yield* new RevocationError({ code: "certificateMismatch" });
-  if (matching.length !== 1 || single.singleExtensions?.some(({ critical }) => critical)) {
+  if (matching.length !== 1 || single.singleExtensions?.some(({ critical }) => critical) === true) {
     return yield* new RevocationError({ code: "unsupportedScope" });
   }
   if (
@@ -235,12 +235,13 @@ const verifyCrl = Effect.fn(function* (
   if (
     crl.crlExtensions?.extensions.some(
       ({ extnID, critical }) => critical || extnID === "2.5.29.27" || extnID === "2.5.29.28",
-    ) ||
-    crl.revokedCertificates?.some(({ crlEntryExtensions }) =>
-      crlEntryExtensions?.extensions.some(
-        ({ extnID, critical }) => critical || extnID === "2.5.29.29",
-      ),
-    )
+    ) === true ||
+    crl.revokedCertificates?.some(
+      ({ crlEntryExtensions }) =>
+        crlEntryExtensions?.extensions.some(
+          ({ extnID, critical }) => critical || extnID === "2.5.29.29",
+        ) === true,
+    ) === true
   )
     return yield* new RevocationError({ code: "unsupportedScope" });
   if (!permitsUsage(issuer, 0x02))

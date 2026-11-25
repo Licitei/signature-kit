@@ -24,7 +24,7 @@ import {
   PdfCorePageDiagnosticsSchema,
   PdfCoreRangeSizeSchema,
   PdfCoreSignatureFieldsSchema,
-  PdfCoreValidationData,
+  PdfCoreValidationDataSchema,
   PdfCoreNewSignatureFieldsSchema,
   PdfCoreRevisionEndSchema,
   PdfCoreRevisionChangesSchema,
@@ -45,6 +45,7 @@ import {
   PdfCoreWinAnsiFontSchema,
 } from "./config.js";
 import type {
+  PdfCoreValidationData,
   PdfCoreCreateOptions,
   PdfCoreDisplayLists,
   PdfCoreDocument,
@@ -1411,7 +1412,7 @@ export const makePdfCore = (
           ? undefined
           : (input) => Effect.succeed(() => entry(input.pointer, input.length)),
       );
-      return yield* Schema.decodeUnknownEffect(PdfCoreValidationData)(
+      return yield* Schema.decodeUnknownEffect(PdfCoreValidationDataSchema)(
         decodeValidationData(bytes),
       ).pipe(
         Effect.mapError(
@@ -1474,7 +1475,7 @@ export const makePdfCore = (
       input: PdfCoreValidationData,
     ) {
       const operation = PdfCoreOperationValue.addValidationData;
-      const evidence = yield* Schema.decodeUnknownEffect(PdfCoreValidationData)(input).pipe(
+      const evidence = yield* Schema.decodeUnknownEffect(PdfCoreValidationDataSchema)(input).pipe(
         Effect.mapError(invalidOptions(operation)),
       );
       const size = [evidence.certificates, evidence.ocsp, evidence.crls].reduce(

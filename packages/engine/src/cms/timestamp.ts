@@ -406,7 +406,7 @@ const TimestampImprintRequest = RequestTimestampInputSchema.mapFields(
     imprint: Schema.Uint8Array,
   }),
 );
-type TimestampImprintRequest = typeof TimestampImprintRequest.Type;
+type TimestampImprintRequest = (typeof TimestampImprintRequest)["Type"];
 
 export const requestTimestampForImprint = Effect.fn(CmsOperationValue.timestamp)(function* (
   input: TimestampImprintRequest,

@@ -32,7 +32,7 @@ export const RevocationReport = Schema.Union([
     result: RevocationVerdict,
   }),
 ]);
-export type RevocationReport = typeof RevocationReport.Type;
+export type RevocationReport = (typeof RevocationReport)["Type"];
 
 export class RevocationError extends Schema.TaggedError<
   RevocationError,
@@ -42,7 +42,7 @@ export class RevocationError extends Schema.TaggedError<
 }) {}
 
 const EvidenceOperation = Schema.Literals(["ocsp", "crl", "timestamp"]);
-export type EvidenceOperation = typeof EvidenceOperation.Type;
+export type EvidenceOperation = (typeof EvidenceOperation)["Type"];
 const EvidenceFetchCode = Schema.Literals([
   "invalidUrl",
   "invalidRequest",

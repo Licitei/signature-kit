@@ -1605,15 +1605,30 @@ pub fn prepare_document_timestamp(pdf: &[u8], limits: &Limits) -> Outcome<Prepar
         document: &document,
         pages: None,
     };
+    let page = store.page_ref(0)?;
     store.set_body(
         field,
         Object::Dict(dictionary([
+            (b"Type", name(b"Annot")),
+            (b"Subtype", name(b"Widget")),
             (b"FT", name(b"Sig")),
             (b"T", pdf_text(&title)),
             (b"V", Object::Ref(signature)),
+            (b"Rect", rect_object([0.0_f64; 4])),
+            (b"F", Object::Integer(132)),
+            (b"P", Object::Ref(page)),
         ])),
         None,
     );
+    store.edit_array(
+        &Target {
+            base: Base::Page(0),
+            path: Vec::new(),
+        },
+        b"Annots",
+        Object::Ref(field),
+        true,
+    )?;
     let target = Target {
         base: Base::Catalog,
         path: vec![Step::Key(b"AcroForm".to_vec())],
