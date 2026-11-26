@@ -92,7 +92,7 @@ export const batchesLayer = (
       ) {
         const persistence = input.resumeId === undefined ? undefined : storage;
         const signingWorkers = pool === undefined ? 0 : yield* pool.available;
-        const compute = signingWorkers > 0 ? pool : undefined;
+        const compute = pool;
         const lock = yield* Semaphore.make(1);
         const bytes = yield* Semaphore.make(config.byteBudget);
         const admission = yield* Semaphore.make(1);

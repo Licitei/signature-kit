@@ -1,5 +1,6 @@
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect, Option, Schema } from "effect";
 import * as Transferable from "effect/workers/Transferable";
+import { A1Hash } from "./a1-certificate.js";
 import { IcpBrasilPadesPolicy } from "./cms/icp-brasil.js";
 import type { CmsError } from "./cms/config.js";
 import type { A1Sessions, PdfRevision } from "./engine.js";
@@ -15,13 +16,14 @@ import type {
   PdfCorePreparedUpdate,
   PdfCoreSignatureFields,
 } from "./wasm/config.js";
-import type { PdfCoreSigningSession } from "./wasm/pdf-core.js";
+import type { PdfCoreSigningVerificationSession } from "./wasm/pdf-core.js";
 
 export const PrepareComputeInputSchema = Schema.Struct({
   options: PdfPrepareOptionsSchema,
   defaultLines: Schema.Array(Schema.String),
   date: Schema.String,
   contentsCapacity: PdfCorePrepareSignatureRequestSchema.fields.contentsCapacity,
+  hash: Schema.optional(A1Hash),
 });
 export type PrepareComputeInput = (typeof PrepareComputeInputSchema)["Type"];
 
@@ -33,18 +35,30 @@ export const PreparedComputeSchema = Schema.Struct({
   prepared: Schema.Struct({
     ...PdfCorePreparedUpdateSchema.fields,
     appendix: ClonedBytes,
+    digest: Schema.optional(Schema.Uint8Array),
   }),
 });
 export type PreparedCompute = (typeof PreparedComputeSchema)["Type"];
+
+const SignPreparedSchema = Schema.Struct({
+  ...PdfCorePreparedUpdateSchema.fields,
+  appendix: ClonedBytes,
+});
 
 export const SignComputeInputSchema = Schema.Struct({
   session: A1SessionBinding,
   policy: PdfPrepareOptionsSchema.fields.policy,
   signedAt: Schema.Date,
   digest: ClonedBytes,
-  prepared: Schema.Struct({ ...PdfCorePreparedUpdateSchema.fields, appendix: ClonedBytes }),
+  prepared: SignPreparedSchema,
 });
 export type SignComputeInput = (typeof SignComputeInputSchema)["Type"];
+
+export const HelperSignComputeInputSchema = Schema.Struct({
+  ...SignComputeInputSchema.fields,
+  prepared: Schema.optional(SignPreparedSchema),
+});
+export type HelperSignComputeInput = (typeof HelperSignComputeInputSchema)["Type"];
 
 export type ComputeSource = { readonly key: string; readonly revision: PdfRevision };
 
@@ -149,7 +163,7 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
   sourceLength: number,
   verifyCms: (cms: Uint8Array) => Effect.Effect<boolean, CmsError>,
   signed: Uint8Array,
-  signing: PdfCoreSigningSession,
+  signing: PdfCoreSigningVerificationSession,
 ) {
   const { contentsStart, contentsEnd, byteRange } = prepared;
   const [start, firstLength, secondStart, secondLength] = byteRange;
@@ -166,9 +180,25 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
   )
     return yield* new LocalError({ code: "selfVerificationFailed" });
 
-  const report = yield* signing
+  const holeStart = contentsStart - sourceLength;
+  const holeEnd = contentsEnd - sourceLength;
+  if (signed[holeStart - 1] !== 0x3c || signed[holeEnd] !== 0x3e) {
+    return yield* new LocalError({ code: "selfVerificationFailed" });
+  }
+  const reportEffect = signing
     .signatures("verification")
     .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
+  const verify = decodeSignatureContents(signed.subarray(holeStart, holeEnd)).pipe(
+    Effect.withSpan("local.pdf.decodeContents"),
+    Effect.flatMap((cms) => verifyCms(cms).pipe(Effect.withSpan("local.pdf.checkCms"))),
+    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
+  );
+  const revisionChanges = signing
+    .changes(sourceLength)
+    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
+  const [report, result, changes] = yield* Effect.all([reportEffect, verify, revisionChanges], {
+    concurrency: 3,
+  });
   const signature = report.dictionaries.find(
     (dictionary) =>
       dictionary.kind === "signature" &&
@@ -176,24 +206,10 @@ const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
       dictionary.contents.valueEnd === secondStart &&
       dictionary.byteRangeValues?.every((value, index) => value === byteRange[index]),
   );
-  if (report.failure !== undefined || signature === undefined) {
+  if (report.failure !== undefined || signature === undefined || !result) {
     return yield* new LocalError({ code: "selfVerificationFailed" });
   }
-  const holeStart = contentsStart - sourceLength;
-  const holeEnd = contentsEnd - sourceLength;
-  if (signed[holeStart - 1] !== 0x3c || signed[holeEnd] !== 0x3e) {
-    return yield* new LocalError({ code: "selfVerificationFailed" });
-  }
-  const result = yield* decodeSignatureContents(signed.subarray(holeStart, holeEnd)).pipe(
-    Effect.withSpan("local.pdf.decodeContents"),
-    Effect.flatMap((cms) => verifyCms(cms).pipe(Effect.withSpan("local.pdf.checkCms"))),
-    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
-  );
-  if (!result) return yield* new LocalError({ code: "selfVerificationFailed" });
 
-  const changes = yield* signing
-    .changes(sourceLength)
-    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
   if (
     changes.pageContentChanged ||
     changes.changes.some(
@@ -243,7 +259,23 @@ export const makeLocalCompute = (
       secondStart + secondLength !== sourceLength + appendix.byteLength
     )
       return yield* new LocalError({ code: "pdfPrepareFailed" });
-    return { widget, appearance, prepared };
+    const hash = input.hash;
+    const before = appendix.subarray(0, firstLength - sourceLength);
+    const after = appendix.subarray(secondStart - sourceLength);
+    let digest: Uint8Array | undefined;
+    if (hash !== undefined) {
+      const resident = yield* signing
+        .digestUpdate(hash, before, after)
+        .pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()));
+      digest = Option.isSome(resident)
+        ? resident.value
+        : yield* revision.digest(hash, before, after);
+    }
+    return {
+      widget,
+      appearance,
+      prepared: { ...prepared, ...(digest === undefined ? {} : { digest }) },
+    };
   }),
   sign: Effect.fnUntraced(function* ({ revision }, input) {
     const { session, policy, signedAt, digest, prepared } = input;

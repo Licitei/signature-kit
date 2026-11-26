@@ -7,7 +7,7 @@ import type {
   PdfCorePreparedUpdate,
   PdfCoreSignatureFields,
 } from "./wasm/config.js";
-import { Clock, Context, Effect, HashMap, Layer, Ref, Schema, Semaphore } from "effect";
+import { Clock, Context, Effect, HashMap, Layer, Option, Ref, Schema, Semaphore } from "effect";
 import { sha256 } from "./crypto/primitives/sha256.js";
 import { A1Sessions, Documents, PdfEngine } from "./engine.js";
 import type { PdfRevision } from "./engine.js";
@@ -20,7 +20,7 @@ import type {
   PdfReceipt,
   RevisionRef,
 } from "./rpc.js";
-import { makeLocalCompute, prepareErrorCode } from "./signature-compute.js";
+import { makeLocalCompute, prepareErrorCode, SignaturePool } from "./signature-compute.js";
 import type { SignatureComputeService } from "./signature-compute.js";
 
 const PREPARED_HEADER_BYTES = 36;
@@ -103,6 +103,7 @@ export const pdfSignaturesLayer = Layer.effect(
     const engine = yield* PdfEngine;
     const core = yield* PdfCore;
     const local = makeLocalCompute(a1);
+    const pool = Option.getOrUndefined(yield* Effect.serviceOption(SignaturePool));
     const entries = yield* Ref.make<HashMap.HashMap<PreparationId, Entry> | undefined>(
       HashMap.empty(),
     );
@@ -220,8 +221,8 @@ export const pdfSignaturesLayer = Layer.effect(
             }
 
             const sourceLength = source.byteLength;
-            const compute = allocation?.compute ?? local;
-            const key = revision.handle;
+            const compute = allocation?.compute ?? pool ?? local;
+            const key = `${revision.handle}/${crypto.randomUUID()}`;
             const { widget, appearance, prepared } = yield* compute
               .prepare(
                 { key, revision: source },
@@ -234,6 +235,7 @@ export const pdfSignaturesLayer = Layer.effect(
                   ],
                   date: "D:" + now.toISOString().slice(0, 19).replace(/[-:T]/g, "") + "Z",
                   contentsCapacity,
+                  hash: certificate.hash,
                 },
               )
               .pipe(
@@ -261,11 +263,16 @@ export const pdfSignaturesLayer = Layer.effect(
               secondStart + secondLength !== sourceLength + appendix.byteLength
             )
               return yield* new LocalError({ code: "pdfPrepareFailed" });
-            const digest = yield* source.digest(
-              certificate.hash,
-              appendix.subarray(0, firstLength - sourceLength),
-              appendix.subarray(secondStart - sourceLength),
-            );
+            const digest =
+              prepared.digest ??
+              (yield* source.digest(
+                certificate.hash,
+                appendix.subarray(0, firstLength - sourceLength),
+                appendix.subarray(secondStart - sourceLength),
+              ));
+            if (digest.byteLength !== digestLengths[certificate.hash]) {
+              return yield* new LocalError({ code: "pdfPrepareFailed" });
+            }
             return yield* Effect.gen(function* () {
               const previewRevision = yield* source.append(appendix);
               const binding = {
@@ -437,15 +444,13 @@ export const pdfSignaturesLayer = Layer.effect(
                     defaultLines: ["Prewarm", "e-CPF", "2026-01-01"],
                     date: "D:20260101000000Z",
                     contentsCapacity: 4096,
+                    hash: "SHA-256",
                   },
                 );
-                const { appendix, byteRange } = prepared;
-                const [, firstLength, secondStart] = byteRange;
-                yield* source.digest(
-                  "SHA-256",
-                  appendix.subarray(0, firstLength - source.byteLength),
-                  appendix.subarray(secondStart - source.byteLength),
-                );
+                const { appendix, digest } = prepared;
+                if (digest?.byteLength !== 32) {
+                  return yield* new LocalError({ code: "pdfPrepareFailed" });
+                }
                 yield* source.check(appendix, (document) =>
                   document.signatures("verification").pipe(
                     Effect.andThen(document.changes(source.byteLength)),

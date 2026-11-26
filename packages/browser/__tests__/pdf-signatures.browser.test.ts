@@ -94,7 +94,7 @@ it("measures warm-session signing through the Chromium worker on the 1.x corpus"
         copies = spans
           .filter(({ name }) => name === "pdfCore.wasm.copyIn" || name === "pdfCore.wasm.copyOut")
           .map(({ name, attributes }) => ({ name, attributes: Object.fromEntries(attributes) }));
-        expect(copies.filter(({ name }) => name === "pdfCore.wasm.copyIn")).toHaveLength(2);
+        expect(copies.filter(({ name }) => name === "pdfCore.wasm.copyIn")).toHaveLength(1);
         expect(copies.filter(({ name }) => name === "pdfCore.wasm.copyOut")).toHaveLength(2);
         expect(spans.find(({ name }) => name === "local.pdf.prepare")?.attributes).toContainEqual([
           "policy",

@@ -9,7 +9,7 @@ import type { RevisionRef } from "./rpc.js";
 import {
   PrepareComputeInputSchema,
   PreparedComputeSchema,
-  SignComputeInputSchema,
+  HelperSignComputeInputSchema,
   makeLocalCompute,
 } from "./signature-compute.js";
 
@@ -31,7 +31,7 @@ export const SigningHelperRpcs = RpcGroup.make(
     payload: {
       key: DocumentKey,
       bytes: Schema.optional(Transferable.Uint8Array),
-      input: SignComputeInputSchema,
+      input: HelperSignComputeInputSchema,
     },
     success: Transferable.Uint8Array,
     error: LocalError,
@@ -48,6 +48,9 @@ export const signingHelperHandlersLayer = SigningHelperRpcs.toLayer(
     const signatures = yield* PdfSignatures;
     const compute = makeLocalCompute(a1);
     const opened = yield* Ref.make(new Map<string, RevisionRef>());
+    const preparedUpdates = yield* Ref.make(
+      new Map<string, Effect.Success<ReturnType<typeof compute.prepare>>["prepared"]>(),
+    );
     const load = Effect.fnUntraced(function* (key: string, bytes: Uint8Array | undefined) {
       const existing = (yield* Ref.get(opened)).get(key);
       if (existing !== undefined) return existing;
@@ -57,6 +60,11 @@ export const signingHelperHandlersLayer = SigningHelperRpcs.toLayer(
       return revision;
     });
     const release = Effect.fnUntraced(function* (key: string) {
+      yield* Ref.update(preparedUpdates, (current) => {
+        const next = new Map(current);
+        next.delete(key);
+        return next;
+      });
       const revision = (yield* Ref.get(opened)).get(key);
       if (revision === undefined) return;
       yield* Ref.update(opened, (current) => {
@@ -73,7 +81,13 @@ export const signingHelperHandlersLayer = SigningHelperRpcs.toLayer(
         load(key, bytes).pipe(
           Effect.flatMap((revision) =>
             engine.withRevision(revision, (source) =>
-              compute.prepare({ key, revision: source }, input),
+              compute
+                .prepare({ key, revision: source }, input)
+                .pipe(
+                  Effect.tap(({ prepared }) =>
+                    Ref.update(preparedUpdates, (current) => new Map(current).set(key, prepared)),
+                  ),
+                ),
             ),
           ),
         ),
@@ -81,7 +95,11 @@ export const signingHelperHandlersLayer = SigningHelperRpcs.toLayer(
         load(key, bytes).pipe(
           Effect.flatMap((revision) =>
             engine.withRevision(revision, (source) =>
-              compute.sign({ key, revision: source }, input),
+              Effect.gen(function* () {
+                const prepared = input.prepared ?? (yield* Ref.get(preparedUpdates)).get(key);
+                if (prepared === undefined) return yield* new LocalError({ code: "unknownHandle" });
+                return yield* compute.sign({ key, revision: source }, { ...input, prepared });
+              }),
             ),
           ),
           Effect.tap(() => release(key)),

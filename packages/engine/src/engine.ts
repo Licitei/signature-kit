@@ -4,7 +4,7 @@ import { parsePkcs12 } from "./crypto/pkcs12.js";
 import { displayListViewport } from "./wasm/canvas.js";
 import type { PdfCoreDisplayList, PdfCoreSignatureFields } from "./wasm/config.js";
 import { PdfCore, pdfCoreBytesSource } from "./wasm/pdf-core.js";
-import type { PdfCoreSigningSession } from "./wasm/pdf-core.js";
+import type { PdfCoreSigningSession, PdfCoreSigningVerificationSession } from "./wasm/pdf-core.js";
 import {
   Context,
   Effect,
@@ -33,6 +33,8 @@ import type {
   RevisionRef,
 } from "./rpc.js";
 import { withQueueTiming } from "./telemetry.js";
+
+const signingDigestSpareBytes = 128 * 1024;
 
 const cmsHash = {
   "SHA-256": "sha256",
@@ -116,9 +118,19 @@ export class LocalRuntime extends Context.Service<
   { readonly instanceId: InstanceId }
 >()("@signature-kit/engine/LocalRuntime") {}
 
+const arrayBufferBytes = (bytes: Uint8Array): bytes is Uint8Array<ArrayBuffer> =>
+  bytes.buffer instanceof ArrayBuffer;
+
+const contiguousParts = (parts: ReadonlyArray<Uint8Array>) => {
+  const [part] = parts;
+  return parts.length === 1 && part !== undefined && arrayBufferBytes(part)
+    ? part
+    : joinParts(parts);
+};
+
 const contentDigest = (parts: ReadonlyArray<Uint8Array>) =>
   Effect.tryPromise({
-    try: () => crypto.subtle.digest("SHA-256", joinParts(parts)),
+    try: () => crypto.subtle.digest("SHA-256", contiguousParts(parts)),
     catch: () => new LocalError({ code: "digestFailed" }),
   }).pipe(
     Effect.map((buffer) =>
@@ -412,7 +424,7 @@ export type PdfRevision = {
   readonly append: (appendix: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
   readonly check: (
     appendix: Uint8Array,
-    validate: (document: PdfCoreSigningSession) => Effect.Effect<void, LocalError>,
+    validate: (document: PdfCoreSigningVerificationSession) => Effect.Effect<void, LocalError>,
   ) => Effect.Effect<void, LocalError>;
 };
 
@@ -466,7 +478,7 @@ export const pdfEngineLayer = Layer.effectContext(
           }).pipe(Scope.provide(scope)),
         );
         const signing = yield* Effect.cached(
-          core.openSigningDocument(parts).pipe(
+          core.openSigningDocument(parts, signingDigestSpareBytes).pipe(
             Scope.provide(scope),
             Effect.mapError(({ code }) => new LocalError({ code: "pdfReadFailed", pdfCode: code })),
           ),
@@ -480,7 +492,7 @@ export const pdfEngineLayer = Layer.effectContext(
         );
         const digest: PdfRevision["digest"] = (hash, before, after) =>
           Effect.tryPromise({
-            try: () => crypto.subtle.digest(hash, joinParts([...parts, before, after])),
+            try: () => crypto.subtle.digest(hash, contiguousParts([...parts, before, after])),
             catch: () => new LocalError({ code: "digestFailed" }),
           }).pipe(
             Effect.map((buffer) => new Uint8Array(buffer)),
@@ -488,12 +500,20 @@ export const pdfEngineLayer = Layer.effectContext(
           );
         const append: PdfRevision["append"] = (appendix) =>
           documents[storeRevision]([...parts, appendix]);
-        const check: PdfRevision["check"] = (appendix, validate) =>
-          core.openSigningDocument([...parts, appendix]).pipe(
+        const check: PdfRevision["check"] = (appendix, validate) => {
+          const fallback = core.openSigningDocument([...parts, appendix]).pipe(
             Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
             Effect.flatMap(validate),
             Effect.scoped,
           );
+          return signing.pipe(
+            Effect.flatMap((session) => session.withAppendix(appendix, validate)),
+            Effect.catchTag("PdfCoreError", () => Effect.succeedNone),
+            Effect.flatMap((result) =>
+              Option.isSome(result) ? Effect.succeed(result.value) : fallback,
+            ),
+          );
+        };
 
         return { byteLength, parts, view, signing, fields, digest, append, check };
       }),
