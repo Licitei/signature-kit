@@ -7,10 +7,11 @@ import { readFile } from "node:fs/promises";
 import * as pki from "pkijs";
 import { A1Sessions, Documents, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../src/pdf-signatures.js";
+import { PdfVerification, pdfVerificationLayer } from "../src/pdf-verification.js";
 import { verifyIndependently } from "../../../tooling/testing/verify-pdf.js";
 import { existingField } from "../../../tooling/testing/cosign.js";
 
-const layer = pdfSignaturesLayer.pipe(
+const layer = Layer.merge(pdfSignaturesLayer, pdfVerificationLayer).pipe(
   Layer.provideMerge(pdfEngineLayer),
   Layer.provideMerge(localRuntimeLayer()),
   Layer.provideMerge(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
@@ -40,6 +41,7 @@ it.effect("appends and reads DSS evidence without changing the signed bytes", ()
     const a1 = yield* A1Sessions;
     const documents = yield* Documents;
     const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const source = yield* documents.open(yield* fixture("cosign/sent.pdf"));
     const session = yield* a1.open({
       pfx: Redacted.make(yield* fixture("validation/signer.p12")),
@@ -52,7 +54,7 @@ it.effect("appends and reads DSS evidence without changing the signed bytes", ()
     expect(yield* pdf.addValidationData(updated, dss)).toEqual(updated);
     const bytes = yield* documents.export(updated.handle);
     expect(bytes.subarray(0, signed.byteLength)).toEqual(yield* documents.export(signed.handle));
-    expect((yield* pdf.verify(updated, { trust: [ca], at })).signatures[0]).toMatchObject({
+    expect((yield* verification.verify(updated, { trust: [ca], at })).signatures[0]).toMatchObject({
       integrity: "valid",
       trust: "trusted",
       revocation: { kind: "verified", source: "ocsp", result: { status: "good" } },

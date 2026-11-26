@@ -11,7 +11,6 @@ import { Clock, Context, Effect, HashMap, Layer, Ref, Schema, Semaphore } from "
 import { sha256 } from "./crypto/primitives/sha256.js";
 import { A1Sessions, Documents, PdfEngine } from "./engine.js";
 import type { PdfRevision } from "./engine.js";
-import { decodeSignatureContents, embedPreparedSignature } from "./pdf-contents.js";
 import { PdfCore } from "./wasm/pdf-core.js";
 import { LocalError, PdfPrepareOptionsSchema, PreparationId } from "./rpc.js";
 import type {

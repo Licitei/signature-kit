@@ -175,6 +175,7 @@ it.effect("creates empty widgets atomically and respects certification and field
     expect(yield* Clock.currentTimeMillis).toBe(trustAt.getTime());
     const documents = yield* Documents;
     const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const a1 = yield* A1Sessions;
     const contract = yield* fixture("contract.pdf");
     const draft = yield* documents.open(contract);
@@ -214,11 +215,11 @@ it.effect("creates empty widgets atomically and respects certification and field
       { mode: "incremental" },
     );
     const alteredCertification = yield* documents.open(withoutPerms);
-    expect((yield* pdf.verify(alteredCertification)).signatures[0]).toMatchObject({
+    expect((yield* verification.verify(alteredCertification)).signatures[0]).toMatchObject({
       integrity: "valid",
       mdp: { docMdp: 1, permittedChanges: [], violations: expect.any(Array) },
     });
-    expect((yield* pdf.compare(lockedDocument, alteredCertification)).reasons).toContain(
+    expect((yield* verification.compare(lockedDocument, alteredCertification)).reasons).toContain(
       "mdpViolation",
     );
     expect(
@@ -260,6 +261,7 @@ it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission
     yield* TestClock.setTime(trustAt.getTime());
     const documents = yield* Documents;
     const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const core = yield* PdfCore;
     const a1 = yield* A1Sessions;
     const source = yield* documents.open(yield* fixture("sent.pdf"));
@@ -274,7 +276,7 @@ it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission
     const signed = (yield* pdf.confirm(certification.preparationId)).signedRevision;
     const approval = yield* pdf.prepare(signed, existingField(session, "Contratada"));
     const cosigned = (yield* pdf.confirm(approval.preparationId)).signedRevision;
-    const report = yield* pdf.verify(cosigned);
+    const report = yield* verification.verify(cosigned);
     expect(report.signatures[0]?.mdp).toMatchObject({
       docMdp,
       violations: [],
@@ -297,7 +299,7 @@ it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission
       ],
       { mode: "incremental" },
     );
-    const verified = yield* pdf.verify(yield* documents.open(annotated));
+    const verified = yield* verification.verify(yield* documents.open(annotated));
     const policy = verified.signatures[0]?.mdp;
     expect(policy?.[docMdp === 2 ? "violations" : "permittedChanges"]).toContainEqual(
       expect.objectContaining({ kind: "annotation", change: "added" }),
