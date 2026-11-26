@@ -118,6 +118,9 @@ jobs:
       - name: Set up workspace
         uses: ./.github/actions/setup
 
+      - name: Install independent PDF and CMS validators
+        run: sudo apt-get update && sudo apt-get install -y qpdf poppler-utils openssl
+
       - name: Install Chromium and build packages
         run: |
           bunx playwright install --with-deps chromium &

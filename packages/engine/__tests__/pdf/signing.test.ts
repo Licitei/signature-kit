@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -36,8 +37,11 @@ const request = (name: string): PdfCorePrepareSignatureRequest => ({
     ],
     border: { width: 1, color: [0.4] },
     image: {
-      png: Uint8Array.fromBase64(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPjfAAACgwGALqKZRAAAAABJRU5ErkJggg==",
+      png: new Uint8Array(
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPjfAAACgwGALqKZRAAAAABJRU5ErkJggg==",
+          "base64",
+        ),
       ),
       rect: [170, 4, 206, 40],
     },
