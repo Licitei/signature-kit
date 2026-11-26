@@ -47,7 +47,9 @@ export class LocalClient extends Context.Service<
   LocalClient,
   {
     readonly instanceId: InstanceId;
+    readonly prewarm: () => Effect.Effect<void, LocalError>;
     readonly openDocument: (bytes: Uint8Array) => Effect.Effect<RevisionRef, LocalError>;
+    readonly documentDigest: (revision: RevisionRef) => Effect.Effect<string, LocalError>;
     readonly exportDocument: (handle: Handle) => Effect.Effect<Uint8Array<ArrayBuffer>, LocalError>;
     readonly releaseDocument: (handle: Handle) => Effect.Effect<void, LocalError>;
     readonly composePdf: (input: PdfComposeInput) => Effect.Effect<RevisionRef, LocalError>;
@@ -191,8 +193,10 @@ export const localClientLayer = (createWorker: () => Worker, options: LocalClien
 
           return LocalClient.of({
             instanceId,
+            prewarm: () => call(() => rpc.Prewarm(undefined)),
             openDocument: (bytes) =>
               call(() => rpc.DocumentsOpen({ bytes: new Uint8Array(bytes) })),
+            documentDigest: (revision) => call(() => rpc.DocumentsDigest({ revision })),
             exportDocument: (handle) => call(() => rpc.DocumentsExport({ handle })),
             releaseDocument: (handle) => call(() => rpc.DocumentsRelease({ handle })),
             composePdf: (input) => call(() => rpc.PdfCompose(input)),

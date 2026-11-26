@@ -10,12 +10,13 @@ import { recordSpans } from "../../../tooling/testing/tracing.ts";
 import { A1Sessions, Documents, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
 import { embedPreparedSignature } from "../src/pdf-contents.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../src/pdf-signatures.js";
+import { PdfVerification, pdfVerificationLayer } from "../src/pdf-verification.js";
 import type { A1Hash } from "../src/a1-certificate.js";
 import type { A1SessionInfo, PdfPrepareOptions } from "../src/rpc.js";
 
 const wasm = pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer));
 const signingLayer = (options?: Parameters<typeof localRuntimeLayer>[0]) =>
-  pdfSignaturesLayer.pipe(
+  Layer.merge(pdfSignaturesLayer, pdfVerificationLayer).pipe(
     Layer.provideMerge(pdfEngineLayer),
     Layer.provideMerge(localRuntimeLayer(options)),
     Layer.provideMerge(wasm),
@@ -63,12 +64,15 @@ describe("local PDF signatures", () => {
         yield* TestClock.setTime(now.getTime());
         const documents = yield* Documents;
         const pdf = yield* PdfSignatures;
+        const verification = yield* PdfVerification;
         const a1 = yield* A1Sessions;
         const pfx = yield* fixture("ecpf");
         const session = yield* a1.open({ pfx, password });
         const { certificateDer } = yield* a1.certificate(session);
         const sourceBytes = yield* readPdfFixture();
         const source = yield* documents.open(sourceBytes);
+        const sourceDigest = yield* documents.digest(source);
+        expect(sourceDigest).toBe(yield* fingerprint(sourceBytes));
         expect((yield* pdf.fields(source)).fields).toHaveLength(0);
 
         const { exit, spans } = yield* recordSpans(
@@ -80,7 +84,9 @@ describe("local PDF signatures", () => {
               rect: [32, 28, 192, 76],
             });
             const preview = yield* documents.export(preparation.previewRevision.handle);
-            expect(preparation.previewRevision.digest).toBe(yield* fingerprint(preview));
+            expect(yield* documents.digest(preparation.previewRevision)).toBe(
+              yield* fingerprint(preview),
+            );
             const sameOptions = yield* pdf.prepare(source, {
               policy: "icpBrasilAdRbV11",
               appearance: { kind: "visible" },
@@ -98,7 +104,6 @@ describe("local PDF signatures", () => {
             expect(receipt).toEqual(concurrent);
             expect(receipt).toMatchObject({
               preparationId: preparation.preparationId,
-              sourceDigest: source.digest,
               certificateFingerprint: session.profile.fingerprintSha256,
               signedAt: now,
               fieldName: "Approval",
@@ -106,7 +111,9 @@ describe("local PDF signatures", () => {
             yield* a1.close();
             expect(yield* pdf.confirm(preparation.preparationId)).toEqual(receipt);
             const signed = yield* documents.export(receipt.signedRevision.handle);
-            expect(receipt.signedRevision.digest).toBe(yield* fingerprint(signed));
+            expect(yield* documents.digest(receipt.signedRevision)).toBe(
+              yield* fingerprint(signed),
+            );
             expect(signed.subarray(0, sourceBytes.byteLength)).toEqual(sourceBytes);
             expect(yield* documents.export(preparation.previewRevision.handle)).toEqual(preview);
 
@@ -119,7 +126,7 @@ describe("local PDF signatures", () => {
             expect(preview.subarray(range[1] + 1, range[2] - 1).every((byte) => byte === 48)).toBe(
               true,
             );
-            const report = yield* pdf.verify(receipt.signedRevision);
+            const report = yield* verification.verify(receipt.signedRevision);
             expect(report.signatures).toMatchObject([
               {
                 fieldName: "Approval",
@@ -134,7 +141,7 @@ describe("local PDF signatures", () => {
               [now, "trusted"],
               [new Date(session.profile.notAfter.getTime() + 1), "untrusted"],
             ] satisfies ReadonlyArray<readonly [Date, "trusted" | "untrusted"]>) {
-              const evaluated = yield* pdf.verify(receipt.signedRevision, {
+              const evaluated = yield* verification.verify(receipt.signedRevision, {
                 trust: [certificateDer],
                 at,
               });
@@ -147,11 +154,13 @@ describe("local PDF signatures", () => {
             const tampered = signed.slice();
             tampered[7] = 0x36;
             const tamperedRef = yield* documents.open(tampered);
-            expect((yield* pdf.verify(tamperedRef)).signatures[0]?.integrity).toBe("invalid");
+            expect((yield* verification.verify(tamperedRef)).signatures[0]?.integrity).toBe(
+              "invalid",
+            );
             const badCms = signed.slice();
             badCms[range[2] - 2] = 0x66;
             const badCmsRef = yield* documents.open(badCms);
-            expect((yield* pdf.verify(badCmsRef)).signatures[0]).toMatchObject({
+            expect((yield* verification.verify(badCmsRef)).signatures[0]).toMatchObject({
               integrity: "invalid",
               coverage: { kind: "wholeFile", bytesAfter: 0 },
             });
@@ -184,13 +193,39 @@ describe("local PDF signatures", () => {
           "Approval",
           session.profile.subjectName,
           session.profile.fingerprintSha256,
-          source.digest,
+          sourceDigest,
         ]) {
           expect(telemetry).not.toContain(value);
         }
         yield* verifyIndependently(signed, 1);
       }).pipe(Effect.provide(layer)),
     30_000,
+  );
+
+  it.effect("fails self-verification when a shared session signs with a foreign key", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now.getTime());
+      const documents = yield* Documents;
+      const pdf = yield* PdfSignatures;
+      const verification = yield* PdfVerification;
+      const a1 = yield* A1Sessions;
+      const company = yield* a1.open({ pfx: yield* fixture("ecnpj"), password });
+      const { key: foreignKey } = yield* a1.share(company);
+      const person = yield* a1.open({ pfx: yield* fixture("ecpf"), password });
+      const genuine = yield* a1.share(person);
+      yield* a1.adopt({ ...genuine, key: foreignKey });
+      const source = yield* documents.open(yield* readPdfFixture());
+      const preparation = yield* pdf.prepare(source, { ...options(person), policy: "cades" });
+      expect(yield* Effect.flip(pdf.confirm(preparation.preparationId))).toMatchObject({
+        code: "selfVerificationFailed",
+      });
+      yield* a1.adopt(genuine);
+      const retried = yield* pdf.prepare(source, { ...options(person, "Retry"), policy: "cades" });
+      const receipt = yield* pdf.confirm(retried.preparationId);
+      expect((yield* verification.verify(receipt.signedRevision)).signatures[0]?.integrity).toBe(
+        "valid",
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("rejects replaced sessions, and checks expiration at confirmation time", () =>
@@ -224,6 +259,7 @@ describe("local PDF signatures", () => {
       yield* TestClock.setTime(now.getTime());
       const documents = yield* Documents;
       const pdf = yield* PdfSignatures;
+      const verification = yield* PdfVerification;
       const a1 = yield* A1Sessions;
       const session = yield* a1.open({ pfx: yield* fixture("ecnpj"), password });
       const core = yield* PdfCore;
@@ -278,7 +314,7 @@ describe("local PDF signatures", () => {
       });
       expect(prepared.widget).toEqual({ kind: "visible", page: 0, rect: [32, 28, 192, 76] });
       const receipt = yield* pdf.confirm(prepared.preparationId);
-      expect((yield* pdf.verify(receipt.signedRevision)).signatures).toMatchObject([
+      expect((yield* verification.verify(receipt.signedRevision)).signatures).toMatchObject([
         { integrity: "valid", signer: { holderKind: "e-cnpj" } },
       ]);
       expect(yield* Effect.flip(pdf.prepare(receipt.signedRevision, existing))).toMatchObject({
@@ -294,6 +330,7 @@ describe("local PDF signatures", () => {
         yield* TestClock.setTime(now.getTime());
         const documents = yield* Documents;
         const pdf = yield* PdfSignatures;
+        const verification = yield* PdfVerification;
         const a1 = yield* A1Sessions;
         const pfx = yield* fixture("ecpf");
         const first = yield* a1.open({ pfx, password });
@@ -310,7 +347,7 @@ describe("local PDF signatures", () => {
           const cosigned = yield* pdf.confirm(preparation.preparationId);
           const exported = yield* documents.export(cosigned.signedRevision.handle);
           expect(exported.subarray(0, original.byteLength)).toEqual(original);
-          const { signatures } = yield* pdf.verify(cosigned.signedRevision);
+          const { signatures } = yield* verification.verify(cosigned.signedRevision);
           expect(signatures).toMatchObject([
             {
               integrity: "valid",
@@ -333,12 +370,13 @@ describe("local PDF signatures", () => {
         const documents = yield* Documents;
         const a1 = yield* A1Sessions;
         const pdf = yield* PdfSignatures;
+        const verification = yield* PdfVerification;
         const pfx = yield* fixture("ecpf");
         const session = yield* a1.open({ pfx, password });
         const source = yield* documents.open(yield* readPdfFixture());
         const preparation = yield* pdf.prepare(source, options(session));
         const receipt = yield* pdf.confirm(preparation.preparationId);
-        expect((yield* pdf.verify(receipt.signedRevision)).signatures).toMatchObject([
+        expect((yield* verification.verify(receipt.signedRevision)).signatures).toMatchObject([
           { integrity: "valid", coverage: { kind: "wholeFile" } },
         ]);
         const signed = yield* documents.export(receipt.signedRevision.handle);

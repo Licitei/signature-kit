@@ -10,10 +10,10 @@ import {
 import { Effect, Redacted } from "effect";
 import { CryptoError, CryptoErrorCodeValue, CryptoOperationValue } from "./config.js";
 import type { Pkcs12Result } from "./config.js";
-import { createHmac, hmac } from "./primitives/hmac.js";
+import { hmac } from "./primitives/hmac.js";
 import type { HmacHashAlgorithm } from "./primitives/hmac.js";
 import { sha1 } from "./primitives/sha1.js";
-import { sha256 } from "./primitives/sha256.js";
+import { sha256, sha256Iterate } from "./primitives/sha256.js";
 import { sha384, sha512 } from "./primitives/sha512.js";
 import { aesCbcDecrypt } from "./primitives/aes.js";
 import { tripleDesCbcDecrypt } from "./primitives/des.js";
@@ -227,9 +227,15 @@ const pkcs12Kdf = (
         yield* kdfYield;
         hashesSinceYield = 0;
       }
-      for (let i = 1; i < iterations; i++) {
-        A = hashBytes(algorithm, A);
-        hashesSinceYield++;
+      for (let remaining = iterations - 1; remaining > 0;) {
+        const count = Math.min(remaining, KDF_YIELD_INTERVAL - hashesSinceYield);
+        if (algorithm === "sha256") {
+          A = sha256Iterate(A, count);
+        } else {
+          for (let i = 0; i < count; i++) A = hashBytes(algorithm, A);
+        }
+        remaining -= count;
+        hashesSinceYield += count;
         if (hashesSinceYield === KDF_YIELD_INTERVAL) {
           yield* kdfYield;
           hashesSinceYield = 0;
@@ -256,6 +262,13 @@ const pkcs12Kdf = (
     return result;
   });
 
+const webCryptoHash = {
+  sha1: "SHA-1",
+  sha256: "SHA-256",
+  sha384: "SHA-384",
+  sha512: "SHA-512",
+} satisfies Record<HmacHashAlgorithm, string>;
+
 const pbkdf2Kdf = (
   prf: HmacHashAlgorithm,
   password: Uint8Array,
@@ -265,45 +278,35 @@ const pbkdf2Kdf = (
   budget: KdfBudget,
 ): Effect.Effect<Uint8Array, CryptoError> =>
   Effect.gen(function* () {
-    const hashLength = hashOutputLength(prf);
-    const blockCount = Math.ceil(keyLength / hashLength);
-    yield* consumeKdfWork(budget, "PBKDF2", iterations, blockCount);
-
-    const hmacContext = createHmac(prf, password);
-    const derivedKey = new Uint8Array(keyLength);
-    let hashesSinceYield = 0;
-
-    for (let blockIndex = 1; blockIndex <= blockCount; blockIndex++) {
-      const saltWithIndex = new Uint8Array(salt.length + 4);
-      saltWithIndex.set(salt);
-      saltWithIndex[salt.length] = (blockIndex >>> 24) & 0xff;
-      saltWithIndex[salt.length + 1] = (blockIndex >>> 16) & 0xff;
-      saltWithIndex[salt.length + 2] = (blockIndex >>> 8) & 0xff;
-      saltWithIndex[salt.length + 3] = blockIndex & 0xff;
-
-      let u = hmacContext.compute(saltWithIndex);
-      const block = new Uint8Array(u);
-      hashesSinceYield++;
-      if (hashesSinceYield === KDF_YIELD_INTERVAL) {
-        yield* kdfYield;
-        hashesSinceYield = 0;
-      }
-
-      for (let iteration = 1; iteration < iterations; iteration++) {
-        u = hmacContext.compute(u);
-        for (let j = 0; j < hashLength; j++) block[j]! ^= u[j]!;
-        hashesSinceYield++;
-        if (hashesSinceYield === KDF_YIELD_INTERVAL) {
-          yield* kdfYield;
-          hashesSinceYield = 0;
-        }
-      }
-
-      const offset = (blockIndex - 1) * hashLength;
-      derivedKey.set(block.subarray(0, Math.min(hashLength, keyLength - offset)), offset);
-    }
-
-    return derivedKey;
+    yield* consumeKdfWork(
+      budget,
+      "PBKDF2",
+      iterations,
+      Math.ceil(keyLength / hashOutputLength(prf)),
+    );
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const key = await crypto.subtle.importKey(
+          "raw",
+          new Uint8Array(password),
+          "PBKDF2",
+          false,
+          ["deriveBits"],
+        );
+        const bits = await crypto.subtle.deriveBits(
+          { name: "PBKDF2", hash: webCryptoHash[prf], salt: new Uint8Array(salt), iterations },
+          key,
+          keyLength * 8,
+        );
+        return new Uint8Array(bits);
+      },
+      catch: () =>
+        new CryptoError({
+          code: CryptoErrorCodeValue.cipherError,
+          reason: "WebCrypto PBKDF2 key derivation failed.",
+          operation: CryptoOperationValue.pkcs12Decrypt,
+        }),
+    });
   });
 
 const macHashAlgorithm = (oid: string): Effect.Effect<HmacHashAlgorithm, CryptoError> => {

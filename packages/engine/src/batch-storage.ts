@@ -1,6 +1,6 @@
 import { Context, Schema } from "effect";
 import type { Effect, Scope } from "effect";
-import { BatchDocument, BatchItem, BatchTemplate } from "./rpc.js";
+import { BatchDocument, BatchItem, BatchTemplate, Sha256 } from "./rpc.js";
 import type { LocalError } from "./rpc.js";
 
 export const BatchPlan = Schema.Struct({
@@ -9,7 +9,7 @@ export const BatchPlan = Schema.Struct({
   documents: Schema.Array(
     Schema.Struct({
       itemId: BatchItem.fields.itemId,
-      digest: BatchDocument.fields.revision.fields.digest,
+      digest: Sha256,
       anchors: BatchDocument.fields.anchors,
     }),
   ),
@@ -19,6 +19,7 @@ export type BatchPlan = typeof BatchPlan.Type;
 export const StoredBatchItem = Schema.Struct({
   version: Schema.Literal(1),
   ...BatchItem.mapFields(({ preparation: _preparation, ...fields }) => fields).fields,
+  outputDigest: Schema.optional(Sha256),
 });
 export type StoredBatchItem = typeof StoredBatchItem.Type;
 

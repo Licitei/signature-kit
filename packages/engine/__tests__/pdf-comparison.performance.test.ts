@@ -11,9 +11,10 @@ import {
 } from "../../../tooling/testing/pdf-signing-benchmark.js";
 import { A1Sessions, Documents, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../src/pdf-signatures.js";
+import { PdfVerification, pdfVerificationLayer } from "../src/pdf-verification.js";
 import type { RevisionRef } from "../src/rpc.js";
 
-const layer = pdfSignaturesLayer.pipe(
+const layer = Layer.merge(pdfSignaturesLayer, pdfVerificationLayer).pipe(
   Layer.provideMerge(pdfEngineLayer),
   Layer.provideMerge(localRuntimeLayer()),
   Layer.provideMerge(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
@@ -35,6 +36,7 @@ it.live(
       const documents = yield* Documents;
       const a1 = yield* A1Sessions;
       const pdf = yield* PdfSignatures;
+      const verification = yield* PdfVerification;
       const core = yield* PdfCore;
       const trust = [yield* fixture("root.der")] satisfies readonly [Uint8Array];
       const certificates = yield* Effect.all([fixture("ecpf.p12"), fixture("ecnpj.p12")]);
@@ -58,7 +60,7 @@ it.live(
         const timing = yield* medianSigningTime(
           Effect.gen(function* () {
             const start = performance.now();
-            const report = yield* pdf.compare(sent, returned, { trust, at: trustAt });
+            const report = yield* verification.compare(sent, returned, { trust, at: trustAt });
             const duration = performance.now() - start;
             expect(report.verdict).toBe("signedAsExpected");
             expect(report.signatures).toHaveLength(2);

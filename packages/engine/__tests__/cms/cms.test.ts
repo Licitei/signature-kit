@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { encode } from "../../src/asn1/asn1";
 import { buildSignedAttributes } from "../../src/cms/attributes";
 import {
   CmsHashAlgorithmValue,
@@ -33,52 +34,55 @@ describe("CMS contracts", () => {
     expect(CmsOid.timeStampToken).toBe("1.2.840.113549.1.9.16.2.14");
   });
 
-  it("builds PAdES signed attributes without signingTime", () => {
-    const messageDigest = new Uint8Array(32).fill(0x11);
-    const certificateSha256 = new Uint8Array(32).fill(0x22);
-    const attributes = buildSignedAttributes({
-      messageDigest,
-      certificateSha256,
-    });
+  it.effect("builds PAdES signed attributes without signingTime", () =>
+    Effect.gen(function* () {
+      const messageDigest = new Uint8Array(32).fill(0x11);
+      const certificateSha256 = new Uint8Array(32).fill(0x22);
+      const attributes = yield* buildSignedAttributes({
+        messageDigest,
+        certificateSha256,
+      });
 
-    expect(attributes.map((attribute) => attribute.type)).toEqual([
-      CmsOid.contentType,
-      CmsOid.messageDigest,
-      CmsOid.signingCertificateV2,
-    ]);
-    expect(attributes.map((attribute) => attribute.type)).not.toContain(CmsOid.signingTime);
-    const signingCertificate = attributes.find(
-      (attribute) => attribute.type === CmsOid.signingCertificateV2,
-    );
-    expect(signingCertificate).toBeDefined();
-    const encoded = new Uint8Array(
-      signingCertificate?.values[0]?.toBER(false) ?? new ArrayBuffer(0),
-    );
-    expect(encoded.byteLength).toBeGreaterThan(0);
-    expect(containsBytes(encoded, certificateSha256)).toBe(true);
-    expect(encoded).toEqual(
-      Uint8Array.of(0x30, 38, 0x30, 36, 0x30, 34, 0x04, 32, ...certificateSha256),
-    );
-  });
+      expect(attributes.map((attribute) => attribute.type)).toEqual([
+        CmsOid.contentType,
+        CmsOid.messageDigest,
+        CmsOid.signingCertificateV2,
+      ]);
+      expect(attributes.map((attribute) => attribute.type)).not.toContain(CmsOid.signingTime);
+      const signingCertificate = attributes.find(
+        (attribute) => attribute.type === CmsOid.signingCertificateV2,
+      );
+      expect(signingCertificate).toBeDefined();
+      const encoded =
+        signingCertificate === undefined ? new Uint8Array() : encode(signingCertificate.value);
+      expect(encoded.byteLength).toBeGreaterThan(0);
+      expect(containsBytes(encoded, certificateSha256)).toBe(true);
+      expect(encoded).toEqual(
+        Uint8Array.of(0x30, 38, 0x30, 36, 0x30, 34, 0x04, 32, ...certificateSha256),
+      );
+    }),
+  );
 
-  it("adds ICP-Brasil signature policy attribute when policy metadata is present", () => {
-    const policyHash = new Uint8Array(32).fill(0x33);
-    const attributes = buildSignedAttributes({
-      messageDigest: new Uint8Array(32).fill(0x11),
-      certificateSha256: new Uint8Array(32).fill(0x22),
-      icpBrasil: {
-        policyOid: "2.16.76.1.7.1.11.1.1",
-        policyHash,
-        policyHashAlgorithm: "sha256",
-        policyUri: "http://politicas.icpbrasil.gov.br/PA_PAdES_AD_RB_v1_1.der",
-      },
-    });
+  it.effect("adds ICP-Brasil signature policy attribute when policy metadata is present", () =>
+    Effect.gen(function* () {
+      const policyHash = new Uint8Array(32).fill(0x33);
+      const attributes = yield* buildSignedAttributes({
+        messageDigest: new Uint8Array(32).fill(0x11),
+        certificateSha256: new Uint8Array(32).fill(0x22),
+        icpBrasil: {
+          policyOid: "2.16.76.1.7.1.11.1.1",
+          policyHash,
+          policyHashAlgorithm: "sha256",
+          policyUri: "http://politicas.icpbrasil.gov.br/PA_PAdES_AD_RB_v1_1.der",
+        },
+      });
 
-    const policy = attributes.find((attribute) => attribute.type === CmsOid.signaturePolicy);
-    expect(policy).toBeDefined();
-    const encoded = new Uint8Array(policy?.values[0]?.toBER(false) ?? new ArrayBuffer(0));
-    expect(containsBytes(encoded, policyHash)).toBe(true);
-  });
+      const policy = attributes.find((attribute) => attribute.type === CmsOid.signaturePolicy);
+      expect(policy).toBeDefined();
+      const encoded = policy === undefined ? new Uint8Array() : encode(policy.value);
+      expect(containsBytes(encoded, policyHash)).toBe(true);
+    }),
+  );
 
   it.effect("makes revocation verification state explicit in CMS verify results", () =>
     Schema.decodeUnknownEffect(CmsVerifyResultSchema)({

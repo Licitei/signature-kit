@@ -800,11 +800,11 @@ impl<'data> Document<'data> {
             pages.push(self.page(obj_ref, dict, inherited)?);
             Ok(())
         };
-        if self.walk_pages(None, &mut collect)? == 0
+        if self.walk_pages(None, None, &mut collect)? == 0
             && !self.repaired.get()
             && self.rebuild().is_ok()
         {
-            let _: usize = self.walk_pages(None, &mut collect)?;
+            let _: usize = self.walk_pages(None, None, &mut collect)?;
         }
         Ok(pages)
     }
@@ -1102,19 +1102,19 @@ impl<'data> Document<'data> {
         stop_after: Option<usize>,
     ) -> Outcome<(usize, Vec<(usize, Page)>)> {
         let mut chosen: HashMap<_, _> = indexes.iter().map(|&index| (widen(index), None)).collect();
-        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
-            if let Some(page) = chosen.get_mut(&index) {
-                *page = Some(self.page(obj_ref, dict, inherited)?);
-            }
-            Ok(())
-        })?;
-        let pages = indexes
-            .iter()
-            .filter_map(|&requested| {
-                let index = widen(requested);
-                chosen.remove(&index).flatten().map(|page| (index, page))
-            })
-            .collect();
+        let mut wanted: Vec<_> = chosen.keys().copied().collect();
+        wanted.sort_unstable();
+        let count = self.walk_pages(
+            stop_after,
+            Some(&wanted),
+            &mut |index, obj_ref, dict, inherited| {
+                if let Some(page) = chosen.get_mut(&index) {
+                    *page = Some(self.page(obj_ref, dict, inherited)?);
+                }
+                Ok(())
+            },
+        )?;
+        let pages = collect_requested(indexes, &mut chosen);
         Ok((count, pages))
     }
 
@@ -1391,7 +1391,12 @@ impl<'data> Document<'data> {
         self.pending_reads() != 0
     }
 
-    fn walk_pages(&self, stop_after: Option<usize>, visit: &mut PageVisitor<'_>) -> Outcome<usize> {
+    fn walk_pages(
+        &self,
+        stop_after: Option<usize>,
+        wanted: Option<&[usize]>,
+        visit: &mut PageVisitor<'_>,
+    ) -> Outcome<usize> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
@@ -1407,7 +1412,7 @@ impl<'data> Document<'data> {
             let obj_ref = if let Object::Ref(reference) = &node {
                 if !visited.insert(reference.number) {
                     if first {
-                        return self.walk_pages(None, visit);
+                        return self.walk_pages(None, None, visit);
                     }
                     continue;
                 }
@@ -1426,7 +1431,7 @@ impl<'data> Document<'data> {
             }
             let Some(dict) = resolved.as_dict() else {
                 if first {
-                    return self.walk_pages(None, visit);
+                    return self.walk_pages(None, None, visit);
                 }
                 continue;
             };
@@ -1441,11 +1446,26 @@ impl<'data> Document<'data> {
                 break;
             }
             if let Some(items) = kids.as_deref().and_then(Object::as_array) {
+                let subtree_count = page_count(dict, items.len(), declared);
                 if first {
-                    let Some(subtree_count) = page_count(dict, items.len(), declared) else {
-                        return self.walk_pages(None, visit);
+                    let Some(valid_count) = subtree_count else {
+                        return self.walk_pages(None, None, visit);
                     };
-                    declared = subtree_count.saturating_sub(items.len().saturating_sub(1));
+                    declared = valid_count.saturating_sub(items.len().saturating_sub(1));
+                }
+                if self.sparse.is_some()
+                    && let (Some(selection), Some(leaves)) = (wanted, subtree_count)
+                {
+                    let start = count;
+                    let end = start.saturating_add(leaves);
+                    let first_wanted = selection.partition_point(|index| *index < start);
+                    if selection
+                        .get(first_wanted)
+                        .is_none_or(|index| *index >= end)
+                    {
+                        count = end;
+                        continue;
+                    }
                 }
                 let merged = inherited.merged(dict);
                 stack.extend(items.iter().rev().map(|kid| (kid.clone(), merged.clone())));
@@ -1453,7 +1473,7 @@ impl<'data> Document<'data> {
             }
             if name_is(dict, b"Type", b"Pages") {
                 if first {
-                    return self.walk_pages(None, visit);
+                    return self.walk_pages(None, None, visit);
                 }
                 continue;
             }
@@ -1481,7 +1501,7 @@ impl<'data> Document<'data> {
             return self.requested_pages(indexes, stop_after);
         }
         let mut pages = Vec::new();
-        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
+        let count = self.walk_pages(stop_after, None, &mut |index, obj_ref, dict, inherited| {
             if stop_after.is_none_or(|limit| index < limit) {
                 pages.push((index, self.page(obj_ref, dict, inherited)?));
             }
@@ -1685,6 +1705,19 @@ pub(crate) fn decode_text_string(bytes: &[u8]) -> String {
         return String::from_utf8_lossy(rest).into_owned();
     }
     bytes.iter().map(|&byte| pdf_doc_char(byte)).collect()
+}
+
+fn collect_requested(
+    indexes: &[u32],
+    chosen: &mut HashMap<usize, Option<Page>>,
+) -> Vec<(usize, Page)> {
+    indexes
+        .iter()
+        .filter_map(|&requested| {
+            let index = widen(requested);
+            chosen.remove(&index).flatten().map(|page| (index, page))
+        })
+        .collect()
 }
 
 fn lenient<T>(result: Outcome<T>) -> Outcome<Option<T>> {
@@ -1964,6 +1997,78 @@ mod tests {
         build_classic(&basic_objects(), "", 0).bytes
     }
 
+    fn push_object(bytes: &mut Vec<u8>, offsets: &mut [usize], number: u32, body: &str) {
+        offsets[usize::try_from(number).unwrap()] = bytes.len();
+        bytes.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+
+    fn many_page_pdf(pages: u32) -> Vec<u8> {
+        const FANOUT: u32 = 100;
+        let groups = pages.div_ceil(FANOUT);
+        let first_page = groups.saturating_add(4);
+        let last = first_page.saturating_add(pages.saturating_sub(1));
+        let group_refs = (0..groups)
+            .map(|index| format!("{} 0 R", index.saturating_add(4)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = vec![0_usize; usize::try_from(last).unwrap().saturating_add(1)];
+        push_object(
+            &mut bytes,
+            &mut offsets,
+            1,
+            "<< /Type /Catalog /Pages 2 0 R >>",
+        );
+        push_object(
+            &mut bytes,
+            &mut offsets,
+            2,
+            &format!("<< /Type /Pages /Kids [{group_refs}] /Count {pages} >>"),
+        );
+        push_object(
+            &mut bytes,
+            &mut offsets,
+            3,
+            "<< /Length 0 >>\nstream\n\nendstream",
+        );
+        for group in 0..groups {
+            let first = group.saturating_mul(FANOUT);
+            let count = pages.saturating_sub(first).min(FANOUT);
+            let kids = (first..first.saturating_add(count))
+                .map(|index| format!("{} 0 R", index.saturating_add(first_page)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            push_object(
+                &mut bytes,
+                &mut offsets,
+                group.saturating_add(4),
+                &format!("<< /Type /Pages /Parent 2 0 R /Kids [{kids}] /Count {count} >>"),
+            );
+        }
+        for index in 0..pages {
+            push_object(
+                &mut bytes,
+                &mut offsets,
+                index.saturating_add(first_page),
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 3 0 R >>",
+            );
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(format!("xref\n0 {}\n", last.saturating_add(1)).as_bytes());
+        bytes.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                last.saturating_add(1)
+            )
+            .as_bytes(),
+        );
+        bytes
+    }
+
     fn inspect_all(bytes: &[u8]) -> Outcome<Inspection> {
         inspect(
             bytes,
@@ -1987,6 +2092,56 @@ mod tests {
         out.extend_from_slice(to);
         out.extend_from_slice(&bytes[at.saturating_add(from.len())..]);
         out
+    }
+
+    #[test]
+    fn opens_documents_beyond_ten_thousand_pages() {
+        let bytes = many_page_pdf(12_000);
+        let document = open(&bytes);
+        assert_eq!(document.pages().unwrap().len(), 12_000);
+    }
+
+    #[test]
+    fn lazy_large_documents_read_selected_pages_selectively() {
+        let bytes = many_page_pdf(12_000);
+        let indexes = [11_999_u32];
+        let mut lazy = Lazy::new(
+            bytes.len(),
+            Tuning {
+                gap: 1024,
+                probe: 4096,
+                round_bytes: 64 * 1024,
+            },
+        );
+        let mut requested = 0_usize;
+        for _ in 0_i32..512_i32 {
+            match lazy.plan(
+                PageRequest::Indexes(Some(&indexes)),
+                false,
+                &Limits::default(),
+            ) {
+                Plan::Ready => {
+                    let selected = lazy
+                        .execute(&Limits::default(), |_, pages| Ok((pages.len(), pages[0].0)))
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(selected, (1, 11_999));
+                    assert!(requested.saturating_mul(2) < bytes.len());
+                    return;
+                }
+                Plan::Failed(_) | Plan::Fallback | Plan::Full(_) => {
+                    panic!("large document did not use a selective lazy plan")
+                }
+                Plan::Need(ranges) => {
+                    for range in ranges {
+                        requested = requested.saturating_add(range.len());
+                        let offset = range.start;
+                        assert!(lazy.feed(offset, &bytes[range]));
+                    }
+                }
+            }
+        }
+        panic!("lazy planner did not finish");
     }
 
     #[test]

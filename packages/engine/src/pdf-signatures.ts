@@ -1,35 +1,30 @@
 import type { A1Hash } from "./a1-certificate.js";
 import { checkTimestampSha256Imprint } from "./cms/timestamp.js";
 import { IcpBrasilPadesPolicy } from "./cms/icp-brasil.js";
-import type { CmsError } from "./cms/config.js";
 import { MAX_PDF_CORE_SIGNATURE_CONTENTS } from "./wasm/config.js";
 import type {
-  PdfCorePrepareSignatureRequest,
   PdfCoreNewSignatureFields,
-  PdfCoreError,
   PdfCorePreparedUpdate,
   PdfCoreSignatureFields,
 } from "./wasm/config.js";
-import type { PdfCoreSigningSession } from "./wasm/pdf-core.js";
-import { Clock, Context, Effect, HashMap, Layer, Ref, Schema, Semaphore } from "effect";
+import { Clock, Context, Effect, HashMap, Layer, Option, Ref, Schema, Semaphore } from "effect";
 import { sha256 } from "./crypto/primitives/sha256.js";
 import { A1Sessions, Documents, PdfEngine } from "./engine.js";
 import type { PdfRevision } from "./engine.js";
-import { decodeSignatureContents, embedPreparedSignature } from "./pdf-contents.js";
+import { PdfCore } from "./wasm/pdf-core.js";
 import { LocalError, PdfPrepareOptionsSchema, PreparationId } from "./rpc.js";
 import type {
   PdfPreparation,
-  ComparisonReport,
   PdfPrepareOptions,
   PdfValidationData,
   PdfReceipt,
-  PdfVerificationReport,
-  PdfVerifyOptions,
-  PdfWidget,
   RevisionRef,
 } from "./rpc.js";
-import { comparePdfRevisions, verifyPdfRevision } from "./pdf-verification.js";
+import { makeLocalCompute, prepareErrorCode, SignaturePool } from "./signature-compute.js";
+import type { SignatureComputeService } from "./signature-compute.js";
 
+const PREPARED_HEADER_BYTES = 36;
+const PREWARM_SESSION = "00000000-0000-4000-8000-000000000000";
 const digestLengths = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 } satisfies Record<
   A1Hash,
   number
@@ -38,6 +33,7 @@ const digestLengths = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 } satisfies 
 type PreparationAllocation = {
   readonly identity: symbol;
   readonly nonce: string;
+  readonly compute?: SignatureComputeService | undefined;
   readonly reserve: (sizes: {
     readonly appendixBytes: number;
     readonly digestBytes: number;
@@ -66,11 +62,6 @@ export class PdfSignatures extends Context.Service<
       revision: RevisionRef,
       token: Uint8Array,
     ) => Effect.Effect<RevisionRef, LocalError>;
-    readonly compare: (
-      sent: RevisionRef,
-      returned: RevisionRef,
-      options?: PdfVerifyOptions,
-    ) => Effect.Effect<ComparisonReport, LocalError>;
     readonly prepare: (
       revision: RevisionRef,
       options: PdfPrepareOptions,
@@ -81,20 +72,15 @@ export class PdfSignatures extends Context.Service<
       owner?: symbol,
     ) => Effect.Effect<PdfReceipt, LocalError>;
     readonly release: (preparationId: PreparationId, owner?: symbol) => Effect.Effect<void>;
-    readonly verify: (
-      revision: RevisionRef,
-      options?: PdfVerifyOptions,
-    ) => Effect.Effect<PdfVerificationReport, LocalError>;
+    readonly prewarm: Effect.Effect<void, LocalError>;
   }
 >()("@signature-kit/engine/PdfSignatures") {}
 
 type Preparation = {
   readonly binding: PdfPreparation["binding"];
-  readonly sourceLength: number;
-  readonly append: (
-    appendix: Uint8Array,
-    validate: (document: PdfCoreSigningSession) => Effect.Effect<void, LocalError>,
-  ) => Effect.Effect<RevisionRef, LocalError>;
+  readonly key: string;
+  readonly source: PdfRevision;
+  readonly compute: SignatureComputeService;
   readonly prepared: PdfCorePreparedUpdate;
   readonly digest: Uint8Array;
 };
@@ -105,147 +91,9 @@ type Entry = {
   readonly state: Ref.Ref<Preparation | PdfReceipt | undefined>;
 };
 
-const idDigest = (value: string): string =>
-  Array.from(sha256(new TextEncoder().encode(value)), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-
-const resolveWidget = Effect.fnUntraced(function* (
-  report: PdfCoreSignatureFields,
-  { field, appearance }: PdfPrepareOptions,
-): Effect.fn.Return<PdfWidget, LocalError> {
-  if (report.docMdp === 1) return yield* new LocalError({ code: "documentLocked" });
-
-  const matching = report.fields.filter(({ name }) => name === field.name);
-  const selected = matching[0];
-  if (matching.length > 1) return yield* new LocalError({ code: "fieldAmbiguous" });
-  if (selected?.signed === true) return yield* new LocalError({ code: "fieldSigned" });
-  if (field.kind === "create") {
-    if (selected !== undefined) return yield* new LocalError({ code: "fieldAmbiguous" });
-    return appearance.kind === "none"
-      ? { kind: "invisible" }
-      : { kind: "visible", page: field.page, rect: field.rect };
-  }
-  if (selected === undefined) return yield* new LocalError({ code: "fieldNotFound" });
-  if (appearance.kind === "none") return { kind: "invisible" };
-  const [widget] = selected.widgets;
-  if (selected.widgets.length !== 1 || widget?.page === undefined || widget.rect === undefined) {
-    return yield* new LocalError({ code: "fieldAmbiguous" });
-  }
-  return { kind: "visible", page: widget.page, rect: widget.rect };
-});
-
-const appearanceFor = (
-  widget: PdfWidget,
-  lines: readonly string[],
-): PdfCorePrepareSignatureRequest["appearance"] => {
-  if (widget.kind === "invisible") return { kind: "none" };
-  const [left, bottom, right, top] = widget.rect;
-  const width = right - left;
-  const height = top - bottom;
-  const size = Math.max(
-    1,
-    Math.min(
-      10,
-      (height - 4) / Math.max(lines.length, 1) / 1.2,
-      (width - 4) / Math.max(...lines.map((line) => line.length), 1),
-    ),
-  );
-  return {
-    kind: "visible",
-    lines: lines.map((text, index) => ({
-      text,
-      font: index === 0 ? "Helvetica-Bold" : "Helvetica",
-      size,
-      position: [2, Math.max(0, height - 2 - size * (1 + index * 1.2))],
-      color: [0],
-    })),
-  };
-};
-
-const prepareErrorCode = (reason: PdfCoreError["reason"]): LocalError["code"] => {
-  switch (reason) {
-    case "DocMDP forbids signing this document":
-    case "DocMDP forbids creating signature fields":
-    case "FieldMDP forbids changing the selected field":
-      return "documentLocked";
-    case "signature field name already exists":
-    case "signature field name is ambiguous":
-      return "fieldAmbiguous";
-    case "signature field is missing":
-    case "selected field is not a terminal signature field":
-      return "fieldNotFound";
-    case "signature field is already signed":
-      return "fieldSigned";
-    case undefined:
-    default:
-      return "pdfPrepareFailed";
-  }
-};
-
-const expectedChanges = new Set(["signature", "signatureField", "widgetAppearance", "acroForm"]);
-
-const selfVerify = Effect.fn("local.pdf.selfVerify")(function* (
-  { prepared, sourceLength }: Preparation,
-  verifyCms: (cms: Uint8Array) => Effect.Effect<boolean, CmsError>,
-  signed: Uint8Array,
-  signing: PdfCoreSigningSession,
-) {
-  const { contentsStart, contentsEnd, byteRange } = prepared;
-  const [start, firstLength, secondStart, secondLength] = byteRange;
-  const byteLength = sourceLength + signed.byteLength;
-  yield* Effect.annotateCurrentSpan("byteLength", byteLength);
-  if (
-    start !== 0 ||
-    firstLength !== contentsStart - 1 ||
-    secondStart !== contentsEnd + 1 ||
-    secondStart + secondLength !== byteLength ||
-    contentsStart <= sourceLength ||
-    contentsEnd <= contentsStart ||
-    signed.byteLength !== prepared.appendix.byteLength
-  )
-    return yield* new LocalError({ code: "selfVerificationFailed" });
-
-  const report = yield* signing
-    .signatures("verification")
-    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
-  const signature = report.dictionaries.find(
-    (dictionary) =>
-      dictionary.kind === "signature" &&
-      dictionary.contents?.valueStart === firstLength &&
-      dictionary.contents.valueEnd === secondStart &&
-      dictionary.byteRangeValues?.every((value, index) => value === byteRange[index]),
-  );
-  if (report.failure !== undefined || signature === undefined) {
-    return yield* new LocalError({ code: "selfVerificationFailed" });
-  }
-  const holeStart = contentsStart - sourceLength;
-  const holeEnd = contentsEnd - sourceLength;
-  if (signed[holeStart - 1] !== 0x3c || signed[holeEnd] !== 0x3e) {
-    return yield* new LocalError({ code: "selfVerificationFailed" });
-  }
-  const result = yield* decodeSignatureContents(signed.subarray(holeStart, holeEnd)).pipe(
-    Effect.withSpan("local.pdf.decodeContents"),
-    Effect.flatMap((cms) => verifyCms(cms).pipe(Effect.withSpan("local.pdf.checkCms"))),
-    Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })),
-  );
-  if (!result) return yield* new LocalError({ code: "selfVerificationFailed" });
-
-  const changes = yield* signing
-    .changes(sourceLength)
-    .pipe(Effect.mapError(() => new LocalError({ code: "selfVerificationFailed" })));
-  if (
-    changes.pageContentChanged ||
-    changes.changes.some(
-      ({ kind, change }) => !expectedChanges.has(kind) || change === "removed",
-    ) ||
-    !changes.changes.some(
-      ({ kind, change, revisionEnd }) =>
-        kind === "signature" && change === "added" && revisionEnd === byteLength,
-    )
-  )
-    return yield* new LocalError({ code: "selfVerificationFailed" });
-});
+const hex = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+const idDigest = (value: string): string => hex(sha256(new TextEncoder().encode(value)));
 
 export const pdfSignaturesLayer = Layer.effect(
   PdfSignatures,
@@ -253,6 +101,9 @@ export const pdfSignaturesLayer = Layer.effect(
     const documents = yield* Documents;
     const a1 = yield* A1Sessions;
     const engine = yield* PdfEngine;
+    const core = yield* PdfCore;
+    const local = makeLocalCompute(a1);
+    const pool = Option.getOrUndefined(yield* Effect.serviceOption(SignaturePool));
     const entries = yield* Ref.make<HashMap.HashMap<PreparationId, Entry> | undefined>(
       HashMap.empty(),
     );
@@ -337,22 +188,11 @@ export const pdfSignaturesLayer = Layer.effect(
             return yield* source.append(appendix);
           }),
         ),
-      compare: Effect.fn(function* (sent, returned, options) {
-        yield* documents.validate(sent);
-        return yield* engine.withRevision(returned, (target) =>
-          Effect.gen(function* () {
-            const signing = yield* target.signing;
-            const sentBytes = yield* documents.export(sent.handle);
-            const returnedBytes = yield* documents.export(returned.handle);
-            return yield* comparePdfRevisions(signing, sentBytes, returnedBytes, options);
-          }),
-        );
-      }),
       prepare: Effect.fn("local.pdf.prepare")(function* (revision, input, allocation) {
         const options = yield* Schema.decodeUnknownEffect(PdfPrepareOptionsSchema)(input).pipe(
           Effect.mapError(() => new LocalError({ code: "pdfPrepareFailed" })),
         );
-        const { session, field, policy, reason, location, docMdp } = options;
+        const { session, field, policy } = options;
         const certificate = yield* a1.certificate(session);
         const { profile } = certificate;
         yield* Effect.annotateCurrentSpan({
@@ -362,19 +202,8 @@ export const pdfSignaturesLayer = Layer.effect(
         });
         return yield* engine.withRevision(revision, (source) =>
           Effect.gen(function* () {
-            const widget = yield* resolveWidget(yield* source.fields, options);
             const now = new Date(yield* Clock.currentTimeMillis);
             const holderLabel = { "e-cpf": "e-CPF", "e-cnpj": "e-CNPJ", other: "A1" };
-            const lines =
-              options.appearance.kind === "visible" ? options.appearance.lines : undefined;
-            const appearance = appearanceFor(
-              widget,
-              lines ?? [
-                profile.subjectName,
-                holderLabel[profile.holderKind],
-                now.toISOString().slice(0, 10),
-              ],
-            );
             const icpBrasil =
               policy === "icpBrasilAdRbV11" ? IcpBrasilPadesPolicy.adRbV11 : undefined;
             const contentsCapacity =
@@ -392,38 +221,36 @@ export const pdfSignaturesLayer = Layer.effect(
             }
 
             const sourceLength = source.byteLength;
-            const signing = yield* source.signing;
-            const prepared = yield* signing
+            const compute = allocation?.compute ?? pool ?? local;
+            const key = `${revision.handle}/${crypto.randomUUID()}`;
+            const { widget, appearance, prepared } = yield* compute
               .prepare(
+                { key, revision: source },
                 {
-                  field,
-                  appearance,
+                  options,
+                  defaultLines: [
+                    profile.subjectName,
+                    holderLabel[profile.holderKind],
+                    now.toISOString().slice(0, 10),
+                  ],
                   date: "D:" + now.toISOString().slice(0, 19).replace(/[-:T]/g, "") + "Z",
                   contentsCapacity,
-                  reason,
-                  location,
-                  docMdp,
+                  hash: certificate.hash,
                 },
-                allocation === undefined
-                  ? undefined
-                  : (appendixBytes, preparedPayloadBytes) =>
-                      allocation.reserve({
-                        appendixBytes,
-                        digestBytes: digestLengths[certificate.hash],
-                        previewBytes: sourceLength + appendixBytes,
-                        preparedPayloadBytes,
-                        contentsCapacity,
-                      }),
               )
               .pipe(
-                Effect.mapError((error) =>
-                  error._tag === "LocalError"
-                    ? error
-                    : new LocalError({
-                        code: prepareErrorCode(error.reason),
-                        pdfCode: error.code,
+                Effect.tap(({ prepared: { appendix } }) =>
+                  allocation === undefined
+                    ? Effect.void
+                    : allocation.reserve({
+                        appendixBytes: appendix.byteLength,
+                        digestBytes: digestLengths[certificate.hash],
+                        previewBytes: sourceLength + appendix.byteLength,
+                        preparedPayloadBytes: appendix.byteLength + PREPARED_HEADER_BYTES,
+                        contentsCapacity,
                       }),
                 ),
+                Effect.onError(() => compute.release(key)),
               );
             const { appendix, byteRange, contentsStart, contentsEnd } = prepared;
             const [start, firstLength, secondStart, secondLength] = byteRange;
@@ -436,15 +263,19 @@ export const pdfSignaturesLayer = Layer.effect(
               secondStart + secondLength !== sourceLength + appendix.byteLength
             )
               return yield* new LocalError({ code: "pdfPrepareFailed" });
-            const digest = yield* source.digest(
-              certificate.hash,
-              appendix.subarray(0, firstLength - sourceLength),
-              appendix.subarray(secondStart - sourceLength),
-            );
+            const digest =
+              prepared.digest ??
+              (yield* source.digest(
+                certificate.hash,
+                appendix.subarray(0, firstLength - sourceLength),
+                appendix.subarray(secondStart - sourceLength),
+              ));
+            if (digest.byteLength !== digestLengths[certificate.hash]) {
+              return yield* new LocalError({ code: "pdfPrepareFailed" });
+            }
             return yield* Effect.gen(function* () {
               const previewRevision = yield* source.append(appendix);
               const binding = {
-                sourceDigest: revision.digest,
                 certificateFingerprint: profile.fingerprintSha256,
                 session,
                 fieldName: field.name,
@@ -453,7 +284,6 @@ export const pdfSignaturesLayer = Layer.effect(
               const preparationId = PreparationId.make(
                 idDigest(
                   JSON.stringify([
-                    binding.sourceDigest,
                     binding.certificateFingerprint,
                     session.generation,
                     field.kind === "create"
@@ -461,7 +291,8 @@ export const pdfSignaturesLayer = Layer.effect(
                       : [field.kind, field.name],
                     appearance,
                     policy,
-                    previewRevision.digest,
+                    certificate.hash,
+                    hex(digest),
                     ...(allocation === undefined ? [] : [allocation.nonce]),
                   ]),
                 ),
@@ -478,8 +309,9 @@ export const pdfSignaturesLayer = Layer.effect(
                 lock: yield* Semaphore.make(1),
                 state: yield* Ref.make<Preparation | PdfReceipt | undefined>({
                   binding,
-                  sourceLength,
-                  append: source.append,
+                  key,
+                  source,
+                  compute,
                   prepared,
                   digest,
                 }),
@@ -539,36 +371,16 @@ export const pdfSignaturesLayer = Layer.effect(
               return yield* new LocalError({ code: "certificateNotYetValid" });
             }
             yield* Effect.annotateCurrentSpan({
-              byteLength: preparation.sourceLength + prepared.appendix.byteLength,
+              byteLength: preparation.source.byteLength + prepared.appendix.byteLength,
               policy,
               holderKind: certificate.profile.holderKind,
             });
-            const bindCms = yield* certificate.cms;
-            const detached = yield* bindCms({
-              messageDigest: digest,
-              signingTime: signedAt,
-              icpBrasil: policy === "icpBrasilAdRbV11" ? IcpBrasilPadesPolicy.adRbV11 : undefined,
-            }).pipe(Effect.mapError(() => new LocalError({ code: "signFailed" })));
-            const cms = yield* detached
-              .sign((attributes) => a1.sign(session.sessionId, session.generation, attributes))
-              .pipe(
-                Effect.mapError((error) =>
-                  error._tag === "LocalError" ? error : new LocalError({ code: "signFailed" }),
-                ),
-                Effect.withSpan("local.pdf.cms", { attributes: { policy } }),
-              );
-            const signed = yield* embedPreparedSignature(
-              {
-                pdf: prepared.appendix,
-                contentsStart: prepared.contentsStart - preparation.sourceLength,
-                contentsEnd: prepared.contentsEnd - preparation.sourceLength,
-              },
-              cms,
-            ).pipe(Effect.withSpan("local.pdf.embed"));
-            const signedRevision = yield* preparation.append(signed, (document) =>
-              selfVerify(preparation, detached.verify, signed, document),
+            const signed = yield* preparation.compute.sign(
+              { key: preparation.key, revision: preparation.source },
+              { session, policy, signedAt, digest, prepared },
             );
-            const receiptId = idDigest(preparationId + signedRevision.digest);
+            const signedRevision = yield* preparation.source.append(signed);
+            const receiptId = idDigest(preparationId + signedRevision.handle);
             yield* a1
               .validate(session)
               .pipe(
@@ -577,13 +389,13 @@ export const pdfSignaturesLayer = Layer.effect(
             const receipt = {
               receiptId,
               preparationId,
-              sourceDigest: binding.sourceDigest,
               signedRevision,
               signedAt,
               certificateFingerprint: binding.certificateFingerprint,
               fieldName: binding.fieldName,
             };
             yield* Ref.set(entry.value.state, receipt);
+            yield* preparation.compute.release(preparation.key);
             return {
               ...receipt,
               signedAt: new Date(signedAt),
@@ -606,18 +418,51 @@ export const pdfSignaturesLayer = Layer.effect(
                 ? HashMap.remove(active, preparationId)
                 : active;
             });
-            yield* Ref.set(entry.value.state, undefined);
+            const state = yield* Ref.getAndSet(entry.value.state, undefined);
+            if (state !== undefined && "compute" in state) yield* state.compute.release(state.key);
           }).pipe(Effect.uninterruptible),
         );
       }),
-      verify: (revision, options) =>
-        engine.withRevision(revision, (source) =>
-          Effect.gen(function* () {
-            const bytes = yield* documents.export(revision.handle);
-            const signing = yield* source.signing;
-            return yield* verifyPdfRevision(signing, bytes, options);
-          }),
-        ),
+      prewarm: Effect.gen(function* () {
+        const pdf = yield* core
+          .create({ pages: [{ width: 240, height: 120 }] })
+          .pipe(Effect.mapError(() => new LocalError({ code: "pdfPrepareFailed" })));
+        yield* Effect.acquireUseRelease(
+          documents.open(pdf),
+          (revision) =>
+            engine.withRevision(revision, (source) =>
+              Effect.gen(function* () {
+                const { prepared } = yield* local.prepare(
+                  { key: revision.handle, revision: source },
+                  {
+                    options: {
+                      session: { sessionId: PREWARM_SESSION, generation: 1 },
+                      field: { kind: "create", name: "Prewarm", page: 0, rect: [12, 12, 132, 60] },
+                      appearance: { kind: "visible" },
+                      policy: "cades",
+                    },
+                    defaultLines: ["Prewarm", "e-CPF", "2026-01-01"],
+                    date: "D:20260101000000Z",
+                    contentsCapacity: 4096,
+                    hash: "SHA-256",
+                  },
+                );
+                const { appendix, digest } = prepared;
+                if (digest?.byteLength !== 32) {
+                  return yield* new LocalError({ code: "pdfPrepareFailed" });
+                }
+                yield* source.check(appendix, (document) =>
+                  document.signatures("verification").pipe(
+                    Effect.andThen(document.changes(source.byteLength)),
+                    Effect.mapError(() => new LocalError({ code: "pdfPrepareFailed" })),
+                    Effect.asVoid,
+                  ),
+                );
+              }),
+            ),
+          (revision) => documents.release(revision.handle).pipe(Effect.ignore),
+        );
+      }).pipe(Effect.withSpan("local.pdf.prewarm")),
     });
   }),
 );

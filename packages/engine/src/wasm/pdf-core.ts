@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Match, Ref, Schema, Semaphore, Tracer } from "effect";
+import { Context, Effect, Layer, Match, Option, Ref, Schema, Semaphore, Tracer } from "effect";
 import type { Scope } from "effect";
 
 import {
@@ -132,6 +132,13 @@ export const pdfCoreBlobSource = (blob: Blob): PdfCoreRangeSource => ({
     }),
 });
 
+export type PdfCoreSigningVerificationSession = {
+  readonly signatures: (
+    analysis: PdfCoreSignatureAnalysis,
+  ) => Effect.Effect<PdfCoreSignatureReport, PdfCoreError>;
+  readonly changes: (from: number) => Effect.Effect<PdfCoreRevisionChanges, PdfCoreError>;
+};
+
 export type PdfCoreSigningSession = {
   readonly validationData: Effect.Effect<PdfCoreValidationData, PdfCoreError>;
   readonly addValidationData: (
@@ -147,10 +154,19 @@ export type PdfCoreSigningSession = {
     request: PdfCorePrepareSignatureRequest,
     reserve?: (appendixBytes: number, payloadBytes: number) => Effect.Effect<void, E>,
   ) => Effect.Effect<PdfCorePreparedUpdate, PdfCoreError | E>;
+  readonly digestUpdate: (
+    hash: string,
+    before: Uint8Array,
+    after: Uint8Array,
+  ) => Effect.Effect<Option.Option<Uint8Array>, PdfCoreError>;
   readonly signatures: (
     analysis: PdfCoreSignatureAnalysis,
   ) => Effect.Effect<PdfCoreSignatureReport, PdfCoreError>;
   readonly changes: (from: number) => Effect.Effect<PdfCoreRevisionChanges, PdfCoreError>;
+  readonly withAppendix: <A, E>(
+    appendix: Uint8Array,
+    use: (session: PdfCoreSigningVerificationSession) => Effect.Effect<A, E>,
+  ) => Effect.Effect<Option.Option<A>, PdfCoreError | E>;
 };
 
 export type PdfCoreService = {
@@ -187,7 +203,8 @@ export type PdfCoreService = {
     request: PdfCorePrepareSignatureRequest,
   ) => Effect.Effect<PdfCorePreparedSignature, PdfCoreError>;
   readonly openSigningDocument: (
-    pdf: Uint8Array,
+    parts: ReadonlyArray<Uint8Array>,
+    spareBytes?: number,
   ) => Effect.Effect<PdfCoreSigningSession, PdfCoreError, Scope.Scope>;
   readonly revisionChanges: (
     pdf: Uint8Array,
@@ -221,6 +238,10 @@ export type PdfCoreService = {
 
 export class PdfCore extends Context.Service<PdfCore, PdfCoreService>()(
   "@signature-kit/engine/PdfCore",
+) {}
+
+export class PdfCoreModule extends Context.Service<PdfCoreModule, WebAssembly.Module>()(
+  "@signature-kit/engine/PdfCoreModule",
 ) {}
 
 const FLAG_TEXT = 1;
@@ -1498,10 +1519,34 @@ export const makePdfCore = (
     });
 
     const openSigningDocument = Effect.fn(PdfCoreOperationValue.openSigningDocument)(function* (
-      pdf: Uint8Array,
+      parts: ReadonlyArray<Uint8Array>,
+      spareBytes = 0,
     ) {
       const operation = PdfCoreOperationValue.openSigningDocument;
-      const input = yield* copyIn(operation, pdf);
+      const length = parts.reduce((sum, part) => sum + part.byteLength, 0);
+      const spare = Number.isSafeInteger(spareBytes) && spareBytes > 0 ? spareBytes : 0;
+      const allocation = yield* allocate(operation, length + spare).pipe(
+        Effect.tap((allocated) =>
+          Effect.sync(() => {
+            let offset = allocated.pointer;
+            for (const part of parts) {
+              new Uint8Array(core.memory.buffer, offset, part.byteLength).set(part);
+              offset += part.byteLength;
+            }
+          }),
+        ),
+        Effect.withSpan(
+          "pdfCore.wasm.copyIn",
+          {
+            attributes: {
+              "signature_kit.wasm.input_bytes": length,
+              "signature_kit.pdf_core.operation": operation,
+            },
+          },
+          { captureStackTrace: false },
+        ),
+      );
+      const input = { pointer: allocation.pointer, length };
       const lock = yield* Semaphore.make(1);
       const closed = yield* Ref.make(false);
       yield* Effect.addFinalizer(() => lock.withPermit(Ref.set(closed, true)));
@@ -1517,12 +1562,76 @@ export const makePdfCore = (
         );
 
       const resident: SigningInput = () => Effect.succeed(input);
+      const digestUpdate = (hash: string, before: Uint8Array, after: Uint8Array) =>
+        live(
+          Effect.gen(function* () {
+            const appendixBytes = before.byteLength + after.byteLength;
+            if (appendixBytes > spare) return Option.none<Uint8Array>();
+            const bytes = yield* Effect.sync(() => {
+              const memory = new Uint8Array(core.memory.buffer);
+              const appendixStart = input.pointer + input.length;
+              memory.set(before, appendixStart);
+              memory.set(after, appendixStart + before.byteLength);
+              return new Uint8Array(
+                core.memory.buffer,
+                input.pointer,
+                input.length + appendixBytes,
+              );
+            });
+            return yield* Effect.tryPromise({
+              try: () => crypto.subtle.digest(hash, bytes),
+              catch: () =>
+                new PdfCoreError({
+                  code: PdfCoreErrorCodeValue.invalidOptions,
+                  operation,
+                  reason: "The digest algorithm is not supported by WebCrypto.",
+                }),
+            }).pipe(
+              Effect.map((digest) => Option.some(new Uint8Array(digest))),
+              Effect.withSpan("local.crypto.digest", undefined, { captureStackTrace: false }),
+            );
+          }),
+        );
+      const withAppendix = <A, E>(
+        appendix: Uint8Array,
+        use: (session: PdfCoreSigningVerificationSession) => Effect.Effect<A, E>,
+      ): Effect.Effect<Option.Option<A>, PdfCoreError | E> => {
+        if (appendix.byteLength > spare) return Effect.succeedNone;
+        return lock.withPermit(
+          Effect.suspend((): Effect.Effect<Option.Option<A>, PdfCoreError | E> => {
+            if (Ref.getUnsafe(closed)) {
+              return Effect.fail(
+                new PdfCoreError({ code: PdfCoreErrorCodeValue.documentClosed, operation }),
+              );
+            }
+            return Effect.gen(function* () {
+              yield* Effect.sync(() =>
+                new Uint8Array(
+                  core.memory.buffer,
+                  input.pointer + input.length,
+                  appendix.byteLength,
+                ).set(appendix),
+              );
+              const length = input.length + appendix.byteLength;
+              const extended: SigningInput = () =>
+                Effect.succeed({ pointer: input.pointer, length });
+              const result = yield* use({
+                signatures: (analysis) => signatures(extended, analysis),
+                changes: (from) => revisionChanges(extended, from),
+              });
+              return Option.some(result);
+            });
+          }),
+        );
+      };
       return {
         fields: live(signatureFields(resident)),
         addFields: (fields) => live(addSignatureFields(resident, fields)),
         prepare: (request, reserve) => live(prepareSignatureUpdate(resident, request, reserve)),
+        digestUpdate,
         signatures: (analysis) => live(signatures(resident, analysis)),
         changes: (from) => live(revisionChanges(resident, from)),
+        withAppendix,
         validationData: live(readValidationData(resident)),
         addValidationData: (input) => live(addValidationData(resident, input)),
         prepareDocumentTimestamp: live(prepareDocumentTimestamp(resident)),
@@ -2404,3 +2513,10 @@ export const makePdfCore = (
 
 export const pdfCoreLayer = (module: WebAssembly.Module): Layer.Layer<PdfCore, PdfCoreError> =>
   Layer.effect(PdfCore, makePdfCore(module));
+
+export const pdfCoreModuleLayer: Layer.Layer<PdfCore, PdfCoreError, PdfCoreModule> = Layer.effect(
+  PdfCore,
+  Effect.gen(function* () {
+    return yield* makePdfCore(yield* PdfCoreModule);
+  }),
+);

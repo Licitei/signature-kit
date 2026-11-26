@@ -14,6 +14,8 @@
   ],
   "type": "module",
   "sideEffects": [
+    "./dist/signing-helper.js",
+    "./dist/signing-worker.js",
     "./dist/worker.js",
     "./dist/worker-telemetry.js"
   ],
@@ -41,6 +43,14 @@
     "./worker-runtime": {
       "types": "./dist/worker-server.d.ts",
       "import": "./dist/worker-server.js"
+    },
+    "./signing-worker": {
+      "types": "./dist/signing-worker.d.ts",
+      "import": "./dist/signing-worker.js"
+    },
+    "./signing-worker-runtime": {
+      "types": "./dist/signing-worker-server.d.ts",
+      "import": "./dist/signing-worker-server.js"
     }
   },
   "publishConfig": {

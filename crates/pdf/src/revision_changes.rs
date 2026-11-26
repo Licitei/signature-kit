@@ -723,7 +723,13 @@ pub fn revision_changes(pdf: &[u8], from: usize, limits: &Limits) -> Outcome<Rev
         }
         let previous_end = previous.end(index.pdf);
         let revision_end = current.end(index.pdf);
-        let old = Document::open(pdf.get(..previous_end).unwrap_or_default(), limits)?;
+        let opened_old;
+        let old = if previous_end == from {
+            &signed
+        } else {
+            opened_old = Document::open(pdf.get(..previous_end).unwrap_or_default(), limits)?;
+            &opened_old
+        };
         let new = Document::open(pdf.get(..revision_end).unwrap_or_default(), limits)?;
         let previous_entries = index.entries(*previous)?;
         let current_entries = index.entries(*current)?;
@@ -732,7 +738,7 @@ pub fn revision_changes(pdf: &[u8], from: usize, limits: &Limits) -> Outcome<Rev
             previous: &previous_entries,
             index: &index,
             new: Graph::read(&new)?,
-            old: Graph::read(&old)?,
+            old: Graph::read(old)?,
             revision_end,
         };
         comparison.collect(&mut result)?;

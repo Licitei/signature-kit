@@ -42,15 +42,21 @@ Delivery order is fixed:
   workspace builds that asset from the `crates/wasm` cdylib with its `pdf` feature
   enabled by default. `crates/pdf` is an rlib.
 - `@signature-kit/browser/worker` assembles the worker RPC server from the public
-  engine subpaths. `/client` provides the page-side client layer and `/viewer`
+  engine subpaths. `@signature-kit/browser/signing-worker` assembles the same
+  protocol without composition, canvas rendering or verification (those calls fail
+  with `operationUnavailable`), so pages that only sign load about half the code.
+  Verification lives in its own `PdfVerification` service, and the CMS signer is
+  built on the in-house ASN.1 module, so the signing graph does not include PKI.js. `/client` provides the page-side client layer and `/viewer`
   paints pages and transforms between PDF user space and canvas pixels.
 
 ## Core model
 
-- **Document and revision are immutable.** `documents.open(bytes)` returns a
-  `RevisionRef { handle, digest, byteLength }`. The digest (SHA-256) identifies
-  content across machines; the handle identifies a worker-owned buffer within one
-  runtime instance. Every mutation (field creation, signing) yields a new revision;
+- **Document and revision are immutable.** `documents.open(bytes)` takes
+  ownership of the bytes and returns a `RevisionRef { handle, byteLength }`; the
+  handle identifies a worker-owned buffer within one runtime instance.
+  `documents.digest(revision)` computes the SHA-256 that identifies content across
+  machines on demand (once per revision) instead of hashing every opened or
+  derived revision. Every mutation (field creation, signing) yields a new revision;
   the previous one is never touched. `documents.release(handle)` is idempotent.
   Handles carry the runtime instance id, so a handle from a dead worker fails with
   a typed `staleHandle` error instead of resolving to the wrong buffer.
@@ -63,9 +69,10 @@ Delivery order is fixed:
 - **Preparation is a real operation.** `pdf.prepare(revision, { session, field,
   appearance, policy })` resolves the field, writes the `/AP` widget appearance,
   reserves `/Contents`, writes one incremental update and computes the `ByteRange`
-  digest — once. The result is an immutable `Preparation` whose id is the hash of
-  (revision digest, certificate fingerprint, session generation, field, appearance,
-  policy, prepared-bytes digest).
+  digest — once, with one native WebCrypto pass. The result is an immutable
+  `Preparation` whose id is the hash of (certificate fingerprint, session
+  generation, field, appearance, policy, ByteRange digest); the ByteRange digest
+  covers the source revision and the prepared update.
 - **Preview and confirmation are bound to the preparation.** `pdf.preview`
   renders the prepared bytes (the exact bytes that will be signed). `pdf.confirm
   (preparationId)` re-checks the session generation and certificate validity at

@@ -22,7 +22,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_pdf_bytes: 512 * 1024 * 1024,
-            max_pages: 10_000,
+            max_pages: 1_000_000,
             max_items_per_page: 10_000,
             max_items: 100_000,
             max_text_bytes: 4 * 1024 * 1024,

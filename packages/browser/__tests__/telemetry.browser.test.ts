@@ -60,7 +60,9 @@ it("propagates a single trace through offline Chromium and exports the sanitized
       );
       const batch = yield* Effect.gen(function* () {
         yield* offline;
-        const { handle } = yield* client.openDocument(createPages(1));
+        const revision = yield* client.openDocument(createPages(1));
+        const { handle } = revision;
+        expect(yield* client.documentDigest(revision)).toMatch(/^[0-9a-f]{64}$/);
         const canvas = document.createElement("canvas");
         yield* paintPage(canvas, { handle, pageIndex: 0, scale: 1 }).pipe(
           Effect.withSpan("local.viewer.paintPage", {
@@ -91,7 +93,7 @@ it("propagates a single trace through offline Chromium and exports the sanitized
       expect(summary.get("PdfRenderPage")?.wasmMs).toBeGreaterThan(0);
       expect(summary.get("PdfRenderPage")?.bytesToWasm).toBeGreaterThan(0);
       expect(summary.get("PdfRenderPage")?.bytesFromWasm).toBeGreaterThan(0);
-      expect(summary.get("DocumentsOpen")?.cryptoMs).toBeGreaterThan(0);
+      expect(summary.get("DocumentsDigest")?.cryptoMs).toBeGreaterThan(0);
 
       expect(yield* collectorPayload(endpoint)).toBe("null");
       yield* Layer.build(localTelemetryOtlpLayer(endpoint));

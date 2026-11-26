@@ -204,5 +204,30 @@ export const aesCbcDecrypt = (
     );
   }
 
-  return removePkcs7Padding(aesCbcDecryptRaw(key, iv, ciphertext), 16);
+  if (key.length === 24) {
+    return removePkcs7Padding(aesCbcDecryptRaw(key, iv, ciphertext), 16);
+  }
+  return Effect.tryPromise({
+    try: async () => {
+      const cryptoKey = await crypto.subtle.importKey(
+        "raw",
+        new Uint8Array(key),
+        "AES-CBC",
+        false,
+        ["decrypt"],
+      );
+      const plaintext = await crypto.subtle.decrypt(
+        { name: "AES-CBC", iv: new Uint8Array(iv) },
+        cryptoKey,
+        new Uint8Array(ciphertext),
+      );
+      return new Uint8Array(plaintext);
+    },
+    catch: () =>
+      new CryptoError({
+        code: CryptoErrorCodeValue.cipherError,
+        reason: "Invalid PKCS#7 padding.",
+        operation: CryptoOperationValue.cipherAes,
+      }),
+  });
 };

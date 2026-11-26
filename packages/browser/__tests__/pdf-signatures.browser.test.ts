@@ -1,6 +1,7 @@
 import { pdfCoreBrowserLayer } from "@signature-kit/engine/wasm/browser";
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { expect, it } from "vitest";
+import { commands } from "vitest/browser";
 import { LocalClient, localClientLayer } from "../src/client.js";
 import { PdfCore } from "@signature-kit/engine/wasm/pdf-core";
 import { LocalTelemetry, TelemetryBatch } from "@signature-kit/engine/rpc";
@@ -13,6 +14,14 @@ import {
 } from "../../../tooling/testing/pdf-signing-benchmark.js";
 
 const encodeBatch = Schema.encodeEffect(TelemetryBatch);
+
+const base64 = (bytes: Uint8Array) => {
+  let binary = "";
+  for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+};
 
 const createWorker = () =>
   new Worker(new URL("../src/worker.ts", import.meta.url), { type: "module" });
@@ -47,6 +56,16 @@ it("measures warm-session signing through the Chromium worker on the 1.x corpus"
         return milliseconds;
       });
       const timing = yield* medianSigningTime(sign);
+      if (telemetry === undefined) {
+        const preparation = yield* client.preparePdf(source, signingOptions(session));
+        const receipt = yield* client.confirmPdf(preparation.preparationId);
+        const signed = yield* client.exportDocument(receipt.signedRevision.handle);
+        expect(signed.subarray(0, bytes.byteLength)).toEqual(bytes);
+        yield* Effect.promise(() => commands.verifyPdfIndependently(base64(signed), 1));
+        yield* client.releasePdf(preparation.preparationId);
+        yield* client.releaseDocument(preparation.previewRevision.handle);
+        yield* client.releaseDocument(receipt.signedRevision.handle);
+      }
       let copies;
       let telemetryProfile;
       if (telemetry !== undefined) {
@@ -75,7 +94,7 @@ it("measures warm-session signing through the Chromium worker on the 1.x corpus"
         copies = spans
           .filter(({ name }) => name === "pdfCore.wasm.copyIn" || name === "pdfCore.wasm.copyOut")
           .map(({ name, attributes }) => ({ name, attributes: Object.fromEntries(attributes) }));
-        expect(copies.filter(({ name }) => name === "pdfCore.wasm.copyIn")).toHaveLength(2);
+        expect(copies.filter(({ name }) => name === "pdfCore.wasm.copyIn")).toHaveLength(1);
         expect(copies.filter(({ name }) => name === "pdfCore.wasm.copyOut")).toHaveLength(2);
         expect(spans.find(({ name }) => name === "local.pdf.prepare")?.attributes).toContainEqual([
           "policy",
@@ -111,4 +130,4 @@ it("measures warm-session signing through the Chromium worker on the 1.x corpus"
       ),
     ),
   );
-}, 120_000);
+}, 300_000);

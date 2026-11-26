@@ -18,8 +18,10 @@ import { ComposeOptionsSchema, DocumentSchema } from "./composition/config.js";
 
 export const RpcMethod = Schema.Literals([
   "Hello",
+  "Prewarm",
   "DocumentsOpen",
   "DocumentsExport",
+  "DocumentsDigest",
   "DocumentsRelease",
   "PdfInspect",
   "PdfCompose",
@@ -57,6 +59,7 @@ const SpanName = Schema.Union([
     "local.pdf.inspect",
     "local.pdf.renderPage",
     "local.pdf.prepare",
+    "local.pdf.prewarm",
     "local.pdf.confirm",
     "local.pdf.cms",
     "local.pdf.selfVerify",
@@ -75,9 +78,10 @@ const SpanName = Schema.Union([
     "local.a1.sign",
     "local.a1.parsePkcs12",
     "local.crypto.digest",
-    "local.crypto.digestPrefix",
+    "local.crypto.documentDigest",
     "local.crypto.importKey",
     "local.crypto.sign",
+    "pdfCore.wasm.compile",
     "pdfCore.wasm.instantiate",
     "pdfCore.wasm.run",
     "pdfCore.wasm.decode",
@@ -144,7 +148,7 @@ export class LocalTelemetry extends Context.Service<
   }
 >()("@signature-kit/engine/LocalTelemetry") {}
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
@@ -155,11 +159,10 @@ export const Handle = Schema.String.check(
 ).pipe(Schema.brand("LocalDocumentHandle"));
 export type Handle = (typeof Handle)["Type"];
 
-const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+export const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
 export const RevisionRef = Schema.Struct({
   handle: Handle,
-  digest: Sha256,
   byteLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 export type RevisionRef = (typeof RevisionRef)["Type"];
@@ -261,7 +264,7 @@ export const PdfPrepareOptionsSchema = Schema.Struct({
 });
 export type PdfPrepareOptions = (typeof PdfPrepareOptionsSchema)["Type"];
 
-const PdfWidget = Schema.Union([
+export const PdfWidget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("invisible") }),
   Schema.Struct({
     kind: Schema.Literal("visible"),
@@ -276,7 +279,6 @@ export const PdfPreparation = Schema.Struct({
   previewRevision: RevisionRef,
   widget: PdfWidget,
   binding: Schema.Struct({
-    sourceDigest: Sha256,
     certificateFingerprint: Sha256,
     session: A1SessionBinding,
     fieldName: Schema.String,
@@ -288,7 +290,6 @@ export type PdfPreparation = (typeof PdfPreparation)["Type"];
 export const PdfReceipt = Schema.Struct({
   receiptId: Sha256,
   preparationId: PreparationId,
-  sourceDigest: Sha256,
   signedRevision: RevisionRef,
   signedAt: Schema.Date,
   certificateFingerprint: Sha256,
@@ -415,6 +416,7 @@ export const LocalErrorCode = Schema.Literals([
   "staleGeneration",
   "protocolMismatch",
   "workerUnavailable",
+  "operationUnavailable",
   "runtimeClosed",
   "digestFailed",
   "keyImportFailed",
@@ -463,8 +465,9 @@ export const localErrorMessages = {
   staleGeneration: "The A1 session changed.",
   protocolMismatch: "The local runtime protocol versions do not match.",
   workerUnavailable: "The local worker failed to respond.",
+  operationUnavailable: "This worker entry does not include the requested operation.",
   runtimeClosed: "The local runtime is closed.",
-  digestFailed: "The SHA-256 digest could not be computed.",
+  digestFailed: "The document digest could not be computed.",
   keyImportFailed: "The A1 signing key could not be imported.",
   signFailed: "The A1 signing operation failed.",
   pdfReadFailed: "The PDF signature data could not be read.",
@@ -515,7 +518,7 @@ const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
 const PositiveCount = Schema.Int.check(Schema.isGreaterThan(0));
 export const BatchId = Schema.String.check(Schema.isUUID());
 export const BatchConfigSchema = Schema.Struct({
-  concurrency: PositiveCount.check(Schema.isLessThanOrEqualTo(16)),
+  concurrency: PositiveCount.check(Schema.isLessThanOrEqualTo(64)),
   queueCapacity: PositiveCount,
   byteBudget: PositiveCount,
   eventCapacity: PositiveCount,
@@ -594,6 +597,7 @@ export const BatchSnapshot = Schema.Struct({
   batchId: BatchId,
   seq: Count,
   state: BatchState,
+  signingWorkers: Count,
   items: Schema.Array(BatchItem),
   progress: BatchProgress,
   reason: Schema.optional(LocalErrorCode),
@@ -627,6 +631,11 @@ export const LocalRpcs = RpcGroup.make(
   Rpc.make("DocumentsExport", {
     payload: { handle: Handle },
     success: Transferable.Uint8Array,
+    error: LocalError,
+  }),
+  Rpc.make("DocumentsDigest", {
+    payload: { revision: RevisionRef },
+    success: Sha256,
     error: LocalError,
   }),
   Rpc.make("DocumentsRelease", {
@@ -692,6 +701,7 @@ export const LocalRpcs = RpcGroup.make(
   }),
   Rpc.make("BatchDelete", { payload: { batchId: BatchId }, error: LocalError }),
   Rpc.make("TelemetryDrain", { success: TelemetryBatch }),
+  Rpc.make("Prewarm", { error: LocalError }),
   Rpc.make("PdfSignatureFields", {
     payload: { revision: RevisionRef },
     success: PdfCoreSignatureFieldsSchema,

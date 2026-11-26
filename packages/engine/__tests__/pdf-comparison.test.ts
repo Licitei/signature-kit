@@ -10,11 +10,12 @@ import { verifyIndependently } from "../../../tooling/testing/verify-pdf.js";
 import { recordSpans } from "../../../tooling/testing/tracing.js";
 import { A1Sessions, Documents, localRuntimeLayer, pdfEngineLayer } from "../src/engine.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../src/pdf-signatures.js";
+import { PdfVerification, pdfVerificationLayer } from "../src/pdf-verification.js";
 import { exportComparisonReport } from "../src/rpc.js";
 import type { ComparisonReport } from "../src/rpc.js";
 import type { PdfCoreNewSignatureFields } from "../src/wasm/config.js";
 
-const layer = pdfSignaturesLayer.pipe(
+const layer = Layer.merge(pdfSignaturesLayer, pdfVerificationLayer).pipe(
   Layer.provideMerge(pdfEngineLayer),
   Layer.provideMerge(localRuntimeLayer()),
   Layer.provideMerge(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
@@ -42,12 +43,12 @@ it.effect.each([
   ([file, verdict, preserved]) =>
     Effect.gen(function* () {
       const documents = yield* Documents;
-      const pdf = yield* PdfSignatures;
+      const verification = yield* PdfVerification;
       const sent = yield* documents.open(yield* fixture("sent.pdf"));
       const returnedBytes = yield* fixture(`${file}.pdf`);
       const returned = yield* documents.open(returnedBytes);
       const trust = [yield* fixture("root.der")] satisfies readonly [Uint8Array];
-      const report = yield* pdf.compare(sent, returned, { trust, at: trustAt });
+      const report = yield* verification.compare(sent, returned, { trust, at: trustAt });
       expect(report).toMatchObject({ sentPreserved: preserved, verdict });
       if (preserved) expect(report.sentRevisionIndex).toBe(1);
       if (file === "page-changed") {
@@ -87,6 +88,7 @@ it.effect("reports only signatures after the sent revision and rejects an invali
   Effect.gen(function* () {
     const documents = yield* Documents;
     const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const original = yield* documents.open(yield* fixture("sent.pdf"));
     const returnedBytes = yield* fixture("cosigned.pdf");
     const returned = yield* documents.open(returnedBytes);
@@ -96,7 +98,7 @@ it.effect("reports only signatures after the sent revision and rejects an invali
     if (end === undefined || range === undefined)
       return yield* Effect.die("Missing fixture signatures.");
     const sent = yield* documents.open(returnedBytes.subarray(0, end));
-    const report = yield* pdf.compare(sent, returned, { trust: [] });
+    const report = yield* verification.compare(sent, returned, { trust: [] });
     expect(report).toMatchObject({
       sentPreserved: true,
       sentRevisionIndex: 2,
@@ -110,7 +112,7 @@ it.effect("reports only signatures after the sent revision and rejects an invali
     const fourthNumber = start + marker.length + 3 * 11;
     const malformed = returnedBytes.slice();
     malformed[fourthNumber] = 0x39;
-    const damaged = yield* pdf.compare(original, yield* documents.open(malformed));
+    const damaged = yield* verification.compare(original, yield* documents.open(malformed));
     expect(damaged).toMatchObject({
       sentPreserved: true,
       verdict: "integrityFailure",
@@ -125,13 +127,13 @@ it.effect("reports only signatures after the sent revision and rejects an invali
 it.effect("evaluates path signatures and validity against explicit roots", () =>
   Effect.gen(function* () {
     const documents = yield* Documents;
-    const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const sent = yield* documents.open(yield* fixture("sent.pdf"));
     const returned = yield* documents.open(yield* fixture("cosigned.pdf"));
     const root = yield* fixture("root.der");
     const invalidAt = new Date("2020-01-01T00:00:00Z");
     expect(
-      (yield* pdf.compare(sent, returned)).signatures.every(
+      (yield* verification.compare(sent, returned)).signatures.every(
         ({ trust }) => trust === "notEvaluated",
       ),
     ).toBe(true);
@@ -139,7 +141,7 @@ it.effect("evaluates path signatures and validity against explicit roots", () =>
       [invalidAt, root],
       [trustAt, yield* fixture("unrelated-root.der")],
     ] satisfies ReadonlyArray<readonly [Date, Uint8Array]>) {
-      const report = yield* pdf.compare(sent, returned, { trust: [anchor], at });
+      const report = yield* verification.compare(sent, returned, { trust: [anchor], at });
       expect(report.verdict).toBe("untrustedSignatures");
       expect(report.signatures.map(({ trust, integrity }) => [trust, integrity])).toEqual([
         ["untrusted", "valid"],
@@ -148,7 +150,7 @@ it.effect("evaluates path signatures and validity against explicit roots", () =>
     }
 
     const { exit, spans } = yield* recordSpans(
-      pdf.compare(sent, returned, { trust: [root], at: trustAt }),
+      verification.compare(sent, returned, { trust: [root], at: trustAt }),
     );
     expect((yield* exit).verdict).toBe("signedAsExpected");
     const telemetry = JSON.stringify(
@@ -173,6 +175,7 @@ it.effect("creates empty widgets atomically and respects certification and field
     expect(yield* Clock.currentTimeMillis).toBe(trustAt.getTime());
     const documents = yield* Documents;
     const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const a1 = yield* A1Sessions;
     const contract = yield* fixture("contract.pdf");
     const draft = yield* documents.open(contract);
@@ -212,11 +215,11 @@ it.effect("creates empty widgets atomically and respects certification and field
       { mode: "incremental" },
     );
     const alteredCertification = yield* documents.open(withoutPerms);
-    expect((yield* pdf.verify(alteredCertification)).signatures[0]).toMatchObject({
+    expect((yield* verification.verify(alteredCertification)).signatures[0]).toMatchObject({
       integrity: "valid",
       mdp: { docMdp: 1, permittedChanges: [], violations: expect.any(Array) },
     });
-    expect((yield* pdf.compare(lockedDocument, alteredCertification)).reasons).toContain(
+    expect((yield* verification.compare(lockedDocument, alteredCertification)).reasons).toContain(
       "mdpViolation",
     );
     expect(
@@ -258,6 +261,7 @@ it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission
     yield* TestClock.setTime(trustAt.getTime());
     const documents = yield* Documents;
     const pdf = yield* PdfSignatures;
+    const verification = yield* PdfVerification;
     const core = yield* PdfCore;
     const a1 = yield* A1Sessions;
     const source = yield* documents.open(yield* fixture("sent.pdf"));
@@ -272,7 +276,7 @@ it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission
     const signed = (yield* pdf.confirm(certification.preparationId)).signedRevision;
     const approval = yield* pdf.prepare(signed, existingField(session, "Contratada"));
     const cosigned = (yield* pdf.confirm(approval.preparationId)).signedRevision;
-    const report = yield* pdf.verify(cosigned);
+    const report = yield* verification.verify(cosigned);
     expect(report.signatures[0]?.mdp).toMatchObject({
       docMdp,
       violations: [],
@@ -295,7 +299,7 @@ it.effect.each([2, 3] satisfies Array<2 | 3>)("enforces certification permission
       ],
       { mode: "incremental" },
     );
-    const verified = yield* pdf.verify(yield* documents.open(annotated));
+    const verified = yield* verification.verify(yield* documents.open(annotated));
     const policy = verified.signatures[0]?.mdp;
     expect(policy?.[docMdp === 2 ? "violations" : "permittedChanges"]).toContainEqual(
       expect.objectContaining({ kind: "annotation", change: "added" }),

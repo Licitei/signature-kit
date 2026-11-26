@@ -18,6 +18,7 @@ import {
   requestTimestampForImprint,
 } from "../src/evidence-fetcher.js";
 import { PdfSignatures, pdfSignaturesLayer } from "../src/pdf-signatures.js";
+import { PdfVerification, pdfVerificationLayer } from "../src/pdf-verification.js";
 import { reportSignature } from "../src/templates.js";
 import { existingField } from "../../../tooling/testing/cosign.js";
 import {
@@ -26,7 +27,7 @@ import {
 } from "../../../tooling/testing/evidence-servers.js";
 
 const run = promisify(execFile);
-const layer = pdfSignaturesLayer.pipe(
+const layer = Layer.merge(pdfSignaturesLayer, pdfVerificationLayer).pipe(
   Layer.provideMerge(pdfEngineLayer),
   Layer.provideMerge(localRuntimeLayer()),
   Layer.provideMerge(pdfCoreFileLayer.pipe(Layer.provide(NodeServices.layer))),
@@ -89,6 +90,7 @@ it.live("raises a signature from B-B through B-T and B-LT to B-LTA with fetched 
     Effect.gen(function* () {
       const servers = yield* localEvidenceServers;
       const pdf = yield* PdfSignatures;
+      const verification = yield* PdfVerification;
       const documents = yield* Documents;
       const [ca, signer, tsa] = yield* Effect.all([
         validationFixture("ca.der"),
@@ -99,7 +101,7 @@ it.live("raises a signature from B-B through B-T and B-LT to B-LTA with fetched 
       const signed = yield* signedRevision;
       const at = () => ({ ...options, at: new Date(Date.now() + 60_000) });
 
-      const basic = (yield* pdf.verify(signed, at())).signatures[0];
+      const basic = (yield* verification.verify(signed, at())).signatures[0];
       expect(basic).toMatchObject({
         integrity: "valid",
         trust: "trusted",
@@ -109,7 +111,7 @@ it.live("raises a signature from B-B through B-T and B-LT to B-LTA with fetched 
       });
 
       const timestamped = yield* documentTimestamp(signed, servers.tsaUrl);
-      const [signatureT, timestampT] = (yield* pdf.verify(timestamped, at())).signatures;
+      const [signatureT, timestampT] = (yield* verification.verify(timestamped, at())).signatures;
       expect(signatureT).toMatchObject({
         ltvLevel: "B-T",
         evaluationTime: { source: "documentTimestamp" },
@@ -127,14 +129,14 @@ it.live("raises a signature from B-B through B-T and B-LT to B-LTA with fetched 
         ocsp: [ocsp, tsaOcsp],
         crls: [],
       });
-      const lt = (yield* pdf.verify(longTerm, at())).signatures[0];
+      const lt = (yield* verification.verify(longTerm, at())).signatures[0];
       expect(lt).toMatchObject({
         revocation: { kind: "verified", source: "ocsp", result: { status: "good" } },
         ltvLevel: "B-LT",
       });
 
       const archived = yield* documentTimestamp(longTerm, servers.tsaUrl);
-      const report = yield* pdf.verify(archived, at());
+      const report = yield* verification.verify(archived, at());
       expect(report.signatures.map(({ kind }) => kind)).toEqual([
         "signature",
         "documentTimestamp",
@@ -154,11 +156,11 @@ it.live("raises a signature from B-B through B-T and B-LT to B-LTA with fetched 
         mdp: "none",
         ltvLevel: "B-LTA",
       });
-      const comparison = yield* pdf.compare(signed, archived, at());
+      const comparison = yield* verification.compare(signed, archived, at());
       expect(comparison.reasons).not.toContain("unexpectedChange");
       expect(comparison.reasons).not.toContain("revokedSignature");
 
-      const offline = (yield* pdf.verify(
+      const offline = (yield* verification.verify(
         yield* documents.open(yield* documents.export(archived.handle)),
         at(),
       )).signatures[0];
@@ -266,6 +268,7 @@ it.live(
       Effect.gen(function* () {
         const servers = yield* localEvidenceServers;
         const pdf = yield* PdfSignatures;
+        const verification = yield* PdfVerification;
         const fetcher = yield* EvidenceFetcher;
         const [ca, signer, good, revoked, expired, wrong] = yield* Effect.all([
           validationFixture("ca.der"),
@@ -286,7 +289,7 @@ it.live(
               certificates: [signer, ca],
               ...evidence,
             });
-            return (yield* pdf.verify(revision, { trust: [ca], at: when })).signatures[0];
+            return (yield* verification.verify(revision, { trust: [ca], at: when })).signatures[0];
           });
 
         expect(yield* verifyWith({ ocsp: [revoked], crls: [] }, at)).toMatchObject({
@@ -311,7 +314,7 @@ it.live(
           ocsp: [good],
           crls: [],
         });
-        expect((yield* pdf.verify(untrusted, { at })).signatures[0]).toMatchObject({
+        expect((yield* verification.verify(untrusted, { at })).signatures[0]).toMatchObject({
           trust: "notEvaluated",
           revocation: { kind: "embeddedEvidence", reasons: ["untrustedIssuer"] },
         });
@@ -320,7 +323,10 @@ it.live(
           ocsp: [revoked],
           crls: [],
         });
-        const comparison = yield* pdf.compare(signed, revokedRevision, { trust: [ca], at });
+        const comparison = yield* verification.compare(signed, revokedRevision, {
+          trust: [ca],
+          at,
+        });
         expect(comparison.reasons).toContain("revokedSignature");
         expect(
           yield* Effect.flip(fetcher.ocsp(`${servers.ocspUrl}/missing`, new Uint8Array([1]))),
@@ -334,6 +340,7 @@ it.live("keeps DSS and document timestamps permitted under a P=1 certification",
     Effect.gen(function* () {
       const servers = yield* localEvidenceServers;
       const pdf = yield* PdfSignatures;
+      const verification = yield* PdfVerification;
       const documents = yield* Documents;
       const a1 = yield* A1Sessions;
       const [ca, signer] = yield* Effect.all([
@@ -357,7 +364,7 @@ it.live("keeps DSS and document timestamps permitted under a P=1 certification",
         crls: [],
       });
       const archived = yield* documentTimestamp(withDss, servers.tsaUrl);
-      const report = yield* pdf.verify(archived, {
+      const report = yield* verification.verify(archived, {
         trust: [ca],
         tsaTrust: [ca],
         at: new Date(Date.now() + 60_000),
@@ -372,7 +379,10 @@ it.live("keeps DSS and document timestamps permitted under a P=1 certification",
       );
       if (signature === undefined) return yield* Effect.die("Missing signature report.");
       expect(reportSignature(signature).mdp).toBe("respected");
-      const comparison = yield* pdf.compare(certified, archived, { trust: [ca], tsaTrust: [ca] });
+      const comparison = yield* verification.compare(certified, archived, {
+        trust: [ca],
+        tsaTrust: [ca],
+      });
       expect(comparison.reasons).not.toContain("mdpViolation");
     }),
   ).pipe(Effect.provide(layer)),

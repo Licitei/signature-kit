@@ -4,7 +4,8 @@ import { inspectDetachedSignedData, unpadSignedData } from "./cms/inspect.js";
 import { verifyDetachedSignedDataEvidence } from "./cms/verify.js";
 import type { PdfCoreSigningSession } from "./wasm/pdf-core.js";
 import type { PdfCoreRevisionChanges } from "./wasm/config.js";
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
+import { Documents, PdfEngine } from "./engine.js";
 import { icpBrasilIdentity } from "./a1-certificate.js";
 import { parseX509 } from "./certificates/certificate.js";
 import { decodeSignatureContents, signatureContents, signedBytes } from "./pdf-contents.js";
@@ -15,6 +16,7 @@ import type {
   PdfSignatureVerification,
   PdfVerificationReport,
   PdfVerifyOptions,
+  RevisionRef,
 } from "./rpc.js";
 
 const countObjects = (changes: PdfCoreRevisionChanges["changes"]) =>
@@ -457,3 +459,47 @@ export const comparePdfRevisions = Effect.fn("local.pdf.compare")(function* (
     reasons,
   };
 });
+
+export class PdfVerification extends Context.Service<
+  PdfVerification,
+  {
+    readonly verify: (
+      revision: RevisionRef,
+      options?: PdfVerifyOptions,
+    ) => Effect.Effect<PdfVerificationReport, LocalError>;
+    readonly compare: (
+      sent: RevisionRef,
+      returned: RevisionRef,
+      options?: PdfVerifyOptions,
+    ) => Effect.Effect<ComparisonReport, LocalError>;
+  }
+>()("@signature-kit/engine/PdfVerification") {}
+
+export const pdfVerificationLayer = Layer.effect(
+  PdfVerification,
+  Effect.gen(function* () {
+    const documents = yield* Documents;
+    const engine = yield* PdfEngine;
+    return PdfVerification.of({
+      verify: (revision, options) =>
+        engine.withRevision(revision, (source) =>
+          Effect.gen(function* () {
+            const bytes = yield* documents.export(revision.handle);
+            const signing = yield* source.signing;
+            return yield* verifyPdfRevision(signing, bytes, options);
+          }),
+        ),
+      compare: Effect.fn(function* (sent, returned, options) {
+        yield* documents.validate(sent);
+        return yield* engine.withRevision(returned, (target) =>
+          Effect.gen(function* () {
+            const signing = yield* target.signing;
+            const sentBytes = yield* documents.export(sent.handle);
+            const returnedBytes = yield* documents.export(returned.handle);
+            return yield* comparePdfRevisions(signing, sentBytes, returnedBytes, options);
+          }),
+        );
+      }),
+    });
+  }),
+);

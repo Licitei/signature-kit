@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -314,8 +315,11 @@ it.effect("resolves horizontal wrapping and vertical flex bases and growth", () 
 
 it.effect("embeds a PNG alpha channel and rejects a damaged image", () =>
   Effect.gen(function* () {
-    const png = Uint8Array.fromBase64(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPjfAAACgwGALqKZRAAAAABJRU5ErkJggg==",
+    const png = new Uint8Array(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPjfAAACgwGALqKZRAAAAABJRU5ErkJggg==",
+        "base64",
+      ),
     );
     const doc = Document(Page([Image(png, { width: 100, height: 30 }, "cover")]));
     const copied = Document(Page([Image(png.slice(), { width: 100, height: 30 }, "cover")]));

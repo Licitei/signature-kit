@@ -492,3 +492,52 @@ export const integerBigInt = (node: Asn1Node): Effect.Effect<bigint, Asn1Error> 
           reason: "Expected a primitive universal INTEGER node.",
         }),
       );
+
+export const primitiveNode = (tag: number, bytes: Uint8Array): Asn1Node => ({
+  kind: "primitive",
+  tag,
+  class: "universal",
+  bytes,
+});
+
+export const sequenceNode = (children: readonly Asn1Node[]): Asn1Node => ({
+  kind: "constructed",
+  tag: 0x10,
+  class: "universal",
+  children,
+});
+
+export const setNode = (children: readonly Asn1Node[]): Asn1Node => ({
+  kind: "constructed",
+  tag: 0x11,
+  class: "universal",
+  children,
+});
+
+const base128 = (value: number): number[] => {
+  const bytes = [value % 128];
+  for (let rest = Math.floor(value / 128); rest > 0; rest = Math.floor(rest / 128)) {
+    bytes.unshift((rest % 128) | 0x80);
+  }
+  return bytes;
+};
+
+export const oidNode = (oid: string): Effect.Effect<Asn1Node, Asn1Error> => {
+  const arcs = oid.split(".").map((arc) => (/^(0|[1-9]\d*)$/.test(arc) ? Number(arc) : NaN));
+  const [first, second, ...rest] = arcs;
+  if (
+    first === undefined ||
+    second === undefined ||
+    !arcs.every(Number.isSafeInteger) ||
+    first > 2 ||
+    (first < 2 && second >= 40) ||
+    !Number.isSafeInteger(first * 40 + second)
+  ) {
+    return Effect.fail(
+      new Asn1Error({ code: Asn1ErrorCodeValue.oidError, reason: "Invalid OBJECT IDENTIFIER." }),
+    );
+  }
+  return Effect.succeed(
+    primitiveNode(0x06, Uint8Array.from([first * 40 + second, ...rest].flatMap(base128))),
+  );
+};

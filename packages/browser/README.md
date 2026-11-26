@@ -29,8 +29,9 @@ Pass PFX bytes and passwords to `openA1` as `Redacted` values. A successful open
 ## Offline PDF viewer
 
 Host the Vite-built worker and its emitted WASM asset with your application. The
-worker loads the bundled `signature-kit.wasm` before the handshake completes. After
-bootstrap, opening, inspecting, rendering and releasing local documents need no
+worker loads the bundled `signature-kit.wasm` before the handshake completes and
+then starts its signing helpers in the background. Once `prewarm()` resolves,
+opening, inspecting, rendering, signing and releasing local documents need no
 network access.
 
 ```ts
@@ -141,7 +142,10 @@ with the returned widget rectangle to place a highlight on the preview.
 Call `confirmPdf(preparationId)` after approval. It checks the session and certificate at
 confirmation time, embeds the detached CMS, and verifies the incremental revision before
 returning a receipt. Repeated confirmation returns the retained receipt. Export the signed
-revision with `exportDocument(receipt.signedRevision.handle)`.
+revision with `exportDocument(receipt.signedRevision.handle)`. Revisions carry a handle and a
+byte length; call `documentDigest(revision)` when you need the content SHA-256 (for example in an
+audit record). The worker computes it on demand once per revision, so signing a large document
+hashes its bytes only once, for the ByteRange digest.
 
 Use `releasePdf(preparationId)` to discard the preparation or its retained receipt. Release the
 source, preview, and signed document handles independently with `releaseDocument`. An open PDF
@@ -160,6 +164,27 @@ with `pdfEngineLayer`, `localRuntimeLayer()` and a `PdfCore` layer. The worker s
 
 See [warm A1 signing benchmarks](../engine/docs/signing-performance.md) for the Node and
 Chromium worker measurements and WASM copy breakdown.
+
+## Signing-only worker
+
+`@signature-kit/browser/signing-worker` is a separate worker entry for pages that only
+sign. Its module graph has no composition, canvas rendering or verification code, so a
+production bundle is about half the size of `@signature-kit/browser/worker` (531 KB
+against 964 KB minified, before compression, in the repository benchmark) and boots
+sooner. It answers the same `LocalRpcs` protocol: documents, inspection, A1 sessions,
+signature fields, preparation, confirmation, batches and telemetry work as in the full
+worker, while `composePdf`, `renderPage`, `verifyPdf` and `comparePdf` fail with
+`operationUnavailable`.
+
+```ts
+import SigningWorker from "@signature-kit/browser/signing-worker?worker";
+import { localClientLayer } from "@signature-kit/browser/client";
+
+const runtime = localClientLayer(() => new SigningWorker());
+```
+
+Custom entries import `signingWorker` from `@signature-kit/browser/signing-worker-runtime`
+and take the same options as `localWorker`.
 
 ## Local batches
 
@@ -182,6 +207,26 @@ copy used in self-verification and an export copy when persistence is enabled.
 The peak counter measures these reservations. Chromium's heap, internal PDF and
 cryptographic scratch allocations, and browser storage overhead have their own
 lifetimes.
+
+The shipped worker signs batch items on `min(4, navigator.hardwareConcurrency - 1)`
+helper workers; the Chromium benchmark stopped improving past four. Helpers receive
+the session's non-extractable `CryptoKey` and certificate chain from the runtime
+worker, so the PFX is parsed once, and the runtime worker's compiled
+`WebAssembly.Module`, so `signature-kit.wasm` is fetched and compiled once. The
+runtime worker keeps handles, digests, receipts, admission, the byte budget and
+events. A custom entry sets the count with the Schema-checked `signingWorkers`
+option (0–64) and passes the helper factory as the third argument of `localWorker`,
+for example
+`localWorker(false, { signingWorkers: 2 }, () => new Worker(new URL("./signing-helper.js", import.meta.url), { type: "module" }))`;
+omit either to sign batch items in the runtime worker.
+
+Helpers start in the background when the worker boots, so a batch started after
+the network drops still runs on them. Helpers that do not start (for example when
+the network drops before their script loads) or that stop responding are left
+out, and their items run in the runtime worker. Every batch snapshot reports the
+effective helper count in `signingWorkers`; `0` means the batch signs in the runtime
+worker. `LocalClient.prewarm()` waits for the configured helpers and warms the
+signing path in each of them.
 
 To opt in to recovery, import `localWorker` from
 `@signature-kit/browser/worker-runtime`. In your worker entry, pass

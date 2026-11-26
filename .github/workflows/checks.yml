@@ -98,6 +98,10 @@ jobs:
       - name: Run non-browser tests
         run: bun run test:unit --shard=${{ matrix.shard }}/2
 
+      - name: Install Chromium for performance tests
+        if: matrix.shard == 1
+        run: bunx playwright install --with-deps chromium
+
       - name: Run local performance tests
         if: matrix.shard == 1
         run: bun run test:performance
@@ -117,6 +121,9 @@ jobs:
 
       - name: Set up workspace
         uses: ./.github/actions/setup
+
+      - name: Install independent PDF and CMS validators
+        run: sudo apt-get update && sudo apt-get install -y qpdf poppler-utils openssl
 
       - name: Install Chromium and build packages
         run: |

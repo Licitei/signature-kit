@@ -94,6 +94,22 @@ export function sha256(data: Uint8Array): Uint8Array {
   return digest;
 }
 
+export function sha256Iterate(digest: Uint8Array, count: number): Uint8Array<ArrayBuffer> {
+  const block = new Uint8Array(64);
+  block.set(digest.subarray(0, 32));
+  block[32] = 0x80;
+  block[62] = 0x01;
+  const view = new DataView(block.buffer);
+  const state = new Int32Array(8);
+  const schedule = new Int32Array(64);
+  for (let round = 0; round < count; round++) {
+    state.set(INIT_H);
+    processBlock(state, view, 0, schedule);
+    for (let word = 0; word < 8; word++) view.setInt32(word * 4, state[word]!, false);
+  }
+  return block.slice(0, 32);
+}
+
 export function sha256WithState(
   initState: Int32Array,
   data: Uint8Array,
@@ -134,44 +150,4 @@ export function sha256ProcessBlock(blockBytes: Uint8Array): Int32Array {
   const view = new DataView(blockBytes.buffer, blockBytes.byteOffset, blockBytes.byteLength);
   processBlock(h, view, 0, new Int32Array(64));
   return h;
-}
-
-export function sha256Prefix(
-  prefix: Uint8Array,
-  initialState = INIT_H,
-  initialLength = 0,
-): {
-  readonly digest: (parts?: readonly Uint8Array[]) => Uint8Array<ArrayBuffer>;
-  readonly append: (bytes: Uint8Array) => ReturnType<typeof sha256Prefix>;
-} {
-  const blockLength = prefix.length - (prefix.length % 64);
-  const state = new Int32Array(initialState);
-  const view = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength);
-  const schedule = new Int32Array(64);
-  for (let offset = 0; offset < blockLength; offset += 64) {
-    processBlock(state, view, offset, schedule);
-  }
-  const tail = prefix.slice(blockLength);
-
-  const hashedLength = initialLength + blockLength;
-  return {
-    digest: (parts = []) => {
-      const bytes = new Uint8Array(
-        tail.length + parts.reduce((length, part) => length + part.length, 0),
-      );
-      bytes.set(tail);
-      let offset = tail.length;
-      for (const part of parts) {
-        bytes.set(part, offset);
-        offset += part.length;
-      }
-      return sha256WithState(state, bytes, hashedLength);
-    },
-    append: (part) => {
-      const bytes = new Uint8Array(tail.length + part.length);
-      bytes.set(tail);
-      bytes.set(part, tail.length);
-      return sha256Prefix(bytes, state, hashedLength);
-    },
-  };
 }

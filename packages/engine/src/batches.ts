@@ -20,6 +20,7 @@ import { startBatchMachine } from "./batch-machine.js";
 import { BatchPlan, BatchStorage } from "./batch-storage.js";
 import { A1Sessions, Documents } from "./engine.js";
 import { PdfSignatures } from "./pdf-signatures.js";
+import { SignaturePool } from "./signature-compute.js";
 import { BatchConfigSchema, BatchEventSchema, BatchPrepareInputSchema, LocalError } from "./rpc.js";
 import type {
   BatchConfig,
@@ -80,6 +81,7 @@ export const batchesLayer = (
       const a1 = yield* A1Sessions;
       const signatures = yield* PdfSignatures;
       const storage = Option.getOrUndefined(yield* Effect.serviceOption(BatchStorage));
+      const pool = Option.getOrUndefined(yield* Effect.serviceOption(SignaturePool));
       const runtimeScope = yield* Effect.scope;
       const registryLock = yield* Semaphore.make(1);
 
@@ -89,8 +91,11 @@ export const batchesLayer = (
         scope: Scope.Closeable,
       ) {
         const persistence = input.resumeId === undefined ? undefined : storage;
+        const signingWorkers = pool === undefined ? 0 : yield* pool.available;
+        const compute = pool;
         const lock = yield* Semaphore.make(1);
         const bytes = yield* Semaphore.make(config.byteBudget);
+        const admission = yield* Semaphore.make(1);
         const updates = yield* PubSub.sliding<BatchEvent>(config.eventCapacity);
         yield* Effect.addFinalizer(() => PubSub.shutdown(updates));
         const transition = yield* startBatchMachine;
@@ -130,6 +135,7 @@ export const batchesLayer = (
           batchId: id,
           seq,
           state,
+          signingWorkers,
           items: Array.from(items.values()),
           progress: progress(),
           reason,
@@ -145,9 +151,15 @@ export const batchesLayer = (
           reason = code;
           yield* PubSub.publish(updates, { _tag: "batchStateChanged", seq: ++seq, state, reason });
         });
-        const save = (item: BatchItem) => {
+        const save = (item: BatchItem, outputDigest?: string) => {
           const { preparation: _preparation, ...stored } = item;
-          return persistence?.writeItem(id, { ...stored, version: 1 }) ?? Effect.void;
+          return (
+            persistence?.writeItem(id, {
+              ...stored,
+              version: 1,
+              ...(outputDigest === undefined ? {} : { outputDigest }),
+            }) ?? Effect.void
+          );
         };
         const change = Effect.fn(function* (item: BatchItem) {
           items.set(item.itemId, item);
@@ -186,17 +198,19 @@ export const batchesLayer = (
         yield* Effect.addFinalizer(() => cleanup.pipe(Effect.orDie));
 
         const reserveReview = (owned: number, working: number, much: number) =>
-          Effect.gen(function* () {
-            if (owned + working > config.byteBudget) {
-              return yield* new LocalError({ code: "itemExceedsBudget" });
-            }
-            let largest = working;
-            for (const source of sources.values()) largest = Math.max(largest, source.working);
-            if (retained + much + largest > config.byteBudget) {
-              return yield* new LocalError({ code: "batchBudgetFull" });
-            }
-            yield* account(much);
-          });
+          admission.withPermit(
+            Effect.gen(function* () {
+              if (owned + working > config.byteBudget) {
+                return yield* new LocalError({ code: "itemExceedsBudget" });
+              }
+              let largest = working;
+              for (const source of sources.values()) largest = Math.max(largest, source.working);
+              if (retained + much + largest > config.byteBudget) {
+                return yield* new LocalError({ code: "batchBudgetFull" });
+              }
+              yield* account(much);
+            }),
+          );
 
         const prepareOne = Effect.fn(function* ({
           itemId,
@@ -206,7 +220,7 @@ export const batchesLayer = (
           const saved = yield* persistence?.readItem(id, itemId) ?? Effect.succeed(undefined);
           const receipt = saved?.receipt;
           if (saved?.state === "signed" && persistence !== undefined) {
-            if (receipt === undefined || receipt.sourceDigest !== revision.digest) {
+            if (receipt === undefined || saved.outputDigest === undefined) {
               return yield* new LocalError({ code: "batchStorageCorrupt" });
             }
             const length = receipt.signedRevision.byteLength;
@@ -218,7 +232,7 @@ export const batchesLayer = (
             peak = Math.max(peak, retained + length);
             const restored = yield* documents.open(output);
             outputs.set(itemId, restored);
-            if (restored.digest !== receipt.signedRevision.digest) {
+            if ((yield* documents.digest(restored)) !== saved.outputDigest) {
               return yield* new LocalError({ code: "batchStorageCorrupt" });
             }
             return yield* change({
@@ -266,6 +280,7 @@ export const batchesLayer = (
               {
                 identity: owner,
                 nonce: crypto.randomUUID(),
+                compute,
                 reserve: ({
                   appendixBytes,
                   digestBytes,
@@ -314,18 +329,22 @@ export const batchesLayer = (
             const plan = BatchPlan.make({
               version: 1,
               template: input.template,
-              documents: input.documents.map(({ itemId, revision, anchors }) => ({
-                itemId,
-                digest: revision.digest,
-                anchors:
-                  anchors === undefined
-                    ? undefined
-                    : Object.fromEntries(
-                        Object.entries(anchors).sort(([left], [right]) =>
-                          left.localeCompare(right),
-                        ),
-                      ),
-              })),
+              documents: yield* Effect.forEach(input.documents, ({ itemId, revision, anchors }) =>
+                documents.digest(revision).pipe(
+                  Effect.map((digest) => ({
+                    itemId,
+                    digest,
+                    anchors:
+                      anchors === undefined
+                        ? undefined
+                        : Object.fromEntries(
+                            Object.entries(anchors).sort(([left], [right]) =>
+                              left.localeCompare(right),
+                            ),
+                          ),
+                  })),
+                ),
+              ),
             });
             yield* Scope.provide(persistence.lock(id), scope);
             const existing = yield* persistence.readPlan(id);
@@ -337,7 +356,10 @@ export const batchesLayer = (
               if (before !== after) return yield* new LocalError({ code: "batchResumeMismatch" });
             }
           }
-          yield* Effect.forEach(input.documents, prepareOne, { discard: true });
+          yield* Effect.forEach(input.documents, prepareOne, {
+            concurrency: config.concurrency,
+            discard: true,
+          });
           yield* move({ _tag: "Review" });
           if (progress().signed === items.size) {
             yield* move({ _tag: "Drain" });
@@ -389,7 +411,7 @@ export const batchesLayer = (
                   if (persistence !== undefined) {
                     const output = yield* documents.export(receipt.signedRevision.handle);
                     yield* persistence.writeOutput(id, itemId, output);
-                    yield* save(signed);
+                    yield* save(signed, yield* documents.digest(receipt.signedRevision));
                   }
                   inFlight -= working;
                   working = 0;
@@ -487,7 +509,7 @@ export const batchesLayer = (
               attemptId: crypto.randomUUID(),
             } satisfies BatchItem);
           });
-          yield* Effect.forEach([...skipped, ...queued], save, { discard: true });
+          yield* Effect.forEach([...skipped, ...queued], (item) => save(item), { discard: true });
           yield* move(event);
           for (const item of skipped) {
             yield* dropSource(item.itemId);
