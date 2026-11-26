@@ -800,11 +800,11 @@ impl<'data> Document<'data> {
             pages.push(self.page(obj_ref, dict, inherited)?);
             Ok(())
         };
-        if self.walk_pages(None, &mut collect)? == 0
+        if self.walk_pages(None, None, &mut collect)? == 0
             && !self.repaired.get()
             && self.rebuild().is_ok()
         {
-            let _: usize = self.walk_pages(None, &mut collect)?;
+            let _: usize = self.walk_pages(None, None, &mut collect)?;
         }
         Ok(pages)
     }
@@ -1101,122 +1101,21 @@ impl<'data> Document<'data> {
         indexes: &[u32],
         stop_after: Option<usize>,
     ) -> Outcome<(usize, Vec<(usize, Page)>)> {
-        if self.sparse.is_some() {
-            return self.requested_pages_sparse(indexes);
-        }
-        let mut chosen: HashMap<_, _> = indexes.iter().map(|&index| (widen(index), None)).collect();
-        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
-            if let Some(page) = chosen.get_mut(&index) {
-                *page = Some(self.page(obj_ref, dict, inherited)?);
-            }
-            Ok(())
-        })?;
-        let pages = collect_requested(indexes, &mut chosen);
-        Ok((count, pages))
-    }
-
-    fn requested_pages_sparse(&self, indexes: &[u32]) -> Outcome<(usize, Vec<(usize, Page)>)> {
         let mut chosen: HashMap<_, _> = indexes.iter().map(|&index| (widen(index), None)).collect();
         let mut wanted: Vec<_> = chosen.keys().copied().collect();
         wanted.sort_unstable();
-        let Some(catalog) = self.catalog()? else {
-            return Err(Failure::invalid("missing document catalog"));
-        };
-        let Some(root) = catalog.as_dict().and_then(|dict| dict.get(b"Pages")) else {
-            return Err(Failure::invalid("missing page tree"));
-        };
-        let mut count = 0_usize;
-        let mut remaining = chosen.len();
-        let mut root_count = None;
-        let mut root_node = true;
-        let mut visited: HashSet<u32> = HashSet::new();
-        let mut stack: Vec<(Object, Inherited)> = vec![(root.clone(), Inherited::default())];
-        while let Some((node, inherited)) = stack.pop() {
-            let first_node = root_node;
-            root_node = false;
-            if remaining == 0
-                && let Some(total) = root_count
-            {
-                return Ok((total, collect_requested(indexes, &mut chosen)));
-            }
-            if let Object::Ref(reference) = &node
-                && !visited.insert(reference.number)
-            {
-                continue;
-            }
-            if visited.len() > self.limits.max_objects {
-                return Err(Failure::limit("page tree too large"));
-            }
-            let Some(resolved) = lenient(self.follow_transient(&node))? else {
-                continue;
-            };
-            if self.waiting() {
-                break;
-            }
-            let Some(dict) = resolved.as_dict() else {
-                continue;
-            };
-            let kids = match dict.get(b"Kids") {
-                Some(kids) if !name_is(dict, b"Type", b"Page") => {
-                    lenient(self.follow_transient(kids))?
-                        .filter(|inner_kids| inner_kids.as_array().is_some())
+        let count = self.walk_pages(
+            stop_after,
+            Some(&wanted),
+            &mut |index, obj_ref, dict, inherited| {
+                if let Some(page) = chosen.get_mut(&index) {
+                    *page = Some(self.page(obj_ref, dict, inherited)?);
                 }
-                _ => None,
-            };
-            if self.waiting() {
-                break;
-            }
-            if let Some(items) = kids.as_deref().and_then(Object::as_array) {
-                let subtree_count = page_count(dict, items.len(), self.limits.max_pages);
-                if first_node {
-                    root_count = subtree_count;
-                }
-                if let Some(leaves) = subtree_count {
-                    let start = count;
-                    let end = start.saturating_add(leaves);
-                    let first = wanted.partition_point(|index| *index < start);
-                    if wanted.get(first).is_none_or(|index| *index >= end) {
-                        count = end;
-                        continue;
-                    }
-                }
-                let merged = inherited.merged(dict);
-                stack.extend(items.iter().rev().map(|kid| (kid.clone(), merged.clone())));
-                continue;
-            }
-            if name_is(dict, b"Type", b"Pages") {
-                continue;
-            }
-            if count >= self.limits.max_pages {
-                return Err(Failure::limit("page count exceeds limit"));
-            }
-            if let Some(page) = chosen.get_mut(&count) {
-                *page = Some(self.page(
-                    match &node {
-                        Object::Ref(reference) => Some(*reference),
-                        Object::Array(_)
-                        | Object::Bool(_)
-                        | Object::Dict(_)
-                        | Object::Integer(_)
-                        | Object::Name(_)
-                        | Object::Null
-                        | Object::Real(_)
-                        | Object::Stream(_)
-                        | Object::String(_) => None,
-                    },
-                    dict,
-                    &inherited,
-                )?);
-                remaining = remaining.saturating_sub(1);
-            }
-            count = count.saturating_add(1);
-        }
-        let total = if remaining == 0 {
-            root_count.unwrap_or(count)
-        } else {
-            count
-        };
-        Ok((total, collect_requested(indexes, &mut chosen)))
+                Ok(())
+            },
+        )?;
+        let pages = collect_requested(indexes, &mut chosen);
+        Ok((count, pages))
     }
 
     fn resolve_crypt_filter(&self, dict: &mut Dict) -> Outcome<()> {
@@ -1492,7 +1391,12 @@ impl<'data> Document<'data> {
         self.pending_reads() != 0
     }
 
-    fn walk_pages(&self, stop_after: Option<usize>, visit: &mut PageVisitor<'_>) -> Outcome<usize> {
+    fn walk_pages(
+        &self,
+        stop_after: Option<usize>,
+        wanted: Option<&[usize]>,
+        visit: &mut PageVisitor<'_>,
+    ) -> Outcome<usize> {
         let Some(catalog) = self.catalog()? else {
             return Err(Failure::invalid("missing document catalog"));
         };
@@ -1508,7 +1412,7 @@ impl<'data> Document<'data> {
             let obj_ref = if let Object::Ref(reference) = &node {
                 if !visited.insert(reference.number) {
                     if first {
-                        return self.walk_pages(None, visit);
+                        return self.walk_pages(None, None, visit);
                     }
                     continue;
                 }
@@ -1527,7 +1431,7 @@ impl<'data> Document<'data> {
             }
             let Some(dict) = resolved.as_dict() else {
                 if first {
-                    return self.walk_pages(None, visit);
+                    return self.walk_pages(None, None, visit);
                 }
                 continue;
             };
@@ -1542,11 +1446,26 @@ impl<'data> Document<'data> {
                 break;
             }
             if let Some(items) = kids.as_deref().and_then(Object::as_array) {
+                let subtree_count = page_count(dict, items.len(), declared);
                 if first {
-                    let Some(subtree_count) = page_count(dict, items.len(), declared) else {
-                        return self.walk_pages(None, visit);
+                    let Some(valid_count) = subtree_count else {
+                        return self.walk_pages(None, None, visit);
                     };
-                    declared = subtree_count.saturating_sub(items.len().saturating_sub(1));
+                    declared = valid_count.saturating_sub(items.len().saturating_sub(1));
+                }
+                if self.sparse.is_some()
+                    && let (Some(selection), Some(leaves)) = (wanted, subtree_count)
+                {
+                    let start = count;
+                    let end = start.saturating_add(leaves);
+                    let first_wanted = selection.partition_point(|index| *index < start);
+                    if selection
+                        .get(first_wanted)
+                        .is_none_or(|index| *index >= end)
+                    {
+                        count = end;
+                        continue;
+                    }
                 }
                 let merged = inherited.merged(dict);
                 stack.extend(items.iter().rev().map(|kid| (kid.clone(), merged.clone())));
@@ -1554,7 +1473,7 @@ impl<'data> Document<'data> {
             }
             if name_is(dict, b"Type", b"Pages") {
                 if first {
-                    return self.walk_pages(None, visit);
+                    return self.walk_pages(None, None, visit);
                 }
                 continue;
             }
@@ -1582,7 +1501,7 @@ impl<'data> Document<'data> {
             return self.requested_pages(indexes, stop_after);
         }
         let mut pages = Vec::new();
-        let count = self.walk_pages(stop_after, &mut |index, obj_ref, dict, inherited| {
+        let count = self.walk_pages(stop_after, None, &mut |index, obj_ref, dict, inherited| {
             if stop_after.is_none_or(|limit| index < limit) {
                 pages.push((index, self.page(obj_ref, dict, inherited)?));
             }
