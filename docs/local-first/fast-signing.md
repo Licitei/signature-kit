@@ -402,14 +402,71 @@ outputs pass `qpdf --check`, `pdfsig` and `openssl cms -verify`, as does the sig
 ### Pending
 
 - **21 MiB ≤ 60 ms:** not reached on this host. One SHA-256 pass over the ByteRange costs
-  90–105 ms in Chromium without SHA extensions. Remaining avoidable work is the contiguous copy
-  before the digest (about 10 ms; it could reuse spare capacity behind the transferred buffer)
-  and the client-side copy that keeps the caller's buffer intact (about 17 ms).
-- **Cold first signature ≤ 150 ms:** not reached. The signing-only bundle reaches 306 ms in the
-  harness (about 295 ms on a static server). Remaining costs are script parse and Effect
-  module evaluation, layer construction, the WASM compile wait (an A1 open that overlaps it
-  needs a PdfCore that becomes ready after the handshake), and the first, unoptimised run of
-  the signing path.
+  82–106 ms in Chromium without SHA extensions. The contiguous copy before the digest was
+  eliminated by writing the appendix into spare WASM memory (`digestUpdate`). Remaining
+  avoidable work is the client-side copy that keeps the caller's buffer intact (about 17 ms).
+- **Cold first signature ≤ 150 ms:** not reached. The signing-only bundle reaches ~300 ms boot
+  plus ~24 ms first sign. Remaining costs are script parse and Effect module evaluation,
+  layer construction, and the WASM compile wait.
 - Repeat visits can use V8's code cache for the worker scripts; the harness loads them with
   caching disabled, so these numbers are first-visit costs.
+
+## Round 3 (`v2-14-fast-signing`, parallel pool hardening)
+
+Same harness and host. "Before" is the round-2 result above.
+
+### Design changes
+
+- **Digest delegation.** The ByteRange digest is computed inside signing-helper workers via
+  WebCrypto, keyed by helper affinity. Prepare no longer re-copies the document in JS; the
+  helper hashes the resident bytes directly. Helpers cache the prepared update so sign can
+  omit both `bytes` and `prepared` on affinity hits.
+- **Zero-copy self-verification.** `withAppendix` extends the resident WASM input in-place
+  for the verification session, avoiding a second copyIn. Verification report scan, CMS
+  verify, and revision changes run concurrently.
+- **Atomic pool scheduler.** Helper selection and reservation happen in a single mutation
+  of the scheduler Ref, eliminating the race that stacked work on one worker during bursts.
+- **Progressive helpers.** Helpers become available as they boot rather than blocking the
+  first signature on full pool startup. Adoption of the A1 session overlaps with prepare.
+- **Self-verification fallback.** When the resident session is closed (document released
+  before confirm), verification falls back to opening a fresh document.
+
+### Pool scaling, 200 documents (p50 ms)
+
+| Helpers | Prepare | Sign | Total |
+| ---: | ---: | ---: | ---: |
+| 0 | 351 | 760 | 1112 |
+| 1 | 452 | 601 | 1053 |
+| 2 | 265 | 394 | 659 |
+| 4 | 212 | 211 | 424 |
+| 7 | 215 | 201 | 416 |
+
+Seven helpers now scales correctly (round 2 showed a regression to 474 ms). Four workers
+remain the default for memory efficiency.
+
+### Warm single signature (p50 ms)
+
+| Fixture | Metric | Round 2 | Round 3 |
+| --- | --- | ---: | ---: |
+| contract-1p | prepare / confirm / total | 3.5 / 5.2 / 10.3 | 3.1 / 4.4 / 8.6 |
+| synthetic-21mib | open / prepare / confirm / total | 25.4 / 115.7 / 6.7 / 160.1 | 11.1 / 82.1 / 3.6 / 105.6 |
+
+The 21 MiB improvement comes from eliminating the contiguous copy before the digest
+(115.7 → 82.1 ms prepare) and the open/copy overlap (25.4 → 11.1 ms open).
+
+### Cold first signature (signing-only worker, p50 ms)
+
+| Metric | Round 2 | Round 3 |
+| --- | ---: | ---: |
+| Boot | 230.9 | 301.5 |
+| First sign (prepare + confirm) | 75.6 | 24.3 |
+
+First sign improved 3× because progressive helpers and parallel adoption eliminate the
+wait for pool startup. Boot is unchanged (dominated by script parse and Effect evaluation).
+
+### What changed, per commit
+
+| Commit | Change | Measured delta (p50, local host) |
+| --- | --- | --- |
+| `perf(engine): parallel signing helpers with digest delegation and zero-copy verification` | Digest in helpers, `withAppendix`, atomic scheduler, progressive startup, parallel adoption | 21 MiB prepare 115.7 → 82.1 ms; batch-200 4w 535.8 → 424 ms; cold sign 75.6 → 24.3 ms |
 
