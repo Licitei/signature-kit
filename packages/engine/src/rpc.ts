@@ -148,7 +148,7 @@ export class LocalTelemetry extends Context.Service<
   }
 >()("@signature-kit/engine/LocalTelemetry") {}
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 export const InstanceId = Schema.String.check(Schema.isUUID());
 export type InstanceId = (typeof InstanceId)["Type"];
 
